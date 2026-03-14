@@ -1,0 +1,174 @@
+import { createContext, useContext, useEffect, useState } from 'react';
+import type { ReactNode } from 'react';
+import type { User } from '@supabase/supabase-js';
+import { supabase, type Profile } from '../lib/supabase';
+
+interface AuthContextType {
+  user: User | null;
+  profile: Profile | null;
+  isLoading: boolean;
+  isAuthenticated: boolean;
+  creditsRemaining: number;
+  signInWithGoogle: () => Promise<void>;
+  signInWithEmailLink: (email: string) => Promise<void>;
+  signOut: () => Promise<void>;
+  refreshProfile: () => Promise<void>;
+}
+
+const AuthContext = createContext<AuthContextType | undefined>(undefined);
+
+interface AuthProviderProps {
+  children: ReactNode;
+}
+
+export function AuthProvider({ children }: AuthProviderProps) {
+  const [user, setUser] = useState<User | null>(null);
+  const [profile, setProfile] = useState<Profile | null>(null);
+  const [isLoading, setIsLoading] = useState(true);
+
+  const creditsRemaining = profile?.credits_remaining ?? 0;
+  const isAuthenticated = !!user;
+
+  // 获取用户 profile
+  const fetchProfile = async (userId: string) => {
+    try {
+      const { data, error } = await supabase
+        .from('profiles')
+        .select('*')
+        .eq('id', userId)
+        .single();
+
+      if (error) {
+        console.error('Error fetching profile:', error);
+        setProfile(null);
+      } else {
+        setProfile(data as Profile);
+      }
+    } catch (err) {
+      console.error('Error fetching profile:', err);
+      setProfile(null);
+    }
+  };
+
+  // 初始化：监听认证状态和处理 OAuth 回跳
+  useEffect(() => {
+    const initAuth = async () => {
+      // 检查 URL 中是否存在 auth code
+      const urlParams = new URLSearchParams(window.location.search);
+      const code = urlParams.get('code');
+
+      // 如果存在 code，交换 session
+      if (code) {
+        try {
+          const { error } = await supabase.auth.exchangeCodeForSession(code);
+
+          if (!error) {
+            // 清除 URL 中的 code 参数，避免重复处理
+            window.history.replaceState({}, '', window.location.pathname);
+          }
+        } catch (err) {
+          console.error('exchangeCodeForSession exception:', err);
+        }
+      }
+
+      // 获取当前会话
+      const { data: { session } } = await supabase.auth.getSession();
+
+      setUser(session?.user ?? null);
+      if (session?.user) {
+        fetchProfile(session.user.id);
+      }
+      setIsLoading(false);
+    };
+
+    initAuth();
+
+    // 监听认证状态变化
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event: string, session: { user: User } | null) => {
+      setUser(session?.user ?? null);
+      if (session?.user) {
+        fetchProfile(session.user.id);
+      } else {
+        setProfile(null);
+      }
+      setIsLoading(false);
+    });
+
+    return () => {
+      subscription.unsubscribe();
+    };
+  }, []);
+
+  // Google 登录
+  const signInWithGoogle = async () => {
+    const redirectTo = window.location.origin;
+
+    const { error } = await supabase.auth.signInWithOAuth({
+      provider: 'google',
+      options: {
+        redirectTo: redirectTo,
+      },
+    });
+
+    if (error) {
+      throw error;
+    }
+  };
+
+  // Email Magic Link 登录
+  const signInWithEmailLink = async (email: string) => {
+    const { error } = await supabase.auth.signInWithOtp({
+      email,
+      options: {
+        emailRedirectTo: window.location.origin,
+      },
+    });
+    if (error) {
+      throw error;
+    }
+  };
+
+  // 登出
+  const signOut = async () => {
+    const { error } = await supabase.auth.signOut();
+    if (error) {
+      throw error;
+    }
+    setUser(null);
+    setProfile(null);
+  };
+
+  // 刷新 profile
+  const refreshProfile = async () => {
+    if (user) {
+      await fetchProfile(user.id);
+    }
+  };
+
+  return (
+    <AuthContext.Provider
+      value={{
+        user,
+        profile,
+        isLoading,
+        isAuthenticated,
+        creditsRemaining,
+        signInWithGoogle,
+        signInWithEmailLink,
+        signOut,
+        refreshProfile,
+      }}
+    >
+      {children}
+    </AuthContext.Provider>
+  );
+}
+
+// 自定义 Hook：使用认证上下文
+export function useAuth() {
+  const context = useContext(AuthContext);
+  if (context === undefined) {
+    throw new Error('useAuth must be used within an AuthProvider');
+  }
+  return context;
+}
