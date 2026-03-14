@@ -1,5 +1,6 @@
 import { BrowserRouter, Routes, Route } from 'react-router-dom';
 import { AuthProvider } from './contexts/AuthContext';
+import { Analytics } from '@vercel/analytics/react';
 import { Home } from './pages/Home';
 import { ResultPage } from './pages/Result';
 import { AccountPage } from './pages/Account';
@@ -18,6 +19,7 @@ function App() {
           <Route path="/terms" element={<TermsOfService />} />
         </Routes>
       </BrowserRouter>
+      <Analytics />
     </AuthProvider>
   );
 }
