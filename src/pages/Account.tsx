@@ -3,7 +3,7 @@ import { useNavigate, Link } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
 import { getAnalysisHistory, getAnalysisById } from '../lib/api';
 import type { AnalysisSummary } from '../types';
-import { User, Sparkles, Clock, ChevronRight, ChevronLeft, LogOut, AlertCircle, RefreshCw, FileText, Shield, Mail, ArrowLeft } from 'lucide-react';
+import { User, Sparkles, Clock, ChevronRight, ChevronLeft, LogOut, AlertCircle, RefreshCw, RefreshCcw, FileText, Shield, Mail, ArrowLeft } from 'lucide-react';
 
 export function AccountPage() {
   const navigate = useNavigate();
@@ -377,6 +377,16 @@ export function AccountPage() {
               <div className="flex items-center gap-3">
                 <FileText size={18} className="text-stone-500" />
                 <span className="text-stone-700">Terms of Service</span>
+              </div>
+              <ChevronRight size={18} className="text-stone-400" />
+            </Link>
+            <Link
+              to="/refund"
+              className="flex items-center justify-between p-3 rounded-xl hover:bg-stone-50 transition-colors"
+            >
+              <div className="flex items-center gap-3">
+                <RefreshCcw size={18} className="text-stone-500" />
+                <span className="text-stone-700">Refund Policy</span>
               </div>
               <ChevronRight size={18} className="text-stone-400" />
             </Link>
