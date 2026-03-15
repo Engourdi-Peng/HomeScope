@@ -13,11 +13,14 @@ export function PrivacyPolicy() {
       </div>
 
       <div className="relative z-10 w-full max-w-[800px]">
-        <button 
-          onClick={() => window.history.back()} 
-          className="inline-flex items-center gap-2 text-stone-600 hover:text-stone-900 mb-8 transition-colors"
+        <button
+          onClick={() => window.history.back()}
+          className="group flex items-center gap-3 text-stone-500 hover:text-stone-900 mb-8 transition-colors"
         >
-          <ArrowLeft className="w-8 h-8" />
+          <div className="w-8 h-8 rounded-full border border-stone-200 flex items-center justify-center bg-white/50 backdrop-blur-md group-hover:bg-white transition-colors">
+            <ArrowLeft size={14} strokeWidth={1.5} />
+          </div>
+          <span className="text-xs font-medium uppercase tracking-widest">Back</span>
         </button>
 
         <div className="bg-white rounded-[2rem] shadow-[0_8px_40px_-12px_rgba(0,0,0,0.08)] border border-stone-200 p-8 md:p-12">

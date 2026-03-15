@@ -83,12 +83,19 @@ export function PricingPage() {
         throw new Error('No session token available');
       }
 
+      // 获取 anon key
+      const anonKey = import.meta.env.VITE_SUPABASE_ANON_KEY;
+      if (!anonKey) {
+        throw new Error('Missing VITE_SUPABASE_ANON_KEY');
+      }
+
       const response = await fetch(
         `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/create-order`,
         {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
+            'apikey': anonKey,
             'Authorization': `Bearer ${token}`,
           },
           body: JSON.stringify({ product: productId }),

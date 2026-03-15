@@ -50,7 +50,7 @@ export function ResultPage() {
       </div>
 
       <div className="relative z-10 w-full max-w-[56rem]">
-        <ResultCard result={result} onBack={() => navigate('/')} />
+        <ResultCard result={result} onBack={() => navigate(-1)} />
       </div>
     </div>
   );

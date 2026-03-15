@@ -3,7 +3,7 @@ import { useNavigate, Link } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
 import { getAnalysisHistory, getAnalysisById } from '../lib/api';
 import type { AnalysisSummary } from '../types';
-import { User, Sparkles, Clock, ChevronRight, LogOut, AlertCircle, RefreshCw, FileText, Shield, Mail, ArrowLeft } from 'lucide-react';
+import { User, Sparkles, Clock, ChevronRight, ChevronLeft, LogOut, AlertCircle, RefreshCw, FileText, Shield, Mail, ArrowLeft } from 'lucide-react';
 
 export function AccountPage() {
   const navigate = useNavigate();
@@ -12,6 +12,8 @@ export function AccountPage() {
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [lastAnalysisDate, setLastAnalysisDate] = useState<string | null>(null);
+  const [currentPage, setCurrentPage] = useState(1);
+  const itemsPerPage = 10;
 
   // Redirect if not authenticated
   useEffect(() => {
@@ -137,11 +139,13 @@ export function AccountPage() {
         {/* Header */}
         <div className="flex items-center justify-between mb-8">
           <button
-            onClick={() => navigate('/')}
-            className="flex items-center gap-2 text-stone-500 hover:text-stone-900 transition-colors"
+            onClick={() => navigate(-1)}
+            className="group flex items-center gap-3 text-stone-500 hover:text-stone-900 transition-colors"
           >
-            <ArrowLeft className="w-8 h-8" />
-            <span className="text-sm font-medium">Back to Home</span>
+            <div className="w-8 h-8 rounded-full border border-stone-200 flex items-center justify-center bg-white/50 backdrop-blur-md group-hover:bg-white transition-colors">
+              <ArrowLeft size={14} strokeWidth={1.5} />
+            </div>
+            <span className="text-xs font-medium uppercase tracking-widest">Back</span>
           </button>
         </div>
 
@@ -252,7 +256,9 @@ export function AccountPage() {
           {/* Analysis List */}
           {!isLoading && !error && analyses.length > 0 && (
             <div className="space-y-3">
-              {analyses.map((analysis) => {
+              {analyses
+                .slice((currentPage - 1) * itemsPerPage, currentPage * itemsPerPage)
+                .map((analysis) => {
                 const statusBadge = getStatusBadge(analysis.status);
                 return (
                   <div
@@ -309,6 +315,43 @@ export function AccountPage() {
                   </div>
                 );
               })}
+            </div>
+          )}
+
+          {/* Pagination */}
+          {analyses.length > itemsPerPage && (
+            <div className="flex items-center justify-between mt-6 pt-4 border-t border-stone-200">
+              <button
+                onClick={() => setCurrentPage(p => Math.max(1, p - 1))}
+                disabled={currentPage === 1}
+                className="flex items-center gap-2 px-4 py-2 text-sm font-medium text-stone-600 hover:text-stone-900 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+              >
+                <ChevronLeft size={16} />
+                Previous
+              </button>
+              <div className="flex items-center gap-2">
+                {Array.from({ length: Math.ceil(analyses.length / itemsPerPage) }, (_, i) => i + 1).map(page => (
+                  <button
+                    key={page}
+                    onClick={() => setCurrentPage(page)}
+                    className={`w-8 h-8 rounded-lg text-sm font-medium transition-colors ${
+                      currentPage === page
+                        ? 'bg-stone-900 text-white'
+                        : 'text-stone-600 hover:bg-stone-100'
+                    }`}
+                  >
+                    {page}
+                  </button>
+                ))}
+              </div>
+              <button
+                onClick={() => setCurrentPage(p => Math.min(Math.ceil(analyses.length / itemsPerPage), p + 1))}
+                disabled={currentPage >= Math.ceil(analyses.length / itemsPerPage)}
+                className="flex items-center gap-2 px-4 py-2 text-sm font-medium text-stone-600 hover:text-stone-900 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+              >
+                Next
+                <ChevronRight size={16} />
+              </button>
             </div>
           )}
         </section>

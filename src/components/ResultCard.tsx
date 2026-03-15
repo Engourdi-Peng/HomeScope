@@ -219,7 +219,7 @@ export function ResultCard({ result, onBack }: ResultProps) {
           <div className="w-8 h-8 rounded-full border border-stone-200 flex items-center justify-center bg-white/50 backdrop-blur-md group-hover:bg-white transition-colors">
             <ArrowLeft size={14} strokeWidth={1.5} />
           </div>
-          <span className="text-xs font-medium uppercase tracking-widest">Back to Scanner</span>
+          <span className="text-xs font-medium uppercase tracking-widest">Back</span>
         </button>
         
         {/* Logo - 居中 */}

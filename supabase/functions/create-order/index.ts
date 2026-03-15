@@ -14,12 +14,10 @@ const SUPABASE_URL = Deno.env.get("SUPABASE_URL") || "https://trteewgplkqiedonom
 const SUPABASE_SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") || "";
 const SUPABASE_ANON_KEY = Deno.env.get("SUPABASE_ANON_KEY") || "";
 
-// Vendors API 配置 - 需要在 Supabase Dashboard 中设置
-// VENDORS_API_KEY: 你的 Vendors API 密钥
-// VENDORS_MERCHANT_ID: 你的 Vendors Merchant ID
-const VENDORS_API_KEY = Deno.env.get("VENDORS_API_KEY") || "";
-const VENDORS_MERCHANT_ID = Deno.env.get("VENDORS_MERCHANT_ID") || "";
-const VENDORS_API_URL = Deno.env.get("VENDORS_API_URL") || "https://api.vendors.com/v1";
+// Paddle API 配置 - 需要在 Supabase Dashboard 中设置
+// PADDLE_API_KEY: 你的 Paddle API 密钥 (格式: pdl_live_apikey_xxx)
+const PADDLE_API_KEY = Deno.env.get("PADDLE_API_KEY") || "";
+const PADDLE_API_URL = Deno.env.get("PADDLE_API_URL") || "https://api.paddle.com";
 
 const corsHeaders: Record<string, string> = {
   "Access-Control-Allow-Origin": "*",
@@ -27,22 +25,22 @@ const corsHeaders: Record<string, string> = {
   "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
 };
 
-// 产品配置
-const PRODUCTS: Record<string, { credits: number; price: number; vendor_product_id: string }> = {
+// 产品配置 - 使用 Paddle Price ID
+const PRODUCTS: Record<string, { credits: number; price: number; price_id: string }> = {
   starter: {
     credits: 5,
     price: 4.99,
-    vendor_product_id: Deno.env.get("VENDORS_PRODUCT_STARTER") || "prod_starter",
+    price_id: Deno.env.get("PRICE_STARTER") || "pri_01kks139q622jr8ptw08ht53qh",
   },
   standard: {
     credits: 20,
     price: 9.99,
-    vendor_product_id: Deno.env.get("VENDORS_PRODUCT_STANDARD") || "prod_standard",
+    price_id: Deno.env.get("PRICE_STANDARD") || "pri_01kks17qba3wgkq10xc1d6pmrz",
   },
   pro: {
     credits: 100,
     price: 29.0,
-    vendor_product_id: Deno.env.get("VENDORS_PRODUCT_PRO") || "prod_pro",
+    price_id: Deno.env.get("PRICE_PRO") || "pri_01kks192dxcy6m53g0vbgfcyh0",
   },
 };
 
@@ -81,70 +79,83 @@ async function getCurrentUser(req: Request): Promise<{ userId: string | null; em
 }
 
 /**
- * 创建 Vendors 订单
+ * 创建 Paddle 交易并获取 checkout URL
  */
-async function createVendorsOrder(
+async function createPaddleTransaction(
   productId: string,
   userId: string,
   email: string,
   successUrl: string,
   cancelUrl: string
-): Promise<{ checkoutUrl: string; orderId: string } | { error: string }> {
+): Promise<{ checkoutUrl: string; transactionId: string } | { error: string }> {
   const product = PRODUCTS[productId];
   if (!product) {
     return { error: "Invalid product ID" };
   }
 
-  // 如果没有配置 Vendors API，使用模拟模式（用于开发测试）
-  if (!VENDORS_API_KEY || !VENDORS_MERCHANT_ID) {
-    console.log("⚠️ Vendors API not configured, using mock mode");
+  // 如果没有配置 Paddle API，使用模拟模式（用于开发测试）
+  if (!PADDLE_API_KEY) {
+    console.log("⚠️ Paddle API not configured, using mock mode");
 
     // 生成模拟订单 ID
     const mockOrderId = `mock_${Date.now()}_${userId.slice(0, 8)}`;
-    const mockCheckoutUrl = `${successUrl}?order_id=${mockOrderId}&status=paid&product=${productId}`;
+    const mockCheckoutUrl = `${successUrl}?transaction_id=${mockOrderId}&status=completed&product=${productId}`;
 
     return {
       checkoutUrl: mockCheckoutUrl,
-      orderId: mockOrderId,
+      transactionId: mockOrderId,
     };
   }
 
   try {
-    // 调用 Vendors API 创建订单
-    const response = await fetch(`${VENDORS_API_URL}/orders`, {
+    // 调用 Paddle API 创建交易
+    const response = await fetch(`${PADDLE_API_URL}/transactions`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        "Authorization": `Bearer ${VENDORS_API_KEY}`,
-        "X-Merchant-ID": VENDORS_MERCHANT_ID,
+        "Authorization": `Bearer ${PADDLE_API_KEY}`,
+        "Paddle-Idempotency-Key": `txn_${Date.now()}_${userId.slice(0, 8)}`,
       },
       body: JSON.stringify({
-        product_id: product.vendor_product_id,
-        quantity: 1,
-        customer: {
-          email: email,
-          metadata: {
-            user_id: userId,
+        items: [
+          {
+            price_id: product.price_id,
+            quantity: 1,
           },
+        ],
+        custom_data: {
+          user_id: userId,
+          product: productId,
         },
-        success_url: successUrl,
-        cancel_url: cancelUrl,
+        checkout: {
+          url: null, // 使用 Paddle 默认的 checkout URL
+        },
       }),
     });
 
     if (!response.ok) {
       const errorText = await response.text();
-      console.error("Vendors API error:", errorText);
-      return { error: `Failed to create order: ${response.statusText}` };
+      console.error("Paddle API error:", errorText);
+      return { error: `Failed to create transaction: ${response.statusText}` };
     }
 
     const data = await response.json();
+    
+    // Paddle 返回的 checkout URL 在 checkout.url 中
+    // 格式: {default_checkout_url}?_ptxn={transaction_id}
+    const checkoutUrl = data.data.checkout?.url;
+    
+    if (!checkoutUrl) {
+      console.error("No checkout URL in response:", data);
+      return { error: "No checkout URL returned from Paddle" };
+    }
+
     return {
-      checkoutUrl: data.checkout_url,
-      orderId: data.order_id,
+      checkoutUrl: checkoutUrl,
+      transactionId: data.data.id,
     };
   } catch (err) {
-    console.error("Vendors API exception:", err);
+    console.error("Paddle API exception:", err);
     return { error: "Failed to connect to payment provider" };
   }
 }
@@ -196,7 +207,7 @@ async function createPaymentRecord(
 Deno.serve(async (req) => {
   // 处理 CORS 预检请求
   if (req.method === "OPTIONS") {
-    return new Response(null, { headers: corsHeaders });
+    return new Response(null, { status: 204, headers: corsHeaders });
   }
 
   // 只允许 POST 请求
@@ -235,8 +246,8 @@ Deno.serve(async (req) => {
     const successUrl = `${baseUrl}/payment-success`;
     const cancelUrl = `${baseUrl}/pricing`;
 
-    // 4. 创建 Vendors 订单
-    const orderResult = await createVendorsOrder(product, userId, email, successUrl, cancelUrl);
+    // 4. 创建 Paddle 交易
+    const orderResult = await createPaddleTransaction(product, userId, email, successUrl, cancelUrl);
 
     if ("error" in orderResult) {
       return new Response(
@@ -248,18 +259,18 @@ Deno.serve(async (req) => {
     // 5. 创建 pending 支付记录
     await createPaymentRecord(
       userId,
-      orderResult.orderId,
+      orderResult.transactionId,
       product,
       productConfig.credits,
       productConfig.price,
-      orderResult.orderId
+      orderResult.transactionId
     );
 
     // 6. 返回 checkout URL
     return new Response(
       JSON.stringify({
         checkout_url: orderResult.checkoutUrl,
-        order_id: orderResult.orderId,
+        transaction_id: orderResult.transactionId,
       }),
       { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } }
     );

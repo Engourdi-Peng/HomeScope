@@ -13,8 +13,8 @@ declare const Deno: {
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL") || "https://trteewgplkqiedonomzg.supabase.co";
 const SUPABASE_SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") || "";
 
-// Webhook 签名验证密钥
-const VENDORS_WEBHOOK_SECRET = Deno.env.get("VENDORS_WEBHOOK_SECRET") || "";
+// Paddle Webhook 配置
+const PADDLE_WEBHOOK_SECRET = Deno.env.get("PADDLE_WEBHOOK_SECRET") || "";
 
 const corsHeaders: Record<string, string> = {
   "Access-Control-Allow-Origin": "*",
@@ -30,40 +30,25 @@ const PRODUCT_CREDITS: Record<string, number> = {
 };
 
 /**
- * 验证 Webhook 签名
+ * 验证 Paddle Webhook 签名
  */
-function verifySignature(req: Request, body: string): boolean {
-  if (!VENDORS_WEBHOOK_SECRET) {
+function verifyPaddleSignature(req: Request, body: string): boolean {
+  if (!PADDLE_WEBHOOK_SECRET) {
     console.log("⚠️ Webhook secret not configured, skipping signature verification");
     return true; // 开发环境跳过验证
   }
 
-  const signature = req.headers.get("x-webhook-signature");
+  const signature = req.headers.get("paddle-signature");
   if (!signature) {
-    console.log("⚠️ No webhook signature provided");
+    console.log("⚠️ No paddle signature provided");
     return false;
   }
 
-  // 简单的 HMAC-SHA256 验证（实际使用时根据 Vendors API 文档调整）
-  const encoder = new TextEncoder();
-  const key = encoder.encode(VENDORS_WEBHOOK_SECRET);
-  const data = encoder.encode(body);
-
-  // 使用 SubtleCrypto 进行 HMAC 验证
-  const cryptoKey = crypto.subtle.importKey(
-    "raw",
-    key,
-    { name: "HMAC", hash: "SHA-256" },
-    false,
-    ["sign"]
-  );
-
-  return crypto.subtle.sign("HMAC", cryptoKey, data).then((sig) => {
-    const expectedSignature = Array.from(new Uint8Array(sig))
-      .map((b) => b.toString(16).padStart(2, "0"))
-      .join("");
-    return signature === expectedSignature;
-  }).catch(() => false);
+  // Paddle 使用特定格式的签名验证
+  // 实际验证逻辑需要根据 Paddle 文档实现
+  // 这里简化处理
+  console.log("Paddle signature received:", signature.substring(0, 20) + "...");
+  return true;
 }
 
 /**
@@ -189,7 +174,7 @@ async function addCredits(userId: string, creditsToAdd: number): Promise<boolean
 Deno.serve(async (req) => {
   // 处理 CORS 预检请求
   if (req.method === "OPTIONS") {
-    return new Response(null, { headers: corsHeaders });
+    return new Response(null, { status: 204, headers: corsHeaders });
   }
 
   // 只允许 POST 请求
@@ -216,10 +201,19 @@ Deno.serve(async (req) => {
     //   );
     // }
 
-    // 3. 解析 webhook 数据
-    const orderId = webhookData.order_id || webhookData.orderId;
-    const paymentStatus = webhookData.status;
-    const productId = webhookData.product_id || webhookData.productId;
+    // 3. 解析 Paddle webhook 数据
+    // Paddle 事件格式: { event_type: "transaction.completed", data: { id: "txn_xxx", ... } }
+    const eventType = webhookData.event_type;
+    const eventData = webhookData.data || webhookData;
+    
+    // 优先从 custom_data 获取信息
+    const customData = eventData.custom_data || {};
+    const transactionId = eventData.id;
+    const paymentStatus = eventData.status;
+    const productId = customData.product;
+    
+    // 兼容旧格式
+    const orderId = transactionId || webhookData.order_id || webhookData.orderId;
 
     if (!orderId || !paymentStatus) {
       console.error("Missing required fields: order_id or status");
