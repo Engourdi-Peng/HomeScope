@@ -198,9 +198,9 @@ export function Contact() {
 
           <div className="mt-8 pt-6 border-t border-stone-200">
             <p className="text-sm text-stone-500 text-center">
-              Prefer to reach out directly?{' '}
-              <a href="mailto:a472018670@gmail.com" className="text-blue-600 hover:underline">
-                a472018670@gmail.com
+              Need urgent help?{' '}
+              <a href="mailto:a472018670@gmail.com" className="text-blue-600 hover:underline font-medium">
+                Contact Support
               </a>
             </p>
           </div>

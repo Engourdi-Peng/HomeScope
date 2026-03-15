@@ -390,8 +390,8 @@ export function AccountPage() {
               </div>
               <ChevronRight size={18} className="text-stone-400" />
             </Link>
-            <Link
-              to="/contact"
+            <a
+              href="mailto:a472018670@gmail.com"
               className="flex items-center justify-between p-3 rounded-xl hover:bg-stone-50 transition-colors"
             >
               <div className="flex items-center gap-3">
@@ -399,7 +399,7 @@ export function AccountPage() {
                 <span className="text-stone-700">Contact Support</span>
               </div>
               <ChevronRight size={18} className="text-stone-400" />
-            </Link>
+            </a>
             <button
               onClick={handleSignOut}
               className="flex items-center justify-between w-full p-3 rounded-xl hover:bg-red-50 transition-colors group"
