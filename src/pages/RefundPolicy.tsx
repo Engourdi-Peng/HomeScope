@@ -1,5 +1,4 @@
 import { RefreshCcw, ArrowLeft, Mail } from 'lucide-react';
-import { Link } from 'react-router-dom';
 
 export function RefundPolicy() {
   return (
