@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Link, useNavigate } from 'react-router-dom';
+import { Link } from 'react-router-dom';
 import { PricingCard } from '../components/PricingCard';
 import { FAQItem } from '../components/FAQItem';
 import { UserMenu } from '../components/UserMenu';
@@ -58,8 +58,7 @@ const PRODUCTS = [
 ];
 
 export function PricingPage() {
-  const navigate = useNavigate();
-  const { user, isAuthenticated, creditsRemaining, refreshProfile } = useAuth();
+  const { user, isAuthenticated } = useAuth();
   const [isLoginModalOpen, setIsLoginModalOpen] = useState(false);
   const [buyingProduct, setBuyingProduct] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);

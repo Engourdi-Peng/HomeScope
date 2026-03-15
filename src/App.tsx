@@ -8,7 +8,7 @@ import { PrivacyPolicy } from './pages/PrivacyPolicy';
 import { TermsOfService } from './pages/TermsOfService';
 import { PricingPage } from './pages/Pricing';
 import { PaymentSuccessPage } from './pages/PaymentSuccess';
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useState } from 'react';
 
 function AnimatedRoutes() {
   const location = useLocation();

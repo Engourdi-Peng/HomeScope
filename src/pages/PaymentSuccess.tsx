@@ -5,9 +5,8 @@ import { useAuth } from '../contexts/AuthContext';
 
 export function PaymentSuccessPage() {
   const [searchParams] = useSearchParams();
-  const { user, isAuthenticated, creditsRemaining, refreshProfile } = useAuth();
+  const { creditsRemaining, refreshProfile } = useAuth();
   const [isLoading, setIsLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
 
   const orderId = searchParams.get('order_id');
   const status = searchParams.get('status');
