@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import ReactDOM from 'react-dom';
 import { useAuth } from '../contexts/AuthContext';
 import { X, Mail, Chrome, Loader2 } from 'lucide-react';
 
@@ -63,7 +64,8 @@ export function LoginModal({ isOpen, onClose }: LoginModalProps) {
     onClose();
   };
 
-  return (
+  // 使用 Portal 将弹窗挂载到 body，绕过祖先元素的 transform 影响
+  const modalContent = (
     <div className="fixed inset-0 z-50 flex items-center justify-center">
       {/* 遮罩层 */}
       <div 
@@ -186,4 +188,7 @@ export function LoginModal({ isOpen, onClose }: LoginModalProps) {
       </div>
     </div>
   );
+
+  // 使用 Portal 挂载到 document.body，确保 fixed 定位相对于视口
+  return ReactDOM.createPortal(modalContent, document.body);
 }
