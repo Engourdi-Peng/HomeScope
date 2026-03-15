@@ -8,6 +8,7 @@ import { PrivacyPolicy } from './pages/PrivacyPolicy';
 import { TermsOfService } from './pages/TermsOfService';
 import { PricingPage } from './pages/Pricing';
 import { PaymentSuccessPage } from './pages/PaymentSuccess';
+import { Contact } from './pages/Contact';
 import { useEffect, useState } from 'react';
 
 function AnimatedRoutes() {
@@ -37,6 +38,7 @@ function AnimatedRoutes() {
         <Route path="/terms" element={<TermsOfService />} />
         <Route path="/pricing" element={<PricingPage />} />
         <Route path="/payment-success" element={<PaymentSuccessPage />} />
+        <Route path="/contact" element={<Contact />} />
       </Routes>
     </div>
   );
