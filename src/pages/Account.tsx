@@ -1,9 +1,9 @@
 import { useEffect, useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, Link } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
 import { getAnalysisHistory, getAnalysisById } from '../lib/api';
 import type { AnalysisSummary } from '../types';
-import { User, Sparkles, Clock, ChevronRight, LogOut, AlertCircle, RefreshCw, FileText, Shield, Mail } from 'lucide-react';
+import { User, Sparkles, Clock, ChevronRight, LogOut, AlertCircle, RefreshCw, FileText, Shield, Mail, ArrowLeft } from 'lucide-react';
 
 export function AccountPage() {
   const navigate = useNavigate();
@@ -29,10 +29,12 @@ export function AccountPage() {
         setIsLoading(true);
         setError(null);
         const history = await getAnalysisHistory(20, 0);
-        setAnalyses(history);
+        // Filter out failed analyses
+        const successfulHistory = history.filter(a => a.status !== 'failed');
+        setAnalyses(successfulHistory);
 
         // Get last analysis date
-        if (history.length > 0) {
+        if (successfulHistory.length > 0) {
           const lastAnalysis = history.find(a => a.status === 'done');
           if (lastAnalysis) {
             setLastAnalysisDate(lastAnalysis.created_at);
@@ -138,12 +140,12 @@ export function AccountPage() {
             onClick={() => navigate('/')}
             className="flex items-center gap-2 text-stone-500 hover:text-stone-900 transition-colors"
           >
-            <ChevronRight className="rotate-180" size={18} />
-            <span className="text-sm font-medium">Back</span>
+            <ArrowLeft className="w-8 h-8" />
+            <span className="text-sm font-medium">Back to Home</span>
           </button>
         </div>
 
-        {/* Section 1: Profile / Plan */}
+        {/* Section 1: Profile */}
         <section className="bg-white rounded-3xl p-8 mb-6 shadow-[0_1px_8px_rgba(0,0,0,0.06)] border border-stone-200">
           <div className="flex items-start justify-between">
             <div className="flex items-center gap-4">
@@ -163,24 +165,14 @@ export function AccountPage() {
                   {user?.user_metadata?.name || user?.email?.split('@')[0] || 'User'}
                 </h2>
                 <p className="text-stone-500 text-sm">{user?.email}</p>
-                <div className="mt-2 inline-flex items-center gap-1.5 px-3 py-1 bg-amber-50 border border-amber-200 rounded-full">
-                  <Sparkles size={12} className="text-amber-600" />
-                  <span className="text-xs font-medium text-amber-700">Free Plan</span>
-                </div>
               </div>
             </div>
             <div className="flex gap-3">
               <button
                 className="px-4 py-2 bg-stone-900 text-white text-sm font-medium rounded-xl hover:bg-stone-800 transition-colors"
-                onClick={() => alert('Purchase credits coming soon!')}
+                onClick={() => navigate('/pricing')}
               >
                 Buy Credits
-              </button>
-              <button
-                className="px-4 py-2 bg-stone-100 text-stone-700 text-sm font-medium rounded-xl hover:bg-stone-200 transition-colors"
-                onClick={() => alert('Manage plan coming soon!')}
-              >
-                Manage Plan
               </button>
             </div>
           </div>
@@ -189,20 +181,13 @@ export function AccountPage() {
         {/* Section 2: Usage */}
         <section className="bg-white rounded-3xl p-8 mb-6 shadow-[0_1px_8px_rgba(0,0,0,0.06)] border border-stone-200">
           <h3 className="text-lg font-semibold text-stone-900 mb-6">Usage</h3>
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-6">
+          <div className="grid grid-cols-2 md:grid-cols-3 gap-6">
             <div className="p-4 bg-amber-50 rounded-2xl border border-amber-100">
               <div className="flex items-center gap-2 mb-2">
                 <Sparkles size={16} className="text-amber-600" />
-                <span className="text-xs font-medium text-amber-700">Free Left</span>
+                <span className="text-xs font-medium text-amber-700">Credits Remaining</span>
               </div>
               <div className="text-3xl font-semibold text-amber-800">{creditsRemaining}</div>
-            </div>
-            <div className="p-4 bg-stone-50 rounded-2xl border border-stone-100">
-              <div className="flex items-center gap-2 mb-2">
-                <FileText size={16} className="text-stone-600" />
-                <span className="text-xs font-medium text-stone-600">Paid Credits</span>
-              </div>
-              <div className="text-3xl font-semibold text-stone-800">0</div>
             </div>
             <div className="p-4 bg-stone-50 rounded-2xl border border-stone-100">
               <div className="flex items-center gap-2 mb-2">
@@ -332,28 +317,26 @@ export function AccountPage() {
         <section className="bg-white rounded-3xl p-8 shadow-[0_1px_8px_rgba(0,0,0,0.06)] border border-stone-200">
           <h3 className="text-lg font-semibold text-stone-900 mb-6">Support & Settings</h3>
           <div className="space-y-3">
-            <a
-              href="#"
+            <Link
+              to="/privacy"
               className="flex items-center justify-between p-3 rounded-xl hover:bg-stone-50 transition-colors"
-              onClick={(e) => { e.preventDefault(); alert('Privacy Policy coming soon!'); }}
             >
               <div className="flex items-center gap-3">
                 <Shield size={18} className="text-stone-500" />
                 <span className="text-stone-700">Privacy Policy</span>
               </div>
               <ChevronRight size={18} className="text-stone-400" />
-            </a>
-            <a
-              href="#"
+            </Link>
+            <Link
+              to="/terms"
               className="flex items-center justify-between p-3 rounded-xl hover:bg-stone-50 transition-colors"
-              onClick={(e) => { e.preventDefault(); alert('Terms of Service coming soon!'); }}
             >
               <div className="flex items-center gap-3">
                 <FileText size={18} className="text-stone-500" />
                 <span className="text-stone-700">Terms of Service</span>
               </div>
               <ChevronRight size={18} className="text-stone-400" />
-            </a>
+            </Link>
             <a
               href="mailto:support@listinganalyzer.com"
               className="flex items-center justify-between p-3 rounded-xl hover:bg-stone-50 transition-colors"

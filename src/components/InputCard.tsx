@@ -203,9 +203,9 @@ export function InputCard({
         {isAuthenticated && !isLoading && (
           <div className="mt-3 text-xs text-stone-500">
             {creditsRemaining > 0 ? (
-              <>You have {creditsRemaining} free analyses left</>
+              <>You have {creditsRemaining} analyses left</>
             ) : (
-              <span className="text-red-500 font-medium">Free analyses used</span>
+              <span className="text-red-500 font-medium">No credits remaining</span>
             )}
           </div>
         )}

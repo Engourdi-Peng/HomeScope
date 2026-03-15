@@ -6,7 +6,7 @@ import { useAuth } from '../contexts/AuthContext';
 
 export function ResultPage() {
   const navigate = useNavigate();
-  const { user, isAuthenticated, creditsRemaining } = useAuth();
+  const { } = useAuth();
   const [result, setResult] = useState<AnalysisResult | null>(null);
 
   useEffect(() => {
@@ -47,11 +47,6 @@ export function ResultPage() {
           className="absolute right-0 top-0 w-full md:w-2/3 h-full object-cover object-right grayscale" 
         />
         <div className="absolute inset-0 bg-gradient-to-r from-[#FDFCF9] via-[#FDFCF9]/80 to-transparent"></div>
-      </div>
-
-      {/* Debug Info */}
-      <div className="fixed top-2 left-2 z-50 text-[10px] text-stone-400 bg-white/80 backdrop-blur px-2 py-1 rounded border border-stone-200">
-        DEBUG: creditsRemaining={creditsRemaining}, isAuthenticated={String(isAuthenticated)}, user={user?.email || 'N/A'}
       </div>
 
       <div className="relative z-10 w-full max-w-[56rem]">

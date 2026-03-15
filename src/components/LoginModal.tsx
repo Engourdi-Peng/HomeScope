@@ -180,7 +180,7 @@ export function LoginModal({ isOpen, onClose }: LoginModalProps) {
         {/* 底部说明 */}
         <div className="px-8 py-4 bg-stone-50 border-t border-stone-100">
           <p className="text-xs text-stone-500 text-center">
-            New users get <strong>3 free analyses</strong> to try out the service.
+            New users get <strong>3 analyses</strong> to try out the service.
           </p>
         </div>
       </div>

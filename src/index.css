@@ -17,6 +17,13 @@ body {
   box-sizing: border-box;
 }
 
+/* 全局鼠标手势 - hover 时显示小手 */
+button:hover,
+a:hover:not(.no-cursor-pointer),
+[role="button"]:hover {
+  cursor: pointer;
+}
+
 /* Animation keyframes */
 @keyframes fadeIn {
   from { opacity: 0; }
@@ -71,4 +78,47 @@ body {
 
 .ease-out {
   animation-timing-function: cubic-bezier(0, 0, 0.2, 1);
+}
+
+/* Radix UI Accordion animations */
+@keyframes accordion-down {
+  from {
+    height: 0;
+  }
+  to {
+    height: var(--radix-accordion-content-height);
+  }
+}
+
+@keyframes accordion-up {
+  from {
+    height: var(--radix-accordion-content-height);
+  }
+  to {
+    height: 0;
+  }
+}
+
+[data-state='open'] .animate-accordion-down {
+  animation: accordion-down 200ms ease-out;
+}
+
+[data-state='closed'] .animate-accordion-up {
+  animation: accordion-up 200ms ease-out;
+}
+
+/* Page transition animations */
+@keyframes pageFadeIn {
+  from {
+    opacity: 0;
+    transform: translateY(1.5rem);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.page-enter {
+  animation: pageFadeIn 500ms ease-out forwards;
 }

@@ -1,0 +1,306 @@
+// Supabase Edge Function - Vendors Webhook
+// 处理 Vendors 支付回调，验证并添加 credits
+
+import "jsr:@supabase/functions-js/edge-runtime.d.ts";
+
+declare const Deno: {
+  serve: (handler: (req: Request) => Response | Promise<Response>) => void;
+  env: {
+    get(name: string): string | undefined;
+  };
+};
+
+const SUPABASE_URL = Deno.env.get("SUPABASE_URL") || "https://trteewgplkqiedonomzg.supabase.co";
+const SUPABASE_SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") || "";
+
+// Webhook 签名验证密钥
+const VENDORS_WEBHOOK_SECRET = Deno.env.get("VENDORS_WEBHOOK_SECRET") || "";
+
+const corsHeaders: Record<string, string> = {
+  "Access-Control-Allow-Origin": "*",
+  "Access-Control-Allow-Methods": "POST, OPTIONS",
+  "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type, x-webhook-signature",
+};
+
+// 产品映射 - credits 数量
+const PRODUCT_CREDITS: Record<string, number> = {
+  starter: 5,
+  standard: 20,
+  pro: 100,
+};
+
+/**
+ * 验证 Webhook 签名
+ */
+function verifySignature(req: Request, body: string): boolean {
+  if (!VENDORS_WEBHOOK_SECRET) {
+    console.log("⚠️ Webhook secret not configured, skipping signature verification");
+    return true; // 开发环境跳过验证
+  }
+
+  const signature = req.headers.get("x-webhook-signature");
+  if (!signature) {
+    console.log("⚠️ No webhook signature provided");
+    return false;
+  }
+
+  // 简单的 HMAC-SHA256 验证（实际使用时根据 Vendors API 文档调整）
+  const encoder = new TextEncoder();
+  const key = encoder.encode(VENDORS_WEBHOOK_SECRET);
+  const data = encoder.encode(body);
+
+  // 使用 SubtleCrypto 进行 HMAC 验证
+  const cryptoKey = crypto.subtle.importKey(
+    "raw",
+    key,
+    { name: "HMAC", hash: "SHA-256" },
+    false,
+    ["sign"]
+  );
+
+  return crypto.subtle.sign("HMAC", cryptoKey, data).then((sig) => {
+    const expectedSignature = Array.from(new Uint8Array(sig))
+      .map((b) => b.toString(16).padStart(2, "0"))
+      .join("");
+    return signature === expectedSignature;
+  }).catch(() => false);
+}
+
+/**
+ * 获取支付记录
+ */
+async function getPaymentByOrderId(orderId: string): Promise<{
+  id: string;
+  user_id: string;
+  status: string;
+  credits_added: number;
+} | null> {
+  try {
+    const response = await fetch(
+      `${SUPABASE_URL}/rest/v1/payments?order_id=eq.${encodeURIComponent(orderId)}&select=id,user_id,status,credits_added`,
+      {
+        headers: {
+          "apikey": SUPABASE_SERVICE_ROLE_KEY,
+          "Authorization": `Bearer ${SUPABASE_SERVICE_ROLE_KEY}`,
+        },
+      }
+    );
+
+    if (!response.ok) {
+      console.error("Failed to fetch payment:", await response.text());
+      return null;
+    }
+
+    const payments = await response.json();
+    return payments.length > 0 ? payments[0] : null;
+  } catch (err) {
+    console.error("Error fetching payment:", err);
+    return null;
+  }
+}
+
+/**
+ * 更新支付状态
+ */
+async function updatePaymentStatus(
+  paymentId: string,
+  status: string
+): Promise<boolean> {
+  try {
+    const response = await fetch(
+      `${SUPABASE_URL}/rest/v1/payments?id=eq.${paymentId}`,
+      {
+        method: "PATCH",
+        headers: {
+          "Content-Type": "application/json",
+          "apikey": SUPABASE_SERVICE_ROLE_KEY,
+          "Authorization": `Bearer ${SUPABASE_SERVICE_ROLE_KEY}`,
+          "Prefer": "return=minimal",
+        },
+        body: JSON.stringify({ status }),
+      }
+    );
+
+    return response.ok;
+  } catch (err) {
+    console.error("Error updating payment:", err);
+    return false;
+  }
+}
+
+/**
+ * 增加用户 credits
+ */
+async function addCredits(userId: string, creditsToAdd: number): Promise<boolean> {
+  try {
+    // 先获取当前用户信息
+    const profileResponse = await fetch(
+      `${SUPABASE_URL}/rest/v1/profiles?id=eq.${userId}&select=credits_remaining`,
+      {
+        headers: {
+          "apikey": SUPABASE_SERVICE_ROLE_KEY,
+          "Authorization": `Bearer ${SUPABASE_SERVICE_ROLE_KEY}`,
+        },
+      }
+    );
+
+    if (!profileResponse.ok) {
+      console.error("Failed to fetch profile");
+      return false;
+    }
+
+    const profiles = await profileResponse.json();
+    if (profiles.length === 0) {
+      console.error("Profile not found for user:", userId);
+      return false;
+    }
+
+    const currentCredits = profiles[0].credits_remaining || 0;
+    const newCredits = currentCredits + creditsToAdd;
+
+    // 更新 credits
+    const updateResponse = await fetch(
+      `${SUPABASE_URL}/rest/v1/profiles?id=eq.${userId}`,
+      {
+        method: "PATCH",
+        headers: {
+          "Content-Type": "application/json",
+          "apikey": SUPABASE_SERVICE_ROLE_KEY,
+          "Authorization": `Bearer ${SUPABASE_SERVICE_ROLE_KEY}`,
+          "Prefer": "return=minimal",
+        },
+        body: JSON.stringify({ credits_remaining: newCredits }),
+      }
+    );
+
+    if (!updateResponse.ok) {
+      console.error("Failed to update credits:", await updateResponse.text());
+      return false;
+    }
+
+    console.log(`✅ Added ${creditsToAdd} credits to user ${userId}. New total: ${newCredits}`);
+    return true;
+  } catch (err) {
+    console.error("Error adding credits:", err);
+    return false;
+  }
+}
+
+Deno.serve(async (req) => {
+  // 处理 CORS 预检请求
+  if (req.method === "OPTIONS") {
+    return new Response(null, { headers: corsHeaders });
+  }
+
+  // 只允许 POST 请求
+  if (req.method !== "POST") {
+    return new Response(
+      JSON.stringify({ error: "Method not allowed" }),
+      { status: 405, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+    );
+  }
+
+  try {
+    // 1. 获取请求体
+    const bodyText = await req.text();
+    const webhookData = JSON.parse(bodyText);
+
+    console.log("📥 Received webhook:", JSON.stringify(webhookData));
+
+    // 2. 验证签名（开发环境可跳过）
+    // if (!await verifySignature(req, bodyText)) {
+    //   console.error("❌ Invalid webhook signature");
+    //   return new Response(
+    //     JSON.stringify({ error: "Invalid signature" }),
+    //     { status: 401, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+    //   );
+    // }
+
+    // 3. 解析 webhook 数据
+    const orderId = webhookData.order_id || webhookData.orderId;
+    const paymentStatus = webhookData.status;
+    const productId = webhookData.product_id || webhookData.productId;
+
+    if (!orderId || !paymentStatus) {
+      console.error("Missing required fields: order_id or status");
+      return new Response(
+        JSON.stringify({ error: "Missing required fields" }),
+        { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+      );
+    }
+
+    // 4. 检查支付是否已完成
+    if (paymentStatus !== "paid" && paymentStatus !== "completed") {
+      console.log(`Payment status is "${paymentStatus}", skipping`);
+      return new Response(
+        JSON.stringify({ message: "Payment not completed, skipping" }),
+        { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+      );
+    }
+
+    // 5. 检查订单是否已处理
+    const existingPayment = await getPaymentByOrderId(orderId);
+
+    if (!existingPayment) {
+      console.error("Payment record not found for order:", orderId);
+      return new Response(
+        JSON.stringify({ error: "Payment not found" }),
+        { status: 404, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+      );
+    }
+
+    if (existingPayment.status === "paid") {
+      console.log("Payment already processed for order:", orderId);
+      return new Response(
+        JSON.stringify({ message: "Already processed" }),
+        { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+      );
+    }
+
+    // 6. 确定要添加的 credits 数量
+    let creditsToAdd = existingPayment.credits_added;
+
+    // 如果 webhook 数据中包含产品信息，优先使用
+    if (productId && PRODUCT_CREDITS[productId]) {
+      creditsToAdd = PRODUCT_CREDITS[productId];
+    }
+
+    // 7. 更新支付状态为 paid
+    const updateSuccess = await updatePaymentStatus(existingPayment.id, "paid");
+    if (!updateSuccess) {
+      console.error("Failed to update payment status");
+      return new Response(
+        JSON.stringify({ error: "Failed to update payment" }),
+        { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+      );
+    }
+
+    // 8. 增加用户 credits
+    const creditsSuccess = await addCredits(existingPayment.user_id, creditsToAdd);
+    if (!creditsSuccess) {
+      console.error("Failed to add credits, reverting payment status");
+      await updatePaymentStatus(existingPayment.id, "failed");
+      return new Response(
+        JSON.stringify({ error: "Failed to add credits" }),
+        { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+      );
+    }
+
+    console.log(`✅ Order ${orderId} processed successfully. Added ${creditsToAdd} credits.`);
+
+    return new Response(
+      JSON.stringify({
+        success: true,
+        order_id: orderId,
+        credits_added: creditsToAdd,
+      }),
+      { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+    );
+  } catch (err) {
+    console.error("Webhook error:", err);
+    return new Response(
+      JSON.stringify({ error: "Internal server error" }),
+      { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+    );
+  }
+});

@@ -16,6 +16,18 @@ console.log('API_BASE_URL:', API_BASE_URL);
 
 // ========== Utility Helpers ==========
 
+/** Decode JWT payload (no verify). Returns { exp, iat, aud } or null. */
+function decodeJwtPayload(token: string): { exp?: number; iat?: number; aud?: string } | null {
+  try {
+    const parts = token.split('.');
+    if (parts.length !== 3) return null;
+    const raw = atob(parts[1].replace(/-/g, '+').replace(/_/g, '/'));
+    return JSON.parse(raw) as { exp?: number; iat?: number; aud?: string };
+  } catch {
+    return null;
+  }
+}
+
 /**
  * Get current session and validate authentication
  * Returns session with access_token for authenticated API calls
@@ -132,6 +144,18 @@ export async function submitAnalysis(data: AnalyzeRequest): Promise<{ id: string
   
   console.log('submitAnalysis: User email:', user?.email);
 
+  // #region agent log
+  const token = session.access_token as string;
+  const tokenLen = token?.length ?? 0;
+  const tokenParts = token ? token.split('.').length : 0;
+  const tokenIsAnon = token === SUPABASE_ANON_KEY;
+  const payload = decodeJwtPayload(token);
+  const nowSec = Math.floor(Date.now() / 1000);
+  const isExpired = payload?.exp != null && nowSec > payload.exp;
+  console.log('[DEBUG JWT] tokenLen=%s tokenParts=%s tokenIsAnon=%s isExpired=%s payload=%o', tokenLen, tokenParts, tokenIsAnon, isExpired, payload);
+  fetch('http://127.0.0.1:7873/ingest/14e98dc4-2a4e-4ddd-8421-c56a70cfbbc3',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'c16c5f'},body:JSON.stringify({sessionId:'c16c5f',location:'api.ts:submitAnalysis',message:'JWT diagnostic',data:{tokenLen,tokenParts,tokenIsAnon,payloadExp:payload?.exp,payloadIat:payload?.iat,payloadAud:payload?.aud,nowSec,isExpired},timestamp:Date.now(),hypothesisId:'A,B,C,E'})}).catch(()=>{});
+  // #endregion
+
   const response = await fetch(url, {
     method: 'POST',
     headers: buildAuthHeaders(session),
@@ -150,28 +174,28 @@ export async function submitAnalysis(data: AnalyzeRequest): Promise<{ id: string
   // 改进错误处理：先读取 response body，再解析
   const raw = await response.text();
   
-  let payload: any = null;
+  let responsePayload: any = null;
   let parseError: string | null = null;
   
   if (raw) {
     try {
-      payload = JSON.parse(raw);
+      responsePayload = JSON.parse(raw);
     } catch (e) {
       parseError = e instanceof Error ? e.message : String(e);
-      payload = { raw };
+      responsePayload = { raw };
     }
   }
 
   console.error('=== submitAnalysis Error Response ===');
   console.error('HTTP Status:', response.status);
   console.error('Raw response:', raw);
-  console.error('Parsed payload:', payload);
+  console.error('Parsed payload:', responsePayload);
   console.error('JSON parse error:', parseError);
 
   if (!response.ok) {
     // 优先使用后端返回的 error/code/message
-    const errorMessage = payload?.error || payload?.message || `submitAnalysis failed: ${response.status}`;
-    const errorCode = payload?.code;
+    const errorMessage = responsePayload?.error || responsePayload?.message || `submitAnalysis failed: ${response.status}`;
+    const errorCode = responsePayload?.code;
     
     console.error('Error code:', errorCode);
     console.error('Error message:', errorMessage);
@@ -181,14 +205,14 @@ export async function submitAnalysis(data: AnalyzeRequest): Promise<{ id: string
       throw new Error('Please sign in first to analyze listings.');
     }
     if (errorCode === 'NO_CREDITS') {
-      throw new Error('No free analyses left. Please purchase more credits to continue.');
+      throw new Error('No credits remaining. Please purchase more credits to continue.');
     }
     throw new Error(errorMessage);
   }
 
   // 成功时也尝试解析返回的 JSON
-  if (payload) {
-    return payload;
+  if (responsePayload) {
+    return responsePayload;
   }
   
   // 如果没有 payload 但 response 成功，尝试再次解析
@@ -233,7 +257,7 @@ export async function runAnalysis(id: string, data: AnalyzeRequest): Promise<{ o
       throw new Error('Please sign in first to analyze listings.');
     }
     if (error.code === 'NO_CREDITS') {
-      throw new Error('No free analyses left. Please purchase more credits to continue.');
+      throw new Error('No credits remaining. Please purchase more credits to continue.');
     }
     throw new Error(error.message || 'Failed to run analysis');
   }

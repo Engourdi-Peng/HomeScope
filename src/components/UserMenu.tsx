@@ -43,7 +43,7 @@ export function UserMenu({ onLoginClick }: UserMenuProps) {
       <div className="flex items-center gap-2 px-3 py-2 bg-amber-50 border border-amber-200 rounded-xl">
         <Sparkles size={16} className="text-amber-600" />
         <span className="text-sm font-medium text-amber-800">
-          {creditsRemaining} free {creditsRemaining === 1 ? 'analysis' : 'analyses'} left
+          {creditsRemaining} {creditsRemaining === 1 ? 'analysis' : 'analyses'} left
         </span>
       </div>
 

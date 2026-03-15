@@ -68,6 +68,7 @@ export interface SpatialMetrics {
 export interface SpaceAnalysisItem {
   spaceType: 'kitchen' | 'bathroom' | 'bedroom' | 'living_room' | 'garage' | 'laundry' | 'exterior' | 'hallway' | 'storage' | 'dining' | 'unknown';
   score: number; // 0-100
+  explanation?: string; // short description of condition (max 12 words)
   photoCount: number; // number of photos analyzed for this space
   observations: string[];
 }
@@ -98,9 +99,39 @@ export interface RealityCheck {
   confidence?: "low" | "medium" | "high";
 }
 
+// Rent Fairness for price evaluation
+export type RentFairnessVerdict = "underpriced" | "fair" | "slightly_overpriced" | "overpriced";
+
+export interface RentFairness {
+  estimated_min: number;
+  estimated_max: number;
+  listing_price: number;
+  verdict: RentFairnessVerdict;
+  explanation: string;
+}
+
+// Score Context for market position (NEW)
+export interface ScoreContext {
+  marketPosition: 'Above Average' | 'Average' | 'Below Average';
+  explanation: string;
+}
+
 // Combined Analysis Result (backward compatible)
+export interface FinalRecommendation {
+  verdict: 'Strong Apply' | 'Apply With Caution' | 'Not Recommended';
+  reason: string;
+}
+
 export interface AnalysisResult {
   overallScore: number;
+  finalRecommendation?: FinalRecommendation | null;
+  
+  // Score Context (NEW)
+  scoreContext?: ScoreContext | null;
+  
+  // Agent Questions (NEW)
+  agentQuestions?: string[];
+  
   verdict: 'Worth Inspecting' | 'Proceed With Caution' | 'Likely Overpriced / Risky' | 'Need More Evidence';
   quickSummary: string;
   whatLooksGood: string[];
@@ -116,6 +147,9 @@ export interface AnalysisResult {
   
   // Hidden Risk Signals (NEW)
   hiddenRisks?: string[];
+  
+  // Potential Risks (NEW)
+  risks?: string[];
   
   // Inspection Fit (NEW)
   inspectionFit?: {
@@ -148,6 +182,9 @@ export interface AnalysisResult {
 
   // Reality Check module (optional)
   reality_check?: RealityCheck;
+
+  // Rent Fairness (optional)
+  rent_fairness?: RentFairness;
 }
 
 export interface AnalyzeRequest {

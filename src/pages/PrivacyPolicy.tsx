@@ -1,5 +1,4 @@
-import { Link } from 'react-router-dom';
-import { Shield, Eye, Lock, Mail, ExternalLink } from 'lucide-react';
+import { Shield, Eye, Lock, Mail, ArrowLeft } from 'lucide-react';
 
 export function PrivacyPolicy() {
   return (
@@ -14,10 +13,12 @@ export function PrivacyPolicy() {
       </div>
 
       <div className="relative z-10 w-full max-w-[800px]">
-        <Link to="/" className="inline-flex items-center gap-2 text-stone-600 hover:text-stone-900 mb-8 transition-colors">
-          <ExternalLink className="w-4 h-4 rotate-[-45deg]" />
-          Back to Home
-        </Link>
+        <button 
+          onClick={() => window.history.back()} 
+          className="inline-flex items-center gap-2 text-stone-600 hover:text-stone-900 mb-8 transition-colors"
+        >
+          <ArrowLeft className="w-8 h-8" />
+        </button>
 
         <div className="bg-white rounded-[2rem] shadow-[0_8px_40px_-12px_rgba(0,0,0,0.08)] border border-stone-200 p-8 md:p-12">
           <div className="flex items-center gap-3 mb-8">

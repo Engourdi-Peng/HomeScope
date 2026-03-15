@@ -1,0 +1,5 @@
+# Edge Function 配置
+# 关闭网关层 JWT 校验，避免与新版 Auth 签名（如 ES256）导致的 401 Invalid JWT。
+# 认证仍在函数内通过 getCurrentUser() 调用 /auth/v1/user 完成。
+[functions.analyze]
+verify_jwt = false

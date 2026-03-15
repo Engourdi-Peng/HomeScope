@@ -892,9 +892,136 @@ Before outputting, verify:
 9. hidden_risks: only output actual potential issues that are not obvious from photos (e.g., neighborhood concerns mentioned in description, landlord red flags, lease term issues)
 
 ================================
+FINAL RECOMMENDATION - CRITICAL
+================================
+Add a final recommendation at the TOP of your response.
+
+Choose ONE verdict:
+- "Strong Apply" - property condition mostly good with minor issues
+- "Apply With Caution" - acceptable but with notable drawbacks
+- "Not Recommended" - major issues or risks
+
+Provide a reason (2-3 sentences, include key pros and cons).
+
+Example:
+- "Strong Apply" - "The kitchen and bedroom conditions are good, with no major layout issues. Parking space is slightly tight but acceptable."
+
+================================
+POTENTIAL RISKS
+================================
+Identify potential risks visible from the photos or description.
+
+Focus on:
+- layout issues
+- small spaces
+- parking constraints
+- signs of outdated renovation
+
+Rules:
+- maximum 3 items
+- concise phrases (under 8 words each)
+- focus on practical risks
+
+Example:
+- "Tight parking access"
+- "Limited kitchen workspace"
+- "Bathroom ventilation unclear"
+
+Return as array:
+"risks": ["risk 1", "risk 2", "risk 3"]
+
+================================
+SCORE CONTEXT
+================================
+Evaluate the property condition relative to typical rental listings.
+
+Classify:
+- "Above Average" - condition better than most rentals
+- "Average" - condition typical for rentals
+- "Below Average" - condition worse than typical rentals
+
+Provide a short explanation (1 sentence).
+
+Example:
+"market_position": "Average"
+"explanation": "Condition is typical compared to similar rental listings."
+
+Return:
+"score_context": {
+  "market_position": "Above Average" | "Average" | "Below Average",
+  "explanation": "short sentence"
+}
+
+================================
+QUESTIONS TO ASK THE AGENT
+================================
+Generate practical questions a renter should ask the agent.
+
+Focus on:
+- renovation age
+- hidden issues
+- property management details
+
+Rules:
+- maximum 3 questions
+- specific, actionable questions
+- related to risks or unclear details
+
+Example:
+- "When was the bathroom last renovated?"
+- "Is the parking space allocated or shared?"
+- "Has the property had any water damage?"
+
+Return as array:
+"agent_questions": ["question 1", "question 2", "question 3"]
+
+================================
+RENT FAIRNESS EVALUATION
+================================
+Evaluate whether the listing price is reasonable for the local rental market.
+
+Based on:
+- suburb information
+- number of bedrooms and bathrooms
+- property condition from photos
+- visual quality
+
+Determine:
+- "underpriced" - listing price is notably below market rate
+- "fair" - listing price is reasonable
+- "slightly_overpriced" - listing price is slightly above market rate
+- "overpriced" - listing price is notably above market rate
+
+Also estimate a fair weekly rent range based on your knowledge of typical rental prices for similar properties.
+
+IMPORTANT:
+- If listing_price is not provided, still provide a verdict based on typical rent expectations for the property type and suburb
+- Use the weekly rent from listing details if available
+- Consider property condition when estimating fair range
+
+Example output:
+"rent_fairness": {
+  "estimated_min": 560,
+  "estimated_max": 590,
+  "listing_price": 620,
+  "verdict": "slightly_overpriced",
+  "explanation": "The price is slightly above typical rent for similar properties in the suburb."
+}
+
+================================
 OUTPUT JSON STRICTLY IN THIS FORMAT:
 
 {
+  "final_recommendation": {
+    "verdict": "Strong Apply" | "Apply With Caution" | "Not Recommended",
+    "reason": "explanation with key pros/cons (2-3 sentences)"
+  },
+
+  "score_context": {
+    "market_position": "Above Average" | "Average" | "Below Average",
+    "explanation": "short sentence"
+  },
+
   "overall_score": number(0-100),
   "decision_priority": "HIGH" | "MEDIUM" | "LOW",
   "confidence_level": "High" | "Medium" | "Low",
@@ -907,12 +1034,18 @@ OUTPUT JSON STRICTLY IN THIS FORMAT:
     {
       "area_type": "kitchen" | "bathroom" | "bedroom" | "living_room" | "garage" | "laundry" | "exterior" | "hallway" | "storage" | "dining" | "unknown",
       "score": number(0-100),
+      "explanation": "short description of condition (max 12 words)",
       "insights": ["insight 1", "insight 2", "insight 3"]
     }
   ],
 
   "property_strengths": ["point 1", "point 2", "point 3", "point 4"],
   "potential_issues": ["issue 1", "issue 2", "issue 3", "issue 4"],
+
+  "risks": [
+    "Tight parking space",
+    "Limited kitchen workspace"
+  ],
 
   "competition_risk": {
     "level": "LOW" | "MEDIUM" | "HIGH",
@@ -930,7 +1063,15 @@ OUTPUT JSON STRICTLY IN THIS FORMAT:
     "not_ideal_for": ["scenario 1", "scenario 2"]
   },
 
-  "questions_to_ask": ["question 1", "question 2", "question 3", "question 4", "question 5"]
+  "agent_questions": ["question 1", "question 2", "question 3"],
+
+  "rent_fairness": {
+    "estimated_min": number,
+    "estimated_max": number,
+    "listing_price": number,
+    "verdict": "underpriced" | "fair" | "slightly_overpriced" | "overpriced",
+    "explanation": "short explanation"
+  }
 }
 
 RULES:
@@ -1171,13 +1312,35 @@ interface Step2Decision {
   pros?: string[];
   cons?: string[];
   hidden_risks?: string[];
-  space_analysis?: unknown[];
+  final_recommendation?: {
+    verdict: string;
+    reason: string;
+  };
+  score_context?: {
+    market_position: string;
+    explanation: string;
+  };
+  risks?: string[];
+  space_analysis?: {
+    area_type: string;
+    score: number;
+    explanation?: string;
+    insights?: string[];
+  }[];
   property_strengths?: string[];
   potential_issues?: string[];
   competition_risk?: { level: string; reasons: string[] };
   inspection_fit?: Step2InspectionFit;
   recommendation?: Step2Recommendation;
   questions_to_ask?: string[];
+  agent_questions?: string[];
+  rent_fairness?: {
+    estimated_min: number;
+    estimated_max: number;
+    listing_price: number;
+    verdict: 'underpriced' | 'fair' | 'slightly_overpriced' | 'overpriced';
+    explanation: string;
+  };
 }
 
 function aggregateSpaceAnalysis(photos: PhotoAnalysis[]): SpaceAggregationResult[] {
@@ -1258,6 +1421,114 @@ function safeParseModelJson(content: unknown) {
       : withoutFence;
 
   return JSON.parse(jsonText);
+}
+
+// ========== Step 2 Helpers ==========
+
+function extractModelText(data: any): string | null {
+  const choice = data?.choices?.[0];
+  if (!choice) return null;
+
+  const content = choice?.message?.content;
+
+  if (typeof content === "string" && content.trim()) {
+    return content.trim();
+  }
+
+  if (Array.isArray(content)) {
+    const text = content
+      .map((item) => {
+        if (typeof item === "string") return item;
+        if (item?.type === "text" && typeof item?.text === "string") return item.text;
+        return "";
+      })
+      .join("")
+      .trim();
+
+    return text || null;
+  }
+
+  return null;
+}
+
+function classifyStep2ResponseIssue(data: any): string {
+  if (!data) return "empty_response_object";
+  if (!Array.isArray(data?.choices) || data.choices.length === 0) return "empty_choices";
+  if (!data?.choices?.[0]?.message) return "missing_message";
+  if (data?.choices?.[0]?.message && data?.choices?.[0]?.message?.content == null) return "missing_content";
+  return "unknown_structure";
+}
+
+async function callStep2Model(
+  openRouterApiKey: string,
+  step2Messages: any[],
+): Promise<{ rawText: string; parsed: Step2Decision }> {
+  const step2RequestBody = {
+    model: "anthropic/claude-haiku-4.5",
+    messages: step2Messages,
+    temperature: 0.1,
+    max_tokens: 5000,
+  };
+
+  async function attempt(attemptNumber: number): Promise<{ rawText: string; parsed: Step2Decision }> {
+    console.log(`[Step 2] attempt ${attemptNumber} start`);
+
+    const response = await fetch(
+      "https://openrouter.ai/api/v1/chat/completions",
+      {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${openRouterApiKey}`,
+          "Content-Type": "application/json",
+          "HTTP-Referer": "https://trteewgplkqiedonomzg.supabase.co",
+          "X-Title": "Rental Property Analyzer",
+        },
+        body: JSON.stringify(step2RequestBody),
+      },
+    );
+
+    if (!response.ok) {
+      const errorData = await response.json().catch(() => ({}));
+      console.error("[Step 2] API error response:", JSON.stringify(errorData));
+      throw new Error(
+        (errorData as { error?: { message?: string } }).error?.message ||
+          `Step 2 failed: ${response.status}`
+      );
+    }
+
+    const data = await response.json();
+
+    console.log("[Step 2] raw response preview:", JSON.stringify(data).slice(0, 2000));
+    console.log("[Step 2] finish_reason:", data?.choices?.[0]?.finish_reason ?? null);
+    console.log("[Step 2] provider:", data?.provider ?? null);
+    console.log("[Step 2] usage:", JSON.stringify(data?.usage ?? null));
+
+    const rawText = extractModelText(data);
+
+    if (!rawText) {
+      const issue = classifyStep2ResponseIssue(data);
+      throw new Error(
+        `Step 2 returned no usable text (${issue}) | finish_reason=${data?.choices?.[0]?.finish_reason ?? "unknown"}`
+      );
+    }
+
+    try {
+      const parsed = safeParseModelJson(rawText) as Step2Decision;
+      return { rawText, parsed };
+    } catch (parseErr) {
+      console.error("[Step 2] JSON parse failed. Raw text preview:", rawText.slice(0, 2000));
+      throw new Error("Step 2 returned invalid JSON");
+    }
+  }
+
+  try {
+    return await attempt(1);
+  } catch (err1) {
+    console.error("[Step 2] attempt 1 failed:", err1);
+
+    console.log("[Step 2] retrying once...");
+    return await attempt(2);
+  }
 }
 
 // ========== URL Validation Helper ==========
@@ -1618,6 +1889,21 @@ Deno.serve(async (req) => {
     try {
       let visualAnalysis: Record<string, unknown> | null = null;
 
+      // Start Reality Check in parallel with Step 1
+      console.log("\n[Reality Check] Starting in parallel...");
+      let realityCheckPromise: Promise<RealityCheck> = Promise.resolve({ should_display: false });
+      
+      if (description?.trim()) {
+        realityCheckPromise = runRealityCheck(
+          openRouterApiKey,
+          description,
+          ""
+        ).catch((rcError) => {
+          console.error("[RealityCheck] Failed:", rcError);
+          return { should_display: false };
+        });
+      }
+
       // Step 1: Visual analysis
       if (imageUrls.length > 0) {
         console.log("\n[Step 1] Visual analysis start");
@@ -1627,8 +1913,8 @@ Deno.serve(async (req) => {
         const step1RequestBody = {
           model: "openai/gpt-4.1-mini",
           messages: step1Messages,
-          temperature: 0.2,
-          max_tokens: 1800,
+          temperature: 0.1,
+          max_tokens: 1500,
         };
 
         const step1Response = await fetch(
@@ -1694,49 +1980,13 @@ Deno.serve(async (req) => {
         optionalDetails,
       );
 
-      const step2RequestBody = {
-        model: "openai/gpt-5-mini",
-        messages: step2Messages,
-        temperature: 0.5,
-        max_tokens: 2000,
-      };
-
-      const step2Response = await fetch(
-        "https://openrouter.ai/api/v1/chat/completions",
-        {
-          method: "POST",
-          headers: {
-            Authorization: `Bearer ${openRouterApiKey}`,
-            "Content-Type": "application/json",
-            "HTTP-Referer": "https://trteewgplkqiedonomzg.supabase.co",
-            "X-Title": "Rental Property Analyzer",
-          },
-          body: JSON.stringify(step2RequestBody),
-        },
+      const { rawText: step2RawText, parsed: decision } = await callStep2Model(
+        openRouterApiKey,
+        step2Messages,
       );
 
-      if (!step2Response.ok) {
-        const errorData = await step2Response.json().catch(() => ({}));
-        console.error("Step 2 Error Response:", JSON.stringify(errorData));
-        throw new Error(
-          (errorData as { error?: { message?: string } }).error?.message ||
-            `Step 2 failed: ${step2Response.status}`,
-        );
-      }
-
-      const step2Data = await step2Response.json();
-      const step2Content = step2Data?.choices?.[0]?.message?.content;
-
-      if (!step2Content) {
-        throw new Error("No response from Step 2");
-      }
-
-      let decision: Step2Decision;
-      try {
-        decision = safeParseModelJson(step2Content) as Step2Decision;
-      } catch {
-        throw new Error("Invalid JSON from Step 2 - failed to parse model response");
-      }
+      console.log("[Step 2] parsed successfully. overall_verdict:", decision.overall_verdict ?? null);
+      console.log("[Step 2] raw text preview:", step2RawText.slice(0, 1000));
 
       console.log("[Step 2] Decision complete:", decision.overall_verdict);
 
@@ -1747,20 +1997,8 @@ Deno.serve(async (req) => {
         progress: 75,
       });
 
-      // Run Reality Check (optional module)
-      console.log("\n[Reality Check] Starting...");
-      let realityCheckResult: RealityCheck = { should_display: false };
-      try {
-        realityCheckResult = await runRealityCheck(
-          openRouterApiKey,
-          description,
-          "" // visibleListingText - can be extended when image text extraction is available
-        );
-      } catch (rcError) {
-        console.error("[RealityCheck] Failed:", rcError);
-        // Safe fallback - don't let Reality Check failure affect main analysis
-        realityCheckResult = { should_display: false };
-      }
+      // Wait for Reality Check result (started in parallel earlier)
+      const realityCheckResult = await realityCheckPromise;
       console.log("[Reality Check] Complete, should_display:", realityCheckResult.should_display);
 
       // Build final result
@@ -1793,6 +2031,14 @@ Deno.serve(async (req) => {
       const overallScoreNum = typeof decision.overall_score === 'number' ? decision.overall_score : 0;
       const result = {
         overallScore: overallScoreNum,
+        finalRecommendation: decision.final_recommendation ? {
+          verdict: decision.final_recommendation.verdict || 'Apply With Caution',
+          reason: decision.final_recommendation.reason || ''
+        } : null,
+        scoreContext: decision.score_context ? {
+          marketPosition: decision.score_context.market_position || 'Average',
+          explanation: decision.score_context.explanation || ''
+        } : null,
         decisionPriority: decision.decision_priority || (overallScoreNum > 75 ? 'HIGH' : overallScoreNum >= 55 ? 'MEDIUM' : 'LOW'),
         confidenceLevel: decision.confidence_level || 'Medium',
         overallVerdict: decision.overall_verdict || '',
@@ -1800,14 +2046,16 @@ Deno.serve(async (req) => {
         whatLooksGood: decision.pros || [],
         riskSignals: decision.cons || [],
         hiddenRisks: decision.hidden_risks || [],
+        risks: decision.risks || [],
         verdict: mapVerdict(recommendation.verdict),
         realityCheck: decision.overall_verdict || '',
         reality_check: realityCheckResult,
-        spaceAnalysis: aggregatedSpaceAnalysis.map((s) => ({
-          spaceType: s.spaceType,
+        spaceAnalysis: (decision.space_analysis as { area_type: string; score: number; explanation?: string; insights?: string[] }[] || aggregatedSpaceAnalysis).map((s: any) => ({
+          spaceType: s.area_type || s.spaceType,
           score: s.score,
-          photoCount: s.photoCount,
-          observations: s.insights
+          explanation: s.explanation || '',
+          photoCount: s.photoCount || 0,
+          observations: s.insights || s.observations || []
         })),
         propertyStrengths: decision.property_strengths || [],
         potentialIssues: decision.potential_issues || [],
@@ -1822,6 +2070,14 @@ Deno.serve(async (req) => {
           notIdealIf: recommendation.not_ideal_for || []
         },
         questionsToAsk: decision.questions_to_ask || [],
+        agentQuestions: decision.agent_questions || [],
+        rent_fairness: decision.rent_fairness ? {
+          estimated_min: typeof decision.rent_fairness.estimated_min === 'number' ? decision.rent_fairness.estimated_min : null,
+          estimated_max: typeof decision.rent_fairness.estimated_max === 'number' ? decision.rent_fairness.estimated_max : null,
+          listing_price: typeof decision.rent_fairness.listing_price === 'number' ? decision.rent_fairness.listing_price : null,
+          verdict: decision.rent_fairness.verdict || 'fair',
+          explanation: decision.rent_fairness.explanation || ''
+        } : null,
         photos: Array.isArray(visualAnalysis?.photos) ? visualAnalysis.photos : [],
         visualAnalysis: visualAnalysis
           ? {
