@@ -1,0 +1,11 @@
+# 确保 /HomeScope/assets/* 作为静态文件返回正确 MIME 类型，不落入 SPA 回退
+[[redirects]]
+  from = "/HomeScope/assets/*"
+  to = "/assets/:splat"
+  status = 200
+  force = true
+
+[[redirects]]
+  from = "/HomeScope/*"
+  to = "/index.html"
+  status = 200

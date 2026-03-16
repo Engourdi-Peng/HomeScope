@@ -49,7 +49,7 @@ function AnimatedRoutes() {
 function App() {
   return (
     <AuthProvider>
-      <BrowserRouter basename="/HomeScope">
+      <BrowserRouter basename={import.meta.env.BASE_URL.replace(/\/$/, '') || '/'}>
         <AnimatedRoutes />
       </BrowserRouter>
       <Analytics />
