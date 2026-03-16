@@ -517,7 +517,7 @@ export function Home() {
           <div className="grid grid-cols-1 md:grid-cols-2 gap-6 md:gap-8">
               {/* 左侧：轮播图片 */}
               <div className="relative p-6 md:p-8">
-                <div className="relative aspect-[4/3] rounded-xl overflow-hidden bg-white shadow-sm">
+                <div className="relative aspect-[4/3] rounded-xl overflow-hidden bg-white shadow-[0_8px_40px_-12px_rgba(0,0,0,0.08)]">
                   <img 
                     src={previewImages[previewIndex]} 
                     alt="Report preview" 
