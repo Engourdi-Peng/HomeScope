@@ -49,7 +49,7 @@ function AnimatedRoutes() {
 function App() {
   return (
     <AuthProvider>
-      <BrowserRouter>
+      <BrowserRouter basename="/HomeScope">
         <AnimatedRoutes />
       </BrowserRouter>
       <Analytics />

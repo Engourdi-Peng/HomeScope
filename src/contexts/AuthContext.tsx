@@ -53,32 +53,48 @@ export function AuthProvider({ children }: AuthProviderProps) {
   // 初始化：监听认证状态和处理 OAuth 回跳
   useEffect(() => {
     const initAuth = async () => {
-      // 检查 URL 中是否存在 auth code
-      const urlParams = new URLSearchParams(window.location.search);
-      const code = urlParams.get('code');
+      try {
+        // 检查 URL 中是否存在 auth code
+        const urlParams = new URLSearchParams(window.location.search);
+        const code = urlParams.get('code');
 
-      // 如果存在 code，交换 session
-      if (code) {
-        try {
-          const { error } = await supabase.auth.exchangeCodeForSession(code);
+        // 如果存在 code，交换 session
+        if (code) {
+          try {
+            const { error } = await supabase.auth.exchangeCodeForSession(code);
 
-          if (!error) {
-            // 清除 URL 中的 code 参数，避免重复处理
-            window.history.replaceState({}, '', window.location.pathname);
+            if (!error) {
+              // 清除 URL 中的 code 参数，避免重复处理
+              window.history.replaceState({}, '', window.location.pathname);
+            }
+          } catch (err) {
+            console.error('exchangeCodeForSession exception:', err);
           }
-        } catch (err) {
-          console.error('exchangeCodeForSession exception:', err);
         }
-      }
 
-      // 获取当前会话
-      const { data: { session } } = await supabase.auth.getSession();
+        // 获取当前会话（可能因无效 refresh token 抛错）
+        const { data: { session }, error } = await supabase.auth.getSession();
 
-      setUser(session?.user ?? null);
-      if (session?.user) {
-        fetchProfile(session.user.id);
+        if (error) {
+          // 无效或过期的 refresh token：清除本地 session，当作未登录
+          await supabase.auth.signOut();
+          setUser(null);
+          setProfile(null);
+        } else {
+          setUser(session?.user ?? null);
+          if (session?.user) {
+            fetchProfile(session.user.id);
+          }
+        }
+      } catch (err) {
+        // 捕获 getSession 抛出的异常（如 AuthApiError: Invalid Refresh Token）
+        console.warn('Auth init error (clearing session):', err);
+        await supabase.auth.signOut();
+        setUser(null);
+        setProfile(null);
+      } finally {
+        setIsLoading(false);
       }
-      setIsLoading(false);
     };
 
     initAuth();
