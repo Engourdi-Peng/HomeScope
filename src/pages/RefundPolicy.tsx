@@ -40,10 +40,19 @@ export function RefundPolicy() {
                 Refund Eligibility
               </h2>
               <p className="text-sm text-stone-600 leading-relaxed">
-                Refunds are available for unused report credits within 7 days of purchase.
+                Payments for HomeScope are processed by Paddle as the Merchant of Record. Refunds and cancellation rights are handled in accordance with Paddle’s consumer terms, including the 14-day consumer cancellation period where applicable.
               </p>
               <p className="text-sm text-stone-600 leading-relaxed mt-3">
-                Once report credits have been used to generate analysis reports, refunds are generally not available, as the service has already been delivered.
+                For details, please refer to Paddle’s terms:{" "}
+                <a
+                  href="https://www.paddle.com/legal/invoiced-consumer-terms"
+                  target="_blank"
+                  rel="noreferrer"
+                  className="text-blue-600 hover:underline"
+                >
+                  Paddle Invoiced Consumer Terms and Conditions
+                </a>
+                .
               </p>
             </section>
 
@@ -52,7 +61,7 @@ export function RefundPolicy() {
                 How to Request a Refund
               </h2>
               <p className="text-sm text-stone-600 leading-relaxed mb-3">
-                If you believe you are eligible for a refund, please contact our support team and include:
+                To request a refund or exercise a cancellation right, please contact our support team and we will assist with submitting your request to Paddle. Please include:
               </p>
               <ul className="list-disc list-inside text-sm text-stone-600 space-y-2 ml-2">
                 <li>The email address associated with your account</li>

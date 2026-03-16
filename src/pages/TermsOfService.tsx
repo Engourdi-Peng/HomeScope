@@ -43,6 +43,9 @@ export function TermsOfService() {
               <p className="text-sm text-stone-600 leading-relaxed">
                 By accessing and using our rental property analysis service ("Service"), you accept and agree to be bound by the terms and provision of this agreement. If you do not agree to abide by these terms, please do not use this Service.
               </p>
+              <p className="text-sm text-stone-600 leading-relaxed mt-3">
+                These Terms are provided by HomeScope (the legal business name). Where payments are processed, Paddle may act as the Merchant of Record.
+              </p>
             </section>
 
             <section>

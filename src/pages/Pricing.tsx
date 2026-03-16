@@ -260,7 +260,7 @@ export function PricingPage() {
             <FAQItem
               value="refund"
               question="Can I get a refund?"
-              answer="Refunds are available for unused report credits within 7 days of purchase. Once reports have been used, refunds are generally not available. If you have any issues with a purchase, please contact our support team."
+              answer="Payments are processed by Paddle as the Merchant of Record. Refunds and cancellation rights are handled in accordance with Paddle’s consumer terms, including the 14-day consumer cancellation period where applicable. For details, see https://www.paddle.com/legal/invoiced-consumer-terms. If you need help, contact our support and we’ll assist with submitting your request to Paddle."
             />
           </Accordion.Root>
         </div>

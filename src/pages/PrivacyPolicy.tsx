@@ -98,8 +98,14 @@ export function PrivacyPolicy() {
               </p>
               <ul className="list-disc list-inside text-sm text-stone-600 space-y-2 ml-2 mt-2">
                 <li>Service providers who assist us in operating our platform</li>
+                <li>
+                  Payment processing providers (for example, Paddle as Merchant of Record) to complete transactions and handle refunds, where applicable
+                </li>
                 <li>Law enforcement or regulatory bodies when required by law</li>
               </ul>
+              <p className="text-sm text-stone-600 leading-relaxed mt-3">
+                If your payment is processed by Paddle, Paddle’s privacy policy and consumer terms may also apply to the processing of payment-related data.
+              </p>
             </section>
 
             <section>
@@ -126,6 +132,12 @@ export function PrivacyPolicy() {
               </h2>
               <p className="text-sm text-stone-600 leading-relaxed">
                 If you have any questions about this Privacy Policy or wish to exercise your privacy rights, please contact us. For complaints about potential privacy breaches, you can also contact the Office of the Australian Information Commissioner (OAIC).
+              </p>
+              <p className="text-sm text-stone-600 leading-relaxed mt-3">
+                Contact email:{" "}
+                <a href="mailto:a472018670@gmail.com" className="text-blue-600 hover:underline">
+                  a472018670@gmail.com
+                </a>
               </p>
             </section>
 
