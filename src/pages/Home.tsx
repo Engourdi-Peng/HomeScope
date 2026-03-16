@@ -3,12 +3,63 @@ import { Link, useNavigate } from 'react-router-dom';
 import { InputCard } from '../components/InputCard';
 import type { AnalysisStage, Photo, OptionalDetails } from '../types';
 import { submitAnalysis, runAnalysis, compressImageForUpload, uploadImagesToStorage, getAnalysisProgress } from '../lib/api';
-import { Sparkles, Camera, FileText, LayoutGrid, AlertTriangle, TrendingUp, CheckCircle } from 'lucide-react';
+import { Sparkles, Camera, FileText, LayoutGrid, AlertTriangle, TrendingUp, CheckCircle, ChevronLeft, ChevronRight } from 'lucide-react';
 import { UserMenu } from '../components/UserMenu';
 import { LoginModal } from '../components/LoginModal';
 import { FAQItem } from '../components/FAQItem';
+import { PricingCard } from '../components/PricingCard';
 import { useAuth } from '../contexts/AuthContext';
+import { supabase } from '../lib/supabase';
 import * as Accordion from '@radix-ui/react-accordion';
+
+// 产品配置
+const PRODUCTS = [
+  {
+    id: 'starter',
+    title: 'Starter',
+    price: '$4.99',
+    reportCount: '5 REPORTS',
+    description: 'Perfect for trying the tool',
+    features: [
+      'AI rental analysis',
+      'Price fairness check',
+      'Risk detection',
+      'Condition analysis',
+    ],
+    buttonText: 'Buy Starter',
+    isPopular: false,
+  },
+  {
+    id: 'standard',
+    title: 'Standard',
+    price: '$9.99',
+    reportCount: '20 REPORTS',
+    description: 'Most popular - enough for a full house search',
+    features: [
+      'Everything in Starter',
+      'Best value per report',
+      'Priority support',
+      'Detailed competition analysis',
+    ],
+    buttonText: 'Buy Standard',
+    isPopular: true,
+  },
+  {
+    id: 'pro',
+    title: 'Pro',
+    price: '$29',
+    reportCount: '100 REPORTS',
+    description: 'For heavy users and professionals',
+    features: [
+      'Everything in Standard',
+      'Unlimited analysis history',
+      'API access',
+      'Custom integrations',
+    ],
+    buttonText: 'Buy Pro',
+    isPopular: false,
+  },
+];
 
 export function Home() {
   const navigate = useNavigate();
@@ -25,6 +76,74 @@ export function Home() {
   const [progressLabel, setProgressLabel] = useState<string>('');
   const pollTimerRef = useRef<number | null>(null);
   const [isLoginModalOpen, setIsLoginModalOpen] = useState(false);
+  const [buyingProduct, setBuyingProduct] = useState<string | null>(null);
+  const [previewIndex, setPreviewIndex] = useState(0);
+
+  const previewImages = [
+    '/report-preview-1.png',
+    '/report-preview-2.png',
+    '/report-preview-3.png',
+  ];
+
+  const nextPreview = () => setPreviewIndex((prev) => (prev + 1) % previewImages.length);
+  const prevPreview = () => setPreviewIndex((prev) => (prev - 1 + previewImages.length) % previewImages.length);
+
+  const handleBuy = async (productId: string) => {
+    // 1. 检查登录状态
+    if (!isAuthenticated || !user) {
+      setIsLoginModalOpen(true);
+      return;
+    }
+
+    setBuyingProduct(productId);
+
+    try {
+      // 2. 调用 create-order API
+      const { data: sessionData } = await supabase.auth.getSession();
+      const token = sessionData.session?.access_token;
+
+      if (!token) {
+        throw new Error('No session token available');
+      }
+
+      // 获取 anon key
+      const anonKey = import.meta.env.VITE_SUPABASE_ANON_KEY;
+      if (!anonKey) {
+        throw new Error('Missing VITE_SUPABASE_ANON_KEY');
+      }
+
+      const response = await fetch(
+        `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/create-order`,
+        {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'apikey': anonKey,
+            'Authorization': `Bearer ${token}`,
+          },
+          body: JSON.stringify({ product: productId }),
+        }
+      );
+
+      if (!response.ok) {
+        const errorData = await response.json();
+        throw new Error(errorData.error || 'Failed to create order');
+      }
+
+      const data = await response.json();
+
+      // 3. 跳转到 Vendors checkout
+      if (data.checkout_url) {
+        window.location.href = data.checkout_url;
+      } else {
+        throw new Error('No checkout URL returned');
+      }
+    } catch (err) {
+      console.error('Purchase error:', err);
+      alert(err instanceof Error ? err.message : 'Failed to process purchase');
+      setBuyingProduct(null);
+    }
+  };
 
   const clearPollTimer = () => {
     if (pollTimerRef.current) {
@@ -315,9 +434,10 @@ export function Home() {
               <div className="w-14 h-14 rounded-2xl bg-stone-100 flex items-center justify-center mx-auto mb-4">
                 <Camera size={28} className="text-stone-600" />
               </div>
-              <h3 className="text-base font-semibold text-stone-900 mb-2">1. Upload Listing Screenshots</h3>
+              <h3 className="text-base font-semibold text-stone-900 mb-2">1. Upload Listing Screenshots or Description</h3>
               <p className="text-sm text-stone-500 leading-relaxed">
-                Upload screenshots from realestate.com.au, Domain, or any rental website.
+                Upload property screenshots or paste the listing description.<br />
+                Our AI will analyze the photos and text to evaluate the property.
               </p>
             </div>
             <div className="text-center p-6 bg-white/60 rounded-2xl border border-stone-200/50">
@@ -392,6 +512,98 @@ export function Home() {
           </div>
         </div>
 
+        {/* 5. Report Preview - 报告预览模块 */}
+        <div className="mb-16 animate-in fade-in slide-in-from-bottom-8 duration-700 ease-out" style={{ animationDelay: '350ms' }}>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-6 md:gap-8">
+              {/* 左侧：轮播图片 */}
+              <div className="relative p-6 md:p-8">
+                <div className="relative aspect-[4/3] rounded-xl overflow-hidden bg-white shadow-sm">
+                  <img 
+                    src={previewImages[previewIndex]} 
+                    alt="Report preview" 
+                    className="w-full h-full object-contain"
+                  />
+                  {/* 左右箭头 */}
+                  <button 
+                    onClick={prevPreview}
+                    className="absolute left-3 top-1/2 -translate-y-1/2 w-10 h-10 rounded-full bg-white/90 shadow-md flex items-center justify-center hover:bg-white transition-colors"
+                    aria-label="Previous"
+                  >
+                    <ChevronLeft size={20} className="text-stone-700" />
+                  </button>
+                  <button 
+                    onClick={nextPreview}
+                    className="absolute right-3 top-1/2 -translate-y-1/2 w-10 h-10 rounded-full bg-white/90 shadow-md flex items-center justify-center hover:bg-white transition-colors"
+                    aria-label="Next"
+                  >
+                    <ChevronRight size={20} className="text-stone-700" />
+                  </button>
+                </div>
+                {/* 底部圆点指示器 */}
+                <div className="flex justify-center gap-2 mt-4">
+                  {previewImages.map((_, idx) => (
+                    <button
+                      key={idx}
+                      onClick={() => setPreviewIndex(idx)}
+                      className={`w-2.5 h-2.5 rounded-full transition-colors ${
+                        idx === previewIndex ? 'bg-amber-500' : 'bg-stone-300'
+                      }`}
+                      aria-label={`Go to slide ${idx + 1}`}
+                    />
+                  ))}
+                </div>
+              </div>
+
+              {/* 右侧：文案 */}
+              <div className="p-6 md:p-10 flex flex-col justify-center">
+                <h3 className="text-2xl font-semibold text-stone-900 mb-4">
+                  Spot rental risks before you inspect.
+                </h3>
+                <p className="text-base text-stone-600 leading-relaxed mb-6">
+                  Upload listing screenshots or paste a description. HomeScope generates an AI analysis report to help you identify potential issues, judge property quality, and decide if it's worth your time.
+                </p>
+                <button
+                  onClick={() => {
+                    if (!isAuthenticated) {
+                      setIsLoginModalOpen(true);
+                    } else {
+                      window.scrollTo({ top: 0, behavior: 'smooth' });
+                    }
+                  }}
+                  className="inline-flex items-center justify-center rounded-full bg-stone-900 hover:bg-stone-800 text-white font-semibold px-6 py-3 transition-colors w-fit"
+                >
+                  Get 3 Free Analyses
+                </button>
+              </div>
+            </div>
+        </div>
+
+        {/* 4. Pricing */}
+        <div className="mb-16 animate-in fade-in slide-in-from-bottom-8 duration-700 ease-out">
+          <div className="text-center mb-10">
+            <h2 className="text-center text-sm font-semibold uppercase tracking-widest text-stone-500 mb-8">
+              Simple pricing
+            </h2>
+          </div>
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-6 md:gap-8 max-w-5xl mx-auto">
+            {PRODUCTS.map((product) => (
+              <PricingCard
+                key={product.id}
+                title={product.title}
+                price={product.price}
+                reportCount={product.reportCount}
+                description={product.description}
+                features={product.features}
+                buttonText={product.buttonText}
+                isPopular={product.isPopular}
+                onBuy={handleBuy}
+                productId={product.id}
+                isLoading={buyingProduct === product.id}
+              />
+            ))}
+          </div>
+        </div>
+
         {/* 5. FAQ */}
         <div className="mb-12 animate-in fade-in slide-in-from-bottom-8 duration-700 ease-out" style={{ animationDelay: '400ms' }}>
           <h2 className="text-center text-sm font-semibold uppercase tracking-widest text-[#a8a29e] mb-8">FAQ</h2>
@@ -429,6 +641,7 @@ export function Home() {
           <div className="flex justify-center gap-4 mb-3">
             <Link to="/privacy" className="text-xs text-stone-400 hover:text-stone-600 transition-colors">Privacy Policy</Link>
             <Link to="/terms" className="text-xs text-stone-400 hover:text-stone-600 transition-colors">Terms of Service</Link>
+            <Link to="/refund" className="text-xs text-stone-400 hover:text-stone-600 transition-colors">Refund Policy</Link>
           </div>
           <p className="text-xs text-stone-400 font-medium">
             AI Rental Decision Assistant
@@ -437,9 +650,9 @@ export function Home() {
         </div>
 
         {/* 登录弹窗 */}
-        <LoginModal 
-          isOpen={isLoginModalOpen} 
-          onClose={() => setIsLoginModalOpen(false)} 
+        <LoginModal
+          isOpen={isLoginModalOpen}
+          onClose={() => setIsLoginModalOpen(false)}
         />
       </div>
     </div>

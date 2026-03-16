@@ -139,19 +139,19 @@ export function AccountPage() {
         {/* Header */}
         <div className="flex items-center justify-between mb-8">
           <button
-            onClick={() => navigate(-1)}
+            onClick={() => navigate('/')}
             className="group flex items-center gap-3 text-stone-500 hover:text-stone-900 transition-colors"
           >
             <div className="w-8 h-8 rounded-full border border-stone-200 flex items-center justify-center bg-white/50 backdrop-blur-md group-hover:bg-white transition-colors">
               <ArrowLeft size={14} strokeWidth={1.5} />
             </div>
-            <span className="text-xs font-medium uppercase tracking-widest">Back</span>
+            <span className="text-xs font-medium uppercase tracking-widest">Back to Home</span>
           </button>
         </div>
 
         {/* Section 1: Profile */}
         <section className="bg-white rounded-3xl p-8 mb-6 shadow-[0_1px_8px_rgba(0,0,0,0.06)] border border-stone-200">
-          <div className="flex items-start justify-between">
+          <div className="flex items-center justify-between">
             <div className="flex items-center gap-4">
               {user?.user_metadata?.avatar_url ? (
                 <img
@@ -266,7 +266,7 @@ export function AccountPage() {
                     onClick={() => handleAnalysisClick(analysis)}
                     className={`flex items-center gap-4 p-4 rounded-2xl border transition-all ${
                       analysis.status === 'done'
-                        ? 'border-stone-200 hover:border-stone-300 hover:shadow-md cursor-pointer bg-white'
+                        ? 'border-stone-200 hover:border-black cursor-pointer bg-white'
                         : 'border-stone-100 bg-stone-50 opacity-60 cursor-not-allowed'
                     }`}
                   >
