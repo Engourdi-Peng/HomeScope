@@ -18,6 +18,7 @@ const SUPABASE_ANON_KEY = Deno.env.get("SUPABASE_ANON_KEY") || "";
 // PADDLE_API_KEY: 你的 Paddle API 密钥 (格式: pdl_live_apikey_xxx)
 const PADDLE_API_KEY = Deno.env.get("PADDLE_API_KEY") || "";
 const PADDLE_API_URL = Deno.env.get("PADDLE_API_URL") || "https://api.paddle.com";
+const APP_URL = Deno.env.get("APP_URL") || "https://www.tryhomescope.com";
 
 const corsHeaders: Record<string, string> = {
   "Access-Control-Allow-Origin": "*",
@@ -153,7 +154,7 @@ async function createPaddleTransaction(
           product: productId,
         },
         checkout: {
-          url: null, // 使用 Paddle 默认的 checkout URL
+          return_url: `${APP_URL}/checkout?_ptxn={transaction_id}`,
         },
       }),
     });
@@ -165,19 +166,18 @@ async function createPaddleTransaction(
     }
 
     const data = await response.json();
-    
-    // Paddle 返回的 checkout URL 在 checkout.url 中
-    // 格式: {default_checkout_url}?_ptxn={transaction_id}
-    const checkoutUrl = data.data.checkout?.url;
-    
-    if (!checkoutUrl) {
-      console.error("No checkout URL in response:", data);
-      return { error: "No checkout URL returned from Paddle" };
-    }
+
+    // 手动构建 checkout_url，指向我们自己的网站
+    // Paddle 会用 {transaction_id} 替换占位符
+    const transactionId = data.data.id;
+    const checkoutUrl = `${APP_URL}/checkout?_ptxn=${transactionId}`;
+
+    console.log("[create-order] checkout_url:", checkoutUrl);
+    console.log("[create-order] transactionId:", transactionId);
 
     return {
       checkout_url: checkoutUrl,
-      transactionId: data.data.id,
+      transactionId: transactionId,
     };
   } catch (err) {
     console.error("Paddle API exception:", err);
