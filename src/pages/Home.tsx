@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type FormEvent } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { InputCard } from '../components/InputCard';
 import type { AnalysisStage, Photo, OptionalDetails } from '../types';
