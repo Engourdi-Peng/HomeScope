@@ -52,8 +52,11 @@ export function CheckoutPage() {
     script.src = 'https://cdn.paddle.com/paddle/v2/paddle.js';
     script.async = true;
     script.onload = () => {
-      console.log('window.Paddle =', window.Paddle);
-      console.log('typeof window.Paddle?.Initialize =', typeof window.Paddle?.Initialize);
+      console.log('[Checkout] Paddle.js loaded');
+      console.log('[Checkout] window.Paddle =', window.Paddle);
+      console.log('[Checkout] typeof window.Paddle?.Initialize =', typeof window.Paddle?.Initialize);
+      console.log('[Checkout] typeof window.Paddle?.Checkout =', typeof window.Paddle?.Checkout);
+      console.log('[Checkout] transactionId =', transactionId);
 
       if (!window.Paddle || typeof window.Paddle.Initialize !== 'function') {
         setError('Paddle SDK loaded, but Initialize() is unavailable.');
@@ -62,9 +65,10 @@ export function CheckoutPage() {
       }
 
       // 设置环境
+      console.log('[Checkout] Setting Paddle environment:', paddleEnv);
       window.Paddle.Environment.set(paddleEnv);
 
-      // 初始化 Paddle - Paddle.js 会自动根据 URL 中的 _ptxn 参数打开 checkout
+      // 初始化 Paddle
       window.Paddle.Initialize({
         token: clientToken,
         checkout: {
@@ -76,9 +80,18 @@ export function CheckoutPage() {
         },
       });
 
-      // Paddle.js 会自动处理 _ptxn 参数并打开 checkout
-      // 我们只需要显示 loading 状态
-      setLoading(true);
+      console.log('[Checkout] Paddle.Initialize completed');
+
+      // 显式调用 Paddle.Checkout.open 打开支付界面
+      if (window.Paddle.Checkout && typeof window.Paddle.Checkout.open === 'function') {
+        console.log('[Checkout] Calling Paddle.Checkout.open with transactionId:', transactionId);
+        window.Paddle.Checkout.open({ transactionId });
+        console.log('[Checkout] Paddle.Checkout.open called successfully');
+      } else {
+        console.error('[Checkout] Paddle.Checkout.open is not available');
+        setError('Paddle checkout is not available. Please try again or contact support.');
+        setLoading(false);
+      }
     };
 
     script.onerror = () => {

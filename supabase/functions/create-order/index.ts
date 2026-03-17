@@ -25,22 +25,37 @@ const corsHeaders: Record<string, string> = {
   "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
 };
 
-// 产品配置 - 使用 Paddle Price ID
+// 校验 Paddle price_id 格式
+function isValidPaddlePriceId(v: string | undefined): v is string {
+  if (!v) return false;
+  return /^pri_[a-zA-Z0-9]{26}$/.test(v.trim());
+}
+
+// 获取并校验环境变量中的 price_id
+function getValidatedPriceId(envKey: string): string {
+  const value = Deno.env.get(envKey)?.trim();
+  if (!value || !isValidPaddlePriceId(value)) {
+    throw new Error(`Invalid or missing Paddle price id: ${envKey}. Expected format: pri_ followed by 26 alphanumeric characters`);
+  }
+  return value;
+}
+
+// 产品配置 - 使用 Paddle Price ID (从环境变量读取)
 const PRODUCTS: Record<string, { credits: number; price: number; price_id: string }> = {
   starter: {
     credits: 5,
     price: 4.99,
-    price_id: Deno.env.get("PRICE_STARTER") || "pri_01kks139q622jr8ptw08ht53qh",
+    price_id: getValidatedPriceId("PRICE_STARTER"),
   },
   standard: {
     credits: 20,
     price: 9.99,
-    price_id: Deno.env.get("PRICE_STANDARD") || "pri_01kks17qba3wgkq10xc1d6pmrz",
+    price_id: getValidatedPriceId("PRICE_STANDARD"),
   },
   pro: {
     credits: 100,
     price: 29.0,
-    price_id: Deno.env.get("PRICE_PRO") || "pri_01kks192dxcy6m53g0vbgfcyh0",
+    price_id: getValidatedPriceId("PRICE_PRO"),
   },
 };
 
@@ -99,6 +114,9 @@ async function createPaddleTransaction(
   if (!product) {
     return { error: "Invalid product ID" };
   }
+
+  console.log("[create-order] price_id:", product.price_id);
+  console.log("[create-order] product:", productId);
 
   // 如果没有配置 Paddle API，使用模拟模式（用于开发测试）
   if (!PADDLE_API_KEY) {
