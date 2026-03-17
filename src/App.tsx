@@ -11,6 +11,7 @@ import { PaymentSuccessPage } from './pages/PaymentSuccess';
 import { Contact } from './pages/Contact';
 import { RefundPolicy } from './pages/RefundPolicy';
 import { CheckoutPage } from './pages/Checkout';
+import { SharePage } from './pages/Share';
 import { useEffect, useState } from 'react';
 
 function AnimatedRoutes() {
@@ -43,6 +44,7 @@ function AnimatedRoutes() {
         <Route path="/contact" element={<Contact />} />
         <Route path="/refund" element={<RefundPolicy />} />
         <Route path="/checkout" element={<CheckoutPage />} />
+        <Route path="/share/:slug" element={<SharePage />} />
       </Routes>
     </div>
   );

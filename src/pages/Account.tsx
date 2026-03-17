@@ -74,6 +74,7 @@ export function AccountPage() {
       }
 
       if (result) {
+        result.id = analysis.id;
         sessionStorage.setItem('analysisResult', JSON.stringify(result));
         navigate('/result');
       }

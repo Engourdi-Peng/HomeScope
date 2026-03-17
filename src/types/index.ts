@@ -123,6 +123,7 @@ export interface FinalRecommendation {
 }
 
 export interface AnalysisResult {
+  id?: string;
   overallScore: number;
   finalRecommendation?: FinalRecommendation | null;
   

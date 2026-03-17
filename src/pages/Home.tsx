@@ -8,6 +8,7 @@ import { UserMenu } from '../components/UserMenu';
 import { LoginModal } from '../components/LoginModal';
 import { FAQItem } from '../components/FAQItem';
 import { PricingCard } from '../components/PricingCard';
+import { ListingAnalysisSection } from '../components/ListingAnalysisSection';
 import { useAuth } from '../contexts/AuthContext';
 import { supabase } from '../lib/supabase';
 import * as Accordion from '@radix-ui/react-accordion';
@@ -367,15 +368,14 @@ export function Home() {
         </div>
         {/* 1. Hero */}
         <div className="text-center mb-12 animate-in fade-in slide-in-from-bottom-8 duration-700 ease-out">
-          <h1 className="text-4xl md:text-5xl font-light tracking-tight text-stone-900 leading-[1.15] mb-4">
-            Know If a Rental Is Worth Inspecting — Before You Go
+          <h1 className="text-3xl md:text-4xl font-light tracking-tight text-stone-900 leading-[1.15] mb-4">
+            Stop Guessing. Know Before You Visit.
           </h1>
           <p className="text-lg md:text-xl text-stone-600 max-w-2xl mx-auto leading-relaxed font-light mb-2">
-            Upload listing screenshots or paste the description.<br className="hidden sm:inline" />
-            AI analyzes the property and tells you if it's worth inspecting.
+            Upload a listing or screenshots. HomeScope reveals hidden risks, fake upgrades, and real living conditions in seconds.
           </p>
           <p className="text-sm text-stone-500 max-w-lg mx-auto">
-            Avoid wasting time on bad rental inspections.
+            Avoid wasting inspections. Make smarter rental decisions.
           </p>
         </div>
 
@@ -396,6 +396,7 @@ export function Home() {
               optionalDetails={optionalDetails}
               onOptionalDetailsChange={setOptionalDetails}
               onSubmit={handleSubmit}
+              onLoginClick={() => setIsLoginModalOpen(true)}
               isLoading={isLoading}
               isComplete={isComplete}
               activeStage={activeStage}
@@ -436,6 +437,9 @@ export function Home() {
         </div>
 
         <div className={`transition-all duration-500 ${isLoading ? 'opacity-35 blur-[0.5px] pointer-events-none select-none' : 'opacity-100'}`}>
+        {/* 3. Don't Trust Listing Photos - Analysis Section */}
+        <ListingAnalysisSection />
+
         {/* 3. How It Works */}
         <div className="mb-16 animate-in fade-in slide-in-from-bottom-8 duration-700 ease-out" style={{ animationDelay: '200ms' }}>
           <h2 className="text-center text-sm font-semibold uppercase tracking-widest text-stone-500 mb-8">How It Works</h2>
@@ -475,7 +479,7 @@ export function Home() {
         <div className="mb-16 animate-in fade-in slide-in-from-bottom-8 duration-700 ease-out" style={{ animationDelay: '300ms' }}>
           <h2 className="text-center text-sm font-semibold uppercase tracking-widest text-stone-500 mb-8">What You Get</h2>
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            <div className="flex items-start gap-4 p-5 bg-white rounded-2xl border border-stone-200">
+            <div className="flex items-start gap-4 p-5 bg-white/60 rounded-2xl border border-stone-200/50">
               <div className="w-12 h-12 rounded-xl bg-green-50 flex items-center justify-center shrink-0">
                 <LayoutGrid size={24} className="text-green-600" />
               </div>
@@ -486,7 +490,7 @@ export function Home() {
                 </p>
               </div>
             </div>
-            <div className="flex items-start gap-4 p-5 bg-white rounded-2xl border border-stone-200">
+            <div className="flex items-start gap-4 p-5 bg-white/60 rounded-2xl border border-stone-200/50">
               <div className="w-12 h-12 rounded-xl bg-red-50 flex items-center justify-center shrink-0">
                 <AlertTriangle size={24} className="text-red-600" />
               </div>
@@ -497,7 +501,7 @@ export function Home() {
                 </p>
               </div>
             </div>
-            <div className="flex items-start gap-4 p-5 bg-white rounded-2xl border border-stone-200">
+            <div className="flex items-start gap-4 p-5 bg-white/60 rounded-2xl border border-stone-200/50">
               <div className="w-12 h-12 rounded-xl bg-amber-50 flex items-center justify-center shrink-0">
                 <TrendingUp size={24} className="text-amber-600" />
               </div>
@@ -508,7 +512,7 @@ export function Home() {
                 </p>
               </div>
             </div>
-            <div className="flex items-start gap-4 p-5 bg-white rounded-2xl border border-stone-200">
+            <div className="flex items-start gap-4 p-5 bg-white/60 rounded-2xl border border-stone-200/50">
               <div className="w-12 h-12 rounded-xl bg-blue-50 flex items-center justify-center shrink-0">
                 <CheckCircle size={24} className="text-blue-600" />
               </div>
@@ -567,10 +571,10 @@ export function Home() {
               {/* 右侧：文案 */}
               <div className="p-6 md:p-10 flex flex-col justify-center">
                 <h3 className="text-2xl font-semibold text-stone-900 mb-4">
-                  Spot rental risks before you inspect.
+                  See What You'll Get
                 </h3>
                 <p className="text-base text-stone-600 leading-relaxed mb-6">
-                  Upload listing screenshots or paste a description. HomeScope generates an AI analysis report to help you identify potential issues, judge property quality, and decide if it's worth your time.
+                  A structured report with scores, risks, and actionable insights.
                 </p>
                 <button
                   onClick={() => {
@@ -591,9 +595,12 @@ export function Home() {
         {/* 4. Pricing */}
         <div className="mb-16 animate-in fade-in slide-in-from-bottom-8 duration-700 ease-out">
           <div className="text-center mb-10">
-            <h2 className="text-center text-sm font-semibold uppercase tracking-widest text-stone-500 mb-8">
-              Simple pricing
+            <h2 className="text-center text-sm font-semibold uppercase tracking-widest text-stone-500 mb-4">
+              One Report Can Save You Hundreds
             </h2>
+            <p className="text-center text-stone-400 font-light mb-8">
+              Avoid bad rentals, save time, and make confident decisions.
+            </p>
           </div>
           <div className="grid grid-cols-1 md:grid-cols-3 gap-6 md:gap-8 max-w-5xl mx-auto">
             {PRODUCTS.map((product) => (

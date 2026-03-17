@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import type { AnalysisResult } from '../types';
-import { Check, AlertCircle, ArrowRight, ArrowLeft, TrendingUp, AlertTriangle, MessageCircle, Eye, DollarSign } from 'lucide-react';
+import { Check, AlertCircle, ArrowRight, ArrowLeft, TrendingUp, AlertTriangle, MessageCircle, Eye, DollarSign, Share2, Copy, CheckCircle } from 'lucide-react';
 
 function AnimatedNumber({ target, duration = 1500 }: { target: number; duration?: number }) {
   const [count, setCount] = useState(0);
@@ -31,6 +31,7 @@ function AnimatedNumber({ target, duration = 1500 }: { target: number; duration?
 interface ResultProps {
   result: AnalysisResult;
   onBack: () => void;
+  onShare?: (analysisId: string) => Promise<{ slug: string; shareUrl: string }>;
 }
 
 const verdictConfig = {
@@ -192,7 +193,11 @@ function SectionDivider() {
   return <div className="h-px bg-stone-200 my-14"></div>;
 }
 
-export function ResultCard({ result, onBack }: ResultProps) {
+export function ResultCard({ result, onBack, onShare }: ResultProps) {
+  const [isSharing, setIsSharing] = useState(false);
+  const [shareResult, setShareResult] = useState<{ slug: string; shareUrl: string } | null>(null);
+  const [copied, setCopied] = useState(false);
+  
   const config = verdictConfig[result.verdict] || verdictConfig['Need More Evidence'];
   const competitionRisk = result.competitionRisk;
   const recommendation = result.recommendation;
@@ -205,7 +210,38 @@ export function ResultCard({ result, onBack }: ResultProps) {
     (result as unknown as { detected_rooms?: string[] }).detected_rooms ??
     [];
   const detectedRoomsText = detectedRooms.length > 0 ? formatDetectedRooms(detectedRooms) : '';
-  const detectedSpaceCount = detectedRooms.length;
+  const detectedRoomsCount = detectedRooms.length;
+
+  const handleShare = async () => {
+    if (!onShare) return;
+    const analysisId = result.id || '';
+    
+    setIsSharing(true);
+    try {
+      const shareResponse = await onShare(analysisId);
+      setShareResult(shareResponse);
+      
+      // Auto-copy after successful share
+      const fullUrl = `${window.location.origin}/share/${shareResponse.slug}`;
+      await navigator.clipboard.writeText(fullUrl);
+      setCopied(true);
+      
+      // Reset copied state after 2 seconds
+      setTimeout(() => setCopied(false), 2000);
+    } catch (err) {
+      console.error('Share failed:', err);
+    } finally {
+      setIsSharing(false);
+    }
+  };
+
+  const copyToClipboard = async () => {
+    if (!shareResult) return;
+    const fullUrl = `${window.location.origin}/share/${shareResult.slug}`;
+    await navigator.clipboard.writeText(fullUrl);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 2000);
+  };
 
   return (
     <div className="w-full animate-in fade-in slide-in-from-bottom-12 duration-700 ease-out pb-24 relative z-10">
@@ -335,7 +371,7 @@ export function ResultCard({ result, onBack }: ResultProps) {
                     {typeof analyzedPhotoCount === 'number' && (
                       <div>
                         Analyzed {analyzedPhotoCount} screenshot{analyzedPhotoCount === 1 ? '' : 's'}
-                        {detectedSpaceCount > 0 ? ` across ${detectedSpaceCount} space${detectedSpaceCount === 1 ? '' : 's'}` : ''}
+                        {detectedRoomsCount > 0 ? ` across ${detectedRoomsCount} space${detectedRoomsCount === 1 ? '' : 's'}` : ''}
                       </div>
                     )}
                     {detectedRoomsText && <div>Detected {detectedRoomsText}</div>}
@@ -667,6 +703,45 @@ export function ResultCard({ result, onBack }: ResultProps) {
             <span className="text-[11px] font-bold uppercase tracking-[0.15em]">Analyze Another Listing</span>
             <ArrowRight size={14} className="group-hover:translate-x-1 transition-transform" strokeWidth={2} />
           </button>
+          
+          {/* Share Button */}
+          {onShare && (
+            <div className="mt-6 flex flex-col items-center gap-3">
+              {!shareResult ? (
+                <button 
+                  onClick={handleShare}
+                  disabled={isSharing}
+                  className="group relative inline-flex items-center justify-center gap-2 px-6 py-3 bg-stone-100 text-stone-600 rounded-full transition-all duration-300 hover:bg-stone-200 disabled:opacity-50"
+                >
+                  <Share2 size={14} />
+                  <span className="text-[10px] font-bold uppercase tracking-[0.15em]">
+                    {isSharing ? 'Generating share link...' : 'Share Result'}
+                  </span>
+                </button>
+              ) : (
+                <div className="flex items-center gap-2 bg-green-50 text-green-700 px-4 py-2 rounded-full">
+                  {copied ? (
+                    <>
+                      <CheckCircle size={14} />
+                      <span className="text-xs font-medium">Copied!</span>
+                    </>
+                  ) : (
+                    <>
+                      <CheckCircle size={14} />
+                      <span className="text-xs font-medium">Link copied!</span>
+                      <button
+                        onClick={copyToClipboard}
+                        className="ml-1 p-1 hover:bg-green-100 rounded"
+                        title="Copy link"
+                      >
+                        <Copy size={12} />
+                      </button>
+                    </>
+                  )}
+                </div>
+              )}
+            </div>
+          )}
         </div>
 
       </div>

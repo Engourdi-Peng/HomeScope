@@ -11,6 +11,7 @@ interface InputCardProps {
   optionalDetails: OptionalDetailsType;
   onOptionalDetailsChange: (value: OptionalDetailsType) => void;
   onSubmit: () => void;
+  onLoginClick: () => void;
   isLoading: boolean;
   isComplete?: boolean;
   activeStage?: AnalysisStage | null;
@@ -74,6 +75,7 @@ export function InputCard({
   optionalDetails,
   onOptionalDetailsChange,
   onSubmit,
+  onLoginClick,
   isLoading,
   isComplete,
   activeStage,
@@ -85,6 +87,21 @@ export function InputCard({
   isAuthenticated = false,
 }: InputCardProps) {
   const isDisabled = photos.length === 0 && description.trim() === '';
+
+  // 按钮状态逻辑：
+  // - 未登录：显示 "Get 3 Free Analyses"，可点击
+  // - 已登录但未输入：显示 "Analyze Listing"，置灰
+  // - 已登录且已输入：显示 "Analyze Listing"，可点击
+  const showLoginButton = !isAuthenticated;
+  const isButtonDisabled = isLoading || (isAuthenticated && isDisabled);
+
+  const handleButtonClick = () => {
+    if (showLoginButton) {
+      onLoginClick();
+    } else {
+      onSubmit();
+    }
+  };
 
   return (
     <div className="w-full">
@@ -172,13 +189,13 @@ export function InputCard({
       {/* Generate Button */}
       <div className="flex flex-col items-center mt-8">
         <button
-          onClick={onSubmit}
-          disabled={isDisabled || isLoading}
+          onClick={handleButtonClick}
+          disabled={isButtonDisabled}
           className={`
             group relative inline-flex items-center justify-center gap-3 px-10 py-4 
             rounded-full transition-all duration-300 shadow-[0_8px_30px_rgba(28,25,23,0.15)] 
             hover:shadow-[0_8px_30px_rgba(28,25,23,0.25)] hover:-translate-y-0.5
-            ${isDisabled || isLoading
+            ${isButtonDisabled
               ? 'bg-stone-200 text-stone-400 cursor-not-allowed shadow-none hover:shadow-none hover:translate-y-0'
               : 'bg-stone-900 hover:bg-stone-800 text-white'
             }
@@ -193,7 +210,9 @@ export function InputCard({
             </span>
           ) : (
             <>
-              <span className="font-medium tracking-widest uppercase text-[11px]">Analyze Listing</span>
+              <span className="font-medium tracking-widest uppercase text-[11px]">
+                {showLoginButton ? 'Get 3 Free Analyses' : 'Analyze Listing'}
+              </span>
               <ArrowRight size={14} className="group-hover:translate-x-1 transition-transform" strokeWidth={2} />
             </>
           )}

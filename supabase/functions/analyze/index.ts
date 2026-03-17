@@ -1710,6 +1710,154 @@ Deno.serve(async (req) => {
     }
   }
 
+  // POST: Make analysis public (share)
+  if (req.method === "POST" && action === "share") {
+    const { analysisId } = await req.json();
+    if (!analysisId) {
+      return jsonResponse({ message: "Missing analysis ID" }, 400);
+    }
+
+    const { user, error: authError } = await getCurrentUser(req);
+    if (authError || !user) {
+      return jsonResponse({ message: "Authentication required", code: "NOT_AUTHENTICATED" }, 401);
+    }
+
+    try {
+      // First get the analysis to check ownership
+      const getResponse = await fetch(
+        `${SUPABASE_URL}/rest/v1/analyses?id=eq.${analysisId}&user_id=eq.${user.id}&select=*`,
+        {
+          headers: {
+            "apikey": SUPABASE_SERVICE_ROLE_KEY,
+            "Authorization": `Bearer ${SUPABASE_SERVICE_ROLE_KEY}`,
+          },
+        }
+      );
+
+      if (!getResponse.ok) {
+        return jsonResponse({ message: "Analysis not found" }, 404);
+      }
+
+      const analyses = await getResponse.json();
+      if (!analyses || analyses.length === 0) {
+        return jsonResponse({ message: "Analysis not found" }, 404);
+      }
+
+      const analysis = analyses[0];
+      
+      // Generate share slug from score and verdict (English only)
+      const score = analysis.overall_score || 0;
+      const verdict = analysis.verdict || "unknown";
+      
+      // Get bedrooms and bathrooms from stored summary
+      const summary = analysis.summary || {};
+      const bedrooms = summary.bedrooms || "";
+      const bathrooms = summary.bathrooms || "";
+      
+      // Map verdict to English slug-friendly format
+      const verdictMap: Record<string, string> = {
+        'Worth Inspecting': 'worth-inspecting',
+        'Apply With Caution': 'apply-with-caution',
+        'Proceed With Caution': 'proceed-with-caution',
+        'Not Recommended': 'not-recommended',
+        'Likely Overpriced / Risky': 'risky',
+        'Need More Evidence': 'need-more-evidence',
+        'Strong Apply': 'strong-apply',
+      };
+      const verdictSlug = verdictMap[verdict] || verdict.toLowerCase().replace(/\s+/g, '-');
+      
+      // Build slug: 78-worth-inspecting-2bed-1bath
+      let slug = `${score}-${verdictSlug}`;
+      if (bedrooms) slug += `-${bedrooms}bed`;
+      if (bathrooms) slug += `-${bathrooms}bath`;
+      
+      slug = slug.replace(/\s+/g, '-').toLowerCase();
+
+      // Update to public
+      const updateResponse = await fetch(
+        `${SUPABASE_URL}/rest/v1/analyses?id=eq.${analysisId}`,
+        {
+          method: "PATCH",
+          headers: {
+            "apikey": SUPABASE_SERVICE_ROLE_KEY,
+            "Authorization": `Bearer ${SUPABASE_SERVICE_ROLE_KEY}`,
+            "Content-Type": "application/json",
+            "Prefer": "return=representation",
+          },
+          body: JSON.stringify({
+            is_public: true,
+            share_slug: slug,
+          }),
+        }
+      );
+
+      if (!updateResponse.ok) {
+        console.error("Failed to share analysis:", await updateResponse.text());
+        return jsonResponse({ message: "Failed to share analysis" }, 500);
+      }
+
+      const updated = await updateResponse.json();
+      return jsonResponse({ 
+        success: true, 
+        slug,
+        shareUrl: `/share/${slug}`
+      });
+    } catch (err) {
+      console.error("Error sharing analysis:", err);
+      return jsonResponse({ message: "Failed to share analysis" }, 500);
+    }
+  }
+
+  // GET: Public access to shared analysis (no auth required)
+  if (req.method === "GET" && action === "public") {
+    const slug = url.searchParams.get("slug");
+    if (!slug) {
+      return jsonResponse({ message: "Missing share slug" }, 400);
+    }
+
+    try {
+      const response = await fetch(
+        `${SUPABASE_URL}/rest/v1/analyses?share_slug=eq.${slug}&is_public=eq.true&select=*`,
+        {
+          headers: {
+            "apikey": SUPABASE_ANON_KEY,
+            "Authorization": `Bearer ${SUPABASE_ANON_KEY}`,
+          },
+        }
+      );
+
+      if (!response.ok) {
+        return jsonResponse({ message: "Analysis not found" }, 404);
+      }
+
+      const analyses = await response.json();
+      if (!analyses || analyses.length === 0) {
+        return jsonResponse({ message: "Analysis not found or not shared" }, 404);
+      }
+
+      const analysis = analyses[0];
+      
+      // Return only public-safe data
+      return jsonResponse({
+        analysis: {
+          id: analysis.id,
+          overall_score: analysis.overall_score,
+          verdict: analysis.verdict,
+          title: analysis.title,
+          address: analysis.address,
+          cover_image_url: analysis.cover_image_url,
+          summary: analysis.summary,
+          full_result: analysis.full_result,
+          created_at: analysis.created_at,
+          share_slug: analysis.share_slug,
+        }
+      });
+    } catch (err) {
+      console.error("Error fetching public analysis:", err);
+      return jsonResponse({ message: "Failed to fetch analysis" }, 500);
+    }
+  }
+
   // POST: submit / run
   if (req.method !== "POST") {
     return jsonResponse({ message: "Method not allowed" }, 405);
@@ -2030,6 +2178,7 @@ Deno.serve(async (req) => {
 
       const overallScoreNum = typeof decision.overall_score === 'number' ? decision.overall_score : 0;
       const result = {
+        id, // Analysis ID for sharing functionality
         overallScore: overallScoreNum,
         finalRecommendation: decision.final_recommendation ? {
           verdict: decision.final_recommendation.verdict || 'Apply With Caution',

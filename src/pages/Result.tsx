@@ -3,10 +3,11 @@ import type { AnalysisResult } from '../types';
 import { ResultCard } from '../components/ResultCard';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
+import { shareAnalysis } from '../lib/api';
 
 export function ResultPage() {
   const navigate = useNavigate();
-  const { } = useAuth();
+  const { isAuthenticated } = useAuth();
   const [result, setResult] = useState<AnalysisResult | null>(null);
 
   useEffect(() => {
@@ -19,6 +20,13 @@ export function ResultPage() {
       }
     }
   }, []);
+
+  const handleShare = async (analysisId: string) => {
+    if (!analysisId) {
+      throw new Error('Analysis ID not found');
+    }
+    return await shareAnalysis(analysisId);
+  };
 
   if (!result) {
     return (
@@ -50,7 +58,11 @@ export function ResultPage() {
       </div>
 
       <div className="relative z-10 w-full max-w-[56rem]">
-        <ResultCard result={result} onBack={() => navigate(-1)} />
+        <ResultCard 
+          result={result} 
+          onBack={() => navigate('/')} 
+          onShare={isAuthenticated ? handleShare : undefined}
+        />
       </div>
     </div>
   );

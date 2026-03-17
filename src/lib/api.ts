@@ -457,3 +457,53 @@ export async function getAnalysisById(id: string): Promise<AnalysisSummary> {
 
   return data.analysis;
 }
+
+/**
+ * Share an analysis (make it public)
+ * @param analysisId - Analysis ID to share
+ */
+export async function shareAnalysis(analysisId: string): Promise<{ success: boolean; slug: string; shareUrl: string }> {
+  const { session } = await getAuthenticatedSession();
+
+  if (!session?.access_token) {
+    throw new Error('Please sign in first.');
+  }
+
+  const response = await fetch(`${API_BASE_URL}?action=share`, {
+    method: 'POST',
+    headers: buildAuthHeaders(session),
+    body: JSON.stringify({ analysisId }),
+  });
+
+  if (!response.ok) {
+    const error = await response.json().catch(() => ({ message: 'Failed to share analysis' }));
+    throw new Error(error.message || 'Failed to share analysis');
+  }
+
+  return response.json();
+}
+
+/**
+ * Get a public shared analysis by slug (no auth required)
+ * @param slug - Share slug
+ */
+export async function getPublicAnalysis(slug: string): Promise<{ analysis: AnalysisSummary }> {
+  const response = await fetch(`${API_BASE_URL}?action=public&slug=${encodeURIComponent(slug)}`, {
+    method: 'GET',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+  });
+
+  if (!response.ok) {
+    const error = await response.json().catch(() => ({ message: 'Analysis not found' }));
+    throw new Error(error.message || 'Analysis not found');
+  }
+
+  const data = await response.json();
+  if (!data.analysis) {
+    throw new Error('Analysis not found');
+  }
+
+  return data.analysis;
+}
