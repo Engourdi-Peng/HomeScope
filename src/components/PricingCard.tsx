@@ -80,7 +80,7 @@ export function PricingCard({
         type="button"
         onClick={handleClick}
         disabled={isLoading}
-        className="w-full bg-white text-[#292524] border-[0.667px] border-solid border-[#f5f5f4] rounded-[16px] px-6 py-4 shadow-[0_8px_40px_-12px_rgba(0,0,0,0.08)] hover:bg-[#1c1917] hover:border-[#1c1917] hover:text-white hover:shadow-[0_8px_40px_-12px_rgba(0,0,0,0.12)] transition-all disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:bg-white disabled:hover:border-[#f5f5f4] disabled:hover:text-[#292524]"
+        className="w-full bg-white text-[#292524] border-[0.667px] border-solid border-[#f5f5f4] rounded-full px-6 py-4 shadow-[0_8px_40px_-12px_rgba(0,0,0,0.08)] hover:bg-[#1c1917] hover:border-[#1c1917] hover:text-white hover:shadow-[0_8px_40px_-12px_rgba(0,0,0,0.12)] transition-all disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:bg-white disabled:hover:border-[#f5f5f4] disabled:hover:text-[#292524]"
       >
         <span className="font-medium text-[14px]">
           {isLoading ? 'Processing...' : buttonText}
