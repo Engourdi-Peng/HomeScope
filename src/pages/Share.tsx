@@ -20,7 +20,7 @@ export function SharePage() {
 
     const fetchPublicAnalysis = async () => {
       try {
-        const { analysis } = await getPublicAnalysis(slug);
+        const analysis = await getPublicAnalysis(slug);
         if (!analysis) {
           setError('Analysis not found');
           return;

@@ -13,9 +13,12 @@
 
 | 设置项 | 值 |
 |--------|-----|
+| **Production Branch** | **`main`**（必须用 main，不要用 gh-pages） |
 | Framework Preset | Vite |
 | Build Command | `npm run build` |
 | Output Directory | `dist` |
+
+**重要**：部署分支必须选择 **main**。若选成 **gh-pages**，构建会失败（gh-pages 分支只有构建产物，没有 `package.json`，无法执行 `npm install`）。
 
 ## 步骤 3: 添加环境变量
 
@@ -33,6 +36,12 @@
 1. 点击 "Deploy" 按钮
 2. 等待构建完成（约 1-2 分钟）
 3. 部署成功后，你会获得一个 `*.vercel.app` 的域名
+
+### 若之前误选了 gh-pages 导致构建失败
+
+1. 打开 Vercel 项目 → **Settings** → **Git**
+2. 将 **Production Branch** 改为 **main**，保存
+3. 在 **Deployments** 里点击 **Redeploy** 重新部署，或推送新的 commit 到 main 触发部署
 
 ## 步骤 5: 配置澳大利亚区域（可选优化）
 

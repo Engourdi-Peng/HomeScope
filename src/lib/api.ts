@@ -487,7 +487,7 @@ export async function shareAnalysis(analysisId: string): Promise<{ success: bool
  * Get a public shared analysis by slug (no auth required)
  * @param slug - Share slug
  */
-export async function getPublicAnalysis(slug: string): Promise<{ analysis: AnalysisSummary }> {
+export async function getPublicAnalysis(slug: string): Promise<AnalysisSummary> {
   const response = await fetch(`${API_BASE_URL}?action=public&slug=${encodeURIComponent(slug)}`, {
     method: 'GET',
     headers: {
