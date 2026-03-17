@@ -51,7 +51,7 @@ async function addCreditsToUser(userId: string, creditsToAdd: number): Promise<b
   try {
     // 先获取用户当前积分
     const getResponse = await fetch(
-      `${SUPABASE_URL}/rest/v1/users?id=eq.${userId}&select=credits`,
+      `${SUPABASE_URL}/rest/v1/profiles?id=eq.${userId}&select=credits_remaining`,
       {
         headers: {
           "apikey": SUPABASE_SERVICE_ROLE_KEY,
@@ -71,12 +71,12 @@ async function addCreditsToUser(userId: string, creditsToAdd: number): Promise<b
       return false;
     }
 
-    const currentCredits = users[0].credits || 0;
+    const currentCredits = users[0].credits_remaining || 0;
     const newCredits = currentCredits + creditsToAdd;
 
     // 更新积分
     const updateResponse = await fetch(
-      `${SUPABASE_URL}/rest/v1/users?id=eq.${userId}`,
+      `${SUPABASE_URL}/rest/v1/profiles?id=eq.${userId}`,
       {
         method: "PATCH",
         headers: {
@@ -86,7 +86,7 @@ async function addCreditsToUser(userId: string, creditsToAdd: number): Promise<b
           "Prefer": "return=minimal",
         },
         body: JSON.stringify({
-          credits: newCredits,
+          credits_remaining: newCredits,
         }),
       }
     );
