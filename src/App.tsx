@@ -10,6 +10,7 @@ import { PricingPage } from './pages/Pricing';
 import { PaymentSuccessPage } from './pages/PaymentSuccess';
 import { Contact } from './pages/Contact';
 import { RefundPolicy } from './pages/RefundPolicy';
+import { CheckoutPage } from './pages/Checkout';
 import { useEffect, useState } from 'react';
 
 function AnimatedRoutes() {
@@ -41,6 +42,7 @@ function AnimatedRoutes() {
         <Route path="/payment-success" element={<PaymentSuccessPage />} />
         <Route path="/contact" element={<Contact />} />
         <Route path="/refund" element={<RefundPolicy />} />
+        <Route path="/checkout" element={<CheckoutPage />} />
       </Routes>
     </div>
   );
