@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, type FormEvent } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { InputCard } from '../components/InputCard';
 import type { AnalysisStage, Photo, OptionalDetails } from '../types';
@@ -88,7 +88,12 @@ export function Home() {
   const nextPreview = () => setPreviewIndex((prev) => (prev + 1) % previewImages.length);
   const prevPreview = () => setPreviewIndex((prev) => (prev - 1 + previewImages.length) % previewImages.length);
 
-  const handleBuy = async (productId: string) => {
+  const handleBuy = async (productId: string, e?: React.FormEvent) => {
+    // 防止表单提交导致页面刷新
+    if (e) {
+      e.preventDefault();
+    }
+
     // 1. 检查登录状态
     if (!isAuthenticated || !user) {
       setIsLoginModalOpen(true);
@@ -98,10 +103,12 @@ export function Home() {
     setBuyingProduct(productId);
 
     try {
-      // 2. 调用 create-order API
-      const { data: sessionData } = await supabase.auth.getSession();
-      const token = sessionData.session?.access_token;
-
+      // 2. 先刷新 session，确保 token 未过期（getSession 可能返回缓存）
+      const { data: refreshData, error: refreshError } = await supabase.auth.refreshSession();
+      if (refreshError) {
+        throw new Error('登录已过期，请重新登录');
+      }
+      const token = refreshData.session?.access_token;
       if (!token) {
         throw new Error('No session token available');
       }
@@ -127,17 +134,20 @@ export function Home() {
 
       if (!response.ok) {
         const errorData = await response.json();
+        console.error('create-order error:', errorData);
         throw new Error(errorData.error || 'Failed to create order');
       }
 
       const data = await response.json();
+      console.log('create-order response:', data);
 
-      // 3. 跳转到 Vendors checkout
+      // 3. 跳转到 checkout
       if (data.checkout_url) {
         window.location.href = data.checkout_url;
-      } else {
-        throw new Error('No checkout URL returned');
+        return;
       }
+
+      throw new Error('Missing checkout_url in create-order response');
     } catch (err) {
       console.error('Purchase error:', err);
       alert(err instanceof Error ? err.message : 'Failed to process purchase');

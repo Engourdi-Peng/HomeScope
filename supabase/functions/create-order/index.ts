@@ -45,11 +45,10 @@ const PRODUCTS: Record<string, { credits: number; price: number; price_id: strin
 };
 
 /**
- * 获取当前用户
+ * 从 JWT token 直接解析用户信息（无需额外 API 调用）
  */
-async function getCurrentUser(req: Request): Promise<{ userId: string | null; email: string | null; error: string | null }> {
+function getCurrentUser(req: Request): { userId: string | null; email: string | null; error: string | null } {
   const authHeader = req.headers.get("Authorization");
-  const apikey = req.headers.get("apikey");
 
   if (!authHeader || !authHeader.startsWith("Bearer ")) {
     return { userId: null, email: null, error: "Missing or invalid Authorization header" };
@@ -57,24 +56,32 @@ async function getCurrentUser(req: Request): Promise<{ userId: string | null; em
 
   const token = authHeader.replace("Bearer ", "");
 
+  // 直接从 JWT payload 解析 user_id
+  // JWT 格式: header.payload.signature，payload 是 base64 编码的 JSON
   try {
-    // 验证 token 获取用户信息
-    const userResponse = await fetch(`${SUPABASE_URL}/auth/v1/user`, {
-      headers: {
-        "Authorization": `Bearer ${token}`,
-        "apikey": SUPABASE_ANON_KEY,
-      },
-    });
-
-    if (!userResponse.ok) {
-      return { userId: null, email: null, error: "Invalid or expired token" };
+    const parts = token.split(".");
+    if (parts.length !== 3) {
+      return { userId: null, email: null, error: "Invalid token format" };
     }
 
-    const userData = await userResponse.json();
-    return { userId: userData.id, email: userData.email, error: null };
+    // 解码 payload（base64url → base64 → JSON）
+    const payloadBase64 = parts[1].replace(/-/g, "+").replace(/_/g, "/");
+    const payloadJson = atob(payloadBase64);
+    const payload = JSON.parse(payloadJson);
+
+    // Supabase JWT 包含 sub（用户 ID）和 email
+    const userId = payload.sub;
+    const email = payload.email;
+
+    if (!userId) {
+      return { userId: null, email: null, error: "No user_id in token" };
+    }
+
+    console.log("Token parsed successfully:", { userId, email });
+    return { userId, email, error: null };
   } catch (err) {
-    console.error("Auth error:", err);
-    return { userId: null, email: null, error: "Authentication failed" };
+    console.error("Token parse error:", err);
+    return { userId: null, email: null, error: "Invalid token" };
   }
 }
 
@@ -87,7 +94,7 @@ async function createPaddleTransaction(
   email: string,
   successUrl: string,
   cancelUrl: string
-): Promise<{ checkoutUrl: string; transactionId: string } | { error: string }> {
+): Promise<{ checkout_url: string; transactionId: string } | { error: string }> {
   const product = PRODUCTS[productId];
   if (!product) {
     return { error: "Invalid product ID" };
@@ -102,7 +109,7 @@ async function createPaddleTransaction(
     const mockCheckoutUrl = `${successUrl}?transaction_id=${mockOrderId}&status=completed&product=${productId}`;
 
     return {
-      checkoutUrl: mockCheckoutUrl,
+      checkout_url: mockCheckoutUrl,
       transactionId: mockOrderId,
     };
   }
@@ -151,7 +158,7 @@ async function createPaddleTransaction(
     }
 
     return {
-      checkoutUrl: checkoutUrl,
+      checkout_url: checkoutUrl,
       transactionId: data.data.id,
     };
   } catch (err) {
@@ -267,9 +274,19 @@ Deno.serve(async (req) => {
     );
 
     // 6. 返回 checkout URL
+    if (!orderResult.checkout_url) {
+      return new Response(
+        JSON.stringify({ error: "Missing checkout_url from payment provider" }),
+        { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+      );
+    }
+
+    console.log("[create-order] returning checkout_url:", orderResult.checkout_url);
+
     return new Response(
       JSON.stringify({
-        checkout_url: orderResult.checkoutUrl,
+        success: true,
+        checkout_url: orderResult.checkout_url,
         transaction_id: orderResult.transactionId,
       }),
       { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } }

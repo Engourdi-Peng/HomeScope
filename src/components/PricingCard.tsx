@@ -1,4 +1,5 @@
 import { Check } from 'lucide-react';
+import type { FormEvent } from 'react';
 
 interface PricingCardProps {
   title: string;
@@ -8,7 +9,7 @@ interface PricingCardProps {
   features: string[];
   buttonText: string;
   isPopular?: boolean;
-  onBuy?: (productId: string) => void;
+  onBuy?: (productId: string, e?: FormEvent) => void;
   productId?: string;
   isLoading?: boolean;
 }
@@ -25,9 +26,9 @@ export function PricingCard({
   productId,
   isLoading = false,
 }: PricingCardProps) {
-  const handleClick = () => {
+  const handleClick = (e: FormEvent) => {
     if (onBuy && productId) {
-      onBuy(productId);
+      onBuy(productId, e);
     }
   };
 
@@ -75,7 +76,8 @@ export function PricingCard({
         </ul>
       </div>
 
-      <button 
+      <button
+        type="button"
         onClick={handleClick}
         disabled={isLoading}
         className="w-full bg-white text-[#292524] border-[0.667px] border-solid border-[#f5f5f4] rounded-[16px] px-6 py-4 shadow-[0_8px_40px_-12px_rgba(0,0,0,0.08)] hover:bg-[#1c1917] hover:border-[#1c1917] hover:text-white hover:shadow-[0_8px_40px_-12px_rgba(0,0,0,0.12)] transition-all disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:bg-white disabled:hover:border-[#f5f5f4] disabled:hover:text-[#292524]"
