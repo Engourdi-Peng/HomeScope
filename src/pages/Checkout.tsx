@@ -16,6 +16,9 @@ declare global {
           };
         };
       }) => void;
+      Checkout?: {
+        open: (options: { transactionId: string }) => void;
+      };
     };
   }
 }
@@ -46,29 +49,36 @@ export function CheckoutPage() {
 
     // 加载 Paddle.js
     const script = document.createElement('script');
-    script.src = 'https://cdn.paddle.com/paddle/paddle.js';
+    script.src = 'https://cdn.paddle.com/paddle/v2/paddle.js';
     script.async = true;
     script.onload = () => {
-      if (window.Paddle) {
-        // 设置环境
-        window.Paddle.Environment.set(paddleEnv);
+      console.log('window.Paddle =', window.Paddle);
+      console.log('typeof window.Paddle?.Initialize =', typeof window.Paddle?.Initialize);
 
-        // 初始化 Paddle - Paddle.js 会自动根据 URL 中的 _ptxn 参数打开 checkout
-        window.Paddle.Initialize({
-          token: clientToken,
-          checkout: {
-            settings: {
-              displayMode: 'overlay',
-              theme: 'light',
-              locale: 'en',
-            },
-          },
-        });
-
-        // Paddle.js 会自动处理 _ptxn 参数并打开 checkout
-        // 我们只需要显示 loading 状态
-        setLoading(true);
+      if (!window.Paddle || typeof window.Paddle.Initialize !== 'function') {
+        setError('Paddle SDK loaded, but Initialize() is unavailable.');
+        setLoading(false);
+        return;
       }
+
+      // 设置环境
+      window.Paddle.Environment.set(paddleEnv);
+
+      // 初始化 Paddle - Paddle.js 会自动根据 URL 中的 _ptxn 参数打开 checkout
+      window.Paddle.Initialize({
+        token: clientToken,
+        checkout: {
+          settings: {
+            displayMode: 'overlay',
+            theme: 'light',
+            locale: 'en',
+          },
+        },
+      });
+
+      // Paddle.js 会自动处理 _ptxn 参数并打开 checkout
+      // 我们只需要显示 loading 状态
+      setLoading(true);
     };
 
     script.onerror = () => {
