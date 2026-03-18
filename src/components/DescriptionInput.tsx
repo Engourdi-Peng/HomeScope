@@ -137,7 +137,7 @@ export function DescriptionInput({ value, onChange, photos = [], onPhotosChange 
           <button
             type="button"
             onClick={() => fileInputRef.current?.click()}
-            className="absolute bottom-4 right-3 flex items-center gap-2 px-3 py-1.5 bg-white/90 backdrop-blur rounded-full border border-stone-200 hover:bg-white hover:border-stone-300 transition-all cursor-pointer shadow-sm"
+            className="absolute bottom-4 right-3 flex items-center gap-2 px-3 py-1.5 bg-white/90 backdrop-blur rounded-full border border-stone-200 hover:bg-white hover:border-stone-300 transition-all cursor-pointer"
           >
             <Image size={14} className="text-stone-500" />
             <span className="text-[10px] font-medium uppercase tracking-widest text-stone-500">Add screenshots</span>

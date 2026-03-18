@@ -45,17 +45,17 @@ function getValidatedPriceId(envKey: string): string {
 const PRODUCTS: Record<string, { credits: number; price: number; price_id: string }> = {
   starter: {
     credits: 5,
-    price: 4.99,
+    price: 6.99,
     price_id: getValidatedPriceId("PRICE_STARTER"),
   },
   standard: {
     credits: 20,
-    price: 9.99,
+    price: 14.99,
     price_id: getValidatedPriceId("PRICE_STANDARD"),
   },
   pro: {
     credits: 100,
-    price: 29.0,
+    price: 39.0,
     price_id: getValidatedPriceId("PRICE_PRO"),
   },
 };

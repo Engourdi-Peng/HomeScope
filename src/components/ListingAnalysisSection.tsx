@@ -16,10 +16,10 @@ export function ListingAnalysisSection({ className = '' }: ListingAnalysisSectio
     <div className={`mb-16 animate-in fade-in slide-in-from-bottom-8 duration-700 ease-out ${className}`}>
       {/* 标题区域 */}
       <div className="text-center mb-8">
-        <h2 className="text-[48px] font-medium text-stone-900 leading-[1] mb-4">
+        <h2 className="text-center text-sm font-semibold uppercase tracking-widest text-stone-500 mb-4">
           Don't Trust Listing Photos
         </h2>
-        <p className="text-2xl text-stone-800 leading-[1.3]">
+        <p className="text-center text-stone-400 font-light mb-8">
           Most rental problems only show up after you visit — or worse, after you move in.
         </p>
       </div>

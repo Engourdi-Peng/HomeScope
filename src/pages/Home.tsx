@@ -18,7 +18,7 @@ const PRODUCTS = [
   {
     id: 'starter',
     title: 'Starter',
-    price: '$4.99',
+    price: '$6.99',
     reportCount: '5 REPORTS',
     description: 'Perfect for trying the tool',
     features: [
@@ -33,7 +33,7 @@ const PRODUCTS = [
   {
     id: 'standard',
     title: 'Standard',
-    price: '$9.99',
+    price: '$14.99',
     reportCount: '20 REPORTS',
     description: 'Most popular - enough for a full house search',
     features: [
@@ -48,7 +48,7 @@ const PRODUCTS = [
   {
     id: 'pro',
     title: 'Pro',
-    price: '$29',
+    price: '$39',
     reportCount: '100 REPORTS',
     description: 'For heavy users and professionals',
     features: [
