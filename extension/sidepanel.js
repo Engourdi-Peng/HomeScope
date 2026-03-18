@@ -40,9 +40,39 @@ window.addEventListener('message', async (event) => {
     }
   }
 
+  if (type === 'start_extension_auth') {
+    // 来自 LoginPage 的授权请求 → 调用 background 处理
+    try {
+      // 通知 background 启动 OAuth 流程
+      chrome.runtime.sendMessage(
+        { action: 'start_extension_auth', user: data.user },
+        () => {
+          // launchWebAuthFlow 完成后，background 会发 auth_status_changed
+          // 这里等 background 通知即可
+        }
+      );
+    } catch (err) {
+      console.error('HomeScope SidePanel: start_extension_auth error', err);
+    }
+  }
+
   if (type === 'login_closed') {
     // 用户关闭了登录页或登录流程结束，关闭侧边栏
     window.close();
+  }
+});
+
+// 监听 background 发来的 auth_status_changed（由 oauth-callback 完成时触发）
+chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  if (message.action === 'auth_status_changed') {
+    // 把结果 postMessage 回 iframe
+    const iframe = document.getElementById('login-frame');
+    if (iframe?.contentWindow) {
+      iframe.contentWindow.postMessage(
+        { type: 'extension_auth_response', data: { success: message.authenticated, error: null } },
+        '*'
+      );
+    }
   }
 });
 

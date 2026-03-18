@@ -496,6 +496,22 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return true;
   }
 
+  // ===== OAuth 回调完成 =====
+  if (message.action === 'auth_complete') {
+    // oauth-callback.html 完成授权后通知 background
+    // 此时 token 已存入 storage，重新检查认证状态并通知所有 popup
+    (async () => {
+      const result = await checkAuthStatus();
+      // 通知所有 popup 更新状态
+      chrome.runtime.sendMessage({
+        action: 'auth_status_changed',
+        authenticated: result.state === AUTH_STATES.AUTHENTICATED,
+        user: result.user
+      });
+    })();
+    return false;
+  }
+
   // ===== 打开侧边栏面板（Monica 式登录入口）=====
   if (message.action === 'open_side_panel') {
     (async () => {

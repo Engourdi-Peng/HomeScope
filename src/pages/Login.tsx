@@ -27,16 +27,31 @@ export function LoginPage() {
     setAuthMessage('Connecting to HomeScope extension...');
 
     try {
-      if (typeof chrome === 'undefined' || !chrome.runtime?.sendMessage) {
-        setExtensionAuth('error');
-        setAuthMessage('Could not auto-connect. You can manually add this extension in browser settings.');
-        return;
-      }
-      // 通知 background script 启动授权流程
-      // 它会打开回调页面，callback 页面会将 token 存入 chrome.storage
-      const response = await chrome.runtime.sendMessage({
-        action: 'start_extension_auth',
-        user: { id: user.id, email: user.email }
+      // 通过 postMessage 通知父窗口（side panel），由它转发给 background script
+      const response = await new Promise<{ success?: boolean; error?: string }>((resolve) => {
+        const timeout = setTimeout(() => {
+          window.removeEventListener('message', handleMessage);
+          resolve({ success: false, error: 'Timeout waiting for extension response' });
+        }, 30000);
+
+        const handleMessage = (event: MessageEvent) => {
+          if (!event.origin.includes('tryhomescope.com')) return;
+          if (event.data?.type === 'extension_auth_response') {
+            clearTimeout(timeout);
+            window.removeEventListener('message', handleMessage);
+            resolve(event.data.data as { success?: boolean; error?: string });
+          }
+        };
+
+        window.addEventListener('message', handleMessage);
+
+        window.parent.postMessage(
+          {
+            type: 'start_extension_auth',
+            data: { user: { id: user.id, email: user.email } }
+          },
+          '*'
+        );
       });
 
       if (response?.success) {
@@ -44,12 +59,10 @@ export function LoginPage() {
         setAuthMessage('HomeScope extension connected successfully!');
       } else {
         setExtensionAuth('error');
-        setAuthMessage(response.error || 'Failed to connect extension');
+        setAuthMessage(response?.error || 'Failed to connect extension');
       }
     } catch (err) {
       console.error('Extension auth error:', err);
-      // 如果 chrome.runtime.sendMessage 失败（可能是在非扩展环境中）
-      // 显示 token 信息让用户手动复制
       setExtensionAuth('error');
       setAuthMessage('Could not auto-connect. You can manually add this extension in browser settings.');
     }
