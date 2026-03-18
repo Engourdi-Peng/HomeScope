@@ -23,9 +23,15 @@ export function LoginPage() {
   }, [fromExtension, isAuthenticated, user]);
 
   const triggerExtensionAuth = async () => {
+    if (!user) return;
     setAuthMessage('Connecting to HomeScope extension...');
 
     try {
+      if (typeof chrome === 'undefined' || !chrome.runtime?.sendMessage) {
+        setExtensionAuth('error');
+        setAuthMessage('Could not auto-connect. You can manually add this extension in browser settings.');
+        return;
+      }
       // 通知 background script 启动授权流程
       // 它会打开回调页面，callback 页面会将 token 存入 chrome.storage
       const response = await chrome.runtime.sendMessage({
@@ -33,7 +39,7 @@ export function LoginPage() {
         user: { id: user.id, email: user.email }
       });
 
-      if (response.success) {
+      if (response?.success) {
         setExtensionAuth('success');
         setAuthMessage('HomeScope extension connected successfully!');
       } else {

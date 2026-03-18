@@ -30,8 +30,9 @@ export function AuthCompletePage() {
           return;
         }
 
-        // 将 token 存入 chrome.storage.local
-        await chrome.storage.local.set({
+        // 将 token 存入 chrome.storage.local（仅在扩展上下文中可用）
+        if (typeof chrome !== 'undefined' && chrome?.storage?.local) {
+          await chrome.storage.local.set({
           access_token: accessToken,
           refresh_token: refreshToken,
           user: {
@@ -39,7 +40,8 @@ export function AuthCompletePage() {
             email: userEmail
           },
           auth_time: Date.now()
-        });
+          });
+        }
 
         setStatus('success');
         setMessage('Extension connected successfully!');
