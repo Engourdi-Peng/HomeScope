@@ -35,7 +35,8 @@ export function LoginPage() {
         }, 30000);
 
         const handleMessage = (event: MessageEvent) => {
-          if (!event.origin.includes('tryhomescope.com')) return;
+          // 接受来自 tryhomescope.com 或扩展的消息
+          if (!event.origin.includes('tryhomescope.com') && !event.origin.startsWith('chrome-extension://')) return;
           if (event.data?.type === 'extension_auth_response') {
             clearTimeout(timeout);
             window.removeEventListener('message', handleMessage);

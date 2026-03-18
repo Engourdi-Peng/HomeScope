@@ -43,12 +43,17 @@ window.addEventListener('message', async (event) => {
   if (type === 'start_extension_auth') {
     // 来自 LoginPage 的授权请求 → 调用 background 处理
     try {
-      // 通知 background 启动 OAuth 流程
       chrome.runtime.sendMessage(
         { action: 'start_extension_auth', user: data.user },
-        () => {
-          // launchWebAuthFlow 完成后，background 会发 auth_status_changed
-          // 这里等 background 通知即可
+        (result) => {
+          // 立刻把 background 的返回值 post 回 iframe
+          const iframe = document.getElementById('login-frame');
+          if (iframe?.contentWindow) {
+            iframe.contentWindow.postMessage(
+              { type: 'extension_auth_response', data: result },
+              '*'
+            );
+          }
         }
       );
     } catch (err) {
