@@ -1,0 +1,556 @@
+/* ===== HomeScope Chrome Extension Styles ===== */
+
+/* ===== 1. 浮动按钮样式 ===== */
+#homescope-analyze-btn {
+  position: fixed;
+  bottom: 24px;
+  right: 24px;
+  z-index: 9999;
+  padding: 12px 20px;
+  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  color: white;
+  border: none;
+  border-radius: 8px;
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+  box-shadow: 0 4px 15px rgba(102, 126, 234, 0.4);
+  transition: all 0.3s ease;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+}
+
+#homescope-analyze-btn:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 6px 20px rgba(102, 126, 234, 0.5);
+}
+
+#homescope-analyze-btn:active {
+  transform: translateY(0);
+}
+
+/* ===== 2. Overlay 样式 ===== */
+.homescope-overlay {
+  position: fixed;
+  top: 0;
+  right: -400px;
+  width: 380px;
+  height: 100%;
+  background: white;
+  box-shadow: -4px 0 20px rgba(0, 0, 0, 0.15);
+  z-index: 10000;
+  transition: right 0.3s ease;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  overflow-y: auto;
+}
+
+.homescope-overlay-open {
+  right: 0;
+}
+
+.homescope-overlay-content {
+  padding: 24px;
+  min-height: 100%;
+  box-sizing: border-box;
+}
+
+/* ===== 3. 关闭按钮 ===== */
+.homescope-close-btn {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  width: 32px;
+  height: 32px;
+  background: #f0f0f0;
+  border: none;
+  border-radius: 50%;
+  font-size: 20px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #666;
+  transition: background 0.2s;
+}
+
+.homescope-close-btn:hover {
+  background: #e0e0e0;
+  color: #333;
+}
+
+/* ===== 4. Loading 状态 ===== */
+.homescope-spinner {
+  width: 40px;
+  height: 40px;
+  margin: 20px auto;
+  border: 4px solid #f3f3f3;
+  border-top: 4px solid #667eea;
+  border-radius: 50%;
+  animation: homescope-spin 1s linear infinite;
+}
+
+@keyframes homescope-spin {
+  0% { transform: rotate(0deg); }
+  100% { transform: rotate(360deg); }
+}
+
+.homescope-overlay-content p {
+  text-align: center;
+  color: #666;
+  font-size: 14px;
+}
+
+/* ===== 5. 结果显示 ===== */
+.homescope-result h3 {
+  margin: 0 0 20px 0;
+  color: #333;
+  font-size: 18px;
+}
+
+.homescope-score {
+  display: flex;
+  align-items: baseline;
+  margin-bottom: 16px;
+}
+
+.homescope-score-label {
+  font-size: 14px;
+  color: #666;
+  margin-right: 8px;
+}
+
+.homescope-score-value {
+  font-size: 36px;
+  font-weight: 700;
+  color: #667eea;
+}
+
+.homescope-score-max {
+  font-size: 16px;
+  color: #999;
+  margin-left: 4px;
+}
+
+.homescope-verdict {
+  font-size: 16px;
+  font-weight: 600;
+  color: #333;
+  margin-bottom: 12px;
+}
+
+.homescope-summary {
+  font-size: 14px;
+  color: #666;
+  line-height: 1.6;
+  margin-bottom: 20px;
+}
+
+.homescope-risks h4 {
+  font-size: 14px;
+  color: #333;
+  margin: 0 0 8px 0;
+}
+
+.homescope-risks ul {
+  margin: 0;
+  padding-left: 20px;
+}
+
+.homescope-risks li {
+  font-size: 13px;
+  color: #e74c3c;
+  margin-bottom: 6px;
+  line-height: 1.4;
+}
+
+/* ===== 6. 登录提示 ===== */
+.homescope-login-prompt {
+  text-align: center;
+  padding-top: 40px;
+}
+
+.homescope-login-prompt h3 {
+  margin: 0 0 12px 0;
+  color: #333;
+  font-size: 18px;
+}
+
+.homescope-login-prompt p {
+  color: #666;
+  font-size: 14px;
+  margin-bottom: 24px;
+}
+
+.homescope-popup-btn {
+  padding: 12px 24px;
+  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  color: white;
+  border: none;
+  border-radius: 6px;
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: opacity 0.2s;
+}
+
+.homescope-popup-btn:hover {
+  opacity: 0.9;
+}
+
+/* ===== 7. 错误状态 ===== */
+.homescope-error {
+  text-align: center;
+  padding-top: 40px;
+}
+
+.homescope-error h3 {
+  margin: 0 0 12px 0;
+  color: #e74c3c;
+  font-size: 18px;
+}
+
+.homescope-error p {
+  color: #666;
+  font-size: 14px;
+}
+
+/* ===== 8. Popup 样式 ===== */
+.homescope-popup {
+  width: 300px;
+  padding: 20px;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+}
+
+.homescope-popup-title {
+  text-align: center;
+  margin-bottom: 20px;
+}
+
+.homescope-popup-title h2 {
+  margin: 0;
+  font-size: 18px;
+  color: #333;
+}
+
+.homescope-popup-title p {
+  margin: 4px 0 0 0;
+  font-size: 12px;
+  color: #999;
+}
+
+.homescope-popup-form {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.homescope-popup-form input {
+  padding: 10px 12px;
+  border: 1px solid #ddd;
+  border-radius: 6px;
+  font-size: 14px;
+  outline: none;
+  transition: border-color 0.2s;
+}
+
+.homescope-popup-form input:focus {
+  border-color: #667eea;
+}
+
+.homescope-popup-form button {
+  padding: 12px;
+  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  color: white;
+  border: none;
+  border-radius: 6px;
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: opacity 0.2s;
+}
+
+.homescope-popup-form button:hover {
+  opacity: 0.9;
+}
+
+.homescope-popup-form button:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.homescope-popup-error {
+  color: #e74c3c;
+  font-size: 12px;
+  text-align: center;
+  margin-top: 8px;
+}
+
+.homescope-popup-logged-in {
+  text-align: center;
+}
+
+.homescope-popup-user {
+  font-size: 14px;
+  color: #333;
+  margin-bottom: 16px;
+}
+
+.homescope-popup-logout-btn {
+  width: 100%;
+  padding: 10px;
+  background: #f5f5f5;
+  color: #666;
+  border: none;
+  border-radius: 6px;
+  font-size: 14px;
+  cursor: pointer;
+  transition: background 0.2s;
+}
+
+.homescope-popup-logout-btn:hover {
+  background: #e8e8e8;
+}
+
+.homescope-popup-footer {
+  margin-top: 16px;
+  text-align: center;
+}
+
+.homescope-popup-footer a {
+  font-size: 12px;
+  color: #667eea;
+  text-decoration: none;
+}
+
+.homescope-popup-footer a:hover {
+  text-decoration: underline;
+}
+
+/* ===== 9. 成功状态 (Magic Link Sent) ===== */
+.homescope-popup-success {
+  text-align: center;
+  padding: 10px 0;
+}
+
+.homescope-popup-success > p:first-child {
+  color: #666;
+  font-size: 13px;
+  margin-bottom: 4px;
+}
+
+.homescope-popup-email {
+  font-size: 14px;
+  font-weight: 600;
+  color: #333;
+  margin-bottom: 16px !important;
+  word-break: break-all;
+}
+
+.homescope-popup-instructions {
+  font-size: 12px;
+  color: #666;
+  line-height: 1.6;
+  text-align: left;
+  background: #f9f9f9;
+  padding: 12px;
+  border-radius: 6px;
+  margin-bottom: 16px;
+}
+
+/* ===== 10. 刷新状态按钮 ===== */
+.homescope-popup-refresh-btn {
+  width: 100%;
+  padding: 12px;
+  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  color: white;
+  border: none;
+  border-radius: 6px;
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+  margin-bottom: 8px;
+  transition: opacity 0.2s;
+}
+
+.homescope-popup-refresh-btn:hover {
+  opacity: 0.9;
+}
+
+.homescope-popup-refresh-btn:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+/* ===== 11. 返回按钮 ===== */
+.homescope-popup-back-btn {
+  width: 100%;
+  padding: 10px;
+  background: #f5f5f5;
+  color: #666;
+  border: none;
+  border-radius: 6px;
+  font-size: 14px;
+  cursor: pointer;
+  transition: background 0.2s;
+}
+
+.homescope-popup-back-btn:hover {
+  background: #e8e8e8;
+}
+
+/* ===== 12. 加载状态 ===== */
+.homescope-popup-loading {
+  text-align: center;
+  padding: 30px 0;
+}
+
+.homescope-popup-loading p {
+  color: #666;
+  font-size: 14px;
+}
+
+.homescope-popup-loading .spinner {
+  width: 30px;
+  height: 30px;
+  margin: 0 auto 16px;
+  border: 3px solid #f3f3f3;
+  border-top: 3px solid #667eea;
+  border-radius: 50%;
+  animation: homescope-spin 1s linear infinite;
+}
+
+/* ===== 13. 简化版 Sign In 样式 ===== */
+.homescope-popup-signin-container {
+  text-align: center;
+  margin-bottom: 16px;
+}
+
+.homescope-popup-description {
+  font-size: 13px;
+  color: #666;
+  margin-bottom: 16px;
+  line-height: 1.5;
+}
+
+.homescope-popup-primary-btn {
+  width: 100%;
+  padding: 14px;
+  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  color: white;
+  border: none;
+  border-radius: 8px;
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: opacity 0.2s, transform 0.2s;
+}
+
+.homescope-popup-primary-btn:hover {
+  opacity: 0.9;
+  transform: translateY(-1px);
+}
+
+.homescope-popup-primary-btn:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+  transform: none;
+}
+
+.homescope-popup-secondary-btn {
+  display: block;
+  width: 100%;
+  padding: 12px;
+  background: #f5f5f5;
+  color: #333;
+  border: none;
+  border-radius: 8px;
+  font-size: 14px;
+  font-weight: 500;
+  text-align: center;
+  text-decoration: none;
+  cursor: pointer;
+  transition: background 0.2s;
+}
+
+.homescope-popup-secondary-btn:hover {
+  background: #e8e8e8;
+}
+
+.homescope-popup-text-btn {
+  background: none;
+  border: none;
+  color: #e74c3c;
+  font-size: 13px;
+  cursor: pointer;
+  padding: 8px;
+  transition: opacity 0.2s;
+}
+
+.homescope-popup-text-btn:hover {
+  opacity: 0.7;
+}
+
+.homescope-popup-avatar {
+  width: 56px;
+  height: 56px;
+  border-radius: 50%;
+  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  color: white;
+  font-size: 24px;
+  font-weight: 600;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin: 0 auto 12px;
+}
+
+.homescope-popup-user-info {
+  text-align: center;
+}
+
+.homescope-popup-user-email {
+  font-size: 14px;
+  color: #333;
+  margin: 0;
+  word-break: break-all;
+}
+
+.homescope-popup-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+/* ===== 14. Google 登入按鈕 ===== */
+.homescope-popup-google-btn {
+  width: 100%;
+  padding: 14px;
+  background: #ffffff;
+  color: #3c4043;
+  border: 1px solid #dadce0;
+  border-radius: 8px;
+  font-size: 14px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+}
+
+.homescope-popup-google-btn:hover {
+  background: #f8f9fa;
+  border-color: #dadce0;
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.15);
+}
+
+.homescope-popup-google-btn:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+  transform: none;
+}
+
+.homescope-popup-google-btn .google-icon {
+  flex-shrink: 0;
+}

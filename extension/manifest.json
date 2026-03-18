@@ -1,0 +1,58 @@
+{
+  "manifest_version": 3,
+  "name": "HomeScope - Property Analyzer",
+  "version": "1.0.0",
+  "description": "Analyze rental property listings with HomeScope",
+  "oauth2": {
+    "client_id": "90653417049-9fdu8du4su8hi306jcd4lu69fsrtvbcg.apps.googleusercontent.com",
+    "scopes": ["openid", "email", "profile"]
+  },
+  "permissions": [
+    "identity",
+    "activeTab",
+    "storage",
+    "scripting",
+    "tabs",
+    "sidePanel"
+  ],
+  "host_permissions": [
+    "https://www.tryhomescope.com/*"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "action": {
+    "default_icon": {
+      "16": "icon.png",
+      "48": "icon.png",
+      "128": "icon.png"
+    }
+  },
+  "content_scripts": [
+    {
+      "matches": ["<all_urls>"],
+      "js": ["content.js"],
+      "css": ["styles.css"],
+      "run_at": "document_end"
+    }
+  ],
+  "icons": {
+    "16": "icon.png",
+    "48": "icon.png",
+    "128": "icon.png"
+  },
+  "side_panel": {
+    "default_path": "sidepanel.html"
+  },
+  "web_accessible_resources": [
+    {
+      "resources": ["oauth-callback.html", "sidepanel.html"],
+      "matches": ["https://www.tryhomescope.com/*"]
+    }
+  ],
+  "externally_connectable": {
+    "matches": [
+      "https://www.tryhomescope.com/*"
+    ]
+  }
+}

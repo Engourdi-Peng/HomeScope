@@ -12,6 +12,10 @@ import { Contact } from './pages/Contact';
 import { RefundPolicy } from './pages/RefundPolicy';
 import { CheckoutPage } from './pages/Checkout';
 import { SharePage } from './pages/Share';
+import { AuthCallback } from './pages/AuthCallback';
+import { LoginPage } from './pages/Login';
+import { AuthCompletePage } from './pages/AuthComplete';
+import { AuthorizePage } from './pages/Authorize';
 import { useEffect, useState } from 'react';
 
 function AnimatedRoutes() {
@@ -45,6 +49,10 @@ function AnimatedRoutes() {
         <Route path="/refund" element={<RefundPolicy />} />
         <Route path="/checkout" element={<CheckoutPage />} />
         <Route path="/share/:slug" element={<SharePage />} />
+        <Route path="/auth/callback" element={<AuthCallback />} />
+        <Route path="/login" element={<LoginPage />} />
+        <Route path="/auth-complete" element={<AuthCompletePage />} />
+        <Route path="/auth/authorize" element={<AuthorizePage />} />
       </Routes>
     </div>
   );
