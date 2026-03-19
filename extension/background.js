@@ -51,9 +51,7 @@ async function signInWithGoogle() {
       `&response_type=id_token` +
       `&scope=${scope}` +
       `&state=${state}` +
-      `&nonce=${nonce}` +
-      `&hd=tryhomescope.com` +
-      `&prompt=select_account`;
+      `&nonce=${nonce}`;
 
     console.log('HomeScope: Starting Google OAuth flow...');
 
@@ -444,28 +442,40 @@ async function startPopupUrlMonitor(windowId) {
       const url = tab.url || '';
 
       if (SUCCESS_PATTERNS.some(p => url.includes(p))) {
-        // 注入脚本：读取 Supabase localStorage token，写入 extension storage
+        // 注入脚本：读取 Supabase localStorage token（key 为 sb-<projectRef>-auth-token）
+        const SUPABASE_PROJECT_REF = 'trteewgplkqiedonomzg';
+        const SUPABASE_STORAGE_KEY = `sb-${SUPABASE_PROJECT_REF}-auth-token`;
         let supabaseSession = null;
         try {
           const results = await chrome.scripting.executeScript({
             target: { tabId: tab.id },
-            func: () => {
+            func: (storageKey) => {
               try {
-                const raw = localStorage.getItem('supabase-auth-token');
-                return raw ? JSON.parse(raw) : null;
+                const raw = localStorage.getItem(storageKey);
+                if (raw) return JSON.parse(raw);
+                for (let i = 0; i < localStorage.length; i++) {
+                  const k = localStorage.key(i);
+                  if (k && k.startsWith('sb-') && k.includes('auth')) {
+                    const v = localStorage.getItem(k);
+                    if (v) return JSON.parse(v);
+                  }
+                }
+                return null;
               } catch { return null; }
-            }
+            },
+            args: [SUPABASE_STORAGE_KEY]
           });
           supabaseSession = results?.[0]?.result;
         } catch (err) {
           console.warn('HomeScope: Failed to inject script for token extraction', err);
         }
 
-        if (supabaseSession?.access_token) {
+        const session = supabaseSession?.currentSession ?? supabaseSession;
+        if (session?.access_token) {
           await chrome.storage.local.set({
-            [STORAGE_KEYS.ACCESS_TOKEN]: supabaseSession.access_token,
-            [STORAGE_KEYS.REFRESH_TOKEN]: supabaseSession.refresh_token || '',
-            [STORAGE_KEYS.USER]: supabaseSession.user
+            [STORAGE_KEYS.ACCESS_TOKEN]: session.access_token,
+            [STORAGE_KEYS.REFRESH_TOKEN]: session.refresh_token || '',
+            [STORAGE_KEYS.USER]: session.user
           });
           console.log('HomeScope: Token synced from website localStorage');
         }
