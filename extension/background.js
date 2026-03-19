@@ -394,35 +394,85 @@ async function callAnalyzeAPI(data) {
 
 // ===== 9. 打开侧边栏面板（Monica 式登录入口）=====
 async function openSidePanel() {
+  return { success: true, note: 'side panel opened via manifest default_path' };
+}
+
+// ===== 10. 打开独立登录弹窗（Monica 风格）=====
+let loginPopupWindowId = null;
+
+async function openLoginPopup() {
   try {
-    // 先确保 side panel 已启用并指向 sidepanel.html
-    await chrome.sidePanel.setOptions({
-      path: 'sidepanel.html',
-      enabled: true
+    const loginUrl = `${MAGIC_LINK_REDIRECT_TO.replace('/auth/callback', '')}/login?from=extension`;
+
+    const window = await chrome.windows.create({
+      url: loginUrl,
+      type: 'popup',
+      width: 420,
+      height: 620
     });
 
-    // 打开当前窗口的侧边栏
-    await chrome.sidePanel.open({ windowId: chrome.windows.WINDOW_ID_CURRENT });
+    loginPopupWindowId = window.id;
+
+    // 监听 popup URL 变化，成功后关掉它
+    startPopupUrlMonitor(window.tabs?.[0]?.id || window.id);
 
     return { success: true };
   } catch (error) {
-    console.error('HomeScope: Failed to open side panel', error);
-    // Fallback: 尝试直接用 tabs 打开（用户禁用了 side panel 时）
-    try {
-      await chrome.tabs.create({
-        url: 'https://www.tryhomescope.com/login?from=extension',
-        active: true
-      });
-      return { success: true, fallback: true };
-    } catch (tabError) {
-      return { success: false, error: error.message };
-    }
+    console.error('HomeScope: Failed to open login popup', error);
+    return { success: false, error: error.message };
   }
 }
 
+// ===== 监控 popup 窗口 URL，成功后关闭 =====
+async function startPopupUrlMonitor(windowId) {
+  const CHECK_INTERVAL = 1000;
+  const SUCCESS_PATTERNS = [
+    '/dashboard',
+    '/account',
+    'tryhomescope.com/auth/callback',
+  ];
+
+  const check = async () => {
+    try {
+      // 如果 popup 已被关掉，停止监控
+      const win = await chrome.windows.get(windowId).catch(() => null);
+      if (!win) return;
+
+      const tabs = await chrome.tabs.query({ windowId });
+      const tab = tabs[0];
+      if (!tab) return;
+
+      const url = tab.url || '';
+
+      if (SUCCESS_PATTERNS.some(p => url.includes(p))) {
+        chrome.windows.remove(windowId).catch(() => {});
+        loginPopupWindowId = null;
+        // 重新检查认证状态，通知侧栏
+        const result = await checkAuthStatus();
+        chrome.runtime.sendMessage({
+          action: 'auth_status_changed',
+          authenticated: result.state === AUTH_STATES.AUTHENTICATED,
+          user: result.user
+        });
+        return;
+      }
+    } catch (e) {
+      // ignore
+    }
+    setTimeout(check, CHECK_INTERVAL);
+  };
+
+  setTimeout(check, 500);
+}
+
 // ===== 点击扩展图标时打开右侧侧边栏（吸附在浏览器右边）=====
-chrome.action.onClicked.addListener(async () => {
-  await openSidePanel();
+chrome.action.onClicked.addListener((tab) => {
+  console.log('HomeScope: icon clicked, tab:', tab.id);
+  chrome.sidePanel.open({ tabId: tab.id }, () => {
+    if (chrome.runtime.lastError) {
+      console.error('HomeScope: Failed to open side panel', chrome.runtime.lastError);
+    }
+  });
 });
 
 // ===== 消息监听 =====
@@ -478,6 +528,15 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return false;
   }
 
+  // ===== 打开独立登录弹窗（Monica 风格）=====
+  if (message.action === 'open_login_popup') {
+    (async () => {
+      const result = await openLoginPopup();
+      sendResponse(result);
+    })();
+    return true;
+  }
+
   // ===== 启动 OAuth 授权流程 =====
   if (message.action === 'start_oauth_flow') {
     (async () => {
@@ -498,8 +557,6 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
   // ===== OAuth 回调完成 =====
   if (message.action === 'auth_complete') {
-    // oauth-callback.html 完成授权后通知 background
-    // 此时 token 已存入 storage，重新检查认证状态并通知所有 popup
     (async () => {
       const result = await checkAuthStatus();
       // 通知所有 popup 更新状态
@@ -508,6 +565,11 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         authenticated: result.state === AUTH_STATES.AUTHENTICATED,
         user: result.user
       });
+      // 关闭登录弹窗
+      if (loginPopupWindowId) {
+        await chrome.windows.remove(loginPopupWindowId).catch(() => {});
+        loginPopupWindowId = null;
+      }
     })();
     return false;
   }

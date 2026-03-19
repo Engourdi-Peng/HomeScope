@@ -13,7 +13,8 @@
     "storage",
     "scripting",
     "tabs",
-    "sidePanel"
+    "sidePanel",
+    "windows"
   ],
   "host_permissions": [
     "https://www.tryhomescope.com/*"
@@ -46,7 +47,7 @@
   },
   "web_accessible_resources": [
     {
-      "resources": ["oauth-callback.html", "sidepanel.html"],
+      "resources": ["oauth-callback.html", "sidepanel.html", "icon.png"],
       "matches": ["https://www.tryhomescope.com/*"]
     }
   ],

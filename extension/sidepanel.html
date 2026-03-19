@@ -49,16 +49,129 @@
       background: #2d2d2d;
       color: #fff;
     }
-    /* 内容区：登录 iframe 填满剩余空间 */
+    /* 内容区 */
     .sidepanel-body {
       flex: 1;
       min-height: 0;
-      background: #fff;
+      background: #1a1a1a;
+      position: relative;
     }
+    /* 未登录门禁视图 */
+    .gate-view {
+      position: absolute;
+      inset: 0;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      padding: 32px 24px;
+      text-align: center;
+    }
+    .gate-icon {
+      width: 56px;
+      height: 56px;
+      object-fit: contain;
+      margin-bottom: 24px;
+      display: block;
+    }
+    .gate-title {
+      font-size: 20px;
+      font-weight: 600;
+      color: #fff;
+      margin-bottom: 8px;
+    }
+    .gate-desc {
+      font-size: 14px;
+      color: #888;
+      margin-bottom: 32px;
+      line-height: 1.5;
+    }
+    .gate-btn {
+      width: 100%;
+      padding: 12px 24px;
+      background: #2563eb;
+      color: #fff;
+      border: none;
+      border-radius: 10px;
+      font-size: 15px;
+      font-weight: 500;
+      cursor: pointer;
+      transition: background 0.2s;
+    }
+    .gate-btn:hover {
+      background: #1d4ed8;
+    }
+    .gate-btn:disabled {
+      opacity: 0.5;
+      cursor: not-allowed;
+    }
+    /* 登录中视图 */
+    .logging-in-view {
+      position: absolute;
+      inset: 0;
+      display: none;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      padding: 32px 24px;
+      text-align: center;
+    }
+    .logging-in-view.active {
+      display: flex;
+    }
+    .logging-in-icon {
+      width: 56px;
+      height: 56px;
+      object-fit: contain;
+      margin-bottom: 24px;
+      animation: pulse 1.5s ease-in-out infinite;
+    }
+    @keyframes pulse {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.4; }
+    }
+    .logging-in-title {
+      font-size: 20px;
+      font-weight: 600;
+      color: #fff;
+      margin-bottom: 8px;
+    }
+    .logging-in-desc {
+      font-size: 14px;
+      color: #888;
+      line-height: 1.5;
+    }
+    /* 已登录视图 */
+    .logged-in-view {
+      position: absolute;
+      inset: 0;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      padding: 32px 24px;
+      text-align: center;
+    }
+    .logged-in-title {
+      font-size: 16px;
+      font-weight: 500;
+      color: #aaa;
+      margin-bottom: 8px;
+    }
+    .logged-in-email {
+      font-size: 14px;
+      color: #666;
+    }
+    /* 登录 iframe */
     .sidepanel-body iframe {
+      position: absolute;
+      inset: 0;
       width: 100%;
       height: 100%;
       border: none;
+      display: none;
+    }
+    .sidepanel-body iframe.active {
       display: block;
     }
   </style>
@@ -69,11 +182,24 @@
     <button type="button" class="sidepanel-close" id="sidepanel-close" title="关闭侧边栏" aria-label="关闭">×</button>
   </header>
   <main class="sidepanel-body">
-    <iframe
-      id="login-frame"
-      src="https://www.tryhomescope.com/login?from=extension"
-      allow="cross-origin-isolated"
-    ></iframe>
+    <!-- 未登录时显示的门禁视图 -->
+    <div id="gate-view" class="gate-view">
+      <img id="gate-icon-img" class="gate-icon" alt="HomeScope" />
+      <h2 class="gate-title">登录 HomeScope</h2>
+      <p class="gate-desc">关联你的账号，同步浏览历史和收藏</p>
+      <button type="button" id="btn-login" class="gate-btn">立即登录</button>
+    </div>
+    <!-- 已登录时显示的视图 -->
+    <div id="logged-in-view" class="logged-in-view" style="display:none">
+      <p class="logged-in-title">已登录 HomeScope</p>
+      <p id="logged-in-email" class="logged-in-email"></p>
+    </div>
+    <!-- 登录中视图 -->
+    <div id="logging-in-view" class="logging-in-view">
+      <img id="logging-in-icon-img" class="logging-in-icon" alt="" />
+      <h2 class="logging-in-title">登录 HomeScope</h2>
+      <p class="logging-in-desc">请在新窗口中完成登录<br />完成后此页面将自动刷新</p>
+    </div>
   </main>
   <script src="sidepanel.js"></script>
 </body>

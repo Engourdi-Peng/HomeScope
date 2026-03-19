@@ -16,11 +16,19 @@ export function LoginPage() {
   const [authMessage, setAuthMessage] = useState('');
 
   // 如果是从扩展来的，登录成功后自动触发授权
+  // 仅在 iframe 里才需要 postMessage 握手；在独立 popup 窗口里直接跳 dashboard
   useEffect(() => {
-    if (fromExtension && isAuthenticated && user && extensionAuth === 'pending') {
+    if (!fromExtension || !isAuthenticated || !user || extensionAuth !== 'pending') return;
+
+    if (window.self !== window.top) {
+      // 在 iframe 里：通过 postMessage 通知侧栏扩展授权
       triggerExtensionAuth();
+    } else {
+      // 在独立 popup 窗口里：直接跳转到 dashboard
+      // background 的 startPopupUrlMonitor 会检测到这个 URL 并关掉 popup
+      window.location.href = '/dashboard';
     }
-  }, [fromExtension, isAuthenticated, user]);
+  }, [fromExtension, isAuthenticated, user, extensionAuth]);
 
   const triggerExtensionAuth = async () => {
     if (!user) return;
