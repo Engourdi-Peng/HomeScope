@@ -24,9 +24,9 @@ export function LoginPage() {
       // 在 iframe 里：通过 postMessage 通知侧栏扩展授权
       triggerExtensionAuth();
     } else {
-      // 在独立 popup 窗口里：直接跳转到 dashboard
-      // background 的 startPopupUrlMonitor 会检测到这个 URL 并关掉 popup
-      window.location.href = '/dashboard';
+      // 在独立 popup 窗口里：跳转到 /account（应用没有 /dashboard 路由）
+      // background 的 startPopupUrlMonitor 会检测到 /account 并关掉 popup
+      window.location.href = '/account';
     }
   }, [fromExtension, isAuthenticated, user, extensionAuth]);
 

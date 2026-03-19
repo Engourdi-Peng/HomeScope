@@ -427,7 +427,6 @@ async function openLoginPopup() {
 async function startPopupUrlMonitor(windowId) {
   const CHECK_INTERVAL = 1000;
   const SUCCESS_PATTERNS = [
-    '/dashboard',
     '/account',
     'tryhomescope.com/auth/callback',
   ];
