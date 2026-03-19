@@ -444,8 +444,35 @@ async function startPopupUrlMonitor(windowId) {
       const url = tab.url || '';
 
       if (SUCCESS_PATTERNS.some(p => url.includes(p))) {
+        // 注入脚本：读取 Supabase localStorage token，写入 extension storage
+        let supabaseSession = null;
+        try {
+          const results = await chrome.scripting.executeScript({
+            target: { tabId: tab.id },
+            func: () => {
+              try {
+                const raw = localStorage.getItem('supabase-auth-token');
+                return raw ? JSON.parse(raw) : null;
+              } catch { return null; }
+            }
+          });
+          supabaseSession = results?.[0]?.result;
+        } catch (err) {
+          console.warn('HomeScope: Failed to inject script for token extraction', err);
+        }
+
+        if (supabaseSession?.access_token) {
+          await chrome.storage.local.set({
+            [STORAGE_KEYS.ACCESS_TOKEN]: supabaseSession.access_token,
+            [STORAGE_KEYS.REFRESH_TOKEN]: supabaseSession.refresh_token || '',
+            [STORAGE_KEYS.USER]: supabaseSession.user
+          });
+          console.log('HomeScope: Token synced from website localStorage');
+        }
+
         chrome.windows.remove(windowId).catch(() => {});
         loginPopupWindowId = null;
+
         // 重新检查认证状态，通知侧栏
         const result = await checkAuthStatus();
         chrome.runtime.sendMessage({
