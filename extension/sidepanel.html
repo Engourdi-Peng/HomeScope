@@ -141,6 +141,10 @@
       color: #888;
       line-height: 1.5;
     }
+    .login-error {
+      font-size: 13px;
+      margin-top: 12px;
+    }
     /* 已登录视图 */
     .logged-in-view {
       position: absolute;
@@ -198,7 +202,8 @@
     <div id="logging-in-view" class="logging-in-view">
       <img id="logging-in-icon-img" class="logging-in-icon" alt="" />
       <h2 class="logging-in-title">登录 HomeScope</h2>
-      <p class="logging-in-desc">请在新窗口中完成登录<br />完成后此页面将自动刷新</p>
+      <p id="logging-in-status" class="logging-in-desc">正在打开 Google 登录...</p>
+      <p id="login-error" class="login-error" style="display:none;color:#ef4444;font-size:13px;margin-top:12px;"></p>
     </div>
   </main>
   <script src="sidepanel.js"></script>
