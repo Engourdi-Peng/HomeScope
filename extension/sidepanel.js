@@ -18,25 +18,42 @@ window.addEventListener('message', async (event) => {
   const { type, data } = event.data;
 
   if (type === 'extension_auth_success') {
-    // 登录页通知扩展：用户登录成功，需要同步 token
-    // data 包含 { accessToken, refreshToken, user }
+    // 登录页通知扩展：用户登录成功，同步 token 和会员数据（剩余次数等）
+    // data 包含 { accessToken, refreshToken, user, profile? }
     try {
       await chrome.storage.local.set({
         access_token: data.accessToken,
         refresh_token: data.refreshToken,
-        user: data.user
+        user: data.user,
+        profile: data.profile || null
       });
 
-      // 通知 popup 刷新状态
       chrome.runtime.sendMessage({
         action: 'auth_status_changed',
         authenticated: true,
-        user: data.user
+        user: data.user,
+        profile: data.profile
       });
 
-      console.log('HomeScope SidePanel: Token saved from login page');
+      // 立即回复 iframe，避免网站端 "Timeout waiting for extension response"
+      const iframe = document.getElementById('login-frame');
+      if (iframe?.contentWindow) {
+        iframe.contentWindow.postMessage(
+          { type: 'extension_auth_response', data: { success: true, error: null } },
+          '*'
+        );
+      }
+
+      console.log('HomeScope SidePanel: Token and profile saved from login page');
     } catch (err) {
       console.error('HomeScope SidePanel: Failed to save token', err);
+      const iframe = document.getElementById('login-frame');
+      if (iframe?.contentWindow) {
+        iframe.contentWindow.postMessage(
+          { type: 'extension_auth_response', data: { success: false, error: err?.message || 'Save failed' } },
+          '*'
+        );
+      }
     }
   }
 
