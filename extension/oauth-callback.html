@@ -2,7 +2,7 @@
 <html>
 <head>
   <meta charset="UTF-8">
-  <title>HomeScope Extension - Connecting...</title>
+  <title>HomeScope - Logging In...</title>
   <style>
     body {
       font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
@@ -20,12 +20,13 @@
       border-radius: 12px;
       box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
       max-width: 400px;
+      width: 90%;
     }
     .spinner {
       width: 48px;
       height: 48px;
       border: 4px solid #e5e7eb;
-      border-top-color: #3b82f6;
+      border-top-color: #667eea;
       border-radius: 50%;
       animation: spin 1s linear infinite;
       margin: 0 auto 20px;
@@ -33,91 +34,29 @@
     @keyframes spin {
       to { transform: rotate(360deg); }
     }
-    h2 {
-      color: #111827;
-      margin: 0 0 8px;
-    }
-    p {
-      color: #6b7280;
-      margin: 0;
-    }
-    .success {
-      color: #10b981;
-    }
-    .error {
-      color: #ef4444;
-    }
-    .hidden { display: none; }
+    h2 { color: #111827; margin: 0 0 8px; }
+    p  { color: #6b7280; margin: 0; }
+    .success { color: #10b981; }
+    .error   { color: #ef4444; }
+    .hidden  { display: none; }
   </style>
 </head>
 <body>
   <div class="container">
     <div id="loading">
       <div class="spinner"></div>
-      <h2>Connecting Extension...</h2>
+      <h2>Logging In...</h2>
       <p>Please wait while we set up your session.</p>
     </div>
     <div id="success" class="hidden">
-      <h2 class="success">Connected!</h2>
+      <h2 class="success">Logged In!</h2>
       <p>HomeScope extension is ready. You can close this page.</p>
     </div>
     <div id="error" class="hidden">
-      <h2 class="error">Connection Failed</h2>
+      <h2 class="error">Login Failed</h2>
       <p id="error-message"></p>
     </div>
   </div>
-
-  <script>
-    (async function() {
-      try {
-        // 解析 URL hash 参数获取 token
-        const hash = window.location.hash.substring(1); // 去掉开头的 #
-        const params = new URLSearchParams(hash);
-
-        const accessToken = params.get('access_token');
-        const refreshToken = params.get('refresh_token');
-        const userId = params.get('user_id');
-        const userEmail = params.get('user_email');
-        const error = params.get('error');
-
-        if (error) {
-          throw new Error(error);
-        }
-
-        if (!accessToken) {
-          throw new Error('No access token received');
-        }
-
-        // 将 token 存入 chrome.storage.local
-        await chrome.storage.local.set({
-          access_token: accessToken,
-          refresh_token: refreshToken,
-          user: {
-            id: userId,
-            email: userEmail
-          },
-          auth_time: Date.now()
-        });
-
-        // 显示成功状态
-        document.getElementById('loading').classList.add('hidden');
-        document.getElementById('success').classList.remove('hidden');
-
-        // 通知 popup（如果有的话）
-        chrome.runtime.sendMessage({ action: 'auth_complete', success: true });
-
-        // 3 秒后自动关闭（仅适用于某些浏览器）
-        setTimeout(() => {
-          window.close();
-        }, 3000);
-
-      } catch (err) {
-        console.error('OAuth callback error:', err);
-        document.getElementById('loading').classList.add('hidden');
-        document.getElementById('error').classList.remove('hidden');
-        document.getElementById('error-message').textContent = err.message || 'Unknown error';
-      }
-    })();
-  </script>
+  <script src="oauth-callback.js"></script>
 </body>
 </html>

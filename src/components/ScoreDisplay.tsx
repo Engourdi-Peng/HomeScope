@@ -1,3 +1,8 @@
+/**
+ * 评分展示组件
+ * 重导出自 shared 模块（如果需要）或保持独立
+ */
+
 import { CheckCircle, AlertTriangle, XCircle, HelpCircle } from 'lucide-react';
 import type { AnalysisResult } from '../types';
 

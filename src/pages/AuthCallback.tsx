@@ -1,67 +1,103 @@
 import { useEffect, useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import { supabase } from '../lib/supabase';
 import { Loader2 } from 'lucide-react';
+import type { Session } from '@supabase/supabase-js';
+
+/** 扩展 Magic Link：会话在网页建立后，经 content script 写入 chrome.storage */
+function pushSessionToExtension(session: Session) {
+  window.postMessage(
+    {
+      source: 'homescope-auth-bridge',
+      type: 'HOMESCOPE_PUSH_SESSION_TO_EXTENSION',
+      payload: {
+        access_token: session.access_token,
+        refresh_token: session.refresh_token,
+        user: session.user,
+      },
+    },
+    window.location.origin
+  );
+}
 
 export function AuthCallback() {
   const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
+  const fromExtension = searchParams.get('from_extension') === '1';
+
   const [status, setStatus] = useState<'loading' | 'success' | 'error'>('loading');
   const [message, setMessage] = useState('Processing your login...');
 
   useEffect(() => {
     const handleCallback = async () => {
       try {
-        // 检查 URL 参数
         const urlParams = new URLSearchParams(window.location.search);
         const code = urlParams.get('code');
         const token = urlParams.get('token');
         const type = urlParams.get('type');
 
-        // Supabase Magic Link 会通过 code 或直接通过 hash 返回 session
+        const finishExtensionFlow = async (session: Session | null) => {
+          if (!fromExtension || !session) return false;
+          pushSessionToExtension(session);
+          setStatus('success');
+          setMessage(
+            '登录成功！会话已同步到 HomeScope 扩展。请打开扩展侧边栏，或点击「刷新状态」。此标签页可关闭。'
+          );
+          window.history.replaceState({}, '', window.location.pathname + window.location.search);
+          return true;
+        };
+
         if (code) {
-          // 交换 code 为 session
           const { error } = await supabase.auth.exchangeCodeForSession(code);
-          
+
           if (error) {
             console.error('Auth callback error:', error);
             setStatus('error');
             setMessage(error.message || 'Login failed. Please try again.');
             return;
           }
-          
+
+          const {
+            data: { session },
+          } = await supabase.auth.getSession();
+
+          if (await finishExtensionFlow(session)) {
+            return;
+          }
+
           setStatus('success');
           setMessage('Login successful! Redirecting...');
-          
-          // 清除 URL 参数
           window.history.replaceState({}, '', '/');
-          
-          // 延迟重定向到首页
           setTimeout(() => {
             navigate('/', { replace: true });
           }, 1500);
         } else if (token) {
-          // 有些情况下 token 直接在 URL 中
           setStatus('success');
           setMessage('Login successful! Redirecting...');
           setTimeout(() => {
             navigate('/', { replace: true });
           }, 1500);
         } else if (type === 'recovery') {
-          // 密码恢复类型
           setStatus('success');
           setMessage('Password reset link verified!');
         } else {
-          // 检查是否已经有 session（通过 hash fragment）
-          const { data: { session }, error: sessionError } = await supabase.auth.getSession();
-          
+          const {
+            data: { session },
+            error: sessionError,
+          } = await supabase.auth.getSession();
+
           if (sessionError) {
             console.error('Session error:', sessionError);
             setStatus('error');
             setMessage(sessionError.message || 'Login failed. Please try again.');
             return;
           }
-          
+
           if (session) {
+            if (await finishExtensionFlow(session)) {
+              return;
+            }
+
             setStatus('success');
             setMessage('Login successful! Redirecting...');
             window.history.replaceState({}, '', '/');
@@ -69,7 +105,6 @@ export function AuthCallback() {
               navigate('/', { replace: true });
             }, 1500);
           } else {
-            // 没有 code 也没有 session，可能用户直接访问了这个页面
             setStatus('error');
             setMessage('Invalid login link. Please request a new magic link.');
           }
@@ -82,36 +117,40 @@ export function AuthCallback() {
     };
 
     handleCallback();
-  }, [navigate]);
+  }, [navigate, fromExtension]);
 
   return (
-    <div style={{
-      minHeight: '100vh',
-      display: 'flex',
-      alignItems: 'center',
-      justifyContent: 'center',
-      background: '#f8f9fa',
-      padding: '20px'
-    }}>
-      <div style={{
-        background: 'white',
-        borderRadius: '12px',
-        padding: '40px',
-        maxWidth: '400px',
-        width: '100%',
-        boxShadow: '0 4px 20px rgba(0, 0, 0, 0.08)',
-        textAlign: 'center'
-      }}>
+    <div
+      style={{
+        minHeight: '100vh',
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        background: '#f8f9fa',
+        padding: '20px',
+      }}
+    >
+      <div
+        style={{
+          background: 'white',
+          borderRadius: '12px',
+          padding: '40px',
+          maxWidth: '400px',
+          width: '100%',
+          boxShadow: '0 4px 20px rgba(0, 0, 0, 0.08)',
+          textAlign: 'center',
+        }}
+      >
         {status === 'loading' && (
           <>
-            <Loader2 
-              style={{ 
-                width: '48px', 
-                height: '48px', 
+            <Loader2
+              style={{
+                width: '48px',
+                height: '48px',
                 color: '#667eea',
                 animation: 'spin 1s linear infinite',
-                margin: '0 auto 20px'
-              }} 
+                margin: '0 auto 20px',
+              }}
             />
             <h2 style={{ margin: '0 0 12px', fontSize: '20px', color: '#333' }}>
               Processing Login
@@ -121,22 +160,24 @@ export function AuthCallback() {
 
         {status === 'success' && (
           <>
-            <div style={{
-              width: '64px',
-              height: '64px',
-              borderRadius: '50%',
-              background: '#d4edda',
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              margin: '0 auto 20px'
-            }}>
-              <svg 
-                width="32" 
-                height="32" 
-                viewBox="0 0 24 24" 
-                fill="none" 
-                stroke="#28a745" 
+            <div
+              style={{
+                width: '64px',
+                height: '64px',
+                borderRadius: '50%',
+                background: '#d4edda',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                margin: '0 auto 20px',
+              }}
+            >
+              <svg
+                width="32"
+                height="32"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="#28a745"
                 strokeWidth="3"
                 strokeLinecap="round"
                 strokeLinejoin="round"
@@ -152,22 +193,24 @@ export function AuthCallback() {
 
         {status === 'error' && (
           <>
-            <div style={{
-              width: '64px',
-              height: '64px',
-              borderRadius: '50%',
-              background: '#f8d7da',
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              margin: '0 auto 20px'
-            }}>
-              <svg 
-                width="32" 
-                height="32" 
-                viewBox="0 0 24 24" 
-                fill="none" 
-                stroke="#dc3545" 
+            <div
+              style={{
+                width: '64px',
+                height: '64px',
+                borderRadius: '50%',
+                background: '#f8d7da',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                margin: '0 auto 20px',
+              }}
+            >
+              <svg
+                width="32"
+                height="32"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="#dc3545"
                 strokeWidth="3"
                 strokeLinecap="round"
                 strokeLinejoin="round"
@@ -182,18 +225,20 @@ export function AuthCallback() {
           </>
         )}
 
-        <p style={{ 
-          margin: '0', 
-          fontSize: '14px', 
-          color: '#666',
-          lineHeight: '1.6'
-        }}>
+        <p
+          style={{
+            margin: '0',
+            fontSize: '14px',
+            color: '#666',
+            lineHeight: '1.6',
+          }}
+        >
           {message}
         </p>
 
         {status === 'error' && (
-          <a 
-            href="/" 
+          <a
+            href="/"
             style={{
               display: 'inline-block',
               marginTop: '20px',
@@ -203,7 +248,7 @@ export function AuthCallback() {
               textDecoration: 'none',
               borderRadius: '6px',
               fontSize: '14px',
-              fontWeight: '500'
+              fontWeight: '500',
             }}
           >
             Go to Home

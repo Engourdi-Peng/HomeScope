@@ -8,13 +8,16 @@
     "build": "tsc -b && vite build",
     "lint": "eslint .",
     "preview": "vite preview",
-    "deploy": "vite build && gh-pages -d dist"
+    "deploy": "vite build && gh-pages -d dist",
+    "build:extension": "node scripts/build-extension.mjs"
   },
   "dependencies": {
     "@radix-ui/react-accordion": "^1.2.12",
     "@supabase/supabase-js": "^2.99.1",
     "@tailwindcss/vite": "^4.2.1",
     "@vercel/analytics": "^2.0.1",
+    "html2canvas": "^1.4.1",
+    "jspdf": "^4.2.1",
     "lucide-react": "^0.577.0",
     "openai": "^6.27.0",
     "react": "^19.2.0",

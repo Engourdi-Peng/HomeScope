@@ -25,7 +25,7 @@ export function ResultPage() {
     if (!analysisId) {
       throw new Error('Analysis ID not found');
     }
-    return await shareAnalysis(analysisId);
+    return (await shareAnalysis(analysisId)).shareUrl;
   };
 
   if (!result) {

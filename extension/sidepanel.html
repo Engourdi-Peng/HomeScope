@@ -16,7 +16,6 @@
       display: flex;
       flex-direction: column;
     }
-    /* 顶部标题栏（类似 Monica 吸附侧栏） */
     .sidepanel-header {
       flex-shrink: 0;
       display: flex;
@@ -49,7 +48,6 @@
       background: #2d2d2d;
       color: #fff;
     }
-    /* 内容区 */
     .sidepanel-body {
       flex: 1;
       min-height: 0;
@@ -83,73 +81,66 @@
     .gate-desc {
       font-size: 14px;
       color: #888;
-      margin-bottom: 32px;
-      line-height: 1.5;
+      margin-bottom: 24px;
+      line-height: 1.6;
+      text-align: center;
     }
-    .gate-btn {
+    .gate-content {
       width: 100%;
-      padding: 12px 24px;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+    #magic-link-form {
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+    #magic-link-form input {
+      width: 100%;
+      padding: 10px 14px;
+      background: #2d2d2d;
+      border: 1px solid #3d3d3d;
+      border-radius: 8px;
+      color: #fff;
+      font-size: 14px;
+      outline: none;
+    }
+    #magic-link-form input:focus {
+      border-color: #2563eb;
+    }
+    #magic-link-form input::placeholder {
+      color: #666;
+    }
+    #send-magic-btn {
+      width: 100%;
+      padding: 11px;
       background: #2563eb;
       color: #fff;
       border: none;
-      border-radius: 10px;
-      font-size: 15px;
+      border-radius: 8px;
+      font-size: 14px;
       font-weight: 500;
       cursor: pointer;
       transition: background 0.2s;
     }
-    .gate-btn:hover {
+    #send-magic-btn:hover:not(:disabled) {
       background: #1d4ed8;
     }
-    .gate-btn:disabled {
+    #send-magic-btn:disabled {
       opacity: 0.5;
       cursor: not-allowed;
     }
-    /* 登录中视图 */
-    .logging-in-view {
-      position: absolute;
-      inset: 0;
-      display: none;
-      flex-direction: column;
-      align-items: center;
-      justify-content: center;
-      padding: 32px 24px;
-      text-align: center;
-    }
-    .logging-in-view.active {
-      display: flex;
-    }
-    .logging-in-icon {
-      width: 56px;
-      height: 56px;
-      object-fit: contain;
-      margin-bottom: 24px;
-      animation: pulse 1.5s ease-in-out infinite;
-    }
-    @keyframes pulse {
-      0%, 100% { opacity: 1; }
-      50% { opacity: 0.4; }
-    }
-    .logging-in-title {
-      font-size: 20px;
-      font-weight: 600;
-      color: #fff;
-      margin-bottom: 8px;
-    }
-    .logging-in-desc {
-      font-size: 14px;
-      color: #888;
-      line-height: 1.5;
-    }
     .login-error {
       font-size: 13px;
-      margin-top: 12px;
+      color: #ef4444;
+      text-align: left;
     }
     /* 已登录视图 */
     .logged-in-view {
       position: absolute;
       inset: 0;
-      display: flex;
+      display: none;
       flex-direction: column;
       align-items: center;
       justify-content: center;
@@ -157,26 +148,50 @@
       text-align: center;
     }
     .logged-in-title {
-      font-size: 16px;
-      font-weight: 500;
-      color: #aaa;
+      font-size: 14px;
+      color: #888;
       margin-bottom: 8px;
     }
     .logged-in-email {
-      font-size: 14px;
-      color: #666;
+      font-size: 15px;
+      color: #fff;
+      font-weight: 500;
+      margin-bottom: 24px;
     }
-    /* 登录 iframe */
-    .sidepanel-body iframe {
-      position: absolute;
-      inset: 0;
+    .logged-in-actions {
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
       width: 100%;
-      height: 100%;
-      border: none;
-      display: none;
     }
-    .sidepanel-body iframe.active {
+    .logged-in-actions a {
       display: block;
+      width: 100%;
+      padding: 10px;
+      background: #2d2d2d;
+      color: #fff;
+      border-radius: 8px;
+      font-size: 14px;
+      text-align: center;
+      text-decoration: none;
+      transition: background 0.2s;
+    }
+    .logged-in-actions a:hover {
+      background: #3d3d3d;
+    }
+    #logout-btn {
+      padding: 10px;
+      background: transparent;
+      color: #ef4444;
+      border: none;
+      border-radius: 8px;
+      font-size: 14px;
+      cursor: pointer;
+      width: 100%;
+      transition: background 0.2s;
+    }
+    #logout-btn:hover {
+      background: #2d2d2d;
     }
   </style>
 </head>
@@ -186,24 +201,33 @@
     <button type="button" class="sidepanel-close" id="sidepanel-close" title="关闭侧边栏" aria-label="关闭">×</button>
   </header>
   <main class="sidepanel-body">
-    <!-- 未登录时显示的门禁视图 -->
+    <!-- 未登录视图 -->
     <div id="gate-view" class="gate-view">
       <img id="gate-icon-img" class="gate-icon" alt="HomeScope" />
       <h2 class="gate-title">登录 HomeScope</h2>
-      <p class="gate-desc">关联你的账号，同步浏览历史和收藏</p>
-      <button type="button" id="btn-login" class="gate-btn">立即登录</button>
+      <p id="gate-desc" class="gate-desc">输入邮箱，我们会发送一个登录链接给你。</p>
+      <div id="gate-content" class="gate-content">
+        <form id="magic-link-form">
+          <input
+            type="email"
+            id="magic-email"
+            placeholder="your@email.com"
+            required
+            autocomplete="email"
+          />
+          <button type="submit" id="send-magic-btn">发送登录链接</button>
+        </form>
+        <p id="login-error" class="login-error" style="display:none"></p>
+      </div>
     </div>
-    <!-- 已登录时显示的视图 -->
-    <div id="logged-in-view" class="logged-in-view" style="display:none">
+    <!-- 已登录视图 -->
+    <div id="logged-in-view" class="logged-in-view">
       <p class="logged-in-title">已登录 HomeScope</p>
       <p id="logged-in-email" class="logged-in-email"></p>
-    </div>
-    <!-- 登录中视图 -->
-    <div id="logging-in-view" class="logging-in-view">
-      <img id="logging-in-icon-img" class="logging-in-icon" alt="" />
-      <h2 class="logging-in-title">登录 HomeScope</h2>
-      <p id="logging-in-status" class="logging-in-desc">正在打开 Google 登录...</p>
-      <p id="login-error" class="login-error" style="display:none;color:#ef4444;font-size:13px;margin-top:12px;"></p>
+      <div class="logged-in-actions">
+        <a href="https://www.tryhomescope.com/account" target="_blank">前往账户</a>
+        <button type="button" id="logout-btn">退出登录</button>
+      </div>
     </div>
   </main>
   <script src="sidepanel.js"></script>

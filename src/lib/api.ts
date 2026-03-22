@@ -1,18 +1,9 @@
 import { supabase } from './supabase';
+import { SUPABASE_PROJECT_REF, SUPABASE_ANON_KEY } from '../../shared/config';
 import type { AnalyzeRequest, AnalysisProgress, AnalysisResult, AnalysisSummary, AnalysisHistoryResponse, AnalysisDetailResponse } from '../types';
 
 // Supabase Edge Function URL
-const SUPABASE_PROJECT_REF = 'trteewgplkqiedonomzg';
-const SUPABASE_ANON_KEY = import.meta.env.VITE_SUPABASE_ANON_KEY;
-
-if (!SUPABASE_ANON_KEY) {
-  throw new Error('VITE_SUPABASE_ANON_KEY is missing. Please set it in your .env file.');
-}
-
-// 使用正确的 base URL（不带任何路径）
 const API_BASE_URL = import.meta.env.VITE_API_URL || `https://${SUPABASE_PROJECT_REF}.supabase.co/functions/v1/analyze`;
-
-console.log('API_BASE_URL:', API_BASE_URL);
 
 // ========== Utility Helpers ==========
 

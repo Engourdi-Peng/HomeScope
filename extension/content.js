@@ -1,6 +1,36 @@
 (function() {
   'use strict';
 
+  // ===== 0. 网站 /auth/callback?from_extension=1 登录后，页面 postMessage → 写入扩展 storage =====
+  function isHomescopeWebOrigin(origin) {
+    try {
+      const u = new URL(origin);
+      if (u.protocol !== 'https:') return false;
+      const h = u.hostname.toLowerCase();
+      return h === 'tryhomescope.com' || h === 'www.tryhomescope.com';
+    } catch {
+      return false;
+    }
+  }
+
+  window.addEventListener('message', (event) => {
+    if (event.source !== window) return;
+    if (!isHomescopeWebOrigin(event.origin)) return;
+    const d = event.data;
+    if (!d || d.source !== 'homescope-auth-bridge' || d.type !== 'HOMESCOPE_PUSH_SESSION_TO_EXTENSION') return;
+    const p = d.payload;
+    if (!p || !p.access_token) return;
+    chrome.runtime.sendMessage(
+      {
+        action: 'ingest_session_from_web',
+        accessToken: p.access_token,
+        refreshToken: p.refresh_token || '',
+        user: p.user || null
+      },
+      () => void chrome.runtime.lastError
+    );
+  });
+
   // ===== 常量配置 =====
   const ANALYZE_BUTTON_ID = 'homescope-analyze-btn';
   const OVERLAY_ID = 'homescope-overlay';
@@ -180,7 +210,7 @@
             <h3>Sign In Required</h3>
             <p>Please sign in to analyze properties.</p>
             <button class="homescope-popup-btn" id="homescope-open-popup">
-              Open Login
+              Sign In
             </button>
           </div>
         `;
@@ -199,13 +229,13 @@
 
     overlay.innerHTML = content;
 
-    // 绑定打开 popup 的按钮事件
+    // 绑定打开 sidepanel 的按钮事件
     if (state === 'not_authenticated') {
       setTimeout(() => {
         const popupBtn = document.getElementById('homescope-open-popup');
         if (popupBtn) {
           popupBtn.addEventListener('click', () => {
-            chrome.runtime.sendMessage({ action: 'openPopup' });
+            chrome.sidePanel.open({ path: 'sidepanel.html' });
           });
         }
       }, 100);

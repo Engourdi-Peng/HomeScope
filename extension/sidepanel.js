@@ -1,105 +1,171 @@
 // ===== HomeScope Extension - Side Panel Script =====
+// 插件 v2: 纯 Magic Link 登录
 
-const gateView = document.getElementById('gate-view');
-const loggedInView = document.getElementById('logged-in-view');
-const loggedInEmail = document.getElementById('logged-in-email');
-const btnLogin = document.getElementById('btn-login');
-const gateIconImg = document.getElementById('gate-icon-img');
-const loggingInView = document.getElementById('logging-in-view');
-const loggingInIconImg = document.getElementById('logging-in-icon-img');
-const loggingInStatus = document.getElementById('logging-in-status');
-const loginError = document.getElementById('login-error');
+const gateView       = document.getElementById('gate-view');
+const gateIconImg    = document.getElementById('gate-icon-img');
+const loggedInView   = document.getElementById('logged-in-view');
+const loggedInEmail  = document.getElementById('logged-in-email');
+const gateDesc       = document.getElementById('gate-desc');
+const gateContent    = document.getElementById('gate-content');
+const loginError     = document.getElementById('login-error');
 
-// 设置 logo 图片
-if (gateIconImg) {
-  gateIconImg.src = chrome.runtime.getURL('icon.png');
-}
-if (loggingInIconImg) {
-  loggingInIconImg.src = chrome.runtime.getURL('icon.png');
-}
+/** 最近一次发送 Magic Link 的邮箱（用于刷新失败时保留界面） */
+let lastMagicEmail = '';
+
+// 设置 logo
+if (gateIconImg) gateIconImg.src = chrome.runtime.getURL('icon.png');
 
 // 关闭按钮
-document.getElementById('sidepanel-close').addEventListener('click', () => {
-  window.close();
-});
+document.getElementById('sidepanel-close').addEventListener('click', () => window.close());
 
-// ===== 初始化：检查登录状态 =====
-async function init() {
-  try {
-    const response = await chrome.runtime.sendMessage({ action: 'check_auth_status' });
-    if (response.state === 'authenticated' && response.user) {
-      showLoggedInView(response.user.email);
-    } else {
-      showGateView();
-    }
-  } catch (err) {
-    console.error('HomeScope SidePanel: check_auth_status error', err);
-    showGateView();
+// ===== 视图切换 =====
+
+function showGateView(error = '') {
+  gateView.style.display = 'flex';
+  loggedInView.style.display = 'none';
+  if (loginError) {
+    loginError.textContent = error;
+    loginError.style.display = error ? 'block' : 'none';
   }
 }
 
-// ===== 显示未登录门禁视图 =====
-function showGateView() {
-  gateView.style.display = 'flex';
-  loggedInView.style.display = 'none';
-  loggingInView.classList.remove('active');
-  if (btnLogin) btnLogin.disabled = false;
-  if (loginError) loginError.style.display = 'none';
-}
-
-// ===== 显示已登录视图 =====
 function showLoggedInView(email) {
   gateView.style.display = 'none';
   loggedInView.style.display = 'flex';
-  loggingInView.classList.remove('active');
-  if (loginError) loginError.style.display = 'none';
   if (email && loggedInEmail) loggedInEmail.textContent = email;
 }
 
-// ===== 显示登录中视图 =====
-function showLoggingInView() {
-  gateView.style.display = 'none';
-  loggedInView.style.display = 'none';
-  loggingInView.classList.add('active');
-  if (btnLogin) btnLogin.disabled = true;
-  if (loginError) loginError.style.display = 'none';
-}
+// ===== 事件：发送 Magic Link =====
+async function handleSendMagicLink(e) {
+  e.preventDefault();
+  const emailInput = document.getElementById('magic-email');
+  const email = (emailInput?.value || '').trim();
 
-// ===== 显示登录错误 =====
-function showLoginError(msg) {
-  if (loginError) {
-    loginError.textContent = msg;
-    loginError.style.display = 'block';
+  if (!email) {
+    if (loginError) {
+      loginError.textContent = '请输入邮箱地址。';
+      loginError.style.display = 'block';
+    }
+    return;
   }
-  loggingInView.classList.remove('active');
-  gateView.style.display = 'flex';
-  if (btnLogin) btnLogin.disabled = false;
-}
 
-// ===== 点击"立即登录"：直接触发 Google OAuth（Monica 风格）=====
-// 整个 OAuth 在 chrome.identity.launchWebAuthFlow 里完成，
-// 它会弹出 Google 登录窗口，用户完成登录后返回 id_token，
-// background 保存 token 后通过 auth_status_changed 通知侧栏。
-btnLogin.addEventListener('click', async () => {
-  showLoggingInView();
-  if (loggingInStatus) loggingInStatus.textContent = '正在打开 Google 登录...';
+  const btn = document.getElementById('send-magic-btn');
+  if (btn) {
+    btn.disabled = true;
+    btn.textContent = '发送中...';
+  }
 
   try {
-    const result = await chrome.runtime.sendMessage({ action: 'sign_in_with_google' });
-
-    if (result.success && result.user) {
-      // background 已保存 token，直接显示已登录
-      showLoggedInView(result.user.email);
+    const response = await chrome.runtime.sendMessage({ action: 'send_magic_link', email });
+    if (response?.success) {
+      lastMagicEmail = email;
+      showMagicLinkSentView(email, '');
     } else {
-      showLoginError(result.error || '登录失败，请重试');
+      if (loginError) {
+        loginError.textContent = response?.error || '发送失败，请重试。';
+        loginError.style.display = 'block';
+      }
+      if (btn) {
+        btn.disabled = false;
+        btn.textContent = '发送登录链接';
+      }
     }
   } catch (err) {
-    console.error('HomeScope: sign_in_with_google error', err);
-    showLoginError('登录失败，请检查网络后重试');
+    console.error('[SIDEPANEL] send_magic_link error:', err);
+    if (loginError) {
+      loginError.textContent = '发送失败，请检查网络后重试。';
+      loginError.style.display = 'block';
+    }
+    if (btn) {
+      btn.disabled = false;
+      btn.textContent = '发送登录链接';
+    }
   }
-});
+}
 
-// ===== 监听 background 发来的 auth_status_changed =====
+// 显示"已发送"视图
+function showMagicLinkSentView(email, hintText = '') {
+  const safeEmail = (email || lastMagicEmail || '').replace(/</g, '');
+  if (gateContent) gateContent.style.display = 'none';
+  const hintDisplay = hintText ? 'block' : 'none';
+  const safeHint = String(hintText).replace(/</g, '&lt;').replace(/>/g, '&gt;');
+
+  if (gateDesc) gateDesc.innerHTML = `
+    <p>登录链接已发送到</p>
+    <p style="color:#fff;font-weight:500;margin:4px 0;">${safeEmail}</p>
+    <p style="margin-top:8px;">请用<strong>本机 Chrome</strong>打开邮件里的链接；会先打开本站登录页并完成登录，会话会自动同步到扩展（请保持扩展已安装并启用）。</p>
+    <p id="magic-link-hint" style="display:${hintDisplay};color:#f87171;font-size:12px;margin-top:12px;text-align:left;line-height:1.5;">${safeHint}</p>
+    <button id="check-login-btn" type="button" style="
+      margin-top:20px;padding:10px 20px;background:#2563eb;color:#fff;
+      border:none;border-radius:8px;font-size:14px;cursor:pointer;width:100%;
+    ">我已点击链接，刷新状态</button>
+    <button id="retry-btn" type="button" style="
+      margin-top:8px;padding:8px;background:transparent;color:#888;
+      border:none;font-size:13px;cursor:pointer;width:100%;
+    ">重新输入邮箱</button>
+  `;
+
+  document.getElementById('check-login-btn')?.addEventListener('click', onRefreshMagicLinkStatus);
+  document.getElementById('retry-btn')?.addEventListener('click', () => {
+    lastMagicEmail = '';
+    if (gateContent) gateContent.style.display = 'block';
+    if (gateDesc) {
+      gateDesc.innerHTML = '输入邮箱，我们会发送一个登录链接给你。';
+      gateDesc.style.display = 'block';
+    }
+    if (loginError) loginError.style.display = 'none';
+  });
+}
+
+async function onRefreshMagicLinkStatus() {
+  const btn = document.getElementById('check-login-btn');
+  const hint = document.getElementById('magic-link-hint');
+  if (btn) {
+    btn.disabled = true;
+    btn.textContent = '正在检查…';
+  }
+  if (hint) {
+    hint.style.display = 'none';
+    hint.textContent = '';
+  }
+
+  try {
+    const response = await chrome.runtime.sendMessage({ action: 'check_auth_status' });
+    if (response?.state === 'authenticated' && response?.user) {
+      showLoggedInView(response.user.email || response.user.user_metadata?.email);
+      return;
+    }
+    const failMsg =
+      '仍未检测到登录。请确认：① 已从<strong>扩展里</strong>发送 Magic Link（不要用网站登录发邮件）；② 点邮件链接后是否打开了带 <code>from_extension=1</code> 的地址（如 …/auth/callback?from_extension=1）；③ 在 Supabase → Authentication → Redirect URLs 中已加入该完整地址（扩展后台日志里会打印）。完成后回到此处再点刷新。';
+    if (hint) {
+      hint.innerHTML = failMsg;
+      hint.style.display = 'block';
+    }
+  } catch (err) {
+    console.error('[SIDEPANEL] check_auth_status', err);
+    if (hint) {
+      hint.textContent = '检查失败：' + (err.message || '请稍后重试');
+      hint.style.display = 'block';
+    }
+  } finally {
+    if (btn) {
+      btn.disabled = false;
+      btn.textContent = '我已点击链接，刷新状态';
+    }
+  }
+}
+
+// ===== 事件：退出登录 =====
+async function handleLogout() {
+  try {
+    await chrome.runtime.sendMessage({ action: 'logout' });
+    init();
+  } catch (err) {
+    init();
+  }
+}
+
+// ===== 监听 background 广播 =====
 chrome.runtime.onMessage.addListener((message) => {
   if (message.action === 'auth_status_changed') {
     if (message.authenticated && message.user) {
@@ -110,7 +176,24 @@ chrome.runtime.onMessage.addListener((message) => {
   }
 });
 
-// ===== 启动 =====
-init();
+// ===== 初始化 =====
+async function init() {
+  try {
+    const response = await chrome.runtime.sendMessage({ action: 'check_auth_status' });
+    if (response.state === 'authenticated' && response.user) {
+      showLoggedInView(response.user.email);
+    } else {
+      showGateView();
+    }
+  } catch (err) {
+    showGateView();
+  }
+}
 
-console.log('HomeScope SidePanel: Loaded');
+// 已登录视图的退出按钮
+document.getElementById('logout-btn')?.addEventListener('click', handleLogout);
+
+// 门禁视图的发送链接表单
+document.getElementById('magic-link-form')?.addEventListener('submit', handleSendMagicLink);
+
+init();
