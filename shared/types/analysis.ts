@@ -138,6 +138,37 @@ export interface AnalysisResult {
     commonComparables: string[];
   } | null;
 
+  // 完整推荐（包含 goodFitIf / notIdealIf）
+  recommendation?: {
+    verdict: string;
+    goodFitIf: string[];
+    notIdealIf: string[];
+  };
+
+  // Light & Thermal Guide
+  lightThermalGuide?: {
+    naturalLightSummary?: string;
+    sunExposure?: string;
+    thermalRisk?: string;
+    summerComfort?: string;
+    winterComfort?: string;
+    evidence?: string[];
+  } | null;
+
+  // Agent Lingo Translation
+  agentLingoTranslation?: {
+    shouldDisplay?: boolean;
+    phrases?: { phrase: string; plainEnglish: string; confidence?: string }[];
+  } | null;
+
+  // Application Strategy
+  applicationStrategy?: {
+    urgency?: string;
+    applySpeed?: string;
+    checklist?: string[];
+    reasoning?: string[];
+  } | null;
+
   // 澳洲特色洞察
   australiaInsights?: {
     smartTags: string[];
