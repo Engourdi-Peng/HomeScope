@@ -4,6 +4,12 @@ import tailwindcss from '@tailwindcss/vite'
 import { resolve } from 'path'
 import { readFileSync, existsSync } from 'fs'
 
+// Path aliases
+const aliases = {
+  '~shared': resolve(__dirname, 'shared'),
+  '~shared/*': resolve(__dirname, 'shared/*'),
+}
+
 // 直接读取 .env 文件（兼容 Vite 7 loadEnv 不稳定的情况）
 function readEnvFile() {
   const envPath = resolve(process.cwd(), '.env')
@@ -42,6 +48,10 @@ console.log('[vite.config.ts] Extension magic link redirect (HTTPS):', magicLink
 
 export default defineConfig(({ command }) => ({
   plugins: [react(), tailwindcss()],
+
+  resolve: {
+    alias: aliases,
+  },
 
   // 扩展构建：注入真实的 Supabase 配置到 background.js
   define: {
