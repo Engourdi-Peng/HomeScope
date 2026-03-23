@@ -44,17 +44,17 @@ function getValidatedPriceId(envKey: string): string {
 // 产品配置 - 使用 Paddle Price ID (从环境变量读取)
 const PRODUCTS: Record<string, { credits: number; price: number; price_id: string }> = {
   starter: {
-    credits: 5,
+    credits: 3,
     price: 6.99,
     price_id: getValidatedPriceId("PRICE_STARTER"),
   },
   standard: {
-    credits: 20,
+    credits: 10,
     price: 14.99,
     price_id: getValidatedPriceId("PRICE_STANDARD"),
   },
   pro: {
-    credits: 100,
+    credits: 40,
     price: 39.0,
     price_id: getValidatedPriceId("PRICE_PRO"),
   },

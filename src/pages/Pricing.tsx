@@ -14,7 +14,7 @@ const PRODUCTS = [
     id: 'starter',
     title: 'Starter',
     price: '$6.99',
-    reportCount: '5 REPORTS',
+    reportCount: '3 REPORTS',
     description: 'Perfect for trying the tool',
     features: [
       'AI rental analysis',
@@ -29,7 +29,7 @@ const PRODUCTS = [
     id: 'standard',
     title: 'Standard',
     price: '$14.99',
-    reportCount: '20 REPORTS',
+    reportCount: '10 REPORTS',
     description: 'Most popular - enough for a full house search',
     features: [
       'Everything in Starter',
@@ -44,7 +44,7 @@ const PRODUCTS = [
     id: 'pro',
     title: 'Pro',
     price: '$39',
-    reportCount: '100 REPORTS',
+    reportCount: '40 REPORTS',
     description: 'For heavy users and professionals',
     features: [
       'Everything in Standard',
