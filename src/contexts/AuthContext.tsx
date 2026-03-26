@@ -120,6 +120,7 @@ export function AuthProvider({ children }: AuthProviderProps) {
   // Google 登录
   const signInWithGoogle = async () => {
     const redirectTo = `${window.location.origin}/auth/callback?from_extension=1`;
+    console.log('[Auth] signInWithGoogle: redirectTo =', redirectTo);
 
     const { error } = await supabase.auth.signInWithOAuth({
       provider: 'google',

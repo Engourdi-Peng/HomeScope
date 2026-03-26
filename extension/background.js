@@ -1,493 +1,620 @@
-// ===== HomeScope Extension - Background Script =====
-// 插件 v2: 独立认证，只走 Magic Link，session 存 chrome.storage.local
-// 配置：通过 vite define 注入（见 vite.config.ts），来源为 .env 中的 VITE_SUPABASE_ANON_KEY
+/**
+ * HomeScope Background Service Worker
+ *
+ * Auth architecture: background is the SINGLE SOURCE OF TRUTH for extension auth.
+ *
+ * Session storage:
+ *   - Primary (persistent): chrome.storage.local { hs_session, hs_user }
+ *   - Runtime cache: _cachedAuth (in-memory, avoids repeated storage reads)
+ *
+ * Auth flow:
+ *   1. User clicks login in side panel → background opens website login page
+ *   2. User completes Google OAuth or Magic Link on website
+ *   3. AuthCallback.tsx (on website) receives session, pushes to content script
+ *   4. Content script forwards session to background via sync_session_from_site
+ *   5. background.saveSession() persists to hs_session/hs_user + updates cache
+ *   6. background.broadcastAuthChanged() notifies all extension contexts
+ *
+ * Legacy migration:
+ *   - On first run after this refactor, migrate any existing session from
+ *     old storage locations (sb-*-auth-token keys, Supabase cookies) to the
+ *     canonical hs_session/hs_user keys. Mark migration complete in
+ *     hs_auth_migrated so this is a one-time operation only.
+ */
 
-// ===== 常量配置（构建时注入，禁止硬编码 fallback） =====
-// __SUPABASE_ANON_KEY__ 和 __SUPABASE_PROJECT_REF__ 在 vite build 时被替换为 .env 中的真实值
-// define 直接替换标识符，所以这里不加引号
+// ===== Injected config (replaced by vite at build time) =====
+const SUPABASE_URL = __SUPABASE_URL__;
+const SUPABASE_ANON_KEY = __SUPABASE_ANON_KEY__;
+const MAGIC_LINK_REDIRECT = __MAGIC_LINK_REDIRECT__;
 
-const SUPABASE_PROJECT_REF = __SUPABASE_PROJECT_REF__;   // 如 "trteewgplkqiedonomzg"
-const SUPABASE_ANON_KEY   = __SUPABASE_ANON_KEY__;        // 如 "eyJhbGci..."
-const SUPABASE_URL        = `https://${SUPABASE_PROJECT_REF}.supabase.co`;
-const AUTH_URL = `${SUPABASE_URL}/auth/v1`;
-const ANALYZE_API = `${SUPABASE_URL}/functions/v1/analyze`;
+const LOG_PREFIX = '[HomeScope BG]';
 
-// 邮件链接走 HTTPS 到本站 /auth/callback（邮件客户端不认 chrome-extension://），页面再通过 postMessage → content 同步到扩展
-const MAGIC_LINK_REDIRECT_URL = __MAGIC_LINK_WEB_REDIRECT__;
+// ===== Image collection DISABLED =====
+// REMOVED: chrome.webRequest.onCompleted auto-collected gallery images on page load.
+// Policy: "严禁后台预抓图库图片" — image collection is now exclusively user-triggered.
+// All gallery image collection must go through the START_USER_EXTRACTION flow in content.js.
+// The HS_IMAGES_KEY storage, isMainGalleryImage(), _saveImageToCache(), and webRequest listener
+// below were deleted as part of this policy change.
 
-// ===== 启动时打印脱敏配置（不发真实 key） =====
-function _logConfig() {
-  const keyPrefix = SUPABASE_ANON_KEY.length > 8 ? SUPABASE_ANON_KEY.slice(0, 8) + '...' : '(empty)';
-  console.log('[BG] === Extension Config ===');
-  console.log('[BG] SUPABASE_URL:', SUPABASE_URL);
-  console.log('[BG] apikey prefix:', keyPrefix);
-  console.log('[BG] anonKey is empty?', !SUPABASE_ANON_KEY);
-  if (!SUPABASE_ANON_KEY) {
-    console.error('[BG] FATAL: SUPABASE_ANON_KEY is empty. Build extension with VITE_SUPABASE_ANON_KEY set in .env');
-  }
-  console.log('[BG] Magic link redirect_to — add to Supabase → Auth → URL Configuration (Redirect URLs):');
-  console.log('[BG]', MAGIC_LINK_REDIRECT_URL);
-  console.log('[BG] === End Config ===');
-}
-_logConfig();
+// ===== tabId → listingUrl mapping (valid for service worker lifetime) =====
+const _tabListingMap = new Map();
 
-// ===== 断言：确保 key 不为空（构建产物层面） =====
-if (!SUPABASE_ANON_KEY) {
-  console.error('[BG] CONFIG_ERROR: SUPABASE_ANON_KEY is empty. Set VITE_SUPABASE_ANON_KEY in .env then rebuild.');
-}
+// ===== Auth: single source of truth =====
 
-const STORAGE_KEYS = {
-  ACCESS_TOKEN:  'access_token',
-  REFRESH_TOKEN: 'refresh_token',
-  USER:          'user'
-};
+// Canonical storage keys (ONLY these are used for persistent session)
+const HS_SESSION_KEY = 'hs_session';
+const HS_USER_KEY = 'hs_user';
+const HS_AUTH_MIGRATED_KEY = 'hs_auth_migrated';
 
-const AUTH_STATES = {
-  NOT_AUTHENTICATED: 'not_authenticated',
-  AUTHENTICATED:     'authenticated',
-  AUTH_ERROR:        'auth_error'
-};
+// In-memory runtime cache
+let _cachedAuth = null;
+// Listeners waiting for auth changes
+let _authListeners = [];
+// Whether legacy session migration has been attempted this session
+let _migrationAttempted = false;
 
-// ===== 工具函数 =====
-
-function decodeJWTPayload(token) {
-  try {
-    const parts = token.split('.');
-    if (parts.length < 2) return null;
-    const padded = parts[1] + '='.repeat((4 - parts[1].length % 4) % 4);
-    return JSON.parse(atob(padded));
-  } catch {
-    return null;
-  }
-}
-
-// ===== 1. Magic Link =====
-
-async function sendMagicLink(email) {
-  try {
-    console.log('[BG] sendMagicLink redirect_to:', MAGIC_LINK_REDIRECT_URL);
-
-    // 优先 legacy /magiclink（与多数项目兼容），失败再试 /otp（对齐 supabase-js signInWithOtp）
-    let response = await fetch(`${AUTH_URL}/magiclink`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'apikey': SUPABASE_ANON_KEY
-      },
-      body: JSON.stringify({
-        email,
-        redirect_to: MAGIC_LINK_REDIRECT_URL
-      })
-    });
-
-    if (!response.ok) {
-      response = await fetch(`${AUTH_URL}/otp`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'apikey': SUPABASE_ANON_KEY
-        },
-        body: JSON.stringify({
-          email,
-          type: 'magiclink',
-          create_user: true,
-          options: {
-            email_redirect_to: MAGIC_LINK_REDIRECT_URL
-          }
-        })
-      });
-    }
-
-    const data = await response.json();
-    if (!response.ok) {
-      return {
-        success: false,
-        error: data.error_description || data.msg || data.message || 'Failed to send magic link'
-      };
-    }
-
-    return {
-      success: true,
-      message: 'Magic link sent! Check your email and click the link in your browser.',
-      redirectHint: MAGIC_LINK_REDIRECT_URL
-    };
-  } catch (err) {
-    console.error('[BG] sendMagicLink exception:', err);
-    return { success: false, error: err.message };
-  }
-}
-
-// 邮件链接若为 PKCE，URL 带 ?code= — 在回调页交给 background 换 token
-async function exchangeMagicLinkCode(code) {
-  const redirectTo = MAGIC_LINK_REDIRECT_URL;
-  try {
-    let response = await fetch(`${AUTH_URL}/token?grant_type=pkce`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'apikey': SUPABASE_ANON_KEY
-      },
-      body: JSON.stringify({ auth_code: code })
-    });
-
-    if (!response.ok) {
-      response = await fetch(`${AUTH_URL}/token?grant_type=authorization_code`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'apikey': SUPABASE_ANON_KEY
-        },
-        body: JSON.stringify({
-          grant_type: 'authorization_code',
-          code,
-          redirect_to: redirectTo
-        })
-      });
-    }
-
-    const data = await response.json();
-    if (!response.ok) {
-      console.error('[BG] exchangeMagicLinkCode failed:', data);
-      return { success: false, error: data.error_description || data.msg || data.message || 'Code exchange failed' };
-    }
-
-    await saveTokensAndVerify(data.access_token, data.refresh_token, data.user);
-    await broadcastAuthChanged(true, data.user);
-    return { success: true, user: data.user };
-  } catch (err) {
-    console.error('[BG] exchangeMagicLinkCode exception:', err);
-    return { success: false, error: err.message };
-  }
-}
-
-// 处理 Magic Link 回调
-async function handleMagicLinkCallback(accessToken, refreshToken, user) {
-  await saveTokensAndVerify(accessToken, refreshToken, user);
-  await broadcastAuthChanged(true, user);
-}
-
-// ===== 2. Token 存储读写 =====
-
-async function getTokens() {
-  const result = await chrome.storage.local.get([
-    STORAGE_KEYS.ACCESS_TOKEN,
-    STORAGE_KEYS.REFRESH_TOKEN,
-    STORAGE_KEYS.USER
-  ]);
+// ----- Helper: normalise Supabase user object to ExtUser -----
+function toExtUser(supabaseUser) {
+  if (!supabaseUser) return null;
+  const meta = supabaseUser.user_metadata || {};
   return {
-    accessToken: result[STORAGE_KEYS.ACCESS_TOKEN],
-    refreshToken: result[STORAGE_KEYS.REFRESH_TOKEN],
-    user: result[STORAGE_KEYS.USER]
+    id: supabaseUser.id,
+    email: supabaseUser.email || '',
+    avatar: meta.avatar_url || meta.picture || meta.avatar,
   };
 }
 
-async function saveTokens(accessToken, refreshToken, user) {
-  await chrome.storage.local.set({
-    [STORAGE_KEYS.ACCESS_TOKEN]:  accessToken,
-    [STORAGE_KEYS.REFRESH_TOKEN]: refreshToken || '',
-    [STORAGE_KEYS.USER]:          user || null
-  });
-}
+// ----- One-time legacy migration -----
+async function migrateLegacySession() {
+  if (_migrationAttempted) return;
+  _migrationAttempted = true;
 
-async function saveTokensAndVerify(accessToken, refreshToken, user) {
-  await saveTokens(accessToken, refreshToken, user);
-  const stored = await chrome.storage.local.get([
-    STORAGE_KEYS.ACCESS_TOKEN,
-    STORAGE_KEYS.REFRESH_TOKEN,
-    STORAGE_KEYS.USER
-  ]);
-  console.log('[BG] tokens saved — access_token exists?', !!stored[STORAGE_KEYS.ACCESS_TOKEN],
-    '| user email:', stored[STORAGE_KEYS.USER]?.email);
-}
+  console.log(`${LOG_PREFIX} migrateLegacySession: checking for legacy session...`);
 
-async function clearTokens() {
-  await chrome.storage.local.remove([
-    STORAGE_KEYS.ACCESS_TOKEN,
-    STORAGE_KEYS.REFRESH_TOKEN,
-    STORAGE_KEYS.USER
-  ]);
-}
-
-// ===== 3. Token 刷新 =====
-
-async function refreshAccessToken(refreshToken) {
-  try {
-    const response = await fetch(`${AUTH_URL}/token?grant_type=refresh_token`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'apikey': SUPABASE_ANON_KEY
-      },
-      body: JSON.stringify({ refresh_token: refreshToken })
-    });
-
-    if (!response.ok) return null;
-    const data = await response.json();
-    return {
-      accessToken: data.access_token,
-      refreshToken: data.refresh_token,
-      user: data.user
-    };
-  } catch (err) {
-    console.error('[BG] refreshAccessToken error:', err);
-    return null;
-  }
-}
-
-// ===== 4. 检查认证状态 =====
-
-async function checkAuthStatus() {
-  const { accessToken, refreshToken, user } = await getTokens();
-
-  if (!accessToken) {
-    return { state: AUTH_STATES.NOT_AUTHENTICATED, user: null };
+  // Check if already migrated
+  const migrationFlag = await chrome.storage.local.get(HS_AUTH_MIGRATED_KEY);
+  if (migrationFlag[HS_AUTH_MIGRATED_KEY] === true) {
+    console.log(`${LOG_PREFIX} migrateLegacySession: already migrated, skipping`);
+    return;
   }
 
-  try {
-    const response = await fetch(`${SUPABASE_URL}/auth/v1/user`, {
-      headers: {
-        'Authorization': `Bearer ${accessToken}`,
-        'apikey': SUPABASE_ANON_KEY
-      }
-    });
-
-    if (response.ok) {
-      const serverUser = await response.json();
-      return { state: AUTH_STATES.AUTHENTICATED, user: serverUser };
+  // Try chrome.storage.local for sb-*-auth-token key
+  const allStorage = await chrome.storage.local.get(null);
+  let legacySession = null;
+  for (const [key, val] of Object.entries(allStorage)) {
+    if (key.startsWith('sb-') && key.endsWith('-auth-token') && val) {
+      try {
+        const parsed = typeof val === 'string' ? JSON.parse(val) : val;
+        const sess = parsed?.currentSession || parsed;
+        if (sess?.access_token && sess?.user) {
+          legacySession = { access_token: sess.access_token, refresh_token: sess.refresh_token, user: sess.user };
+          console.log(`${LOG_PREFIX} migrateLegacySession: found legacy session in storage key=${key}`);
+          break;
+        }
+      } catch (_) {}
     }
-
-    if (refreshToken) {
-      const newTokens = await refreshAccessToken(refreshToken);
-      if (newTokens) {
-        await saveTokens(newTokens.accessToken, newTokens.refreshToken, newTokens.user);
-        return { state: AUTH_STATES.AUTHENTICATED, user: newTokens.user };
-      }
-    }
-
-    await clearTokens();
-    return { state: AUTH_STATES.NOT_AUTHENTICATED, user: null, error: 'Session expired' };
-
-  } catch (err) {
-    console.error('[BG] checkAuthStatus exception:', err);
-    return { state: AUTH_STATES.AUTH_ERROR, user: null, error: err.message };
   }
-}
 
-// ===== 5. 广播登录状态变更 =====
+  // Try Supabase cookie fallback
+  if (!legacySession) {
+    try {
+      const cookies = await chrome.cookies.getAll({ domain: '.supabase.co' });
+      for (const c of cookies) {
+        if (c.name.startsWith('sb-') && c.name.endsWith('-auth-token') && c.value) {
+          try {
+            const decoded = decodeURIComponent(c.value);
+            const parsed = JSON.parse(decoded);
+            const sess = parsed?.currentSession || parsed;
+            if (sess?.access_token && sess?.user) {
+              legacySession = { access_token: sess.access_token, refresh_token: sess.refresh_token, user: sess.user };
+              console.log(`${LOG_PREFIX} migrateLegacySession: found legacy session in cookie name=${c.name}`);
+              break;
+            }
+          } catch (_) {}
+        }
+      }
+    } catch (_) {}
+  }
 
-async function broadcastAuthChanged(authenticated, user) {
-  try {
-    chrome.runtime.sendMessage({
-      action: 'auth_status_changed',
-      authenticated,
-      user: user || null
+  if (legacySession) {
+    const extUser = toExtUser(legacySession.user);
+    const session = { access_token: legacySession.access_token, refresh_token: legacySession.refresh_token || '' };
+    await chrome.storage.local.set({
+      [HS_SESSION_KEY]: session,
+      [HS_USER_KEY]: extUser,
+      [HS_AUTH_MIGRATED_KEY]: true,
     });
+    _cachedAuth = { user: extUser, session };
+    console.log(`${LOG_PREFIX} migrateLegacySession: migrated successfully, userId=${extUser?.id}`);
+  } else {
+    // No legacy session found — just mark migration complete
+    await chrome.storage.local.set({ [HS_AUTH_MIGRATED_KEY]: true });
+    console.log(`${LOG_PREFIX} migrateLegacySession: no legacy session, migration marked complete`);
+  }
+}
+
+// ----- Primary session getter (cache → migrated storage only) -----
+async function getSession() {
+  // 1. In-memory cache
+  if (_cachedAuth) return _cachedAuth;
+
+  // 2. One-time legacy migration (runs at most once per service worker lifetime)
+  await migrateLegacySession();
+
+  // 3. Canonical storage keys ONLY
+  const stored = await chrome.storage.local.get([HS_SESSION_KEY, HS_USER_KEY]);
+  if (stored[HS_SESSION_KEY] && stored[HS_USER_KEY]) {
+    _cachedAuth = { session: stored[HS_SESSION_KEY], user: stored[HS_USER_KEY] };
+    console.log(`${LOG_PREFIX} getSession: loaded from canonical storage, userId=${stored[HS_USER_KEY]?.id}`);
+    return _cachedAuth;
+  }
+
+  console.log(`${LOG_PREFIX} getSession: no session found`);
+  return null;
+}
+
+// ----- Save session to canonical storage -----
+async function saveSession(session, user) {
+  try {
+    await chrome.storage.local.set({
+      [HS_SESSION_KEY]: session,
+      [HS_USER_KEY]: user,
+    });
+    _cachedAuth = { user, session };
+    console.log(`${LOG_PREFIX} saveSession: written hs_session (access_token=${!!session.access_token}) and hs_user (id=${user?.id})`);
+    _authListeners.forEach((cb) => cb(user));
+    console.log(`${LOG_PREFIX} saveSession: notifying ${_authListeners.length} auth listeners`);
+    console.log(`${LOG_PREFIX} saveSession: success, userId=${user?.id}`);
   } catch (err) {
-    // popup/sidepanel 可能已关闭，忽略
+    console.error(`${LOG_PREFIX} saveSession: FAILED —`, err.message);
+    throw err;
   }
 }
 
-// ===== 6. 退出登录 =====
+// ----- Clear session -----
+async function clearSession() {
+  await chrome.storage.local.remove([HS_SESSION_KEY, HS_USER_KEY]);
+  _cachedAuth = null;
+  _authListeners.forEach((cb) => cb(null));
+  console.log(`${LOG_PREFIX} logout: session cleared`);
+}
 
-async function logout() {
-  const { refreshToken } = await getTokens();
-  if (refreshToken) {
-    fetch(`${AUTH_URL}/logout`, {
-      method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${refreshToken}`,
-        'apikey': SUPABASE_ANON_KEY
+// ----- Broadcast auth change to all extension contexts -----
+function broadcastAuthChanged(authenticated, user) {
+  console.log(`${LOG_PREFIX} broadcastAuthChanged: BEFORE — authenticated=${authenticated}, userId=${user?.id || 'none'}`);
+  try {
+    chrome.runtime.sendMessage(
+      { action: 'auth_status_changed', authenticated, user: user || undefined },
+      () => {
+        const lastErr = chrome.runtime.lastError;
+        if (lastErr) {
+          console.warn(`${LOG_PREFIX} broadcastAuthChanged: chrome.runtime.lastError=`, lastErr.message);
+        } else {
+          console.log(`${LOG_PREFIX} broadcastAuthChanged: sent OK`);
+        }
       }
-    }).catch(() => {});
+    );
+    console.log(`${LOG_PREFIX} broadcastAuthChanged: AFTER — message dispatched`);
+  } catch (err) {
+    console.error(`${LOG_PREFIX} broadcastAuthChanged: EXCEPTION —`, err.message);
   }
-  await clearTokens();
-  await broadcastAuthChanged(false, null);
-  return { success: true, state: AUTH_STATES.NOT_AUTHENTICATED };
 }
 
-// ===== 7. 分析 API =====
-
-async function callAnalyzeAPI(data) {
-  const { accessToken, refreshToken } = await getTokens();
-  if (!accessToken || !refreshToken) return { status: 'not_authenticated' };
-
-  let response = await fetch(ANALYZE_API, {
+// ----- Send Magic Link via Supabase Auth API -----
+async function rpcSendMagicLink(email) {
+  console.log(`${LOG_PREFIX} send_magic_link: email=${email}`);
+  const res = await fetch(`${SUPABASE_URL}/auth/v1/otp`, {
     method: 'POST',
     headers: {
-      'Authorization': `Bearer ${accessToken}`,
-      'apikey': SUPABASE_ANON_KEY,
-      'Content-Type': 'application/json'
+      'Content-Type': 'application/json',
+      apikey: SUPABASE_ANON_KEY,
+      Authorization: `Bearer ${SUPABASE_ANON_KEY}`,
     },
-    body: JSON.stringify(data)
+    body: JSON.stringify({ email, options: { email_redirect_to: MAGIC_LINK_REDIRECT } }),
   });
-
-  if (response.status === 401 && refreshToken) {
-    const newTokens = await refreshAccessToken(refreshToken);
-    if (newTokens) {
-      await saveTokens(newTokens.accessToken, newTokens.refreshToken, newTokens.user);
-      response = await fetch(ANALYZE_API, {
-        method: 'POST',
-        headers: {
-          'Authorization': `Bearer ${newTokens.accessToken}`,
-          'apikey': SUPABASE_ANON_KEY,
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify(data)
-      });
-    } else {
-      await clearTokens();
-      return { status: 'not_authenticated' };
-    }
+  const data = await res.json();
+  if (data.error) {
+    console.error(`${LOG_PREFIX} send_magic_link: error=${data.error.message}`);
+  } else {
+    console.log(`${LOG_PREFIX} send_magic_link: success`);
   }
-
-  if (response.ok) {
-    const result = await response.json();
-    return { status: 'success', result };
-  } else if (response.status === 401 || response.status === 403) {
-    const err = await response.json().catch(() => ({}));
-    return {
-      status: 'error',
-      error: err.message || (response.status === 401 ? 'Please sign in again' : 'No credits')
-    };
-  }
-  return { status: 'error', error: 'Analysis failed' };
+  return data;
 }
 
-// ===== 8. 获取用户数据 =====
+// ----- Token refresh -----
+async function refreshSessionIfNeeded() {
+  const stored = await getSession();
+  if (!stored?.session?.refresh_token) {
+    console.log(`${LOG_PREFIX} refreshSessionIfNeeded: no refresh token, skipped`);
+    return stored;
+  }
 
-async function getUserData() {
-  const { accessToken, refreshToken } = await getTokens();
-  if (!accessToken || !refreshToken) return { status: 'not_authenticated' };
-
-  const tryFetch = async (token) => {
-    const resp = await fetch(`${SUPABASE_URL}/rest/v1/rpc/get_user_data`, {
+  console.log(`${LOG_PREFIX} refreshSessionIfNeeded: refreshing...`);
+  try {
+    const res = await fetch(`${SUPABASE_URL}/auth/v1/token?grant_type=refresh_token`, {
       method: 'POST',
       headers: {
-        'Authorization': `Bearer ${token}`,
-        'apikey': SUPABASE_ANON_KEY,
-        'Content-Type': 'application/json'
-      }
+        'Content-Type': 'application/json',
+        apikey: SUPABASE_ANON_KEY,
+        Authorization: `Bearer ${SUPABASE_ANON_KEY}`,
+      },
+      body: JSON.stringify({ refresh_token: stored.session.refresh_token }),
     });
-    return resp;
-  };
-
-  let response = await tryFetch(accessToken);
-
-  if (response.status === 401 && refreshToken) {
-    const newTokens = await refreshAccessToken(refreshToken);
-    if (newTokens) {
-      await saveTokens(newTokens.accessToken, newTokens.refreshToken, newTokens.user);
-      response = await tryFetch(newTokens.accessToken);
+    if (res.ok) {
+      const data = await res.json();
+      await saveSession(data, stored.user);
+      console.log(`${LOG_PREFIX} refreshSessionIfNeeded: success`);
+      return { session: data, user: stored.user };
     } else {
-      await clearTokens();
-      return { status: 'not_authenticated' };
+      const errText = await res.text();
+      console.warn(`${LOG_PREFIX} refreshSessionIfNeeded: FAILED (${res.status}) — clearing session`);
+      await clearSession();
+      broadcastAuthChanged(false, null);
+      return null;
     }
+  } catch (err) {
+    console.warn(`${LOG_PREFIX} refreshSessionIfNeeded: FAILED (network) — clearing session`);
+    await clearSession();
+    broadcastAuthChanged(false, null);
+    return null;
   }
-
-  if (response.ok) {
-    const data = await response.json();
-    return { status: 'success', data };
-  }
-
-  const errBody = await response.json().catch(() => ({}));
-  return {
-    status: 'error',
-    error: errBody.message || `API error: ${response.status}`
-  };
 }
 
-// ===== 9. 消息监听 =====
+// Listen to storage changes to keep listeners in sync
+chrome.storage.onChanged.addListener((changes) => {
+  if (changes[HS_USER_KEY] || changes[HS_SESSION_KEY]) {
+    getSession().then((auth) => {
+      _authListeners.forEach((cb) => cb(auth?.user ?? null));
+    });
+  }
+});
 
+// ===== Message handling =====
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  handleMessage(message, sender, sendResponse);
+  return true;
+});
 
-  if (message.action === 'send_magic_link') {
-    (async () => {
-      const result = await sendMagicLink(message.email);
-      sendResponse(result);
-    })();
-    return true;
-  }
+async function handleMessage(message, sender, sendResponse) {
+  const { action } = message;
 
-  if (message.action === 'check_auth_status') {
-    (async () => {
-      const result = await checkAuthStatus();
-      sendResponse(result);
-    })();
-    return true;
-  }
+  switch (action) {
 
-  if (message.action === 'logout') {
-    (async () => {
-      const result = await logout();
-      sendResponse(result);
-    })();
-    return true;
-  }
+    case 'check_auth_status': {
+      console.log(`${LOG_PREFIX} check_auth_status: checking...`);
+      try {
+        await refreshSessionIfNeeded();
+        const auth = await getSession();
+        const state = auth?.user ? 'authenticated' : 'unauthenticated';
+        console.log(`${LOG_PREFIX} check_auth_status: state=${state}, userId=${auth?.user?.id}`);
+        sendResponse(auth?.user ? { state: 'authenticated', user: auth.user } : { state: 'unauthenticated' });
+      } catch (err) {
+        console.error(`${LOG_PREFIX} check_auth_status: error —`, err.message);
+        sendResponse({ state: 'unauthenticated', error: err.message });
+      }
+      break;
+    }
 
-  if (message.action === 'analyze') {
-    (async () => {
-      const result = await callAnalyzeAPI(message.data);
-      sendResponse(result);
-    })();
-    return true;
-  }
+    case 'get_user_data': {
+      try {
+        const auth = await getSession();
+        if (!auth?.user) {
+          sendResponse({ status: 'success', data: { credits_remaining: 0 } });
+          return;
+        }
+        const res = await fetch(
+          `${SUPABASE_URL}/rest/v1/profiles?select=credits_remaining&id=eq.${auth.user.id}`,
+          { headers: { apikey: SUPABASE_ANON_KEY, Authorization: `Bearer ${auth.session?.access_token || SUPABASE_ANON_KEY}` } }
+        );
+        if (res.ok) {
+          const rows = await res.json();
+          sendResponse({ status: 'success', data: { credits_remaining: rows?.[0]?.credits_remaining ?? 0 } });
+        } else {
+          sendResponse({ status: 'success', data: { credits_remaining: 0 } });
+        }
+      } catch (err) {
+        console.error(`${LOG_PREFIX} get_user_data: error —`, err.message);
+        sendResponse({ status: 'error', error: err.message });
+      }
+      break;
+    }
 
-  if (message.action === 'get_user_data') {
-    (async () => {
-      const result = await getUserData();
-      sendResponse(result);
-    })();
-    return true;
-  }
+    case 'send_magic_link': {
+      try {
+        const { email } = message;
+        if (!email) {
+          sendResponse({ success: false, error: 'Email is required' });
+          return;
+        }
+        const result = await rpcSendMagicLink(email);
+        sendResponse(result.error ? { success: false, error: result.error.message } : { success: true });
+      } catch (err) {
+        console.error(`${LOG_PREFIX} send_magic_link: exception —`, err.message);
+        sendResponse({ success: false, error: err.message });
+      }
+      break;
+    }
 
-  if (message.action === 'magic_link_callback') {
-    (async () => {
-      const { accessToken, refreshToken, user } = message;
-      console.log('[BG] magic_link_callback received, accessToken:', !!accessToken, 'user:', user?.email);
-      await handleMagicLinkCallback(accessToken, refreshToken, user);
-      sendResponse({ success: true });
-    })();
-    return true;
-  }
+    case 'initiate_google_oauth': {
+      console.log(`${LOG_PREFIX} initiate_google_oauth: opening login page`);
+      try {
+        // Derive site base URL from MAGIC_LINK_REDIRECT to avoid hardcoding
+        const siteBase = MAGIC_LINK_REDIRECT.split('/auth/callback')[0];
+        const loginUrl = `${siteBase}/login?from=extension`;
+        await chrome.tabs.create({ url: loginUrl, active: true });
+        console.log(`${LOG_PREFIX} initiate_google_oauth: opened login page`);
+        sendResponse({ success: true, opened_login_page: true });
+      } catch (err) {
+        console.error(`${LOG_PREFIX} initiate_google_oauth: error —`, err.message);
+        sendResponse({ success: false, error: err.message });
+      }
+      break;
+    }
 
-  // 网站 /auth/callback?from_extension=1 登录后，由 content script 转发 session
-  if (message.action === 'ingest_session_from_web') {
-    (async () => {
-      const { accessToken, refreshToken, user } = message;
-      console.log('[BG] ingest_session_from_web, accessToken:', !!accessToken, 'user:', user?.email);
-      if (!accessToken) {
-        sendResponse({ success: false, error: 'No access token' });
+    case 'logout': {
+      console.log(`${LOG_PREFIX} logout: requested`);
+      try {
+        await clearSession();
+        broadcastAuthChanged(false, null);
+        sendResponse({ success: true });
+      } catch (err) {
+        console.error(`${LOG_PREFIX} logout: error —`, err.message);
+        sendResponse({ success: false, error: err.message });
+      }
+      break;
+    }
+
+    // Canonical bridge: website AuthCallback forwards session here via content script
+    case 'sync_session_from_site': {
+      console.log(`${LOG_PREFIX} sync_session_from_site: received`);
+      try {
+        const p = message.payload;
+        if (!p?.access_token || !p?.user) {
+          console.error(`${LOG_PREFIX} sync_session_from_site: invalid payload`);
+          sendResponse({ success: false, error: 'Invalid session payload' });
+          return;
+        }
+        console.log(`${LOG_PREFIX} sync_session_from_site: userId=${p.user.id}, accessToken=${p.access_token.substring(0, 12)}...`);
+        const session = { access_token: p.access_token, refresh_token: p.refresh_token || '' };
+        const extUser = toExtUser(p.user);
+        await saveSession(session, extUser);
+        broadcastAuthChanged(true, extUser);
+        console.log(`${LOG_PREFIX} sync_session_from_site: success`);
+        sendResponse({ success: true, user: extUser });
+      } catch (err) {
+        console.error(`${LOG_PREFIX} sync_session_from_site: error —`, err.message);
+        sendResponse({ success: false, error: err.message });
+      }
+      break;
+    }
+
+    case 'analyze': {
+      // Step 1: Get session
+      const auth = await getSession();
+      if (!auth?.session?.access_token) {
+        sendResponse({ status: 'error', error: 'Please sign in first to analyze listings.' });
         return;
       }
-      await handleMagicLinkCallback(accessToken, refreshToken, user);
-      sendResponse({ success: true });
-    })();
-    return true;
-  }
+      const { session } = auth;
 
-  if (message.action === 'exchange_magic_code') {
-    (async () => {
-      const result = await exchangeMagicLinkCode(message.code);
-      sendResponse(result);
-    })();
-    return true;
-  }
+      // Step 2: Map listingData → AnalyzeRequest body
+      const listingData = message.data;
+      const imageUrls = listingData?.imageUrls || listingData?.images || [];
+      const description = listingData?.description || listingData?.rawText || '';
+      const requestBody = {
+        imageUrls,
+        description,
+        optionalDetails: {
+          weeklyRent: listingData?.price || listingData?.priceText,
+          suburb: listingData?.address,
+          bedrooms: listingData?.bedrooms != null ? String(listingData.bedrooms) : undefined,
+          bathrooms: listingData?.bathrooms != null ? String(listingData.bathrooms) : undefined,
+          parking: listingData?.parking != null ? String(listingData.parking) : undefined,
+        },
+      };
 
-  return false;
-});
+      // Step 3: action=submit — create analysis record
+      try {
+        const submitRes = await fetch(`${SUPABASE_URL}/functions/v1/analyze?action=submit`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'apikey': SUPABASE_ANON_KEY,
+            'Authorization': `Bearer ${session.access_token}`,
+          },
+          body: JSON.stringify(requestBody),
+        });
 
-// ===== 启动时注册侧边栏行为：点击图标打开侧边栏 =====
+        if (!submitRes.ok) {
+          const err = await submitRes.json().catch(() => ({ message: 'Failed to submit analysis' }));
+          if (submitRes.status === 403 || err?.code === 'NO_CREDITS') {
+            sendResponse({ status: 'no_credits' });
+          } else if (submitRes.status === 401 || err?.code === 'NOT_AUTHENTICATED') {
+            sendResponse({ status: 'error', error: 'Session expired. Please sign in again.' });
+          } else {
+            sendResponse({ status: 'error', error: err.message || 'Failed to submit analysis' });
+          }
+          return;
+        }
 
-chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: true }).catch((err) => {
-  console.warn('[BG] setPanelBehavior failed (may need reload):', err.message);
-});
+        const { id: analysisId } = await submitRes.json();
+        console.log(`${LOG_PREFIX} analyze: submitted, analysisId=${analysisId}`);
 
-// ===== 点击图标 → 打开侧边栏（fallback） =====
+        // Step 4: action=run — fire analysis job (fire-and-forget)
+        fetch(`${SUPABASE_URL}/functions/v1/analyze?action=run`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'apikey': SUPABASE_ANON_KEY,
+            'Authorization': `Bearer ${session.access_token}`,
+          },
+          body: JSON.stringify({ id: analysisId, ...requestBody }),
+        }).catch((err) => console.error(`${LOG_PREFIX} analyze: run error —`, err.message));
 
-chrome.action.onClicked.addListener((tab) => {
-  chrome.sidePanel.open({ tabId: tab.id }, () => {
-    if (chrome.runtime.lastError) {
-      console.error('[BG] sidePanel.open failed:', chrome.runtime.lastError.message);
+        // Step 5: Poll for result
+        let result = null;
+        const startTime = Date.now();
+        const MAX_POLL_MS = 60_000;
+
+        while (Date.now() - startTime < MAX_POLL_MS) {
+          await sleep(2000);
+
+          const pollRes = await fetch(
+            `${SUPABASE_URL}/functions/v1/analyze?id=${analysisId}`,
+            {
+              method: 'GET',
+              headers: {
+                'apikey': SUPABASE_ANON_KEY,
+                'Authorization': `Bearer ${session.access_token}`,
+              },
+            }
+          );
+
+          if (!pollRes.ok) continue;
+          const progress = await pollRes.json();
+
+          if (progress.status === 'done' && progress.result) {
+            result = progress.result;
+            break;
+          }
+          if (progress.status === 'failed') {
+            sendResponse({ status: 'error', error: progress.error || 'Analysis failed' });
+            return;
+          }
+        }
+
+        if (result) {
+          sendResponse({ status: 'success', result });
+        } else {
+          sendResponse({ status: 'error', error: 'Analysis timed out. Please try again.' });
+        }
+      } catch (err) {
+        console.error(`${LOG_PREFIX} analyze: error —`, err.message);
+        sendResponse({ status: 'error', error: err.message });
+      }
+      break;
     }
-  });
-});
+
+    case 'get_analysis_history': {
+      try {
+        const auth = await getSession();
+        if (!auth?.session?.access_token) {
+          sendResponse({ status: 'success', analyses: [] });
+          return;
+        }
+        const limit = message.limit ?? 8;
+        const offset = message.offset ?? 0;
+        const res = await fetch(
+          `${SUPABASE_URL}/functions/v1/analyze?action=list&limit=${limit}&offset=${offset}`,
+          {
+            headers: {
+              'Content-Type': 'application/json',
+              'apikey': SUPABASE_ANON_KEY,
+              'Authorization': `Bearer ${auth.session.access_token}`,
+            },
+          }
+        );
+        if (res.ok) {
+          const data = await res.json();
+          sendResponse({ status: 'success', analyses: data.analyses || [] });
+        } else {
+          sendResponse({ status: 'success', analyses: [] });
+        }
+      } catch (err) {
+        console.error(`${LOG_PREFIX} get_analysis_history: error —`, err.message);
+        sendResponse({ status: 'error', error: err.message });
+      }
+      break;
+    }
+
+    case 'PING': {
+      try {
+        const tabId = message.tabId || sender.tab?.id;
+        if (!tabId) { sendResponse({ ok: false, error: 'NO_TAB_ID' }); return; }
+        const response = await chrome.tabs.sendMessage(tabId, { action: 'PONG' });
+        sendResponse({ ok: true, url: response?.url, title: response?.title, readyState: response?.readyState });
+      } catch (err) {
+        sendResponse({ ok: false, error: err.message });
+      }
+      break;
+    }
+
+    case 'INJECT_CONTENT_SCRIPT': {
+      try {
+        const tabId = message.tabId;
+        await injectContentScript(tabId);
+        sendResponse({ success: true });
+      } catch (err) {
+        sendResponse({ success: false, error: 'INJECTION_FAILED', message: err.message });
+      }
+      break;
+    }
+
+    case 'GET_ACTIVE_TAB': {
+      try {
+        const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+        sendResponse({ success: true, data: tab });
+      } catch (err) {
+        sendResponse({ success: false, error: err.message });
+      }
+      break;
+    }
+
+    case 'EXTRACT_DATA':
+    case 'EXTRACT_LISTING':
+    case 'EXTRACT_LISTING_V2':
+    case 'START_ANALYSIS':
+    case 'GET_PAGE_STATE':
+    case 'START_USER_EXTRACTION': {
+      try {
+        const tabId = message.tabId || sender.tab?.id;
+        if (!tabId) { sendResponse({ error: 'NO_TAB_ID' }); return; }
+        const response = await chrome.tabs.sendMessage(tabId, message);
+        sendResponse(response);
+      } catch (err) {
+        sendResponse({ error: err.message });
+      }
+      break;
+    }
+
+    case 'REGISTER_LISTING_TAB': {
+      const { tabId, listingUrl } = message;
+      if (tabId && listingUrl) {
+        _tabListingMap.set(tabId, listingUrl);
+        console.log(`${LOG_PREFIX} REGISTER_LISTING_TAB tabId=${tabId} url=${listingUrl}`);
+      }
+      sendResponse({ success: true });
+      break;
+    }
+
+    case 'REGISTER_LISTING_FROM_CS': {
+      const tabId = sender.tab?.id;
+      const listingUrl = message.listingUrl;
+      if (tabId && listingUrl) {
+        _tabListingMap.set(tabId, listingUrl);
+        console.log(`${LOG_PREFIX} REGISTER_LISTING_FROM_CS tabId=${tabId} url=${listingUrl}`);
+      }
+      sendResponse({ success: true });
+      break;
+    }
+
+    default:
+      sendResponse({ success: false, error: 'UNKNOWN_ACTION' });
+  }
+}
+
+async function injectContentScript(tabId) {
+  try {
+    await chrome.tabs.sendMessage(tabId, { action: 'PONG' });
+    return;
+  } catch (_) {}
+  await chrome.scripting.executeScript({ target: { tabId }, files: ['content.js'] });
+}
+
+// ----- Sleep helper -----
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+chrome.sidePanel?.setPanelBehavior?.({ openPanelOnActionClick: true })?.catch?.(() => {});
+chrome.tabs.onUpdated.addListener(() => {});

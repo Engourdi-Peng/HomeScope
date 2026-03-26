@@ -1,81 +1,14 @@
-import { useState, useEffect } from 'react';
-import { useSearchParams } from 'react-router-dom';
+import { useState } from 'react';
 import { useAuth } from '../contexts/AuthContext';
-import { Mail, Loader2, CheckCircle, ExternalLink } from 'lucide-react';
+import { Mail, Loader2 } from 'lucide-react';
 
 export function LoginPage() {
-  const { signInWithEmailLink, signInWithGoogle, user, isAuthenticated } = useAuth();
-  const [searchParams] = useSearchParams();
-  const fromExtension = searchParams.get('from') === 'extension';
+  const { signInWithEmailLink, signInWithGoogle } = useAuth();
 
   const [email, setEmail] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const [magicLinkSent, setMagicLinkSent] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [extensionAuth, setExtensionAuth] = useState<'pending' | 'success' | 'error'>('pending');
-  const [authMessage, setAuthMessage] = useState('');
-
-  // 如果是从扩展来的，登录成功后自动触发授权
-  // 仅在 iframe 里才需要 postMessage 握手；在独立 popup 窗口里直接跳 dashboard
-  useEffect(() => {
-    if (!fromExtension || !isAuthenticated || !user || extensionAuth !== 'pending') return;
-
-    if (window.self !== window.top) {
-      // 在 iframe 里：通过 postMessage 通知侧栏扩展授权
-      triggerExtensionAuth();
-    } else {
-      // 在独立 popup 窗口里：跳转到 /account（应用没有 /dashboard 路由）
-      // background 的 startPopupUrlMonitor 会检测到 /account 并关掉 popup
-      window.location.href = '/account';
-    }
-  }, [fromExtension, isAuthenticated, user, extensionAuth]);
-
-  const triggerExtensionAuth = async () => {
-    if (!user) return;
-    setAuthMessage('Connecting to HomeScope extension...');
-
-    try {
-      // 通过 postMessage 通知父窗口（side panel），由它转发给 background script
-      const response = await new Promise<{ success?: boolean; error?: string }>((resolve) => {
-        const timeout = setTimeout(() => {
-          window.removeEventListener('message', handleMessage);
-          resolve({ success: false, error: 'Timeout waiting for extension response' });
-        }, 30000);
-
-        const handleMessage = (event: MessageEvent) => {
-          // 接受来自 tryhomescope.com 或扩展的消息
-          if (!event.origin.includes('tryhomescope.com') && !event.origin.startsWith('chrome-extension://')) return;
-          if (event.data?.type === 'extension_auth_response') {
-            clearTimeout(timeout);
-            window.removeEventListener('message', handleMessage);
-            resolve(event.data.data as { success?: boolean; error?: string });
-          }
-        };
-
-        window.addEventListener('message', handleMessage);
-
-        window.parent.postMessage(
-          {
-            type: 'start_extension_auth',
-            data: { user: { id: user.id, email: user.email } }
-          },
-          '*'
-        );
-      });
-
-      if (response?.success) {
-        setExtensionAuth('success');
-        setAuthMessage('HomeScope extension connected successfully!');
-      } else {
-        setExtensionAuth('error');
-        setAuthMessage(response?.error || 'Failed to connect extension');
-      }
-    } catch (err) {
-      console.error('Extension auth error:', err);
-      setExtensionAuth('error');
-      setAuthMessage('Could not auto-connect. You can manually add this extension in browser settings.');
-    }
-  };
 
   const handleEmailSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -109,60 +42,6 @@ export function LoginPage() {
     }
   };
 
-  // 从扩展来的登录成功页面
-  if (fromExtension && isAuthenticated) {
-    return (
-      <div className="min-h-screen bg-gray-50 flex flex-col">
-        <div className="flex-1 flex items-center justify-center p-4">
-          <div className="max-w-md w-full">
-            <div className="bg-white rounded-xl shadow-lg p-8 text-center">
-              <div className="w-16 h-16 bg-green-100 rounded-full flex items-center justify-center mx-auto mb-4">
-                {extensionAuth === 'success' ? (
-                  <CheckCircle className="w-8 h-8 text-green-600" />
-                ) : extensionAuth === 'error' ? (
-                  <ExternalLink className="w-8 h-8 text-red-600" />
-                ) : (
-                  <Loader2 className="w-8 h-8 text-blue-600 animate-spin" />
-                )}
-              </div>
-
-              <h2 className="text-xl font-semibold text-gray-900 mb-2">
-                {extensionAuth === 'success' ? 'Extension Connected!' : 'Connecting Extension...'}
-              </h2>
-
-              <p className="text-gray-600 mb-4">
-                Signed in as <strong>{user?.email}</strong>
-              </p>
-
-              <p className="text-sm text-gray-500 mb-6">
-                {authMessage}
-              </p>
-
-              {extensionAuth === 'success' && (
-                <p className="text-sm text-gray-500">
-                  You can now close this tab and use the HomeScope extension.
-                </p>
-              )}
-
-              {extensionAuth === 'error' && (
-                <div className="space-y-3">
-                  <p className="text-sm text-red-600">{authMessage}</p>
-                  <button
-                    onClick={() => setExtensionAuth('pending')}
-                    className="text-blue-600 hover:text-blue-700 font-medium"
-                  >
-                    Try again
-                  </button>
-                </div>
-              )}
-            </div>
-          </div>
-        </div>
-      </div>
-    );
-  }
-
-  // 普通登录页面
   return (
     <div className="min-h-screen bg-gray-50 flex flex-col">
       <div className="flex-1 flex items-center justify-center p-4">

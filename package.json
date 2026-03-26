@@ -5,11 +5,14 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "tsc -b && vite build",
+    "build": "vite build",
+    "build:tsc": "tsc -b && vite build",
+    "build:extension": "set \"BUILD_TARGET=extension\" && vite build",
+    "build:web": "vite build",
+    "dev:extension": "set \"BUILD_TARGET=extension\" && vite build --watch",
     "lint": "eslint .",
     "preview": "vite preview",
-    "deploy": "vite build && gh-pages -d dist",
-    "build:extension": "node scripts/build-extension.mjs"
+    "deploy": "vite build && gh-pages -d dist"
   },
   "dependencies": {
     "@radix-ui/react-accordion": "^1.2.12",

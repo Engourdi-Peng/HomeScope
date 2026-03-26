@@ -7,14 +7,21 @@ import type { Session } from '@supabase/supabase-js';
 /** 通过 postMessage 将 session 推送到 content script，由它转发给 background */
 function pushSessionToExtension(session: Session): Promise<boolean> {
   return new Promise((resolve) => {
+    console.log('[AuthCallback] pushSessionToExtension: preparing postMessage...');
+    console.log('[AuthCallback]   access_token exists:', !!session.access_token);
+    console.log('[AuthCallback]   refresh_token exists:', !!session.refresh_token);
+    console.log('[AuthCallback]   user.id:', session.user?.id);
+    console.log('[AuthCallback]   window.location.origin:', window.location.origin);
+
     const timeout = setTimeout(() => {
       window.removeEventListener('message', handleMessage);
-      console.warn('[AuthCallback] pushSessionToExtension: timeout, assuming success');
+      console.warn('[AuthCallback] pushSessionToExtension: TIMEOUT after 15s, assuming success');
       resolve(true); // 超时也当成功处理，扩展下次刷新会同步到
     }, 15000);
 
     const handleMessage = (event: MessageEvent) => {
-      // 接受来自扩展 sidepanel 的回应
+      // 接受来自 content script 的确认
+      console.log('[AuthCallback] postMessage listener: event.origin=', event.origin, 'event.data=', JSON.stringify(event.data));
       if (!event.origin.startsWith('chrome-extension://')) return;
       if (event.data?.type === 'HOMESCOPE_SESSION_RECEIVED') {
         clearTimeout(timeout);
@@ -26,7 +33,8 @@ function pushSessionToExtension(session: Session): Promise<boolean> {
 
     window.addEventListener('message', handleMessage);
 
-    window.parent.postMessage(
+    // 目标：content script 在同一页面上，window === content script 的 window
+    window.postMessage(
       {
         source: 'homescope-auth-bridge',
         type: 'HOMESCOPE_PUSH_SESSION_TO_EXTENSION',
@@ -38,6 +46,7 @@ function pushSessionToExtension(session: Session): Promise<boolean> {
       },
       window.location.origin
     );
+    console.log('[AuthCallback] pushSessionToExtension: postMessage sent');
   });
 }
 
@@ -58,63 +67,65 @@ async function waitForSession(maxAttempts = 10, intervalMs = 300): Promise<Sessi
 export function AuthCallback() {
   const navigate = useNavigate();
 
-  // 从 URL 直接解析（不能用 useSearchParams，因为 AuthContext 清除 code 后
-  // React Router 的 searchParams 可能是旧的）
-  const url = new URL(window.location.href);
-  const fromExtension = url.searchParams.get('from_extension') === '1';
-
   const [status, setStatus] = useState<'loading' | 'success' | 'error'>('loading');
   const [message, setMessage] = useState('Processing your login...');
 
   useEffect(() => {
     const handleCallback = async () => {
-      try {
-        // AuthContext.initAuth() 已经 exchange 过 code 了，这里只读 session
-        // 先立即试一次（code exchange 后 session 通常已经就绪）
-        const { data } = await supabase.auth.getSession();
-        let session: Session | null = data.session ?? null;
-        if (!session) {
-          // 兜底：轮询等待 session（OAuth code exchange 是异步的）
-          session = await waitForSession();
-        }
+      console.log('[AuthCallback] PAGE LOADED');
+      console.log('[AuthCallback]   location.href:', window.location.href);
+      const url = new URL(window.location.href);
+      const code = url.searchParams.get('code');
+      const fromExt = url.searchParams.get('from_extension');
+      console.log('[AuthCallback]   code exists:', !!code, '  from_extension:', fromExt);
 
-        // ── 扩展流程：推送 session 后关闭标签页 ──
-        if (fromExtension) {
-          if (session) {
-            console.log('[AuthCallback] from_extension=true, pushing session to extension');
-            await pushSessionToExtension(session);
-            setStatus('success');
-            setMessage('登录成功！HomeScope 扩展已同步会话。此标签页将自动关闭。');
-            // 延迟关闭，让用户看到成功提示
-            setTimeout(() => {
-              window.close();
-            }, 2500);
-          } else {
-            setStatus('error');
-            setMessage('无法获取登录会话。请重新尝试登录。');
-          }
-          return;
-        }
+      // AuthContext.initAuth() 已经 exchange 过 code 了，这里只读 session
+      const { data } = await supabase.auth.getSession();
+      let session: Session | null = data.session ?? null;
+      console.log('[AuthCallback]   getSession result: session exists =', !!session);
 
-        // ── 普通网页流程 ──
+      if (!session) {
+        console.log('[AuthCallback]   session not immediately available, polling waitForSession...');
+        session = await waitForSession();
+        console.log('[AuthCallback]   waitForSession result: session exists =', !!session);
+      }
+
+      // ── 扩展流程：推送 session 后关闭标签页 ──
+      if (fromExt === '1') {
+        console.log('[AuthCallback]   from_extension=1 → entering extension sync flow');
         if (session) {
+          console.log('[AuthCallback]   session ready, calling pushSessionToExtension...');
+          await pushSessionToExtension(session);
           setStatus('success');
-          setMessage('Login successful! Redirecting...');
-          window.history.replaceState({}, '', '/');
-          setTimeout(() => navigate('/', { replace: true }), 1500);
+          setMessage('登录成功！HomeScope 扩展已同步会话。此标签页将自动关闭。');
+          console.log('[AuthCallback]   pushSessionToExtension done, closing tab in 2.5s...');
+          setTimeout(() => {
+            window.close();
+          }, 2500);
         } else {
+          console.error('[AuthCallback]   NO SESSION after all retries — cannot sync to extension');
           setStatus('error');
-          setMessage('No active session found. Please sign in.');
+          setMessage('无法获取登录会话。请重新尝试登录。');
         }
-      } catch (err) {
-        console.error('[AuthCallback] exception:', err);
+        return;
+      }
+
+      // ── 普通网页流程 ──
+      console.log('[AuthCallback]   normal web flow (no from_extension)');
+      if (session) {
+        setStatus('success');
+        setMessage('Login successful! Redirecting...');
+        window.history.replaceState({}, '', '/');
+        setTimeout(() => navigate('/', { replace: true }), 1500);
+      } else {
+        console.error('[AuthCallback]   no session, showing error');
         setStatus('error');
-        setMessage('An unexpected error occurred. Please try again.');
+        setMessage('No active session found. Please sign in.');
       }
     };
 
     handleCallback();
-  }, [navigate, fromExtension]);
+  }, [navigate]);
 
   return (
     <div
