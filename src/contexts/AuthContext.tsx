@@ -58,14 +58,16 @@ export function AuthProvider({ children }: AuthProviderProps) {
         const urlParams = new URLSearchParams(window.location.search);
         const code = urlParams.get('code');
 
-        // 如果存在 code，交换 session
+        // 如果存在 code，交换 session（AuthContext 是唯一负责 exchangeCodeForSession 的地方）
         if (code) {
           try {
             const { error } = await supabase.auth.exchangeCodeForSession(code);
 
             if (!error) {
-              // 清除 URL 中的 code 参数，避免重复处理
-              window.history.replaceState({}, '', window.location.pathname);
+              // 清除 URL 中的 code 参数，但保留 from_extension=1（让 AuthCallback 能读到它）
+              const url = new URL(window.location.href);
+              url.searchParams.delete('code');
+              window.history.replaceState({}, '', url.pathname + url.search);
             }
           } catch (err) {
             console.error('exchangeCodeForSession exception:', err);
@@ -117,7 +119,7 @@ export function AuthProvider({ children }: AuthProviderProps) {
 
   // Google 登录
   const signInWithGoogle = async () => {
-    const redirectTo = window.location.origin;
+    const redirectTo = `${window.location.origin}/auth/callback?from_extension=1`;
 
     const { error } = await supabase.auth.signInWithOAuth({
       provider: 'google',

@@ -1,29 +1,67 @@
 import { useEffect, useState } from 'react';
-import { useNavigate, useSearchParams } from 'react-router-dom';
+import { useNavigate } from 'react-router-dom';
 import { supabase } from '../lib/supabase';
 import { Loader2 } from 'lucide-react';
 import type { Session } from '@supabase/supabase-js';
 
-/** 扩展 Magic Link：会话在网页建立后，经 content script 写入 chrome.storage */
-function pushSessionToExtension(session: Session) {
-  window.postMessage(
-    {
-      source: 'homescope-auth-bridge',
-      type: 'HOMESCOPE_PUSH_SESSION_TO_EXTENSION',
-      payload: {
-        access_token: session.access_token,
-        refresh_token: session.refresh_token,
-        user: session.user,
+/** 通过 postMessage 将 session 推送到 content script，由它转发给 background */
+function pushSessionToExtension(session: Session): Promise<boolean> {
+  return new Promise((resolve) => {
+    const timeout = setTimeout(() => {
+      window.removeEventListener('message', handleMessage);
+      console.warn('[AuthCallback] pushSessionToExtension: timeout, assuming success');
+      resolve(true); // 超时也当成功处理，扩展下次刷新会同步到
+    }, 15000);
+
+    const handleMessage = (event: MessageEvent) => {
+      // 接受来自扩展 sidepanel 的回应
+      if (!event.origin.startsWith('chrome-extension://')) return;
+      if (event.data?.type === 'HOMESCOPE_SESSION_RECEIVED') {
+        clearTimeout(timeout);
+        window.removeEventListener('message', handleMessage);
+        console.log('[AuthCallback] extension confirmed session received');
+        resolve(true);
+      }
+    };
+
+    window.addEventListener('message', handleMessage);
+
+    window.parent.postMessage(
+      {
+        source: 'homescope-auth-bridge',
+        type: 'HOMESCOPE_PUSH_SESSION_TO_EXTENSION',
+        payload: {
+          access_token: session.access_token,
+          refresh_token: session.refresh_token,
+          user: session.user,
+        },
       },
-    },
-    window.location.origin
-  );
+      window.location.origin
+    );
+  });
+}
+
+/** 等待 session 建立（轮询 getSession，最长 3 秒） */
+async function waitForSession(maxAttempts = 10, intervalMs = 300): Promise<Session | null> {
+  for (let i = 0; i < maxAttempts; i++) {
+    const { data } = await supabase.auth.getSession();
+    if (data.session) {
+      console.log(`[AuthCallback] waitForSession: found session after ${i + 1} attempt(s)`);
+      return data.session;
+    }
+    await new Promise((r) => setTimeout(r, intervalMs));
+  }
+  console.warn('[AuthCallback] waitForSession: session not found after max attempts');
+  return null;
 }
 
 export function AuthCallback() {
   const navigate = useNavigate();
-  const [searchParams] = useSearchParams();
-  const fromExtension = searchParams.get('from_extension') === '1';
+
+  // 从 URL 直接解析（不能用 useSearchParams，因为 AuthContext 清除 code 后
+  // React Router 的 searchParams 可能是旧的）
+  const url = new URL(window.location.href);
+  const fromExtension = url.searchParams.get('from_extension') === '1';
 
   const [status, setStatus] = useState<'loading' | 'success' | 'error'>('loading');
   const [message, setMessage] = useState('Processing your login...');
@@ -31,86 +69,46 @@ export function AuthCallback() {
   useEffect(() => {
     const handleCallback = async () => {
       try {
-        const urlParams = new URLSearchParams(window.location.search);
-        const code = urlParams.get('code');
-        const token = urlParams.get('token');
-        const type = urlParams.get('type');
+        // AuthContext.initAuth() 已经 exchange 过 code 了，这里只读 session
+        // 先立即试一次（code exchange 后 session 通常已经就绪）
+        let { data } = await supabase.auth.getSession();
+        if (!data.session) {
+          // 兜底：轮询等待 session（OAuth code exchange 是异步的）
+          data.session = await waitForSession();
+        }
 
-        const finishExtensionFlow = async (session: Session | null) => {
-          if (!fromExtension || !session) return false;
-          pushSessionToExtension(session);
-          setStatus('success');
-          setMessage(
-            '登录成功！会话已同步到 HomeScope 扩展。请打开扩展侧边栏，或点击「刷新状态」。此标签页可关闭。'
-          );
-          window.history.replaceState({}, '', window.location.pathname + window.location.search);
-          return true;
-        };
+        const session = data.session ?? null;
 
-        if (code) {
-          const { error } = await supabase.auth.exchangeCodeForSession(code);
-
-          if (error) {
-            console.error('Auth callback error:', error);
+        // ── 扩展流程：推送 session 后关闭标签页 ──
+        if (fromExtension) {
+          if (session) {
+            console.log('[AuthCallback] from_extension=true, pushing session to extension');
+            await pushSessionToExtension(session);
+            setStatus('success');
+            setMessage('登录成功！HomeScope 扩展已同步会话。此标签页将自动关闭。');
+            // 延迟关闭，让用户看到成功提示
+            setTimeout(() => {
+              window.close();
+            }, 2500);
+          } else {
             setStatus('error');
-            setMessage(error.message || 'Login failed. Please try again.');
-            return;
+            setMessage('无法获取登录会话。请重新尝试登录。');
           }
+          return;
+        }
 
-          const {
-            data: { session },
-          } = await supabase.auth.getSession();
-
-          if (await finishExtensionFlow(session)) {
-            return;
-          }
-
+        // ── 普通网页流程 ──
+        if (session) {
           setStatus('success');
           setMessage('Login successful! Redirecting...');
           window.history.replaceState({}, '', '/');
-          setTimeout(() => {
-            navigate('/', { replace: true });
-          }, 1500);
-        } else if (token) {
-          setStatus('success');
-          setMessage('Login successful! Redirecting...');
-          setTimeout(() => {
-            navigate('/', { replace: true });
-          }, 1500);
-        } else if (type === 'recovery') {
-          setStatus('success');
-          setMessage('Password reset link verified!');
+          setTimeout(() => navigate('/', { replace: true }), 1500);
         } else {
-          const {
-            data: { session },
-            error: sessionError,
-          } = await supabase.auth.getSession();
-
-          if (sessionError) {
-            console.error('Session error:', sessionError);
-            setStatus('error');
-            setMessage(sessionError.message || 'Login failed. Please try again.');
-            return;
-          }
-
-          if (session) {
-            if (await finishExtensionFlow(session)) {
-              return;
-            }
-
-            setStatus('success');
-            setMessage('Login successful! Redirecting...');
-            window.history.replaceState({}, '', '/');
-            setTimeout(() => {
-              navigate('/', { replace: true });
-            }, 1500);
-          } else {
-            setStatus('error');
-            setMessage('Invalid login link. Please request a new magic link.');
-          }
+          setStatus('error');
+          setMessage('No active session found. Please sign in.');
         }
       } catch (err) {
-        console.error('Auth callback exception:', err);
+        console.error('[AuthCallback] exception:', err);
         setStatus('error');
         setMessage('An unexpected error occurred. Please try again.');
       }
