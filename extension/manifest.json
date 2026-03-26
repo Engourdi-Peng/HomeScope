@@ -1,48 +1,43 @@
 {
   "manifest_version": 3,
-  "name": "HomeScope - Property Analyzer",
+  "name": "HomeScope",
   "version": "1.0.0",
-  "description": "Analyze rental property listings with HomeScope",
+  "description": "AI-powered property analysis in your browser",
+  "icons": {
+    "48": "icon.png",
+    "128": "icon.png"
+  },
   "permissions": [
     "activeTab",
-    "storage",
     "scripting",
+    "sidePanel",
+    "storage",
     "tabs",
-    "sidePanel"
+    "identity",
+    "cookies",
+    "webRequest"
   ],
   "host_permissions": [
-    "https://www.tryhomescope.com/*",
-    "https://*.supabase.co/*"
+    "<all_urls>"
   ],
   "background": {
-    "service_worker": "dist/background.js"
+    "service_worker": "background.js",
+    "type": "module"
   },
-  "action": {
-    "default_icon": {
-      "16": "icon.png",
-      "48": "icon.png",
-      "128": "icon.png"
-    }
+  "side_panel": {
+    "default_path": "sidepanel.html",
+    "default_width": 720
   },
   "content_scripts": [
     {
       "matches": ["<all_urls>"],
       "js": ["content.js"],
-      "css": ["styles.css"],
-      "run_at": "document_end"
+      "run_at": "document_idle"
     }
   ],
-  "icons": {
-    "16": "icon.png",
-    "48": "icon.png",
-    "128": "icon.png"
-  },
-  "side_panel": {
-    "default_path": "sidepanel.html"
-  },
   "web_accessible_resources": [
     {
-      "resources": ["oauth-callback.html", "icon.png"],
+      "resources": ["assets/*"],
       "matches": ["<all_urls>"]
     }
   ]

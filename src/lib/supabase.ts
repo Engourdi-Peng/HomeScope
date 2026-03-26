@@ -3,10 +3,10 @@ import { SUPABASE_URL, SUPABASE_ANON_KEY } from '../../shared/config';
 
 export const supabase: SupabaseClient = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
   auth: {
-    flowType: 'implicit',
     autoRefreshToken: true,
     persistSession: true,
     detectSessionInUrl: true,
+    // PKCE flow is the default in modern Supabase JS SDK (v2+)
   },
 });
 

@@ -10,8 +10,8 @@
  * Auth flow:
  *   1. User clicks login in side panel → background opens website login page
  *   2. User completes Google OAuth or Magic Link on website
- *   3. AuthCallback.tsx (on website) receives session, pushes to content script
- *   4. Content script forwards session to background via sync_session_from_site
+ *   3. AuthCallback.tsx injects a <script> tag that calls chrome.runtime.sendMessage
+ *   4. Background receives sync_session_from_site, saves session, closes the callback tab
  *   5. background.saveSession() persists to hs_session/hs_user + updates cache
  *   6. background.broadcastAuthChanged() notifies all extension contexts
  *
@@ -364,7 +364,7 @@ async function handleMessage(message, sender, sendResponse) {
       break;
     }
 
-    // Canonical bridge: website AuthCallback forwards session here via content script
+    // Canonical bridge: website AuthCallback forwards session here via injected <script>
     case 'sync_session_from_site': {
       console.log(`${LOG_PREFIX} sync_session_from_site: received`);
       try {
@@ -374,12 +374,25 @@ async function handleMessage(message, sender, sendResponse) {
           sendResponse({ success: false, error: 'Invalid session payload' });
           return;
         }
-        console.log(`${LOG_PREFIX} sync_session_from_site: userId=${p.user.id}, accessToken=${p.access_token.substring(0, 12)}...`);
+        // 记录回调标签页 ID，后续用于关闭它
+        const callbackTabId = sender?.tab?.id;
+        console.log(`${LOG_PREFIX} sync_session_from_site: userId=${p.user.id}, callbackTabId=${callbackTabId}`);
         const session = { access_token: p.access_token, refresh_token: p.refresh_token || '' };
         const extUser = toExtUser(p.user);
         await saveSession(session, extUser);
         broadcastAuthChanged(true, extUser);
-        console.log(`${LOG_PREFIX} sync_session_from_site: success`);
+        console.log(`${LOG_PREFIX} sync_session_from_site: success, saved session for userId=${extUser?.id}`);
+
+        // 关闭回调标签页（由扩展打开的，background 有权限关闭）
+        if (callbackTabId != null) {
+          console.log(`${LOG_PREFIX} sync_session_from_site: closing callback tab ${callbackTabId}...`);
+          chrome.tabs.remove(callbackTabId).catch((err) => {
+            console.warn(`${LOG_PREFIX} sync_session_from_site: failed to close tab —`, err.message);
+          });
+        } else {
+          console.warn(`${LOG_PREFIX} sync_session_from_site: no callbackTabId, cannot auto-close`);
+        }
+
         sendResponse({ success: true, user: extUser });
       } catch (err) {
         console.error(`${LOG_PREFIX} sync_session_from_site: error —`, err.message);
@@ -540,13 +553,12 @@ async function handleMessage(message, sender, sendResponse) {
     }
 
     case 'INJECT_CONTENT_SCRIPT': {
-      try {
-        const tabId = message.tabId;
-        await injectContentScript(tabId);
-        sendResponse({ success: true });
-      } catch (err) {
-        sendResponse({ success: false, error: 'INJECTION_FAILED', message: err.message });
-      }
+      // DISABLED: content.js is injected declaratively via manifest.content_scripts.
+      // Background PONG check + executeScript dual-injection caused AUTH_BRIDGE_SOURCE
+      // redeclaration errors when manifest injection already loaded the script.
+      // Manifest injection is sufficient and guaranteed by Chrome before any messages
+      // are processed. Remove this handler entirely if you need programmatic injection.
+      sendResponse({ success: true, note: 'disabled - use manifest injection' });
       break;
     }
 
@@ -603,13 +615,14 @@ async function handleMessage(message, sender, sendResponse) {
   }
 }
 
-async function injectContentScript(tabId) {
-  try {
-    await chrome.tabs.sendMessage(tabId, { action: 'PONG' });
-    return;
-  } catch (_) {}
-  await chrome.scripting.executeScript({ target: { tabId }, files: ['content.js'] });
-}
+// injectContentScript DISABLED — content script is injected declaratively via
+// manifest.content_scripts. Manifest injection is reliable and avoids double-
+// injection issues (AUTH_BRIDGE_SOURCE redeclaration). Kept as a commented
+// reference in case programmatic injection is ever needed again:
+// async function injectContentScript(tabId) {
+//   try { await chrome.tabs.sendMessage(tabId, { action: 'PONG' }); return; } catch (_) {}
+//   await chrome.scripting.executeScript({ target: { tabId }, files: ['content.js'] });
+// }
 
 // ----- Sleep helper -----
 function sleep(ms) {
@@ -618,3 +631,43 @@ function sleep(ms) {
 
 chrome.sidePanel?.setPanelBehavior?.({ openPanelOnActionClick: true })?.catch?.(() => {});
 chrome.tabs.onUpdated.addListener(() => {});
+
+// ===== Token refresh scheduler (prevents 7-day Supabase expiry) =====
+// Runs on extension startup and periodically to keep the session alive.
+// Only re-schedules on success; failure means token is expired → user must re-login.
+
+const REFRESH_INTERVAL_MS = 6 * 60 * 60 * 1000; // 6 hours — well within Supabase 7-day window
+let _refreshTimer = null;
+
+async function scheduleTokenRefresh() {
+  if (_refreshTimer) {
+    clearTimeout(_refreshTimer);
+    _refreshTimer = null;
+  }
+
+  _refreshTimer = setTimeout(async () => {
+    console.log(`${LOG_PREFIX} [scheduler] refreshing token...`);
+    const result = await refreshSessionIfNeeded();
+    if (result) {
+      console.log(`${LOG_PREFIX} [scheduler] refresh OK, re-scheduling`);
+      scheduleTokenRefresh();
+    } else {
+      console.log(`${LOG_PREFIX} [scheduler] refresh failed (token expired), will not re-schedule`);
+    }
+  }, REFRESH_INTERVAL_MS);
+}
+
+// Kick off on every service worker startup
+scheduleTokenRefresh();
+
+// Re-schedule when Chrome restarts (fires once per browser session)
+chrome.runtime.onStartup.addListener(() => {
+  console.log(`${LOG_PREFIX} [startup] browser started, scheduling token refresh`);
+  scheduleTokenRefresh();
+});
+
+// Re-schedule when extension is updated or reloaded
+chrome.runtime.onInstalled.addListener((details) => {
+  console.log(`${LOG_PREFIX} [installed] reason=${details.reason}, scheduling token refresh`);
+  scheduleTokenRefresh();
+});

@@ -1,76 +1,212 @@
-import { defineConfig } from 'vite'
-import react from '@vitejs/plugin-react'
-import tailwindcss from '@tailwindcss/vite'
-import { resolve } from 'path'
-import { readFileSync, existsSync } from 'fs'
+import { defineConfig } from 'vite';
+import react from '@vitejs/plugin-react';
+import tailwindcss from '@tailwindcss/vite';
+import { resolve } from 'path';
+import { readFileSync, existsSync, copyFileSync, mkdirSync, readdirSync, rmSync, writeFileSync } from 'fs';
+
+const __dirname = import.meta.dirname;
 
 // Path aliases
 const aliases = {
   '~shared': resolve(__dirname, 'shared'),
   '~shared/*': resolve(__dirname, 'shared/*'),
-}
+};
 
-// 直接读取 .env 文件（兼容 Vite 7 loadEnv 不稳定的情况）
+// 直接读取 .env 文件
 function readEnvFile() {
-  const envPath = resolve(process.cwd(), '.env')
-  const result: Record<string, string> = {}
+  const envPath = resolve(process.cwd(), '.env');
+  const result: Record<string, string> = {};
 
   if (existsSync(envPath)) {
-    const content = readFileSync(envPath, 'utf8')
+    const content = readFileSync(envPath, 'utf8');
     for (const line of content.split('\n')) {
-      const trimmed = line.trim()
-      if (!trimmed || trimmed.startsWith('#')) continue
-      const idx = trimmed.indexOf('=')
-      if (idx < 0) continue
-      const key = trimmed.slice(0, idx).trim()
-      const val = trimmed.slice(idx + 1).trim()
-      result[key] = val
+      const trimmed = line.trim();
+      if (!trimmed || trimmed.startsWith('#')) continue;
+      const idx = trimmed.indexOf('=');
+      if (idx < 0) continue;
+      const key = trimmed.slice(0, idx).trim();
+      const val = trimmed.slice(idx + 1).trim();
+      result[key] = val;
     }
   }
 
-  return result
+  return result;
 }
 
-const envVars = readEnvFile()
-const anonKey    = envVars['VITE_SUPABASE_ANON_KEY']    || ''
-const projectRef = envVars['VITE_SUPABASE_PROJECT_REF'] || 'trteewgplkqiedonomzg'
-const siteBase   = (envVars['VITE_SITE_BASE_URL'] || 'https://www.tryhomescope.com').replace(/\/$/, '')
-const magicLinkWebRedirect = `${siteBase}/auth/callback?from_extension=1`
+const envVars = readEnvFile();
+const anonKey = envVars['VITE_SUPABASE_ANON_KEY'] || '';
+const projectRef = envVars['VITE_SUPABASE_PROJECT_REF'] || 'trteewgplkqiedonomzg';
+const supabaseUrl = `https://${projectRef}.supabase.co`;
+const siteBase = (envVars['VITE_SITE_BASE_URL'] || 'https://www.tryhomescope.com').replace(/\/$/, '');
 
 if (!anonKey) {
-  console.warn('[vite.config.ts] VITE_SUPABASE_ANON_KEY is empty or not found in .env!')
-  console.warn('[vite.config.ts] Extension will send empty apikey and get 401.')
-  console.warn('[vite.config.ts] Please set VITE_SUPABASE_ANON_KEY in your .env file.')
-} else {
-  console.log('[vite.config.ts] Loaded apikey prefix:', anonKey.slice(0, 10) + '...')
+  console.warn('[vite.config.ts] VITE_SUPABASE_ANON_KEY is empty or not found in .env!');
 }
-console.log('[vite.config.ts] Extension magic link redirect (HTTPS):', magicLinkWebRedirect)
 
-export default defineConfig(({ command }) => ({
-  plugins: [react(), tailwindcss()],
+const sharedDefine = {
+  __SUPABASE_ANON_KEY__: JSON.stringify(anonKey),
+  __SITE_BASE_URL__: JSON.stringify(siteBase),
+};
 
-  resolve: {
-    alias: aliases,
-  },
+// ===== 构建后复制文件到 extension/dist =====
+function copyToExtension(distDir: string, extDir: string) {
+  // 确保目录存在
+  if (!existsSync(extDir)) {
+    mkdirSync(extDir, { recursive: true });
+  }
 
-  // 扩展构建：注入真实的 Supabase 配置到 background.js
-  define: {
-    __SUPABASE_ANON_KEY__:       JSON.stringify(anonKey),
-    __SUPABASE_PROJECT_REF__:    JSON.stringify(projectRef),
-    __MAGIC_LINK_WEB_REDIRECT__: JSON.stringify(magicLinkWebRedirect),
-  },
+  // 复制 manifest.json
+  const manifestSrc = resolve(__dirname, 'extension', 'manifest.json');
+  if (existsSync(manifestSrc)) {
+    copyFileSync(manifestSrc, resolve(extDir, 'manifest.json'));
+    console.log('[vite] Copied manifest.json');
+  }
 
-  build: command === 'build' && process.env.BUILD_TARGET === 'extension'
-    ? {
-        lib: {
-          entry: resolve(__dirname, 'extension/background.js'),
-          formats: ['iife'],
-          name: 'HomeScopeBackground',
-          fileName: () => 'background.js',
+  // 复制扩展图标（manifest 的 icons 指向根目录 icon.png）
+  const iconSrc = resolve(__dirname, 'extension', 'icon.png');
+  if (existsSync(iconSrc)) {
+    copyFileSync(iconSrc, resolve(extDir, 'icon.png'));
+    console.log('[vite] Copied icon.png');
+  }
+
+  // 复制 background.js
+  const bgSrc = resolve(__dirname, 'extension', 'background.js');
+  if (existsSync(bgSrc)) {
+    copyFileSync(bgSrc, resolve(extDir, 'background.js'));
+    console.log('[vite] Copied background.js');
+  }
+
+  // 复制 content.js
+  const contentSrc = resolve(__dirname, 'extension', 'content.js');
+  if (existsSync(contentSrc)) {
+    copyFileSync(contentSrc, resolve(extDir, 'content.js'));
+    console.log('[vite] Copied content.js');
+  }
+
+  // 复制 sidepanel.html（内含固定路径 ./assets/sidepanel-ext.js 与 .css，由 rollup output 生成）
+  const sidepanelSrc = resolve(__dirname, 'extension', 'sidepanel.html');
+  if (existsSync(sidepanelSrc)) {
+    copyFileSync(sidepanelSrc, resolve(extDir, 'sidepanel.html'));
+    console.log('[vite] Copied sidepanel.html');
+  }
+
+  // 复制 assets 目录
+  const assetsSrc = resolve(distDir, 'assets');
+  const assetsDest = resolve(extDir, 'assets');
+  if (existsSync(assetsSrc)) {
+    if (!existsSync(assetsDest)) {
+      mkdirSync(assetsDest, { recursive: true });
+    }
+    const files = readdirSync(assetsSrc);
+    for (const file of files) {
+      copyFileSync(resolve(assetsSrc, file), resolve(assetsDest, file));
+    }
+    console.log(`[vite] Copied ${files.length} assets`);
+  }
+
+  // 同步 sidepanel-ext.css（可能带 hash → 固定名，确保 sidepanel.html 引用有效）
+  const cssFiles = readdirSync(assetsSrc).filter((f) => f.startsWith('sidepanel-ext-') && f.endsWith('.css'));
+  const cssFixed = resolve(assetsDest, 'sidepanel-ext.css');
+  if (cssFiles.length) {
+    copyFileSync(resolve(assetsSrc, cssFiles[0]), cssFixed);
+    console.log(`[vite] Synced sidepanel-ext.css`);
+  }
+
+  // 同步 sidepanel-ext.js（入口文件带 hash → 固定名）
+  const jsFiles = readdirSync(assetsSrc).filter((f) => f.startsWith('sidepanel-ext-') && f.endsWith('.js'));
+  const jsFixed = resolve(assetsDest, 'sidepanel-ext.js');
+  if (jsFiles.length) {
+    copyFileSync(resolve(assetsSrc, jsFiles[0]), jsFixed);
+    console.log(`[vite] Synced sidepanel-ext.js`);
+  }
+
+  // After all files are copied, inject auth config into background.js and content.js
+  injectAuthConfig(extDir);
+}
+
+// ===== Inject auth config into extension scripts after copy =====
+function injectAuthConfig(extDir) {
+  if (!existsSync(extDir)) return;
+  const bgFile = resolve(extDir, 'background.js');
+  const csFile = resolve(extDir, 'content.js');
+
+  const replacements = [
+    ['__SUPABASE_URL__', JSON.stringify(supabaseUrl)],
+    ['__SUPABASE_ANON_KEY__', JSON.stringify(anonKey)],
+    ['__MAGIC_LINK_REDIRECT__', JSON.stringify(`${siteBase}/auth/callback?from_extension=1`)],
+    ['__AUTH_BRIDGE_SOURCE__', JSON.stringify('homescope-auth-bridge')],
+    // __INJECTED_AT__ intentionally removed — it was unused and JSON.stringify(Date.now())
+    // produced a quoted string that became an invalid JS const name ("1234" = ...)
+  ];
+
+  for (const [file, label] of [[bgFile, 'background.js'], [csFile, 'content.js']]) {
+    if (!existsSync(file)) continue;
+    let content = readFileSync(file, 'utf8');
+    for (const [placeholder, value] of replacements) {
+      content = content.replace(new RegExp(placeholder, 'g'), value);
+    }
+    writeFileSync(file, content, 'utf8');
+    console.log(`[vite] Injected auth config into ${label}`);
+  }
+}
+
+// ===== 清理目录 =====
+function cleanDir(dir: string) {
+  if (existsSync(dir)) {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+// 判断是否为扩展构建
+const isExtensionBuild = process.env.BUILD_TARGET === 'extension';
+const outDir = isExtensionBuild ? resolve(__dirname, 'extension', 'dist') : resolve(__dirname, 'dist');
+
+export default defineConfig(({ command }) => {
+  // 构建前清理
+  if (command === 'build') {
+    cleanDir(outDir);
+  }
+
+  return {
+    plugins: [
+      react(),
+      tailwindcss(),
+      {
+        name: 'vite-plugin-copy-extension',
+        closeBundle() {
+          if (command === 'build' && isExtensionBuild) {
+            copyToExtension(outDir, outDir);
+          }
         },
-        outDir: resolve(__dirname, 'extension/dist'),
-        emptyOutDir: true,
-        rollupOptions: { output: { inlineDynamicImports: true } },
-      }
-    : undefined,
-}))
+      },
+    ],
+    resolve: {
+      alias: aliases,
+    },
+    define: sharedDefine,
+    build: {
+      outDir,
+      emptyOutDir: command === 'build',
+      rollupOptions: {
+        input: isExtensionBuild
+          ? resolve(__dirname, 'src', 'extension', 'sidepanel-ext.tsx')
+          : resolve(__dirname, 'index.html'),
+        ...(isExtensionBuild
+          ? {
+              output: {
+                entryFileNames: 'assets/sidepanel-ext.js',
+                chunkFileNames: 'assets/chunk-[name]-[hash].js',
+                assetFileNames: (assetInfo) => {
+                  if (assetInfo.names?.some((n) => n.endsWith('.css'))) {
+                    return 'assets/sidepanel-ext.css';
+                  }
+                  return 'assets/[name][extname]';
+                },
+              },
+            }
+          : {}),
+      },
+    },
+    base: isExtensionBuild ? './' : '/',
+  };
+});

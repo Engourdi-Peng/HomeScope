@@ -8,8 +8,8 @@
   <style>
     * {
       box-sizing: border-box;
-      /* 注意：不重置 margin/padding — 交给 Tailwind preflight 处理，
-         无 layer 的 margin/padding:0 会覆盖 Tailwind utilities */
+      margin: 0;
+      padding: 0;
     }
     html, body {
       height: 100%;
@@ -19,11 +19,9 @@
       height: 100%;
     }
   </style>
-  <!-- 固定路径：与 vite extension 构建的 rollup output 一致；必须从 extension/dist 加载扩展 -->
-  <link rel="stylesheet" href="./assets/sidepanel-ext.css" />
 </head>
 <body>
   <div id="root"></div>
-  <script type="module" src="./assets/sidepanel-ext.js"></script>
+  <script type="module" src="./sidepanel-ext.tsx"></script>
 </body>
 </html>

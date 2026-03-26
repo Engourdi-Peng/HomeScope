@@ -243,3 +243,77 @@ export interface AnalysisHistoryResponse {
 export interface AnalysisDetailResponse {
   analysis: AnalysisSummary;
 }
+
+// ===== 15. 通用房产页面提取类型 =====
+
+export type PricePeriod = 'week' | 'month' | 'year' | 'unknown';
+export type ParserType = 'site_specific' | 'generic';
+export type AnalysisTier = 'full' | 'partial' | 'none';
+
+export interface ExtractionSource {
+  url: string;
+  domain: string;
+  parserType: ParserType;
+  siteName?: string;
+}
+
+/**
+ * 统一房源提取数据结构
+ * 所有解析器（站点专用 + 通用）最终输出此结构
+ */
+export interface ExtractedListingData {
+  source: ExtractionSource;
+  title?: string;
+  address?: string;
+  price?: string;
+  priceAmount?: number;
+  pricePeriod: PricePeriod;
+  bedrooms?: number | null;
+  bathrooms?: number | null;
+  parking?: number | null;
+  propertyType?: string | null;
+  description?: string;
+  imageUrls: string[];
+  features?: string[];
+  rawText?: string;
+  extractionConfidence: number; // 0.0 ~ 1.0
+}
+
+/**
+ * 房产页面检测结果
+ */
+export interface PropertyDetection {
+  score: number;           // 0.0 ~ 1.0
+  signals: string[];       // 检测到的信号列表
+  tier: AnalysisTier;      // 分析等级
+  canAnalyze: boolean;
+}
+
+/**
+ * 兼容旧版 ListingData 的扩展结构
+ * Side Panel 内部使用，由 normalizeExtractedData 转换而来
+ */
+export interface ListingDataV2 {
+  source: ExtractionSource;
+  title?: string;
+  address: string;
+  price: string;
+  priceAmount?: number;
+  pricePeriod: PricePeriod;
+  bedrooms: number;
+  bathrooms: number;
+  parking: number;
+  propertyType: string;
+  description: string;
+  images: string[];
+  features: string[];
+  extractionConfidence: number;
+  // 以下为向后兼容字段
+  bond?: string;
+  availableDate?: string;
+  petsAllowed?: boolean | null;
+  agent?: { name: string; agency: string; phone: string };
+  listingId?: string;
+  listingUrl: string;
+  site: string;
+}
