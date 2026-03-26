@@ -5,66 +5,31 @@ import { Loader2 } from 'lucide-react';
 import type { Session } from '@supabase/supabase-js';
 
 /**
- * 将 session 直接推送到 extension background，通过注入 <script> 标签实现。
+ * 将 session 直接推送到 extension background，通过 postMessage 实现。
+ * 页面只负责发消息，不等待 extension 响应。
  *
  * 架构：
- * 1. content script 将 __HOMESCOPE_SYNC_SESSION__ 函数挂到 window 上
- * 2. 页面注入的 <script> 调用该函数，函数体在 content script 世界执行（可访问 chrome.* API）
- * 3. content script → chrome.runtime.sendMessage → background 保存 session
- * 4. background 关闭回调标签并通过 postMessage 回调通知页面
+ * 1. 页面通过 window.postMessage 发送 session（source: 'homescope-auth-bridge'）
+ * 2. content script 在 isolated world 监听 message，转发到 background
+ * 3. background 保存 session，自动关闭 callback tab
  */
-function pushSessionToExtension(session: Session): Promise<boolean> {
-  return new Promise((resolve) => {
-    console.log('[AuthCallback] pushSessionToExtension: starting injected script approach...');
-    console.log('[AuthCallback]   access_token exists:', !!session.access_token);
-    console.log('[AuthCallback]   user.id:', session.user?.id);
+function pushSessionToExtension(session: Session): void {
+  console.log('[AuthCallback] pushSessionToExtension: sending postMessage...');
+  console.log('[AuthCallback]   access_token exists:', !!session.access_token);
+  console.log('[AuthCallback]   user.id:', session.user?.id);
 
-    // 10 秒超时
-    const timeout = setTimeout(() => {
-      cleanup();
-      console.error('[AuthCallback] pushSessionToExtension: TIMEOUT — extension did not respond');
-      resolve(false);
-    }, 10000);
-
-    function cleanup() {
-      clearTimeout(timeout);
-      window.removeEventListener('message', handleBgResponse);
+  // 发送 session 到 content script（通过 postMessage）
+  window.postMessage({
+    source: 'homescope-auth-bridge',
+    type: 'HOMESCOPE_SYNC_SESSION',
+    payload: {
+      access_token: session.access_token,
+      refresh_token: session.refresh_token,
+      user: session.user
     }
+  }, window.location.origin);
 
-    // 监听 content script 通过 postMessage 广播的回执（HOMESCOPE_SESSION_ACK 由 content script 在收到 background 响应后发出）
-    function handleBgResponse(event: MessageEvent) {
-      if (!event.origin.startsWith('chrome-extension://')) return;
-      if (event.data?.type === 'HOMESCOPE_SESSION_ACK') {
-        cleanup();
-        console.log('[AuthCallback] ✓ background confirmed session saved');
-        resolve(event.data?.success !== false);
-      }
-    }
-    window.addEventListener('message', handleBgResponse);
-
-    // 注入脚本：调用 content script 暴露在 window 上的同步函数（函数体在 content script 世界执行，可访问 chrome.*）
-    const injectedScript = document.createElement('script');
-    injectedScript.textContent = `
-      (function() {
-        console.log('[AuthCallback] injected script: calling window.__HOMESCOPE_SYNC_SESSION__...');
-        if (typeof window.__HOMESCOPE_SYNC_SESSION__ === 'function') {
-          window.__HOMESCOPE_SYNC_SESSION__({
-            access_token: ${JSON.stringify(session.access_token)},
-            refresh_token: ${JSON.stringify(session.refresh_token)},
-            user: ${JSON.stringify(session.user)}
-          }, function(success, error) {
-            console.log('[AuthCallback] injected script: __HOMESCOPE_SYNC_SESSION__ callback: success=' + success, 'error=' + error);
-            window.postMessage({ type: 'HOMESCOPE_SESSION_ACK', success: success }, window.location.origin);
-          });
-        } else {
-          console.error('[AuthCallback] injected script: window.__HOMESCOPE_SYNC_SESSION__ not found — content script may not be loaded on this page');
-          window.postMessage({ type: 'HOMESCOPE_SESSION_ACK', success: false }, window.location.origin);
-        }
-      })();
-    `;
-    document.documentElement.appendChild(injectedScript);
-    console.log('[AuthCallback] injected script appended to DOM');
-  });
+  console.log('[AuthCallback] postMessage sent HOMESCOPE_SYNC_SESSION');
 }
 
 /** 等待 session 建立（轮询 getSession，最长 3 秒） */
@@ -111,17 +76,12 @@ export function AuthCallback() {
       if (fromExt === '1') {
         console.log('[AuthCallback]   from_extension=1 → entering extension sync flow');
         if (session) {
-          console.log('[AuthCallback]   session ready, calling pushSessionToExtension...');
-          const ok = await pushSessionToExtension(session);
-          if (ok) {
-            setStatus('success');
-            setMessage('登录成功！HomeScope 扩展已同步会话。此标签页将自动关闭。');
-            console.log('[AuthCallback]   pushSessionToExtension → success, background will close tab');
-          } else {
-            console.error('[AuthCallback]   pushSessionToExtension → FAILED');
-            setStatus('error');
-            setMessage('无法同步会话到扩展。请确保扩展已启用，或刷新扩展后重试。');
-          }
+          console.log('[AuthCallback]   session ready, sending to extension...');
+          pushSessionToExtension(session);
+          // 直接显示成功，不再等待 extension 响应
+          setStatus('success');
+          setMessage('登录成功！HomeScope 扩展已同步会话。此标签页将自动关闭。');
+          console.log('[AuthCallback]   pushSessionToExtension → sent, background will save session and close tab');
         } else {
           console.error('[AuthCallback]   NO SESSION after all retries — cannot sync to extension');
           setStatus('error');

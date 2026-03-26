@@ -7,37 +7,62 @@
  * - EXTRACT_LISTING / GET_PAGE_STATE only perform lightweight page sensing.
  *
  * Auth bridge (ONLY auth-related code in this file):
- *   - Exposes window.__HOMESCOPE_SYNC_SESSION__(payload, callback) for injected <script> from AuthCallback.tsx
- *   - Calls chrome.runtime.sendMessage → background sync_session_from_site handler
+ *   - Listens for window.postMessage from web pages (source: 'homescope-auth-bridge')
+ *   - Forwards session data to background via chrome.runtime.sendMessage
+ *   - Sends ACK back to page via postMessage
  */
 
-// ===== Global guard to prevent double-injection in same tab =====
-if (window.__HOMESCOPE_CS_LOADED__) {
-  console.log('[HomeScope CS] Already loaded, skip.');
-  return;
-}
+;(function() {
+  'use strict';
 
-// ── Auth bridge: expose sync function on window ──
-  // Called by injected <script> from AuthCallback.tsx (which runs in the web page world,
-  // cannot access chrome.* APIs directly). The function body runs HERE in the content script
-  // world, so it CAN call chrome.runtime.sendMessage.
-  window.__HOMESCOPE_SYNC_SESSION__ = function(sessionPayload, callback) {
-    console.log('[HomeScope CS] __HOMESCOPE_SYNC_SESSION__ called, userId=' + (sessionPayload.user ? sessionPayload.user.id : 'unknown'));
+  // ===== Global guard to prevent double-injection in same tab =====
+  if (window.__HOMESCOPE_CS_LOADED__) {
+    console.log('[HomeScope CS] Already loaded, skip.');
+    return;
+  }
+  window.__HOMESCOPE_CS_LOADED__ = true;
+
+// ── Auth bridge: listen for postMessage from page world ──
+// Pages in the web world cannot access content script's window object directly.
+// They send messages via window.postMessage, which we listen for here.
+window.addEventListener('message', (event) => {
+  // Only accept messages from the page (same window instance)
+  if (event.source !== window) return;
+
+  // Validate message source
+  if (event.data?.source !== 'homescope-auth-bridge') return;
+
+  if (event.data?.type === 'HOMESCOPE_SYNC_SESSION') {
+    console.log('[HomeScope CS] Received HOMESCOPE_SYNC_SESSION from page, userId=' +
+      (event.data.payload?.user?.id || 'unknown'));
+
     chrome.runtime.sendMessage(
-      { action: 'sync_session_from_site', payload: sessionPayload },
+      { type: 'sync_session_from_site', payload: event.data.payload },
       (response) => {
         if (chrome.runtime.lastError) {
-          console.error('[HomeScope CS] __HOMESCOPE_SYNC_SESSION__: chrome.runtime.lastError=', chrome.runtime.lastError.message);
-          callback(false, chrome.runtime.lastError.message);
+          console.error('[HomeScope CS] sync_session_from_site: chrome.runtime.lastError=',
+            chrome.runtime.lastError.message);
+          event.source.postMessage({
+            source: 'homescope-auth-bridge',
+            type: 'HOMESCOPE_SESSION_ACK',
+            success: false,
+            error: chrome.runtime.lastError.message
+          }, event.origin);
           return;
         }
-        console.log('[HomeScope CS] __HOMESCOPE_SYNC_SESSION__: background responded:', JSON.stringify(response));
-        callback(response?.success !== false, response?.error || null);
+        console.log('[HomeScope CS] sync_session_from_site: background responded:', JSON.stringify(response));
+        event.source.postMessage({
+          source: 'homescope-auth-bridge',
+          type: 'HOMESCOPE_SESSION_ACK',
+          success: response?.success !== false,
+          error: response?.error || null
+        }, event.origin);
       }
     );
-  };
+  }
+});
 
-  console.log('[HomeScope CS] Content script loaded, page URL:', window.location.href, 'origin:', window.location.origin);
+console.log('[HomeScope CS] Content script loaded, page URL:', window.location.href, 'origin:', window.location.origin);
 
 // ─────────────────────────────────────────────────────────────
 // User-triggered extraction session state
@@ -1669,4 +1694,6 @@ async function collectByPhotoSwipePaging() {
 // ── Mark as ready ──
 isReady = true;
 console.log('[HomeScope] Content script loaded — user-triggered extraction mode');
+
+})(); // End of IIFE
 
