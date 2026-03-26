@@ -71,13 +71,12 @@ export function AuthCallback() {
       try {
         // AuthContext.initAuth() 已经 exchange 过 code 了，这里只读 session
         // 先立即试一次（code exchange 后 session 通常已经就绪）
-        let { data } = await supabase.auth.getSession();
-        if (!data.session) {
+        const { data } = await supabase.auth.getSession();
+        let session: Session | null = data.session ?? null;
+        if (!session) {
           // 兜底：轮询等待 session（OAuth code exchange 是异步的）
-          data.session = await waitForSession();
+          session = await waitForSession();
         }
-
-        const session = data.session ?? null;
 
         // ── 扩展流程：推送 session 后关闭标签页 ──
         if (fromExtension) {
