@@ -14,10 +14,10 @@
 // ===== Global guard to prevent double-injection in same tab =====
 if (window.__HOMESCOPE_CS_LOADED__) {
   console.log('[HomeScope CS] Already loaded, skip.');
-} else {
-  window.__HOMESCOPE_CS_LOADED__ = true;
+  return;
+}
 
-  // ── Auth bridge: expose sync function on window ──
+// ── Auth bridge: expose sync function on window ──
   // Called by injected <script> from AuthCallback.tsx (which runs in the web page world,
   // cannot access chrome.* APIs directly). The function body runs HERE in the content script
   // world, so it CAN call chrome.runtime.sendMessage.
@@ -765,7 +765,6 @@ async function openGallery() {
 
   log('✗ All strategies failed — PhotoSwipe not opened');
   return false;
-}
 }
 
 /**
@@ -1666,13 +1665,8 @@ async function collectByPhotoSwipePaging() {
   return result;
 }
 
-// ── NOTE: No automatic REGISTER_LISTING_FROM_CS on load ──
-// Background tab→URL mapping is now set by the side panel when the user
-// initiates analysis (REGISTER_LISTING_TAB message), not by auto-injection.
-// This prevents silent background activity.
 
 // ── Mark as ready ──
 isReady = true;
 console.log('[HomeScope] Content script loaded — user-triggered extraction mode');
 
-} // end global guard: window.__HOMESCOPE_CS_LOADED__
