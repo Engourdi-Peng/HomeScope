@@ -37,7 +37,7 @@ window.addEventListener('message', (event) => {
       (event.data.payload?.user?.id || 'unknown'));
 
     chrome.runtime.sendMessage(
-      { type: 'sync_session_from_site', payload: event.data.payload },
+      { action: 'sync_session_from_site', payload: event.data.payload },
       (response) => {
         if (chrome.runtime.lastError) {
           console.error('[HomeScope CS] sync_session_from_site: chrome.runtime.lastError=',
