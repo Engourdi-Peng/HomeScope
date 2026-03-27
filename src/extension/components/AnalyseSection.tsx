@@ -1,6 +1,90 @@
 import React from 'react';
-import { Sparkles } from 'lucide-react';
+import { ArrowRight, Check, Camera } from 'lucide-react';
 import { useAppState, useActions } from '../store';
+
+// Analysis phases in order
+const ANALYSIS_PHASES = [
+  'reading_page',
+  'opening_gallery',
+  'collecting_photos',
+  'sending_data',
+  'analysing',
+  'generating_report',
+] as const;
+
+type AnalysisPhaseType = typeof ANALYSIS_PHASES[number];
+
+const PHASE_DISPLAY: Record<AnalysisPhaseType, { label: string }> = {
+  reading_page: { label: 'Reading page data' },
+  opening_gallery: { label: 'Opening gallery' },
+  collecting_photos: { label: 'Collecting photos' },
+  sending_data: { label: 'Sending data' },
+  analysing: { label: 'Analysing property' },
+  generating_report: { label: 'Generating report' },
+};
+
+interface PhaseItemProps {
+  phase: AnalysisPhaseType;
+  index: number;
+  isDone: boolean;
+  isActive: boolean;
+}
+
+function PhaseItem({ phase, index, isDone, isActive }: PhaseItemProps) {
+  const display = PHASE_DISPLAY[phase];
+
+  return (
+    <div className={`ext-phase-item ${isDone ? 'ext-phase-item--done' : ''} ${isActive ? 'ext-phase-item--active' : ''}`}>
+      <div className="ext-phase-indicator">
+        {isDone ? (
+          <Check size={12} strokeWidth={3} />
+        ) : isActive ? (
+          <div className="ext-phase-spinner" />
+        ) : (
+          <span className="ext-phase-number">{index + 1}</span>
+        )}
+      </div>
+      <span className="ext-phase-label">{display.label}</span>
+    </div>
+  );
+}
+
+interface AnalysisProgressPanelProps {
+  phase: string;
+  progress: number;
+}
+
+function AnalysisProgressPanel({ phase, progress }: AnalysisProgressPanelProps) {
+  return (
+    <div className="ext-analysis-progress-panel ext-panel">
+      <div className="ext-phase-list">
+        {ANALYSIS_PHASES.map((p, idx) => {
+          const phaseIdx = ANALYSIS_PHASES.indexOf(p as AnalysisPhaseType);
+          const currentIdx = ANALYSIS_PHASES.indexOf(phase as AnalysisPhaseType);
+          const isDone = phaseIdx < currentIdx;
+          const isActive = p === phase;
+
+          return (
+            <PhaseItem
+              key={p}
+              phase={p as AnalysisPhaseType}
+              index={idx}
+              isDone={isDone}
+              isActive={isActive}
+            />
+          );
+        })}
+      </div>
+      <div className="ext-phase-progress-bar">
+        <div className="ext-phase-progress-fill" style={{ width: `${progress}%` }} />
+      </div>
+      <div className="ext-phase-hint">
+        <Camera size={12} />
+        <span>We&apos;ll open the photo gallery to collect all images for a more accurate analysis.</span>
+      </div>
+    </div>
+  );
+}
 
 function useCooldownRemaining() {
   const { cooldownEndsAt } = useAppState();
@@ -23,8 +107,10 @@ function useCooldownRemaining() {
   return remaining;
 }
 
+const PRIMARY_CTA_MAIN = 'See potential risks';
+
 const PHASE_LABELS: Record<string, { main: string; sub?: string }> = {
-  idle: { main: 'Analyse this property', sub: 'Uses 1 credit' },
+  idle: { main: PRIMARY_CTA_MAIN, sub: 'Know before you visit' },
   preparing: { main: 'Preparing extraction...', sub: 'Checking page state' },
   reading_page: { main: 'Reading page data...', sub: 'Extracting listing info' },
   opening_gallery: { main: 'Opening photo gallery...', sub: 'Launching PhotoSwipe' },
@@ -32,82 +118,85 @@ const PHASE_LABELS: Record<string, { main: string; sub?: string }> = {
   sending_data: { main: 'Sending to analysis...', sub: 'Uploading property data' },
   analysing: { main: 'Analysing property...', sub: 'AI evaluation in progress' },
   generating_report: { main: 'Generating report...', sub: 'Building your report' },
-  done: { main: 'Analyse this property', sub: 'Uses 1 credit' },
+  done: { main: PRIMARY_CTA_MAIN, sub: 'Know before you visit' },
   no_credits: { main: 'No credits remaining', sub: 'Get more credits' },
   error: { main: 'Analysis failed · Tap to retry' },
 };
 
 export function AnalyseSection() {
-  const { analysisPhase, analysisProgress, propertyStatus, listingData, propertyDetection } = useAppState();
-  const { retryAnalysis, navigateToReport } = useActions();
+  const { analysisPhase, analysisProgress, listingData, propertyDetection } = useAppState();
+  const { retryAnalysis, startAnalysis } = useActions();
   const cooldownRemaining = useCooldownRemaining();
   const cooldownSecs = Math.ceil(cooldownRemaining / 1000);
 
   const isAnalysing = ['preparing', 'reading_page', 'opening_gallery', 'collecting_photos', 'sending_data', 'analysing', 'generating_report'].includes(analysisPhase);
   const isInCooldown = cooldownRemaining > 0;
-  const canAnalyse = propertyStatus === 'detected' && listingData && !isAnalysing && !isInCooldown;
   const isNoCredits = analysisPhase === 'no_credits';
   const isError = analysisPhase === 'error';
   const isDone = analysisPhase === 'done';
+
+  // Button is always enabled unless: already analysing, in cooldown, or no credits
+  const isDisabled = isAnalysing || isInCooldown || isNoCredits;
 
   const getButtonLabel = () => {
     if (isInCooldown) return { main: `Please wait ${cooldownSecs}s`, sub: 'Cooldown active' };
     if (isError) return { main: 'Analysis failed · Tap to retry' };
     if (isNoCredits) return { main: 'No credits remaining', sub: 'Get more credits' };
-    if (isDone) return { main: 'Analyse this property', sub: 'Uses 1 credit' };
     if (isAnalysing) return { main: PHASE_LABELS[analysisPhase]?.main ?? 'Working...', sub: PHASE_LABELS[analysisPhase]?.sub };
+    if (isDone) return { main: PRIMARY_CTA_MAIN, sub: 'Know before you visit' };
     const tier = propertyDetection?.tier;
     if (tier === 'partial') {
-      return { main: 'Analyse with available data', sub: 'Partial analysis · Uses 1 credit' };
+      return { main: PRIMARY_CTA_MAIN, sub: 'Partial analysis · Uses 1 credit' };
     }
     if (listingData) {
-      return { main: 'Analyse this property', sub: 'Uses 1 credit' };
+      return { main: PRIMARY_CTA_MAIN, sub: 'Know before you visit' };
     }
-    return { main: 'Not enough listing data', sub: 'Open a full listing page' };
+    // No listing data yet — button still enabled, will trigger extraction first
+    return { main: PRIMARY_CTA_MAIN, sub: 'Reads listing page first' };
   };
 
   const handleClick = () => {
-    if (isInCooldown) return;
+    if (isDisabled) return;
     if (isError) {
       retryAnalysis();
-    } else if (canAnalyse) {
-      navigateToReport(null);
     } else if (isNoCredits) {
       window.open('https://www.tryhomescope.com/pricing', '_blank');
+    } else {
+      // Always go through startAnalysis — it handles the full extract + analyze flow,
+      // including the case where listingData hasn't been loaded yet.
+      startAnalysis({ bypassCache: true });
     }
   };
 
   const label = getButtonLabel();
 
+  const showPrimaryArrow =
+    (isDone || !!listingData) && !isAnalysing && !isNoCredits && !isInCooldown && !isError;
+
   const btnClass = [
     'ext-cta',
     isAnalysing && 'ext-cta--loading',
-    (isInCooldown || isNoCredits) && 'ext-cta--disabled',
+    isNoCredits && 'ext-cta--disabled',
     isError && 'ext-cta--error',
-    (isDone || canAnalyse) && !isAnalysing && !isNoCredits && !isInCooldown && !isError && 'ext-cta--primary',
-    !isDone && !canAnalyse && !isAnalysing && !isNoCredits && !isInCooldown && !isError && 'ext-cta--muted',
+    (isDone || !!listingData) && !isAnalysing && !isNoCredits && !isInCooldown && !isError && 'ext-cta--primary',
+    !listingData && !isAnalysing && !isNoCredits && !isInCooldown && !isError && 'ext-cta--muted',
   ]
     .filter(Boolean)
     .join(' ');
 
-  const showProgress = isAnalysing && analysisProgress > 0;
-  const disabled = !canAnalyse && !isError && !isNoCredits && !isDone && !isInCooldown;
-
   return (
     <div className="ext-cta-block">
-      <button type="button" className={btnClass} onClick={handleClick} disabled={disabled}>
-        {isAnalysing ? (
-          <div className="ext-spinner ext-spinner-sm ext-spinner-on-dark" />
-        ) : (
-          !isError && !isNoCredits && !isInCooldown && <Sparkles size={18} strokeWidth={2} className="ext-cta-icon" />
-        )}
-        <span>{label.main}</span>
+      <button type="button" className={btnClass} onClick={handleClick} disabled={isDisabled}>
+        {isAnalysing && <div className="ext-spinner ext-spinner-sm ext-spinner-on-dark" />}
+        <span className="ext-cta-label">{label.main}</span>
+        {showPrimaryArrow && <ArrowRight size={18} strokeWidth={2.25} className="ext-cta-icon" aria-hidden />}
       </button>
 
-      {showProgress && (
-        <div className="ext-progress ext-progress-cta">
-          <div className="ext-progress-bar" style={{ width: `${analysisProgress}%` }} />
-        </div>
+      {isAnalysing && (
+        <AnalysisProgressPanel
+          phase={analysisPhase}
+          progress={analysisProgress}
+        />
       )}
 
       {label.sub && !isAnalysing && (

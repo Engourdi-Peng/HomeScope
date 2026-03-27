@@ -62,8 +62,8 @@ function appReducer(state: AppState, action: AppAction): AppState {
       return {
         ...state,
         authStatus: action.authStatus,
-        user: action.user ?? null,
-        credits: action.credits ?? state.credits,
+        user: action.user !== undefined ? action.user : state.user,
+        credits: action.credits !== undefined ? action.credits : state.credits,
       };
 
     case 'SET_ANALYSIS_PHASE':
@@ -136,6 +136,7 @@ interface AppContextValue {
   dispatch: React.Dispatch<AppAction>;
   actions: {
     refreshPageData: () => Promise<void>;
+    refreshAll: () => Promise<void>;
     startAnalysis: (options?: { bypassCache?: boolean }) => Promise<void>;
     retryAnalysis: () => Promise<void>;
     refreshPhotos: () => Promise<void>;
@@ -185,12 +186,169 @@ async function sendMessageWithTimeout<T = unknown>(
   });
 }
 
+// ── Shared extraction result type ──
+interface ExtractionResult {
+  data: ListingData | ListingDataV2 | null;
+  error: string | null;
+  detection: PropertyDetection | null;
+}
+
+/**
+ * Ensures the content script is loaded and performs a lightweight EXTRACT_LISTING.
+ * Returns { data, error, detection } — never throws.
+ * Used by both initial page load and tab-switch / URL-change refresh.
+ */
+async function ensureContentScriptThenExtractListing(
+  tabId: number
+): Promise<ExtractionResult> {
+  // Step 1: PING — check if content script is already loaded
+  let pingOk = false;
+  try {
+    const pong: { ready: boolean } | null = await sendMessageWithTimeout(
+      { action: 'PONG' },
+      tabId,
+      1000
+    );
+    pingOk = pong?.ready === true;
+  } catch {}
+
+  // Step 2: Inject if needed
+  if (!pingOk) {
+    try {
+      await chrome.scripting.executeScript({
+        target: { tabId },
+        files: ['content.js'],
+      });
+    } catch {}
+  }
+
+  // Step 3: Extract lightweight listing data (no gallery images)
+  try {
+    const extractResult = await sendMessageWithTimeout<{
+      data?: ListingData | ListingDataV2;
+      error?: string;
+      detection?: PropertyDetection;
+    }>({ action: 'EXTRACT_LISTING', includeGalleryImages: false }, tabId, 8000);
+
+    if (!extractResult) {
+      return {
+        data: null,
+        error: 'No response from page (timeout or tab inactive). Reload the listing page and try again.',
+        detection: null,
+      };
+    }
+
+    if (extractResult.error) {
+      return {
+        data: null,
+        error: String(extractResult.error),
+        detection: extractResult.detection ?? null,
+      };
+    }
+
+    if (!extractResult.data) {
+      return {
+        data: null,
+        error: 'Could not read listing data. Try again.',
+        detection: extractResult.detection ?? null,
+      };
+    }
+
+    const data = extractResult.data as ListingData | ListingDataV2;
+    return {
+      data,
+      error: null,
+      detection: extractResult.detection ?? null,
+    };
+  } catch (err) {
+    return { data: null, error: String(err), detection: null };
+  }
+}
+
+/**
+ * Pure ping + inject: ensures content script is loaded, returns whether it succeeded.
+ * Used by startAnalysis (no EXTRACT_LISTING call needed there).
+ */
+async function ensureContentScriptLoaded(tabId: number): Promise<boolean> {
+  let pingOk = false;
+  try {
+    const pong: { ready: boolean } | null = await sendMessageWithTimeout(
+      { action: 'PONG' },
+      tabId,
+      1000
+    );
+    pingOk = pong?.ready === true;
+  } catch {}
+
+  if (!pingOk) {
+    try {
+      await chrome.scripting.executeScript({
+        target: { tabId },
+        files: ['content.js'],
+      });
+      // Verify injection worked
+      try {
+        const pong2: { ready: boolean } | null = await sendMessageWithTimeout(
+          { action: 'PONG' },
+          tabId,
+          1000
+        );
+        pingOk = pong2?.ready === true;
+      } catch {}
+    } catch {}
+  }
+
+  return pingOk;
+}
+
+// ── Unified dispatch helper for extraction results ──
+function dispatchExtractionResult(
+  dispatch: React.Dispatch<AppAction>,
+  result: ExtractionResult,
+  pingResult?: { url?: string; title?: string; readyState?: string } | null
+) {
+  if (!result.data) {
+    // Not a property page or extraction failed
+    const canAnalyze = result.detection?.canAnalyze ?? false;
+    dispatch({
+      type: 'SET_PROPERTY_STATUS',
+      propertyStatus: canAnalyze ? 'error' : 'not_listing',
+      listingData: null,
+      propertyDetection: result.detection,
+      readError: result.error,
+    });
+  } else {
+    dispatch({
+      type: 'SET_PROPERTY_STATUS',
+      propertyStatus: 'detected',
+      listingData: result.data,
+      propertyDetection: result.detection,
+      readError: null,
+    });
+
+    // Also populate pageState for debugging / observability
+    if (pingResult) {
+      const stateInfo: PageStateInfo = {
+        url: pingResult.url ?? '',
+        title: pingResult.title ?? '',
+        readyState: (pingResult.readyState ?? 'unknown') as DocumentReadyState,
+        isPropertyLike: true,
+        extractionStage: 'initial',
+        basicSignals: result.detection?.signals as PageStateInfo['basicSignals'],
+      };
+      dispatch({ type: 'SET_PAGE_STATE', pageState: stateInfo });
+    }
+  }
+}
+
 /** Layer A: 稳定的页面数据接入函数 */
 async function initializePageData(dispatch: React.Dispatch<AppAction>) {
   dispatch({ type: 'SET_PAGE_STATUS', pageStatus: 'loading' });
 
-  // Step 1: 获取当前激活 tab
   let tabId: number | undefined;
+  let pingResult: { ready: boolean; url?: string; title?: string; readyState?: string } | null = null;
+
+  // Step 1: 获取当前激活 tab
   try {
     const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
     if (!tab?.id) {
@@ -198,76 +356,17 @@ async function initializePageData(dispatch: React.Dispatch<AppAction>) {
       return;
     }
     tabId = tab.id;
+    pingResult = { ready: true, url: tab.url, title: tab.title, readyState: tab.status };
   } catch {
     dispatch({ type: 'SET_READ_ERROR', errorCode: 'TAB_UNAVAILABLE', errorMessage: getUserErrorMessage(ExtractionErrorCode.TAB_UNAVAILABLE) });
     return;
   }
 
-    // Step 2: Ping content script（2000ms 超时）
-    let pingResult: { ready: boolean; url?: string; title?: string; readyState?: string } | null = null;
-    try {
-      pingResult = await sendMessageWithTimeout<{ ready: boolean; url?: string; title?: string; readyState?: string }>(
-        { action: 'PONG' },
-        tabId,
-        PING_TIMEOUT_MS
-      );
-    } catch {}
+  // Step 2: Ping + inject + EXTRACT_LISTING (shared path)
+  const result = await ensureContentScriptThenExtractListing(tabId);
 
-    if (pingResult?.ready !== true) {
-      // Step 3: 运行时注入 content script（只在此刻需要）
-      try {
-        await chrome.scripting.executeScript({
-          target: { tabId },
-          files: ['content.js'],
-        });
-        // 注入后重试 Ping
-        pingResult = await sendMessageWithTimeout<{ ready: boolean; url?: string; title?: string; readyState?: string }>(
-          { action: 'PONG' },
-          tabId,
-          PING_TIMEOUT_MS
-        );
-      } catch (injectError) {
-        dispatch({ type: 'SET_READ_ERROR', errorCode: 'CS_NOT_INJECTED', errorMessage: getUserErrorMessage(ExtractionErrorCode.CS_NOT_INJECTED) });
-        return;
-      }
-    }
-
-  if (pingResult?.ready !== true) {
-    dispatch({ type: 'SET_READ_ERROR', errorCode: 'NO_HOST_PERMISSION', errorMessage: getUserErrorMessage(ExtractionErrorCode.NO_HOST_PERMISSION) });
-    return;
-  }
-
-  // Step 4: 获取轻量页面状态（不用完整提取）
-  try {
-    const pageState = await sendMessageWithTimeout<{ url: string; title: string; readyState: string; isPropertyLike: boolean; extractionStage: string; basicDetectedSignals?: Record<string, unknown>; detection: PropertyDetection }>(
-      { action: 'GET_PAGE_STATE' },
-      tabId,
-      3000
-    );
-
-    const stateInfo: PageStateInfo = {
-      url: pageState?.url ?? pingResult?.url ?? '',
-      title: pageState?.title ?? pingResult?.title ?? '',
-      readyState: (pageState?.readyState ?? pingResult?.readyState ?? 'unknown') as DocumentReadyState,
-      isPropertyLike: pageState?.isPropertyLike ?? false,
-      extractionStage: (pageState?.extractionStage ?? 'initial') as 'initial' | 'delayed' | 'final',
-      basicSignals: pageState?.basicDetectedSignals as PageStateInfo['basicSignals'],
-    };
-
-    dispatch({ type: 'SET_PAGE_STATE', pageState: stateInfo });
-
-    // 根据检测结果设置 propertyStatus
-    const detection = pageState?.detection;
-    if (detection) {
-      dispatch({ type: 'SET_PROPERTY_STATUS', propertyStatus: detection.canAnalyze ? 'detected' : 'not_listing', propertyDetection: detection, listingData: null, readError: null });
-    } else {
-      dispatch({ type: 'SET_PROPERTY_STATUS', propertyStatus: 'idle' });
-    }
-  } catch {
-    // 页面状态获取失败，但 ping 成功，设为 idle
-    dispatch({ type: 'SET_PROPERTY_STATUS', propertyStatus: 'idle' });
-  }
-
+  // Step 3: Dispatch unified result
+  dispatchExtractionResult(dispatch, result, pingResult);
   dispatch({ type: 'SET_PAGE_STATUS', pageStatus: 'ready' });
 }
 
@@ -391,9 +490,81 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     return () => chrome.runtime.onMessage.removeListener(handleMessage);
   }, [refreshUserDataAndHistory]);
 
+  // ---- Tab 切换 / URL 变化时自动轻量读取（仅在已登录时生效）----
+  useEffect(() => {
+    if (state.authStatus !== 'logged_in') return;
+
+    let currentWindowId: number | null = null;
+    let debounceTimer: ReturnType<typeof setTimeout> | null = null;
+
+    async function getCurrentWindowId() {
+      try {
+        const win = await chrome.windows.getCurrent();
+        return win.id;
+      } catch {
+        return null;
+      }
+    }
+
+    async function handleTabChange(tabId: number, changeInfo?: { url?: string; status?: string }) {
+      if (debounceTimer) {
+        clearTimeout(debounceTimer);
+        debounceTimer = null;
+      }
+
+      debounceTimer = setTimeout(async () => {
+        debounceTimer = null;
+        if (currentWindowId === null) {
+          currentWindowId = await getCurrentWindowId();
+        }
+        // 只处理当前窗口的标签页变化
+        try {
+          const tab = await chrome.tabs.get(tabId);
+          if (tab.windowId !== currentWindowId) return;
+          if (!tab.active) return; // 只处理激活的标签页
+        } catch {
+          return;
+        }
+
+        // 提取当前激活标签页的数据（复用 shared helper）
+        try {
+          const [activeTab] = await chrome.tabs.query({ active: true, currentWindow: true });
+          if (!activeTab?.id) return;
+          const pingResult = { url: activeTab.url, title: activeTab.title, readyState: activeTab.status };
+          const result = await ensureContentScriptThenExtractListing(activeTab.id);
+          // 静默更新：保持当前 analysisPhase 不变，仅更新卡片数据
+          dispatchExtractionResult(dispatch, result, pingResult);
+        } catch {
+          // 自动刷新失败不提示，避免干扰用户
+        }
+      }, 400);
+    }
+
+    // chrome.tabs.onActivated
+    const onActivated = (activeInfo: { tabId: number; windowId: number }) => {
+      void handleTabChange(activeInfo.tabId);
+    };
+
+    // chrome.tabs.onUpdated — 仅在 status === 'complete' 时触发
+    const onUpdated = (tabId: number, changeInfo: { status?: string; url?: string }) => {
+      if (changeInfo.status === 'complete' || changeInfo.url) {
+        void handleTabChange(tabId, changeInfo);
+      }
+    };
+
+    chrome.tabs.onActivated.addListener(onActivated);
+    chrome.tabs.onUpdated.addListener(onUpdated);
+
+    return () => {
+      chrome.tabs.onActivated.removeListener(onActivated);
+      chrome.tabs.onUpdated.removeListener(onUpdated);
+      if (debounceTimer) clearTimeout(debounceTimer);
+    };
+  }, [state.authStatus]);
+
   // ---- Actions ----
 
-  /** 刷新页面数据（使用新协议） */
+  /** 刷新页面数据（轻量自动读取 + 展示卡片） */
   const refreshPageData = useCallback(async () => {
     dispatch({ type: 'SET_PAGE_STATUS', pageStatus: 'loading' });
     dispatch({ type: 'SET_PROPERTY_STATUS', propertyStatus: 'reading' });
@@ -404,74 +575,43 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       return;
     }
 
-    // Step 1: 先尝试 PING，只有在 content script 未加载时才注入
-    let pingOk = false;
-    try {
-      const pong: { ready: boolean } | null = await sendMessageWithTimeout(
-        { action: 'PONG' },
-        tab.id,
-        1000
-      );
-      pingOk = pong?.ready === true;
-    } catch {}
-
-    if (!pingOk) {
-      // content script 未加载，运行时注入（已有 manifest 自动注入时跳过）
-      try {
-        await chrome.scripting.executeScript({
-          target: { tabId: tab.id },
-          files: ['content.js'],
-        });
-      } catch {}
-    }
-
-    // Step 2: 提取数据
-    try {
-      const extractResult = await sendMessageWithTimeout<{
-        data?: ListingData | ListingDataV2;
-        error?: string;
-        detection?: PropertyDetection;
-      }>({ action: 'EXTRACT_LISTING', includeGalleryImages: false }, tab.id, 8000);
-
-      if (extractResult?.data && !extractResult.error) {
-        const data = extractResult.data as ListingData | ListingDataV2;
-        if (data.error === 'NOT_PROPERTY_PAGE') {
-          dispatch({ type: 'SET_PROPERTY_STATUS', propertyStatus: 'not_listing', propertyDetection: extractResult.detection ?? null });
-        } else {
-          dispatch({
-            type: 'SET_PROPERTY_STATUS',
-            propertyStatus: 'detected',
-            listingData: data as ListingData | ListingDataV2,
-            propertyDetection: extractResult.detection ?? null,
-          });
-        }
-      } else if (extractResult?.error) {
-        dispatch({
-          type: 'SET_PROPERTY_STATUS',
-          propertyStatus: 'error',
-          readError: String(extractResult.error),
-          listingData: null,
-          propertyDetection: extractResult.detection ?? null,
-        });
-      } else {
-        // 超时、content script 无响应、或空响应：保持 error 面板可重试，勿设为 not_listing（ListingSummary 会对 not_listing return null 导致整块消失）
-        dispatch({
-          type: 'SET_PROPERTY_STATUS',
-          propertyStatus: 'error',
-          readError:
-            extractResult == null
-              ? 'No response from page (timeout or tab inactive). Reload the listing page and try again.'
-              : 'Could not read listing data. Try again.',
-          listingData: null,
-          propertyDetection: null,
-        });
-      }
-    } catch (err) {
-      dispatch({ type: 'SET_PROPERTY_STATUS', propertyStatus: 'error', readError: String(err) });
-    }
-
+    const pingResult = { url: tab.url, title: tab.title, readyState: tab.status };
+    const result = await ensureContentScriptThenExtractListing(tab.id);
+    dispatchExtractionResult(dispatch, result, pingResult);
     dispatch({ type: 'SET_PAGE_STATUS', pageStatus: 'ready' });
   }, []);
+
+  /** 刷新所有：页面数据 + 用户积分 + 历史记录 */
+  const refreshAll = useCallback(async () => {
+    // 1. 刷新页面数据
+    await refreshPageData();
+
+    // 2. 刷新用户积分
+    if (state.user) {
+      sendMessage<{
+        status: string;
+        data?: { credits_remaining: number };
+      }>({ action: 'get_user_data' }).then((userData) => {
+        if (userData?.status === 'success' && userData.data) {
+          dispatch({
+            type: 'SET_AUTH_STATUS',
+            authStatus: 'logged_in',
+            credits: userData.data.credits_remaining,
+          });
+        }
+      }).catch(() => {});
+    }
+
+    // 3. 刷新历史记录
+    sendMessage<{
+      status: string;
+      analyses?: AnalysisSummary[];
+    }>({ action: 'get_analysis_history', limit: 8, offset: 0 }).then((response) => {
+      if (response.status === 'success' && response.analyses) {
+        dispatch({ type: 'SET_HISTORY', history: response.analyses });
+      }
+    }).catch(() => {});
+  }, [refreshPageData, state.user]);
 
   /**
    * User-triggered analysis flow.
@@ -515,25 +655,8 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       return;
     }
 
-    // Step 3: Ensure content script is loaded
-    let pingOk = false;
-    try {
-      const pong: { ready: boolean } | null = await sendMessageWithTimeout(
-        { action: 'PONG' },
-        tab.id,
-        1000
-      );
-      pingOk = pong?.ready === true;
-    } catch {}
-
-    if (!pingOk) {
-      try {
-        await chrome.scripting.executeScript({
-          target: { tabId: tab.id },
-          files: ['content.js'],
-        });
-      } catch {}
-    }
+    // Step 3: Ensure content script is loaded (reuse shared helper)
+    await ensureContentScriptLoaded(tab.id);
 
     // Step 4: Send START_USER_EXTRACTION
     dispatch({ type: 'SET_ANALYSIS_PHASE', phase: 'reading_page' });
@@ -568,7 +691,99 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   }, [state.cooldownEndsAt, state.lastExtractedUrl, state.extractionCached, state.listingData]);
 
   /**
+   * Poll for analysis status from frontend.
+   * Separated so it runs in the React side panel context (not background).
+   * This avoids Service Worker termination issues that caused sendResponse loss.
+   */
+  async function pollAnalysisStatus(analysisId: string) {
+    const POLL_INTERVAL_MS = 2000;
+    const MAX_POLL_MS = 120_000; // 2 minutes max for frontend polling
+
+    const startTime = Date.now();
+
+    while (Date.now() - startTime < MAX_POLL_MS) {
+      try {
+        const statusResponse = await sendMessage<{
+          status?: string;
+          result?: AnalysisResult;
+          error?: string;
+          stage?: string;
+          progress?: number;
+        }>({
+          action: 'get_analysis_status',
+          analysisId,
+        });
+
+        if (statusResponse.status === 'done' && statusResponse.result) {
+          // Analysis completed successfully
+          dispatch({ type: 'SET_ANALYSIS_RESULT', result: statusResponse.result });
+          dispatch({ type: 'SET_ANALYSIS_PHASE', phase: 'done' });
+          dispatch({ type: 'SET_CURRENT_VIEW', view: 'report' });
+
+          // Set 20s cooldown to prevent rapid re-triggers
+          dispatch({ type: 'SET_COOLDOWN', cooldownEndsAt: Date.now() + EXTRACTION_COOLDOWN_MS });
+
+          // Refresh credits
+          const userData = await sendMessage<{
+            status: string;
+            data?: { credits_remaining: number };
+          }>({ action: 'get_user_data' });
+          if (userData.status === 'success' && userData.data) {
+            dispatch({ type: 'SET_AUTH_STATUS', authStatus: 'logged_in', credits: userData.data.credits_remaining });
+          }
+
+          return;
+        }
+
+        if (statusResponse.status === 'failed') {
+          dispatch({
+            type: 'SET_ANALYSIS_PHASE',
+            phase: 'error',
+            error: statusResponse.error || 'Analysis failed',
+          });
+          return;
+        }
+
+        // Update progress based on backend stage
+        if (statusResponse.stage) {
+          const stage = statusResponse.stage;
+          if (stage.includes('uploading') || stage.includes('Reading')) {
+            dispatch({ type: 'SET_ANALYSIS_PHASE', phase: 'reading_page' });
+          } else if (stage.includes('gallery') || stage.includes('gallery_open') || stage.includes('opening_gallery')) {
+            dispatch({ type: 'SET_ANALYSIS_PHASE', phase: 'opening_gallery' });
+          } else if (stage.includes('photo') || stage.includes('Collecting') || stage.includes('extracting') || stage.includes('image')) {
+            dispatch({ type: 'SET_ANALYSIS_PHASE', phase: 'collecting_photos' });
+          } else if (stage.includes('send') || stage.includes('uploading') || stage.includes('sending')) {
+            dispatch({ type: 'SET_ANALYSIS_PHASE', phase: 'sending_data' });
+          } else if (stage.includes('analyse') || stage.includes('evaluating') || stage.includes('strengths') || stage.includes('competition')) {
+            dispatch({ type: 'SET_ANALYSIS_PHASE', phase: 'analysing' });
+          } else if (stage.includes('生成') || stage.includes('building') || stage.includes('final') || stage.includes('report')) {
+            dispatch({ type: 'SET_ANALYSIS_PHASE', phase: 'generating_report' });
+          }
+
+          if (statusResponse.progress != null) {
+            dispatch({ type: 'SET_ANALYSIS_PROGRESS', progress: statusResponse.progress });
+          }
+        }
+      } catch (err) {
+        console.error('[ExtApp] pollAnalysisStatus: error —', err);
+        // Continue polling despite errors
+      }
+
+      await new Promise((resolve) => setTimeout(resolve, POLL_INTERVAL_MS));
+    }
+
+    // Timeout after max poll duration
+    dispatch({
+      type: 'SET_ANALYSIS_PHASE',
+      phase: 'error',
+      error: 'Analysis timed out. Please check history later.',
+    });
+  }
+
+  /**
    * Shared API submission step. Separated so it can be called directly after a cache hit.
+   * Now returns analysisId immediately and polls from frontend.
    */
   async function submitAnalysis(listingData: ListingData | ListingDataV2) {
     dispatch({ type: 'SET_ANALYSIS_PHASE', phase: 'sending_data' });
@@ -576,6 +791,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     try {
       const response = await sendMessage<{
         status: string;
+        analysisId?: string;
         result?: AnalysisResult;
         error?: string;
       }>({
@@ -583,31 +799,22 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         data: listingData,
       });
 
-      if (response.status === 'success' && response.result) {
-        dispatch({ type: 'SET_ANALYSIS_RESULT', result: response.result });
-        dispatch({ type: 'SET_ANALYSIS_PHASE', phase: 'done' });
-        dispatch({ type: 'SET_CURRENT_VIEW', view: 'report' });
-
-        // Set 20s cooldown to prevent rapid re-triggers
-        dispatch({ type: 'SET_COOLDOWN', cooldownEndsAt: Date.now() + EXTRACTION_COOLDOWN_MS });
-
-        // Refresh credits
-        const userData = await sendMessage<{
-          status: string;
-          data?: { credits_remaining: number };
-        }>({ action: 'get_user_data' });
-        if (userData.status === 'success' && userData.data) {
-          dispatch({ type: 'SET_AUTH_STATUS', authStatus: 'logged_in', credits: userData.data.credits_remaining });
-        }
-      } else if (response.status === 'no_credits') {
-        dispatch({ type: 'SET_ANALYSIS_PHASE', phase: 'no_credits' });
-      } else {
-        dispatch({
-          type: 'SET_ANALYSIS_PHASE',
-          phase: 'error',
-          error: response.error || 'Analysis failed',
-        });
+      if (response.status === 'submitted' && response.analysisId) {
+        // Start polling from frontend
+        void pollAnalysisStatus(response.analysisId);
+        return;
       }
+
+      if (response.status === 'no_credits') {
+        dispatch({ type: 'SET_ANALYSIS_PHASE', phase: 'no_credits' });
+        return;
+      }
+
+      dispatch({
+        type: 'SET_ANALYSIS_PHASE',
+        phase: 'error',
+        error: response.error || 'Analysis failed',
+      });
     } catch (err) {
       dispatch({ type: 'SET_ANALYSIS_PHASE', phase: 'error', error: String(err) });
     }
@@ -667,6 +874,21 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
 
   const navigateToHome = useCallback(() => {
     dispatch({ type: 'SET_CURRENT_VIEW', view: 'home' });
+    // Refresh user credits when returning to home
+    sendMessage<{
+      status: string;
+      data?: { credits_remaining: number };
+    }>({ action: 'get_user_data' }).then((userData) => {
+      if (userData?.status === 'success' && userData.data) {
+        dispatch({
+          type: 'SET_AUTH_STATUS',
+          authStatus: 'logged_in',
+          credits: userData.data.credits_remaining,
+        });
+      }
+    }).catch(() => {
+      // Silently ignore refresh failures
+    });
   }, []);
 
   const sendMagicLink = useCallback(async (email: string): Promise<{ success: boolean; error?: string }> => {
@@ -697,6 +919,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     dispatch,
     actions: {
       refreshPageData,
+      refreshAll,
       startAnalysis,
       retryAnalysis,
       refreshPhotos,

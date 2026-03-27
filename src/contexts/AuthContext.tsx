@@ -119,8 +119,17 @@ export function AuthProvider({ children }: AuthProviderProps) {
 
   // Google 登录
   const signInWithGoogle = async () => {
-    const redirectTo = `${window.location.origin}/auth/callback?from_extension=1`;
-    console.log('[Auth] signInWithGoogle: redirectTo =', redirectTo);
+    // 检查是否来自扩展的登录流程（URL 参数传递）
+    const urlParams = new URLSearchParams(window.location.search);
+    const fromExtension = urlParams.get('from_extension') === '1';
+
+    if (fromExtension) {
+      // 扩展触发的登录：设置标记，在 AuthCallback 中通知扩展并关闭标签页
+      localStorage.setItem('hs_login_from_extension', '1');
+    }
+
+    const redirectTo = `${window.location.origin}/auth/callback`;
+    console.log('[Auth] signInWithGoogle: redirectTo =', redirectTo, 'fromExtension =', fromExtension);
 
     const { error } = await supabase.auth.signInWithOAuth({
       provider: 'google',
@@ -130,6 +139,8 @@ export function AuthProvider({ children }: AuthProviderProps) {
     });
 
     if (error) {
+      // 登录失败时清除标记
+      localStorage.removeItem('hs_login_from_extension');
       throw error;
     }
   };

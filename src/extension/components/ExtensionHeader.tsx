@@ -3,7 +3,7 @@ import { useAppState, useActions } from '../store';
 
 export function ExtensionHeader() {
   const { propertyStatus, listingData, propertyDetection } = useAppState();
-  const { refreshPageData } = useActions();
+  const { refreshAll } = useActions();
 
   const getStatusDotClass = () => {
     switch (propertyStatus) {
@@ -48,7 +48,7 @@ export function ExtensionHeader() {
         <button
           type="button"
           className="ext-icon-btn"
-          onClick={refreshPageData}
+          onClick={refreshAll}
           title="Refresh"
           aria-label="Refresh"
         >

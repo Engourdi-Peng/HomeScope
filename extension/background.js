@@ -426,7 +426,7 @@ async function handleMessage(message, sender, sendResponse) {
         },
       };
 
-      // Step 3: action=submit — create analysis record
+      // Step 3: action=submit — create analysis record and return analysisId
       try {
         const submitRes = await fetch(`${SUPABASE_URL}/functions/v1/analyze?action=submit`, {
           method: 'POST',
@@ -464,45 +464,50 @@ async function handleMessage(message, sender, sendResponse) {
           body: JSON.stringify({ id: analysisId, ...requestBody }),
         }).catch((err) => console.error(`${LOG_PREFIX} analyze: run error —`, err.message));
 
-        // Step 5: Poll for result
-        let result = null;
-        const startTime = Date.now();
-        const MAX_POLL_MS = 60_000;
-
-        while (Date.now() - startTime < MAX_POLL_MS) {
-          await sleep(2000);
-
-          const pollRes = await fetch(
-            `${SUPABASE_URL}/functions/v1/analyze?id=${analysisId}`,
-            {
-              method: 'GET',
-              headers: {
-                'apikey': SUPABASE_ANON_KEY,
-                'Authorization': `Bearer ${session.access_token}`,
-              },
-            }
-          );
-
-          if (!pollRes.ok) continue;
-          const progress = await pollRes.json();
-
-          if (progress.status === 'done' && progress.result) {
-            result = progress.result;
-            break;
-          }
-          if (progress.status === 'failed') {
-            sendResponse({ status: 'error', error: progress.error || 'Analysis failed' });
-            return;
-          }
-        }
-
-        if (result) {
-          sendResponse({ status: 'success', result });
-        } else {
-          sendResponse({ status: 'error', error: 'Analysis timed out. Please try again.' });
-        }
+        // Return analysisId immediately — frontend will poll for status
+        sendResponse({ status: 'submitted', analysisId });
       } catch (err) {
         console.error(`${LOG_PREFIX} analyze: error —`, err.message);
+        sendResponse({ status: 'error', error: err.message });
+      }
+      break;
+    }
+
+    case 'get_analysis_status': {
+      // Query analysis status and result from backend
+      const auth = await getSession();
+      if (!auth?.session?.access_token) {
+        sendResponse({ status: 'error', error: 'Please sign in first.' });
+        return;
+      }
+
+      const { analysisId } = message;
+      if (!analysisId) {
+        sendResponse({ status: 'error', error: 'Missing analysisId' });
+        return;
+      }
+
+      try {
+        const res = await fetch(
+          `${SUPABASE_URL}/functions/v1/analyze?id=${analysisId}`,
+          {
+            method: 'GET',
+            headers: {
+              'apikey': SUPABASE_ANON_KEY,
+              'Authorization': `Bearer ${auth.session.access_token}`,
+            },
+          }
+        );
+
+        if (!res.ok) {
+          sendResponse({ status: 'error', error: 'Failed to get analysis status' });
+          return;
+        }
+
+        const data = await res.json();
+        sendResponse(data);
+      } catch (err) {
+        console.error(`${LOG_PREFIX} get_analysis_status: error —`, err.message);
         sendResponse({ status: 'error', error: err.message });
       }
       break;

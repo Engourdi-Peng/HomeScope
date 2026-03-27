@@ -56,10 +56,10 @@ export function AuthCallback() {
     const handleCallback = async () => {
       console.log('[AuthCallback] PAGE LOADED');
       console.log('[AuthCallback]   location.href:', window.location.href);
-      const url = new URL(window.location.href);
-      const code = url.searchParams.get('code');
-      const fromExt = url.searchParams.get('from_extension');
-      console.log('[AuthCallback]   code exists:', !!code, '  from_extension:', fromExt);
+
+      // 检查是否来自扩展的登录流程
+      const fromExtension = localStorage.getItem('hs_login_from_extension') === '1';
+      console.log('[AuthCallback]   from_extension (via localStorage):', fromExtension);
 
       // AuthContext.initAuth() 已经 exchange 过 code 了，这里只读 session
       const { data } = await supabase.auth.getSession();
@@ -73,20 +73,16 @@ export function AuthCallback() {
       }
 
       // ── 扩展流程：推送 session 后关闭标签页 ──
-      if (fromExt === '1') {
+      if (fromExtension && session) {
         console.log('[AuthCallback]   from_extension=1 → entering extension sync flow');
-        if (session) {
-          console.log('[AuthCallback]   session ready, sending to extension...');
-          pushSessionToExtension(session);
-          // 直接显示成功，不再等待 extension 响应
-          setStatus('success');
-          setMessage('登录成功！HomeScope 扩展已同步会话。此标签页将自动关闭。');
-          console.log('[AuthCallback]   pushSessionToExtension → sent, background will save session and close tab');
-        } else {
-          console.error('[AuthCallback]   NO SESSION after all retries — cannot sync to extension');
-          setStatus('error');
-          setMessage('无法获取登录会话。请重新尝试登录。');
-        }
+        console.log('[AuthCallback]   session ready, sending to extension...');
+        pushSessionToExtension(session);
+        setStatus('success');
+        setMessage('登录成功！HomeScope 扩展已同步会话。此标签页将自动关闭。');
+        console.log('[AuthCallback]   pushSessionToExtension → sent, background will save session and close tab');
+
+        // 清除标记
+        localStorage.removeItem('hs_login_from_extension');
         return;
       }
 
@@ -95,6 +91,8 @@ export function AuthCallback() {
       if (session) {
         setStatus('success');
         setMessage('Login successful! Redirecting...');
+        // 清除标记（以防万一）
+        localStorage.removeItem('hs_login_from_extension');
         window.history.replaceState({}, '', '/');
         setTimeout(() => navigate('/', { replace: true }), 1500);
       } else {

@@ -343,21 +343,38 @@ html, body {
 }
 
 .ext-cta--primary {
-  background: var(--accent);
+  background: #0a0a0a;
   color: #fff;
-  box-shadow: none;
+  border-radius: 9999px;
+  padding: 14px 28px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.22);
 }
 
 .ext-cta--primary:hover:not(:disabled) {
-  background: var(--accent-hover);
+  background: #171717;
   transform: translateY(-1px);
-  box-shadow: none;
+  box-shadow: 0 6px 22px rgba(0, 0, 0, 0.28);
+}
+
+.ext-cta--primary .ext-spinner,
+.ext-cta--loading .ext-spinner {
+  border-color: rgba(255, 255, 255, 0.35);
+  border-top-color: #fff;
 }
 
 .ext-cta--loading {
-  background: var(--accent);
+  background: #0a0a0a;
   color: #fff;
+  border-radius: 9999px;
+  padding: 14px 28px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.22);
   cursor: wait;
+}
+
+.ext-cta--loading:hover:not(:disabled) {
+  background: #0a0a0a;
+  transform: none;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.22);
 }
 
 .ext-cta--muted {
@@ -376,6 +393,10 @@ html, body {
   background: var(--error-bg);
   color: var(--error);
   border: 1px solid #fecaca;
+}
+
+.ext-cta-icon {
+  flex-shrink: 0;
 }
 
 .ext-cta-sub {
@@ -922,10 +943,15 @@ html, body {
 }
 
 /* ===== Listing Summary ===== */
+.ext-panel.ext-listing-skeleton {
+  padding: 16px;
+}
+
 .ext-listing {
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 14px;
+  padding: 16px;
 }
 
 .ext-listing-cover-placeholder {
@@ -951,14 +977,23 @@ html, body {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-  margin-bottom: 3px;
+  margin-bottom: 6px;
+}
+
+.ext-listing-address {
+  font-size: 11px;
+  color: var(--text-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  margin-bottom: 6px;
 }
 
 .ext-listing-price {
   font-size: 15px;
   font-weight: 700;
   color: var(--text-primary);
-  margin-bottom: 4px;
+  margin-bottom: 8px;
 }
 
 .ext-listing-meta {
@@ -986,13 +1021,12 @@ html, body {
   flex-direction: column;
   border-radius: var(--radius-md);
   overflow: hidden;
-  margin-bottom: 10px;
 }
 
 .ext-listing-gallery-scroll {
   display: flex;
   overflow-x: auto;
-  gap: 4px;
+  gap: 6px;
   scrollbar-width: thin;
   scrollbar-color: var(--border) transparent;
 }
@@ -1023,7 +1057,7 @@ html, body {
   display: flex;
   align-items: center;
   justify-content: flex-end;
-  padding: 4px 2px 0;
+  padding-top: 8px;
 }
 
 .ext-listing-img-count {
@@ -1558,6 +1592,25 @@ html, body {
   background: var(--accent);
   border-radius: var(--radius-full);
   transition: width 0.3s ease;
+}
+
+/* ===== Analysis Progress Panel (Extension) ===== */
+.ext-analysis-progress-panel {
+  padding: 14px;
+  margin-top: 4px;
+}
+
+.ext-phase-hint {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 12px;
+  font-size: 11px;
+  color: var(--text-faint);
+}
+
+.ext-phase-hint svg {
+  flex-shrink: 0;
 }
 
 /* 错误状态 */

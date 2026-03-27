@@ -219,14 +219,189 @@ async function startUserExtraction(bypassCache = false) {
  * Extracts listing metadata only — title, address, price, rooms, description.
  * Does NOT open PhotoSwipe or collect any gallery images.
  */
+// ─────────────────────────────────────────────────────────────
+// JSON-LD / Schema.org structured data extraction
+// ─────────────────────────────────────────────────────────────
+
+/**
+ * Parse all <script type="application/ld+json"> tags and return the first
+ * structured object that looks like a real-estate listing.
+ * Falls back to null if none are found.
+ */
+function parseJsonLd() {
+  const scripts = document.querySelectorAll('script[type="application/ld+json"]');
+  for (const script of scripts) {
+    try {
+      const raw = script.textContent || '';
+      const data = JSON.parse(raw);
+      // Handle @graph arrays (Google SDTT format)
+      const candidates = Array.isArray(data)
+        ? data
+        : (data['@graph'] ? data['@graph'] : [data]);
+      for (const item of candidates) {
+        const type = (item['@type'] || '').toLowerCase();
+        const isListing =
+          type.includes('realestate') ||
+          type.includes('residence') ||
+          type.includes('house') ||
+          type.includes('apartment') ||
+          type.includes('accommodation') ||
+          type.includes(' lodging') ||
+          type.includes('offer') ||
+          (type === 'product' && item.name); // some sites use Product for listings
+        if (isListing) return item;
+      }
+    } catch {
+      // Malformed JSON — skip
+    }
+  }
+  return null;
+}
+
+/**
+ * Extract structured property fields from a JSON-LD object.
+ * Returns null for each field that cannot be resolved.
+ */
+function extractListingFromJsonLd(json) {
+  if (!json) return null;
+
+  // ---- Title ----
+  let title = null;
+  if (json.name) title = String(json.name).trim();
+  if (!title && json.headline) title = String(json.headline).trim();
+
+  // ---- Address ----
+  let address = null;
+  const addr = json.address || json.location || null;
+  if (addr) {
+    if (typeof addr === 'string') {
+      address = addr.trim();
+    } else if (typeof addr === 'object') {
+      const parts = [
+        addr.streetAddress,
+        addr.addressLocality,
+        addr.addressRegion,
+        addr.postalCode,
+        addr.addressCountry,
+      ].filter(Boolean).map(s => String(s).trim());
+      if (parts.length > 0) address = parts.join(', ');
+    }
+  }
+  // Fallback: description sometimes contains an address
+  if (!address && json.description) {
+    const ad = extractAddressFromText(json.description);
+    if (ad) address = ad;
+  }
+
+  // ---- Price ----
+  let price = null;
+  const offer = json.offers || json.aggregateOffer || null;
+  if (offer) {
+    const rawPrice = offer.price || offer.lowPrice || null;
+    if (rawPrice != null) {
+      const priceCurrency = offer.priceCurrency || offer.priceCurrency || '';
+      const formatted = String(rawPrice);
+      if (priceCurrency) {
+        price = priceCurrency + formatted;
+      } else {
+        price = '$' + formatted;
+      }
+      if (offer.unitCode && !price.includes('/')) {
+        price += ' /' + String(offer.unitCode).replace(/^https?:\/\/schema\.org\//, '').toLowerCase();
+      } else if (offer.unitText) {
+        price += ' ' + String(offer.unitText);
+      }
+    }
+  }
+
+  // ---- Rooms (bedrooms / bathrooms) ----
+  const rooms = { bedrooms: null, bathrooms: null, parking: null };
+  const amenityList = (json.amenityFeature || json.features || [])
+    .concat(json.propertyFeature || [])
+    .filter(Boolean);
+
+  function amenityValue(key) {
+    for (const a of amenityList) {
+      const name = (a.name || a.propertyID || '').toLowerCase();
+      if (name.includes(key)) {
+        const val = a.value || a.valueReference;
+        if (typeof val === 'number') return val;
+        if (typeof val === 'string') {
+          const n = parseInt(val, 10);
+          if (!isNaN(n)) return n;
+        }
+        return null;
+      }
+    }
+    return null;
+  }
+
+  if (rooms.bedrooms == null) rooms.bedrooms = amenityValue('bed');
+  if (rooms.bathrooms == null) rooms.bathrooms = amenityValue('bath');
+  if (rooms.parking == null) rooms.parking = amenityValue('parking') || amenityValue('garage') || amenityValue('car');
+
+  // Also check floorPlan / numberOfRooms for structured room counts
+  if (rooms.bedrooms == null && json.numberOfBedrooms != null) {
+    rooms.bedrooms = parseInt(String(json.numberOfBedrooms), 10) || null;
+  }
+  if (rooms.bathrooms == null && json.numberOfBathroomsTotal != null) {
+    rooms.bathrooms = parseInt(String(json.numberOfBathroomsTotal), 10) || null;
+  }
+
+  // ---- Description ----
+  let description = null;
+  if (json.description) {
+    const d = String(json.description).trim();
+    if (d.length > 50) description = d.slice(0, 5000);
+  }
+
+  return { title, address, price, rooms, description };
+}
+
+/**
+ * Fallback regex-based address extractor from raw text.
+ * Works for western and mixed-format addresses.
+ */
+function extractAddressFromText(text) {
+  const patterns = [
+    /\d+\s+[A-Z][a-zA-Z]+(?:\s+[A-Z][a-zA-Z]+){1,4},\s*[A-Z]{2,4}\s*\d{4,}/,
+    /\d+\s+[A-Z][a-zA-Z]+(?:\s+[A-Z][a-zA-Z]+){1,4},\s*[A-Z][a-zA-Z]+(?:\s+[A-Z][a-zA-Z]+)*/,
+    /[A-Z][a-zA-Z]+(?:\s+[A-Z][a-zA-Z]+){1,3},\s*[A-Z]{2,4}\s*\d{4,}/,
+    // Chinese-style: Unit 123, Street Name, Suburb, City 123456
+    /[\u4e00-\u9fa5]{2,}[\s\S]{0,40}?\d{6}/,
+  ];
+  for (const p of patterns) {
+    const m = text.match(p);
+    if (m) return m[0].trim();
+  }
+  return null;
+}
+
 async function extractListingDataLight() {
   const signals = detectPropertySignals();
   propertySignals = signals;
-  const title = extractTitle();
-  const address = extractAddress();
-  const price = extractPrice();
-  const rooms = extractRooms();
-  const description = extractDescription();
+
+  // Priority 1: JSON-LD structured data
+  const jsonLd = parseJsonLd();
+  const fromJsonLd = extractListingFromJsonLd(jsonLd);
+
+  // Priority 2: DOM-based extraction (fallback)
+  const domTitle = extractTitle();
+  const domAddress = extractAddress();
+  const domPrice = extractPrice();
+  const domRooms = extractRooms();
+  const domDescription = extractDescription();
+
+  // Merge: prefer JSON-LD, fall back to DOM
+  const title = fromJsonLd?.title || domTitle || null;
+  const address = fromJsonLd?.address || domAddress || null;
+  const price = fromJsonLd?.price || domPrice || null;
+  const rooms = {
+    bedrooms: fromJsonLd?.rooms?.bedrooms ?? domRooms.bedrooms,
+    bathrooms: fromJsonLd?.rooms?.bathrooms ?? domRooms.bathrooms,
+    parking: fromJsonLd?.rooms?.parking ?? domRooms.parking,
+  };
+  const description = fromJsonLd?.description || domDescription || null;
 
   // NOTE: imageUrls is intentionally empty here — gallery collection is
   // only done via startUserExtraction() triggered by the user.
@@ -506,8 +681,9 @@ function findActivePswpItem() {
 /**
  * Within a pswp__item, find the best real image.
  * - Skips imgs with empty src, data: URLs, blob: URLs.
- * - Prioritises naturalWidth > 0 (loaded real image).
- * - Falls back to largest clientWidth * clientHeight (may be placeholder/scaled).
+ * - Priority 1: img with currentSrc containing "reastatic" (real CDN image)
+ * - Priority 2: naturalWidth > 0 (loaded real image)
+ * - Priority 3: largest clientWidth * clientHeight (may be placeholder/scaled)
  * - Global fallback: scans all .pswp__img if no valid img in this item.
  *
  * Returns { img, source: 'item-best'|'global-best' } or null.
@@ -531,11 +707,12 @@ function findBestImgInItem(item, allPswpImgs) {
     const area = cw * ch;
     const isPlaceholder = !effectiveSrc || effectiveSrc.startsWith('data:') || effectiveSrc.startsWith('blob:');
     const isLoaded = nw > 0;
+    const isReastatic = /reastatic\.(net|com\.au)/i.test(effectiveSrc);
 
-    dbg('  img[' + i + '] src=\"' + (src ? src.substring(0, 60) : '(empty)') + '\" currentSrc=\"' + (currentSrc ? currentSrc.substring(0, 60) : '(empty)') + '\" nw=' + nw + ' cw=' + cw + ' ch=' + ch + ' area=' + area + ' placeholder=' + isPlaceholder + ' loaded=' + isLoaded);
+    dbg('  img[' + i + '] src=\"' + (src ? src.substring(0, 60) : '(empty)') + '\" currentSrc=\"' + (currentSrc ? currentSrc.substring(0, 60) : '(empty)') + '\" nw=' + nw + ' cw=' + cw + ' ch=' + ch + ' area=' + area + ' placeholder=' + isPlaceholder + ' loaded=' + isLoaded + ' reastatic=' + isReastatic);
 
     if (!isPlaceholder) {
-      candidates.push({ img, nw, area, index: i });
+      candidates.push({ img, nw, area, index: i, isReastatic });
     }
   }
 
@@ -557,7 +734,15 @@ function findBestImgInItem(item, allPswpImgs) {
     return null;
   }
 
-  // Priority 1: loaded images (naturalWidth > 0) sorted by nw desc
+  // Priority 1: reastatic CDN image (real high-res photo)
+  const reastatic = candidates.filter(c => c.isReastatic);
+  if (reastatic.length > 0) {
+    reastatic.sort((a, b) => b.nw - a.nw || b.area - a.area);
+    dbg('  WINNER (reastatic, max naturalWidth): img[' + reastatic[0].index + '] nw=' + reastatic[0].nw);
+    return { img: reastatic[0].img, source: 'item-best' };
+  }
+
+  // Priority 2: loaded images (naturalWidth > 0) sorted by nw desc
   const loaded = candidates.filter(c => c.nw > 0);
   if (loaded.length > 0) {
     loaded.sort((a, b) => b.nw - a.nw);
@@ -565,7 +750,7 @@ function findBestImgInItem(item, allPswpImgs) {
     return { img: loaded[0].img, source: 'item-best' };
   }
 
-  // Priority 2: fallback to largest client area
+  // Priority 3: fallback to largest client area
   candidates.sort((a, b) => b.area - a.area);
   dbg('  WINNER (max client area): img[' + candidates[0].index + '] area=' + candidates[0].area);
   return { img: candidates[0].img, source: 'item-best' };
@@ -1130,564 +1315,859 @@ function extractLightImageUrls() {
 let _pagingLock = false;
 
 /**
- * Collect all gallery images via PhotoSwipe paging.
- * This function is ONLY reachable through the START_USER_EXTRACTION flow.
+ * Attempt to extract all gallery image URLs directly from PhotoSwipe's internal items array.
+ * This bypasses the need for paging/interaction and is the preferred strategy.
+ * Returns null if no PhotoSwipe instance is accessible.
+ *
+ * Tries (in order):
+ *   1. window.pswp.items         (PhotoSwipe v5 global)
+ *   2. pswpEl.__pswp.items       (PhotoSwipe v4 element property)
+ *   3. window.pswp.instances.get(uid).items (PhotoSwipe v5 keyed instances)
+ *
+ * @returns {Promise<Array<{url: string, width: number, id: string|null}>|null>}
+ */
+async function tryExtractPhotoSwipeItems() {
+  const log = (msg, data) => console.log('[paging] [tryExtractPhotoSwipeItems] ' + msg, data);
+
+  const pswpEl = document.querySelector('.pswp');
+  if (!pswpEl) {
+    log('no .pswp element found');
+    return null;
+  }
+
+  // Helper: extract fields from a PhotoSwipe item object
+  function extractItem(item) {
+    if (!item) return null;
+    const src = item.src || item.originalSrc || item.thumbnailSrc || '';
+    if (!src || src.startsWith('data:') || src.startsWith('blob:')) return null;
+    const norm = normalizeUrl(src);
+    const cid = extractContentId(norm);
+    const width = item.w || item.width || extractWidthFromUrl(src);
+    return { url: norm, width, id: cid };
+  }
+
+  // Strategy 1: window.pswp.items  (PhotoSwipe v5 global)
+  if (Array.isArray(window.pswp?.items) && window.pswp.items.length > 0) {
+    const items = window.pswp.items.map(extractItem).filter(Boolean);
+    log('Strategy 1 (window.pswp.items): ' + items.length + ' images');
+    return items;
+  }
+
+  // Strategy 2: pswpEl.__pswp.items  (PhotoSwipe v4)
+  if (pswpEl.__pswp && Array.isArray(pswpEl.__pswp.items) && pswpEl.__pswp.items.length > 0) {
+    const items = pswpEl.__pswp.items.map(extractItem).filter(Boolean);
+    log('Strategy 2 (__pswp.items): ' + items.length + ' images');
+    return items;
+  }
+
+  // Strategy 3: PhotoSwipe v5 keyed instances via dataset.pswpUid
+  const uid = pswpEl.dataset?.pswpUid;
+  if (uid && window.pswp?.instances instanceof Map) {
+    const instance = window.pswp.instances.get(Number(uid));
+    if (instance && Array.isArray(instance.items) && instance.items.length > 0) {
+      const items = instance.items.map(extractItem).filter(Boolean);
+      log('Strategy 3 (pswp.instances.get(uid)): ' + items.length + ' images');
+      return items;
+    }
+  }
+
+  // Strategy 4: try reading items from the UI DOM (fallback)
+  // PhotoSwipe renders .pswp__item elements; scan all of them for images
+  const pswpItems = Array.from(pswpEl.querySelectorAll('.pswp__item'));
+  if (pswpItems.length > 0) {
+    // Collect all images from all slots (each slot may have multiple imgs: placeholder + real)
+    const allImgs = Array.from(pswpEl.querySelectorAll('.pswp__img'));
+    const collected = [];
+    for (const img of allImgs) {
+      const src = (img.currentSrc || img.src || '').trim();
+      if (!src || src.startsWith('data:') || src.startsWith('blob:')) continue;
+      if (isPlaceholderUrl(src)) continue;
+      const norm = normalizeUrl(src);
+      const cid = extractContentId(norm);
+      collected.push({ url: norm, width: extractWidthFromUrl(src), id: cid });
+    }
+    if (collected.length > 0) {
+      log('Strategy 4 (DOM scan all .pswp__img): ' + collected.length + ' images');
+      return collected;
+    }
+  }
+
+  // Strategy 5: Scan list-page thumbnail images for full-res URLs
+  // Many real estate sites embed the full gallery in the list view as data attributes or href links
+  const galleryUrlsFromList = scanGalleryFromListView();
+  if (galleryUrlsFromList && galleryUrlsFromList.length > 0) {
+    log('Strategy 5 (galleryFromList): ' + galleryUrlsFromList.length + ' images');
+    return galleryUrlsFromList;
+  }
+
+  // Strategy 6: Try __NEXT_DATA__, window.__INITIAL_STATE__, or similar React/SSR data
+  const galleryUrlsFromSsr = scanGalleryFromSsrData();
+  if (galleryUrlsFromSsr && galleryUrlsFromSsr.length > 0) {
+    log('Strategy 6 (ssrData): ' + galleryUrlsFromSsr.length + ' images');
+    return galleryUrlsFromSsr;
+  }
+
+  // Strategy 7: Scan window for gallery/image arrays (common patterns)
+  const galleryUrlsFromWindow = scanGalleryFromWindow();
+  if (galleryUrlsFromWindow && galleryUrlsFromWindow.length > 0) {
+    log('Strategy 7 (windowScan): ' + galleryUrlsFromWindow.length + ' images');
+    return galleryUrlsFromWindow;
+  }
+
+  log('no PhotoSwipe items accessible via any strategy');
+  return null;
+}
+
+/**
+ * Strategy 5: Scan list-page DOM for gallery images.
+ * Many sites put the full-res URL in:
+ *   - <img> data-full-src / data-src / data-zoom-src / data-high-res-src attributes
+ *   - <a> href pointing to full-res image
+ *   - JSON data attributes on containers (data-images, data-gallery, etc.)
+ *   - OEmbed / meta tags
+ */
+function scanGalleryFromListView() {
+  const log = (msg) => console.log('[paging] [scanGalleryFromListView] ' + msg);
+  const collected = [];
+
+  // Patterns for full-res image attributes on <img> elements
+  const imgFullResAttrs = [
+    'data-full-src', 'data-full', 'data-zoom-src', 'data-zoom',
+    'data-high-res-src', 'data-highres', 'data-hires', 'data-hd-src',
+    'data-src-full', 'data-original', 'data-ghost', 'data-lazy-src',
+    'data-expand', 'data-bg-src', 'data-img-src',
+    // Common realestate site patterns
+    'data-url', 'data-srcset',
+  ];
+
+  for (const img of document.querySelectorAll('img')) {
+    for (const attr of imgFullResAttrs) {
+      const val = img.getAttribute(attr);
+      if (val && isValidImageUrl(val)) {
+        const norm = normalizeUrl(val);
+        const cid = extractContentId(norm);
+        collected.push({ url: norm, width: extractWidthFromUrl(norm), id: cid });
+        break;
+      }
+    }
+  }
+
+  // Patterns for <a href> pointing to full-res images
+  const linkSelectors = [
+    'a[href*=".jpg"]', 'a[href*=".jpeg"]', 'a[href*=".png"]', 'a[href*=".webp"]',
+    'a[data-src]', 'a[data-href]', 'a[data-url]', 'a[data-image]',
+  ];
+  for (const selector of linkSelectors) {
+    for (const a of document.querySelectorAll(selector)) {
+      const href = a.getAttribute('href') || a.getAttribute('data-href') || a.getAttribute('data-url') || a.getAttribute('data-image');
+      if (href && isValidImageUrl(href)) {
+        const norm = normalizeUrl(href);
+        const cid = extractContentId(norm);
+        if (!collected.find(x => x.url === norm)) {
+          collected.push({ url: norm, width: extractWidthFromUrl(norm), id: cid });
+        }
+      }
+    }
+  }
+
+  // Scan for JSON data attributes on containers
+  const dataContainerSelectors = [
+    '[data-images]', '[data-gallery]', '[data-photos]', '[data-media]',
+    '[data-image-list]', '[data-photo-gallery]', '[data-slideshow]',
+    '[data-json]', '[data-config]', '[data-props]', '[data-listing]',
+  ];
+  for (const container of document.querySelectorAll(dataContainerSelectors.join(','))) {
+    for (const attr of container.attributes) {
+      const val = attr.value;
+      if (!val || val.length < 10) continue;
+      try {
+        if (val.startsWith('[') || val.startsWith('{')) {
+          const parsed = JSON.parse(val);
+          const urls = extractUrlsFromParsed(parsed);
+          for (const url of urls) {
+            const norm = normalizeUrl(url);
+            const cid = extractContentId(norm);
+            if (!collected.find(x => x.url === norm)) {
+              collected.push({ url: norm, width: extractWidthFromUrl(norm), id: cid });
+            }
+          }
+        }
+      } catch (_) {}
+    }
+  }
+
+  if (collected.length > 0) {
+    log('Found ' + collected.length + ' images from list view');
+  }
+  return collected.length > 0 ? collected : null;
+}
+
+/**
+ * Strategy 6: Scan SSR/RWT data blocks (NEXT_DATA, redux state, etc.)
+ */
+function scanGalleryFromSsrData() {
+  const log = (msg) => console.log('[paging] [scanGalleryFromSsrData] ' + msg);
+  const collected = [];
+
+  // Common SSR data script tags
+  const ssrSelectors = [
+    '#__NEXT_DATA__',
+    'script[data-reactstate]',
+    'script[data-redux-state]',
+    'script[data-page-context]',
+    'script[id="__NEXT_DATA__"]',
+    '#__PRELOADED_STATE__',
+    'script[data-initial-state]',
+  ];
+
+  const ssrSources = [];
+  for (const sel of ssrSelectors) {
+    const el = document.querySelector(sel);
+    if (el) {
+      ssrSources.push(el.textContent || el.innerText || '');
+    }
+  }
+
+  // Also check window globals
+  const windowKeys = [
+    '__INITIAL_STATE__', '__PRELOADED_STATE__', '__STATE__',
+    '__REDUX_STATE__', '__NEXT_REDUX_WRAPPER_STORE__',
+    '__pageData__', '__INITIAL_PROPS__',
+  ];
+  for (const key of windowKeys) {
+    try {
+      if (window[key]) {
+        ssrSources.push(JSON.stringify(window[key]));
+      }
+    } catch (_) {}
+  }
+
+  for (const src of ssrSources) {
+    if (!src || src.length < 50) continue;
+    try {
+      const parsed = JSON.parse(src);
+      const urls = extractUrlsFromParsed(parsed);
+      for (const url of urls) {
+        if (isValidImageUrl(url)) {
+          const norm = normalizeUrl(url);
+          const cid = extractContentId(norm);
+          if (!collected.find(x => x.url === norm)) {
+            collected.push({ url: norm, width: extractWidthFromUrl(norm), id: cid });
+          }
+        }
+      }
+    } catch (_) {}
+  }
+
+  if (collected.length > 0) {
+    log('Found ' + collected.length + ' images from SSR data');
+  }
+  return collected.length > 0 ? collected : null;
+}
+
+/**
+ * Strategy 7: Scan window object for gallery/image arrays.
+ * Common patterns: window.images, window.gallery, window.photos, window.mediaItems, etc.
+ */
+function scanGalleryFromWindow() {
+  const log = (msg) => console.log('[paging] [scanGalleryFromWindow] ' + msg);
+  const collected = [];
+
+  const candidates = [
+    window.images, window.gallery, window.photos, window.mediaItems,
+    window.imageUrls, window.imageList, window.galleryImages,
+    window.listingImages, window.propertyImages, window.photoGallery,
+  ];
+
+  for (const candidate of candidates) {
+    if (!candidate) continue;
+    try {
+      const arr = Array.isArray(candidate) ? candidate : [candidate];
+      for (const item of arr) {
+        const url = typeof item === 'string' ? item : (item?.src || item?.url || item?.href || item?.image || item?.photo);
+        if (url && isValidImageUrl(url)) {
+          const norm = normalizeUrl(url);
+          const cid = extractContentId(norm);
+          if (!collected.find(x => x.url === norm)) {
+            collected.push({ url: norm, width: extractWidthFromUrl(norm), id: cid });
+          }
+        }
+      }
+    } catch (_) {}
+  }
+
+  if (collected.length > 0) {
+    log('Found ' + collected.length + ' images from window globals');
+  }
+  return collected.length > 0 ? collected : null;
+}
+
+/**
+ * Recursively extract image URLs from a parsed object/array.
+ */
+function extractUrlsFromParsed(obj, depth = 0) {
+  if (depth > 8) return [];
+  const urls = [];
+
+  if (Array.isArray(obj)) {
+    for (const item of obj) {
+      urls.push(...extractUrlsFromParsed(item, depth + 1));
+    }
+  } else if (obj && typeof obj === 'object') {
+    // Check common image URL fields
+    const urlFields = ['src', 'url', 'href', 'original', 'full', 'large', 'high', 'hd', 'zoom', 'photo', 'image', 'media'];
+    for (const field of urlFields) {
+      const val = obj[field];
+      if (typeof val === 'string' && isValidImageUrl(val)) {
+        urls.push(val);
+      } else if (typeof val === 'object' && val !== null) {
+        urls.push(...extractUrlsFromParsed(val, depth + 1));
+      }
+    }
+    // Recurse into all values
+    for (const key of Object.keys(obj)) {
+      if (!urlFields.includes(key) && typeof obj[key] === 'object' && obj[key] !== null) {
+        urls.push(...extractUrlsFromParsed(obj[key], depth + 1));
+      }
+    }
+  }
+  return urls;
+}
+
+/**
+ * Check if a URL is a valid image URL (not placeholder, not data:, not blob:).
+ */
+function isValidImageUrl(url) {
+  if (!url || typeof url !== 'string') return false;
+  const trimmed = url.trim();
+  if (trimmed.startsWith('data:') || trimmed.startsWith('blob:') || trimmed.startsWith('javascript:')) return false;
+  if (isPlaceholderUrl(trimmed)) return false;
+  const lower = trimmed.toLowerCase();
+  return lower.includes('.jpg') || lower.includes('.jpeg') || lower.includes('.png') || lower.includes('.webp') || lower.includes('.gif') || lower.includes('.avif') || lower.includes('.svg');
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// NEW GALLERY EXTRACTION MODULE — Signature-based approach
+// Key principles:
+// - Don't wait for fully loaded images
+// - Use signature (canonicalized URL) as unique image key
+// - Stop when no new signatures found after N consecutive attempts
+// ═══════════════════════════════════════════════════════════════════════════
+
+/**
+ * Canonicalize an image URL to a stable signature key.
+ * Strips dimensions/resize parameters that vary but don't indicate different images.
+ * Keeps the content hash portion which identifies the actual image.
+ *
+ * Strategy: Extract all hex strings >= 16 chars from path, take the LAST one.
+ * This is more stable than regex patterns that might match path fragments.
+ * Realestate image hashes are typically 40+ hex chars and appear near the end of URL path.
+ */
+function canonicalizeImageUrl(url) {
+  if (!url || typeof url !== 'string') return '';
+  const u = url.trim();
+  if (!u.startsWith('http')) return u.toLowerCase();
+  try {
+    const parsed = new URL(u);
+    const path = parsed.pathname;
+
+    // Extract ALL hex strings >= 16 chars, take the LAST one as the true image hash
+    // This avoids matching resize dimensions (e.g., "680x1176") or short path fragments
+    const allHexMatches = path.match(/[a-f0-9]{16,}/gi);
+    let sig = path;  // fallback to full path
+    if (allHexMatches && allHexMatches.length > 0) {
+      // Take the last match — realestate image hash is always near the end
+      sig = allHexMatches[allHexMatches.length - 1].toLowerCase();
+    }
+
+    // Remove query params
+    parsed.search = '';
+    // Return just the signature + domain as key
+    return parsed.hostname + ':' + sig;
+  } catch (_) {
+    return u.split('?')[0].toLowerCase();
+  }
+}
+
+/**
+ * Get PhotoSwipe instance if available.
+ * Returns { instance, uid, totalSlides } or null.
+ * Does NOT throw on failure.
+ */
+function getPhotoSwipeInstance() {
+  try {
+    const pswpRoot = document.querySelector('.pswp');
+    if (!pswpRoot) return null;
+
+    const uid = pswpRoot.dataset?.pswpUid;
+    if (uid && window.pswp?.instances instanceof Map) {
+      const inst = window.pswp.instances.get(Number(uid));
+      if (inst) {
+        let totalSlides = 0;
+        if (typeof inst.getNumItems === 'function') {
+          totalSlides = inst.getNumItems();
+        } else if (Array.isArray(inst.items)) {
+          totalSlides = inst.items.length;
+        }
+        return { instance: inst, uid: String(uid), totalSlides };
+      }
+    }
+    if (pswpRoot.__pswp) {
+      const inst = pswpRoot.__pswp;
+      let totalSlides = 0;
+      if (typeof inst.getNumItems === 'function') {
+        totalSlides = inst.getNumItems();
+      } else if (Array.isArray(inst.items)) {
+        totalSlides = inst.items.length;
+      }
+      return { instance: inst, uid: 'el', totalSlides };
+    }
+    return null;
+  } catch (_) {
+    return null;
+  }
+}
+
+/**
+ * Wait for gallery to enter "URL readable" state.
+ * Success criteria: at least one .pswp__img with a valid http(s) src or currentSrc.
+ */
+async function waitForGalleryReady(timeoutMs = 3000) {
+  const start = Date.now();
+  let polls = 0;
+  while (Date.now() - start < timeoutMs) {
+    polls++;
+    const pswp = document.querySelector('.pswp.pswp--open');
+    if (!pswp) {
+      await new Promise(r => setTimeout(r, 120));
+      continue;
+    }
+    const imgs = Array.from(pswp.querySelectorAll('.pswp__img'));
+    for (const img of imgs) {
+      const src = (img.currentSrc || img.src || '').trim();
+      if (src && src.startsWith('http') && !src.startsWith('data:') && !src.startsWith('blob:')) {
+        console.log('[gallery] waitForGalleryReady success at poll ' + polls + ' after ' + (Date.now() - start) + 'ms');
+        return { ready: true, pollCount: polls };
+      }
+    }
+    await new Promise(r => setTimeout(r, 100));
+  }
+  console.log('[gallery] waitForGalleryReady TIMEOUT after ' + polls + ' polls');
+  return { ready: false, pollCount: polls };
+}
+
+/**
+ * Check if URL is a valid reastatic image URL.
+ * Filters out placeholders, data:, blob:, and non-reastatic URLs.
+ */
+function isValidReastaticUrl(src) {
+  if (!src || !src.startsWith('http')) return false;
+  if (src.startsWith('data:') || src.startsWith('blob:')) return false;
+  // Must be from reastatic CDN
+  return /reastatic\.(net|com\.au)/i.test(src);
+}
+
+/**
+ * Get a snapshot of the current active slide.
+ * Priority: PhotoSwipe API > transform-based > aria > area.
+ */
+function getActiveSlideSnapshot() {
+  const pswp = document.querySelector('.pswp');
+  if (!pswp) return { isValid: false };
+
+  // Strategy A: PhotoSwipe API
+  const pswpInfo = getPhotoSwipeInstance();
+  if (pswpInfo) {
+    try {
+      const currIndex = pswpInfo.instance.currIndex;
+      const items = pswpInfo.instance.items || [];
+      const item = items[currIndex];
+      if (item) {
+        const rawSrc = item.src || item.thumb || '';
+        const signature = canonicalizeImageUrl(rawSrc);
+        return {
+          currIndex,
+          strategy: 'pswp-api',
+          signature,
+          rawSrc,
+          isValid: isValidReastaticUrl(rawSrc),
+        };
+      }
+    } catch (_) {}
+  }
+
+  // Strategy B: find the center-most slide by transform
+  const items = Array.from(pswp.querySelectorAll('.pswp__item'));
+  let bestItem = null, bestAbsTx = Infinity, bestSlotIndex = -1;
+  for (let i = 0; i < items.length; i++) {
+    const style = window.getComputedStyle(items[i]);
+    const tx = parseTranslateX(style.transform);
+    const absTx = Math.abs(tx);
+    if (absTx < bestAbsTx) {
+      bestAbsTx = absTx;
+      bestItem = items[i];
+      bestSlotIndex = i;
+    }
+  }
+
+  if (bestItem) {
+    const imgs = Array.from(bestItem.querySelectorAll('.pswp__img'));
+    let bestImg = null;
+    for (const img of imgs) {
+      const src = (img.currentSrc || img.src || '').trim();
+      if (!src || src.startsWith('data:') || src.startsWith('blob:')) continue;
+      bestImg = img;
+      // Prefer realastatic images without waiting for load
+      if (/reastatic\.(net|com\.au)/i.test(src)) break;
+    }
+    if (!bestImg) {
+      bestImg = imgs.find(img => {
+        const src = (img.currentSrc || img.src || '').trim();
+        return src.startsWith('http');
+      });
+    }
+    if (bestImg) {
+      const rawSrc = (bestImg.currentSrc || bestImg.src || '').trim();
+      const signature = canonicalizeImageUrl(rawSrc);
+      return {
+        currIndex: bestSlotIndex,
+        strategy: 'transform-slot',
+        slotIndex: bestSlotIndex,
+        transformX: -bestAbsTx,
+        imgEl: bestImg,
+        rawSrc,
+        signature,
+        isValid: isValidReastaticUrl(rawSrc),
+      };
+    }
+  }
+
+  // Strategy C: aria-hidden=false
+  for (const item of items) {
+    if (item.getAttribute('aria-hidden') === 'false') {
+      const imgs = Array.from(item.querySelectorAll('.pswp__img'));
+      for (const img of imgs) {
+        const src = (img.currentSrc || img.src || '').trim();
+        if (isValidReastaticUrl(src)) {
+          const signature = canonicalizeImageUrl(src);
+          return { strategy: 'aria', signature, rawSrc: src, isValid: true, imgEl: img };
+        }
+      }
+    }
+  }
+
+  // Strategy D: largest visible img
+  const allImgs = Array.from(pswp.querySelectorAll('.pswp__img'));
+  let bestArea = 0, bestVisibleImg = null;
+  for (const img of allImgs) {
+    const src = (img.currentSrc || img.src || '').trim();
+    if (!isValidReastaticUrl(src)) continue;
+    const r = img.getBoundingClientRect();
+    const visible = r.width > 10 && r.height > 10;
+    const area = r.width * r.height;
+    if (visible && area > bestArea) {
+      bestArea = area;
+      bestVisibleImg = img;
+    }
+  }
+  if (bestVisibleImg) {
+    const rawSrc = (bestVisibleImg.currentSrc || bestVisibleImg.src || '').trim();
+    const signature = canonicalizeImageUrl(rawSrc);
+    return { strategy: 'area', signature, rawSrc, isValid: true, imgEl: bestVisibleImg };
+  }
+
+  return { isValid: false, strategy: 'none' };
+}
+
+/**
+ * Wait for a real slide change to occur.
+ * Success conditions:
+ *   A. PhotoSwipe API: currIndex changed AND signature changed (双重确认)
+ *   B. No PhotoSwipe API: signature changed (唯一判断依据)
+ *
+ * 不会因为 currIndex 变了但图片没变就返回成功
+ */
+async function waitForRealSlideChange(prevSnapshot, prevCurrIndex, timeoutMs = 4000) {
+  const start = Date.now();
+  let polls = 0;
+  let lastSnapshot = prevSnapshot;
+
+  while (Date.now() - start < timeoutMs) {
+    polls++;
+    await new Promise(r => setTimeout(r, 150));
+
+    const pswpInfo = getPhotoSwipeInstance();
+    const snapshot = getActiveSlideSnapshot();
+    lastSnapshot = snapshot;
+
+    // Strategy A: PhotoSwipe API available — 需要 currIndex 和 signature 双重确认
+    if (pswpInfo) {
+      const newCurrIndex = pswpInfo.instance.currIndex;
+      if (newCurrIndex !== prevCurrIndex) {
+        // currIndex 变了，必须再确认 signature 也变了才算成功
+        if (snapshot.isValid && snapshot.signature && snapshot.signature !== prevSnapshot?.signature) {
+          console.log('[gallery] waitForRealSlideChange: A-success pswp-api+signature ' + prevCurrIndex + ' -> ' + newCurrIndex + ', sig changed (' + polls + ' polls, ' + (Date.now() - start) + 'ms)');
+          return { changed: true, newSnapshot: snapshot, prevSnapshot, reason: 'pswp-api+signature', newCurrIndex, polls };
+        }
+        // currIndex 变了但 signature 没变 = PhotoSwipe 内部 glitch，继续等待
+        console.log('[gallery] waitForRealSlideChange: A-glitch currIndex changed but sig same, continue polling');
+      }
+    }
+
+    // Strategy B: signature changed (fallback 或无 API 时的唯一判断)
+    if (snapshot.isValid && snapshot.signature && snapshot.signature !== prevSnapshot?.signature) {
+      const reason = pswpInfo ? 'signature-only(no-pswp-index)' : 'signature';
+      console.log('[gallery] waitForRealSlideChange: B-success ' + reason + ' ' + (prevSnapshot?.signature || 'null') + ' -> ' + snapshot.signature + ' (' + polls + ' polls, ' + (Date.now() - start) + 'ms)');
+      return { changed: true, newSnapshot: snapshot, prevSnapshot, reason, polls };
+    }
+  }
+
+  console.log('[gallery] waitForRealSlideChange: TIMEOUT after ' + polls + ' polls, ' + (Date.now() - start) + 'ms, prevSignature=' + (prevSnapshot?.signature || 'null') + ', currSignature=' + (lastSnapshot?.signature || 'null'));
+  return { changed: false, newSnapshot: lastSnapshot, prevSnapshot, reason: 'timeout', polls };
+}
+
+/**
+ * Advance to next slide. Priority: pswp API > button click > keyboard.
+ */
+function advanceToNextSlide() {
+  const pswpInfo = getPhotoSwipeInstance();
+  if (pswpInfo) {
+    try {
+      pswpInfo.instance.next();
+      console.log('[gallery] advanceToNextSlide: used=pswp-api');
+      return { used: 'pswp-api', success: true };
+    } catch (_) {}
+  }
+
+  const btn =
+    document.querySelector('.pswp__button--arrow--right') ||
+    document.querySelector('.pswp__button--arrow--next') ||
+    document.querySelector('[class*="arrow"][class*="right"]');
+
+  if (btn && !btn.disabled) {
+    try { btn.click(); } catch (_) { btn.dispatchEvent(new MouseEvent('click', { bubbles: true })); }
+    console.log('[gallery] advanceToNextSlide: used=button');
+    return { used: 'button', success: true };
+  }
+
+  document.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true }));
+  console.log('[gallery] advanceToNextSlide: used=keyboard');
+  return { used: 'keyboard', success: true };
+}
+
+/**
+ * Close the PhotoSwipe gallery if it is open.
+ * Uses user-behavior simulation (close button → ESC → DOM removal) for maximum compatibility.
+ * Safe to call redundantly — does nothing if gallery is not open.
+ */
+function closeGallery() {
+  try {
+    const pswpRoot = document.querySelector('.pswp.pswp--open');
+    if (!pswpRoot) return;
+
+    console.log('[gallery] Attempting to close PhotoSwipe...');
+
+    // 1️⃣ Try clicking the close button (most stable)
+    const closeBtn = pswpRoot.querySelector('.pswp__button--close');
+    if (closeBtn) {
+      closeBtn.click();
+      console.log('[gallery] closed via close button');
+      return;
+    }
+
+    // 2️⃣ Simulate ESC key
+    document.dispatchEvent(
+      new KeyboardEvent('keydown', {
+        key: 'Escape',
+        keyCode: 27,
+        which: 27,
+        bubbles: true,
+      })
+    );
+    console.log('[gallery] dispatched ESC');
+
+    // 3️⃣ Fallback: force-remove DOM after animation settles
+    setTimeout(() => {
+      const stillOpen = document.querySelector('.pswp.pswp--open');
+      if (stillOpen) {
+        stillOpen.remove();
+        console.log('[gallery] force removed pswp DOM');
+      }
+    }, 300);
+  } catch (err) {
+    console.warn('[gallery] closeGallery error:', err);
+  }
+}
+
+/**
+ * NEW PhotoSwipe gallery extraction using signature-based approach.
  *
  * @returns {Promise<string[]>} Deduplicated image URL array
  */
 async function collectByPhotoSwipePaging() {
   if (_pagingLock) {
-    console.log('[paging] Skipped (paging lock held)');
+    console.log('[gallery] collectByPhotoSwipePaging: skipped (lock held)');
     return [];
   }
   _pagingLock = true;
 
-  let result = [];
+  const result = [];
   try {
-    const log = (msg, data) => console.log('[paging] ' + msg, typeof data === 'object' ? JSON.stringify(data) : data);
+    console.log('[gallery] ====== START PhotoSwipe extraction ======');
 
-    if (!document.querySelector('.pswp')) {
-      log('PhotoSwipe not open, returning empty');
-      result = [];
-    } else {
-      log('Starting PhotoSwipe paging...');
+    const pswp = document.querySelector('.pswp.pswp--open');
+    if (!pswp) {
+      console.log('[gallery] PhotoSwipe not open, returning empty');
+      return [];
+    }
 
-      // Must be declared before any dbg() call (const TDZ — "Cannot access 'dbg' before initialization")
-      const DEBUG = true;
-      const dbg = (...args) => { if (DEBUG) console.log('[paging] ' + args.map(a => typeof a === 'object' ? JSON.stringify(a) : String(a)).join(' ')); };
+    // Wait for gallery to be ready
+    const ready = await waitForGalleryReady(3000);
+    if (!ready.ready) {
+      console.log('[gallery] Gallery not ready, returning empty');
+      return [];
+    }
 
-      // ── Diagnostic: log gallery root structure ──
-      const pswp = document.querySelector('.pswp');
-      const pswpItems = pswp ? Array.from(pswp.querySelectorAll('.pswp__item')) : [];
-      const allImgs = pswp ? Array.from(pswp.querySelectorAll('.pswp__img')) : [];
+    // Get PhotoSwipe instance info
+    const pswpInfo = getPhotoSwipeInstance();
+    const totalSlides = pswpInfo?.totalSlides || 0;
+    console.log('[gallery] Gallery ready, totalSlides=' + totalSlides);
 
-      // ── DEBUG: snapshot ALL pswp__item states ──
-      dbg('[INIT] pswp__item count: ' + pswpItems.length + ', pswp__img count: ' + allImgs.length);
-      for (let ii = 0; ii < pswpItems.length; ii++) {
-        const item = pswpItems[ii];
-        const imgs = Array.from(item.querySelectorAll('.pswp__img'));
-        const aria = item.getAttribute('aria-hidden');
-        const hasActive = item.classList.contains('pswp--active');
-        const firstImg = imgs[0];
-        const firstImgSrc = firstImg ? (firstImg.currentSrc || firstImg.src || '').trim() : '(no img)';
-        const rect = firstImg ? firstImg.getBoundingClientRect() : null;
-        const area = rect ? Math.round(rect.width * rect.height) : 0;
-        dbg('[INIT]   pswp__item[' + ii + '] aria=' + aria + ' activeClass=' + hasActive + ' imgs=' + imgs.length + ' firstSrc=' + (firstImgSrc ? firstImgSrc.substring(0, 80) : '(empty)') + ' area=' + area + 'px');
+    // Get initial snapshot
+    const initialSnapshot = getActiveSlideSnapshot();
+    console.log('[gallery] Initial snapshot: strategy=' + initialSnapshot.strategy + ', signature=' + (initialSnapshot.signature || 'null') + ', rawSrc=' + (initialSnapshot.rawSrc?.substring(0, 60) || 'null'));
+
+    if (!initialSnapshot.isValid) {
+      console.log('[gallery] Cannot read any image URL from initial snapshot');
+      return [];
+    }
+
+    // ── Snapshot vs Result Item ─────────────────────────────────────────
+    // snapshot: 翻页判断用，包含 signature/rawSrc/slotIndex 等元数据
+    //   字段: { isValid, strategy, signature, rawSrc, currIndex, slotIndex, transformX, imgEl }
+    // result item: 最终输出用，只包含签名和 URL
+    //   字段: { signature, url }
+    // ───────────────────────────────────────────────────────────────────
+
+    // Record first image (result item)
+    const firstSignature = initialSnapshot.signature;
+    const firstSrc = initialSnapshot.rawSrc;
+    if (firstSignature && firstSrc) {
+      result.push({ signature: firstSignature, url: firstSrc });
+      console.log('[gallery] RECORDED [0]: signature=' + firstSignature + ', url=' + firstSrc.substring(0, 80));
+    }
+
+    // Maintain currentSnapshot for next comparison (snapshot, not result item)
+    let currentSnapshot = initialSnapshot;
+
+    // Main loop
+    const seenSignatures = new Set([firstSignature]);
+    let consecutiveNoNew = 0;
+    let totalAttempts = 0;
+    const MAX_NO_NEW = 3;
+    const MAX_TOTAL = 60;
+
+    while (totalAttempts < MAX_TOTAL) {
+      totalAttempts++;
+
+      // Re-fetch pswpInfo each iteration (DOM may have changed)
+      const pswpInfoNow = getPhotoSwipeInstance();
+      const totalSlidesNow = pswpInfoNow?.totalSlides || 0;
+      const prevCurrIndex = pswpInfoNow?.instance?.currIndex ?? 0;
+
+      if (totalSlidesNow > 0 && result.length >= totalSlidesNow) {
+        console.log('[gallery] Reached totalSlides limit (' + totalSlidesNow + '), stopping');
+        break;
       }
 
-      // ── DEBUG: snapshot ALL .pswp__img with currentSrc ──
-      allImgs.forEach((img, ii) => {
-        const src = (img.currentSrc || img.src || '').trim();
-        const rect = img.getBoundingClientRect();
-        const area = Math.round(rect.width * rect.height);
-        const style = window.getComputedStyle(img);
-        dbg('[INIT]   pswp__img[' + ii + '] src=' + (src ? src.substring(0, 80) : '(empty)') + ' area=' + area + ' opacity=' + style.opacity);
-      });
+      // Advance to next slide
+      advanceToNextSlide();
 
-      // ── DEBUG: check dataset.pswpIndex ──
-      dbg('[INIT] dataset.pswpIndex=' + (pswp ? pswp.dataset.pswpIndex : 'N/A'));
+      // Wait for slide to change — pass full snapshot (not result item)
+      const waitResult = await waitForRealSlideChange(
+        currentSnapshot,  // Always pass the current full snapshot
+        prevCurrIndex,
+        4000
+      );
 
-      // ── State ──
-      const seenUrls = new Map();
-      const seenIds  = new Map();
-      let firstIndex = -1;
-      let consecutiveNoImgReady = 0;
-      const MAX_ITER = 30;
-      const NO_READY_THRESHOLD = 4;
-
-      /**
-       * Extract image URL from the active slide using the best img strategy.
-       * Returns { src, check, source }.
-       */
-      function getActiveImageSrcWithCheck() {
-        const allPswpImgs = Array.from(document.querySelectorAll('.pswp__img'));
-
-        // Check 1: transform-based
-        const activeItem = findActivePswpItem();
-        if (activeItem) {
-          const best = findBestImgInItem(activeItem.item, allPswpImgs);
-          if (best) {
-            const src = (best.img.currentSrc || best.img.src || '').trim();
-            if (src && !src.startsWith('data:') && !src.startsWith('blob:')) {
-              return { src, check: 'transform', source: best.source };
-            }
-          }
-        }
-        // Check 2: .pswp--active class
-        const activeItems = document.querySelectorAll('.pswp__item.pswp--active');
-        if (activeItems.length === 1) {
-          const best = findBestImgInItem(activeItems[0], allPswpImgs);
-          if (best) {
-            const src = (best.img.currentSrc || best.img.src || '').trim();
-            if (src && !src.startsWith('data:') && !src.startsWith('blob:')) {
-              return { src, check: 'active-class', source: best.source };
-            }
-          }
-        }
-        // Check 3: aria-hidden="false"
-        for (const item of document.querySelectorAll('.pswp__item')) {
-          if (item.getAttribute('aria-hidden') === 'false') {
-            const best = findBestImgInItem(item, allPswpImgs);
-            if (best) {
-              const src = (best.img.currentSrc || best.img.src || '').trim();
-              if (src && !src.startsWith('data:') && !src.startsWith('blob:')) {
-                return { src, check: 'aria', source: best.source };
-              }
-            }
-          }
-        }
-        // Check 4: global area fallback
-        const fallback = getVisiblePhotoSwipeImage();
-        if (fallback) {
-          const src = (fallback.currentSrc || fallback.src || '').trim();
-          if (src) return { src, check: 'area', source: 'global-fallback' };
-        }
-        return { src: '', check: 'empty', source: 'none' };
-      }
-
-      /**
-       * Determine the current active slide index from PhotoSwipe state.
-       * Returns { index, strategy: 'transform'|'dataset'|'aria'|'area' }
-       */
-      function getCurrentSlideIndexWithStrategy() {
-        // Strategy 0 (NEW): PhotoSwipe API — most reliable when available
-        const pswp = document.querySelector('.pswp');
-        if (pswp) {
-          const pswpUid = pswp.dataset?.pswpUid;
-          if (pswpUid && window.pswp?.instances instanceof Map) {
-            const instance = window.pswp.instances.get(Number(pswpUid));
-            if (instance && typeof instance.currIndex === 'number') {
-              return { index: instance.currIndex, strategy: 'pswp-api' };
-            }
-          }
-          // Fallback: direct instance from element property
-          if (pswp.__pswp && typeof pswp.__pswp.currIndex === 'number') {
-            return { index: pswp.__pswp.currIndex, strategy: 'pswp-el-api' };
-          }
-        }
-        // Strategy 1: transform — find item with translateX closest to 0
-        const activeItem = findActivePswpItem();
-        if (activeItem) {
-          return { index: activeItem.index, strategy: 'transform' };
-        }
-        // Strategy 2: dataset.pswpIndex
-        if (pswp && typeof pswp.dataset.pswpIndex !== 'undefined' && pswp.dataset.pswpIndex !== '') {
-          return { index: parseInt(pswp.dataset.pswpIndex, 10), strategy: 'dataset' };
-        }
-        // Strategy 3: aria-hidden=false
-        const items = document.querySelectorAll('.pswp__item');
-        for (let i = 0; i < items.length; i++) {
-          if (items[i].getAttribute('aria-hidden') === 'false') return { index: i, strategy: 'aria' };
-        }
-        // Strategy 4: area-based (last resort)
-        const allImgs = Array.from(document.querySelectorAll('.pswp__img'));
-        if (!allImgs.length) return { index: 0, strategy: 'area-none' };
-        let best = allImgs[0], bestArea = 0;
-        for (const img of allImgs) {
-          const r = img.getBoundingClientRect();
-          const area = r.width * r.height;
-          if (area > bestArea) { bestArea = area; best = img; }
-        }
-        const idx = Array.from(document.querySelectorAll('.pswp__img')).indexOf(best);
-        return { index: idx >= 0 ? idx : 0, strategy: 'area' };
-      }
-
-      /**
-       * Try to advance to the next slide.
-       * Returns { used, clicked, prevIndex, success }.
-       */
-      function clickNext() {
-        // Capture prevIndex before any action so callers can compare with post-click index.
-        const prevIndex = (() => {
-          const ii = getCurrentSlideIndexWithStrategy();
-          return ii.index;
-        })();
-
-        // Priority 0 (NEW): Direct PhotoSwipe API — bypasses synthetic event issues entirely
-        const pswpRoot = document.querySelector('.pswp');
-        if (pswpRoot) {
-          // Try PhotoSwipe v5 keyed-by-uid instance access
-          const pswpUid = pswpRoot.dataset?.pswpUid;
-          if (pswpUid && window.pswp?.instances instanceof Map) {
-            const instance = window.pswp.instances.get(Number(pswpUid));
-            if (instance && typeof instance.next === 'function') {
-              instance.next();
-              dbg('[clickNext] used=pswp-api uid=' + pswpUid + ' prevIndex=' + prevIndex);
-              return { used: 'pswp-api', clicked: true, prevIndex, success: true };
-            }
-          }
-          // Fallback: direct instance from a known class property (PhotoSwipe v4 / some builds)
-          const pswpEl = document.querySelector('.pswp');
-          if (pswpEl && pswpEl.__pswp) {
-            const inst = pswpEl.__pswp;
-            if (typeof inst.next === 'function') {
-              inst.next();
-              dbg('[clickNext] used=pswp-el-api prevIndex=' + prevIndex);
-              return { used: 'pswp-el-api', clicked: true, prevIndex, success: true };
-            }
-          }
-        }
-
-        // Priority 1: .pswp__button--arrow--right  (PhotoSwipe v5+)
-        // Priority 2: .pswp__button--arrow--next   (older PhotoSwipe)
-        // Priority 3: any button with "arrow" + "right" in className (generics)
-        const btn =
-          document.querySelector('.pswp__button--arrow--right') ||
-          document.querySelector('.pswp__button--arrow--next') ||
-          document.querySelector('[class*="arrow"][class*="right"]');
-
-        if (btn && !btn.disabled && getComputedStyle(btn).display !== 'none') {
-          btn.focus();                            // ← must focus before click for keyboard events to propagate
-          const clicked = triggerClick(btn);
-          dbg('[clickNext] used=button prevIndex=' + prevIndex + ' clicked=' + clicked + ': ' + getElementPath(btn));
-          return { used: 'button', clicked, prevIndex, success: clicked };
-        }
-
-        // Priority 4: generic class-based next button fallback
-        const fallbackBtn = document.querySelector('[class*="pswp__button"][class*="next"]');
-        if (fallbackBtn) {
-          fallbackBtn.focus();
-          const clicked = triggerClick(fallbackBtn);
-          dbg('[clickNext] used=fallback-btn prevIndex=' + prevIndex + ' clicked=' + clicked + ': ' + getElementPath(fallbackBtn));
-          return { used: 'fallback-btn', clicked, prevIndex, success: clicked };
-        }
-
-        // Priority 5: keyboard event on pswp root (requires focus first)
-        if (pswpRoot) {
-          pswpRoot.focus();                       // ← focus is required for PhotoSwipe to receive keyboard events
-          dbg('[clickNext] used=keyboard-pswp prevIndex=' + prevIndex);
-          pswpRoot.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true, cancelable: true }));
-          return { used: 'keyboard-pswp', clicked: true, prevIndex, success: true };
-        }
-
-        // Priority 6: global keyboard fallback
-        dbg('[clickNext] used=keyboard-global prevIndex=' + prevIndex);
-        document.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true, cancelable: true }));
-        return { used: 'keyboard-global', clicked: true, prevIndex, success: true };
-      }
-
-      function triggerClick(el) {
-        try { el.click(); return true; } catch (_) {}
-        try { el.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true })); return true; } catch (_) {}
-        return false;
-      }
-
-      /**
-       * Get the current active img element (fresh DOM query each call).
-       * Picks the best real img inside the active item using findBestImgInItem.
-       * Returns { img, index, tx, strategy, source } or null.
-       */
-      function getActiveImgInfo() {
-        const allPswpImgs = Array.from(document.querySelectorAll('.pswp__img'));
-
-        // Strategy 1: transform-based
-        const activeItem = findActivePswpItem();
-        if (activeItem) {
-          const best = findBestImgInItem(activeItem.item, allPswpImgs);
-          if (best) return { img: best.img, index: activeItem.index, tx: activeItem.tx, strategy: 'transform', source: best.source };
-        }
-
-        // Strategy 2: .pswp--active class
-        const activeItems = document.querySelectorAll('.pswp__item.pswp--active');
-        if (activeItems.length === 1) {
-          const best = findBestImgInItem(activeItems[0], allPswpImgs);
-          if (best) return { img: best.img, index: -1, tx: 0, strategy: 'active-class', source: best.source };
-        }
-
-        // Strategy 3: aria-hidden="false"
-        for (const item of document.querySelectorAll('.pswp__item')) {
-          if (item.getAttribute('aria-hidden') === 'false') {
-            const best = findBestImgInItem(item, allPswpImgs);
-            if (best) return { img: best.img, index: -1, tx: 0, strategy: 'aria', source: best.source };
-          }
-        }
-
-        return null;
-      }
-
-      /**
-       * Wait for the img element to be fully loaded.
-       * Criteria: src/currentSrc non-empty, img.complete === true, naturalWidth > 0.
-       * Returns { ready, img, src, currentSrc, complete, naturalWidth } after each poll.
-       */
-      async function waitForImageReady(img, timeoutMs = 3000) {
-        const start = Date.now();
-        while (Date.now() - start < timeoutMs) {
-          const src = (img.src || '').trim();
-          const currentSrc = (img.currentSrc || '').trim();
-          const complete = img.complete;
-          const naturalWidth = img.naturalWidth || 0;
-          const ready = complete && naturalWidth > 0 && !!(currentSrc || src);
-
-          dbg('[waitForImageReady] poll complete=' + complete + ' nw=' + naturalWidth + ' src=\"' + (src ? src.substring(0, 60) : '(empty)') + '\" currentSrc=\"' + (currentSrc ? currentSrc.substring(0, 60) : '(empty)') + '\" ready=' + ready);
-
-          if (ready) {
-            return { ready: true, img, src: currentSrc || src, currentSrc, complete, naturalWidth };
-          }
-          await new Promise(r => setTimeout(r, 120));
-        }
-        // Final check after timeout
-        const src = (img.src || '').trim();
-        const currentSrc = (img.currentSrc || '').trim();
-        const complete = img.complete;
-        const naturalWidth = img.naturalWidth || 0;
-        dbg('[waitForImageReady] TIMEOUT after ' + timeoutMs + 'ms | complete=' + complete + ' nw=' + naturalWidth + ' currentSrc=\"' + (currentSrc ? currentSrc.substring(0, 60) : '(empty)') + '\"');
-        return { ready: complete && naturalWidth > 0 && !!(currentSrc || src), img, src: currentSrc || src, currentSrc, complete, naturalWidth };
-      }
-
-      /**
-       * Wait for the slide index to change (using transform).
-       * Primary signal: indexChanged (NOT urlChanged).
-       * Also handles loop-back detection.
-       * Returns { changed, indexChanged, newIndex, newIndexStrategy, newImgInfo, loopBack, pollCount, timedOut }.
-       * newImgInfo contains the fresh img element for subsequent waitForImageReady.
-       */
-      /**
-       * Directly manipulate PhotoSwipe slides via transform, bypassing PhotoSwipe's event system.
-       * This is the fallback when synthetic clicks/keyboard events are ignored by PhotoSwipe.
-       */
-      function forceTransformSlide(targetIndex) {
-        const items = Array.from(document.querySelectorAll('.pswp__item'));
-        if (!items.length) return false;
-        const clampedIndex = Math.max(0, Math.min(targetIndex, items.length - 1));
-        // tx = -clampedIndex * 100 positions the target slide at the "visible" slot (tx ≈ 0)
-        const tx = -clampedIndex * 100;
-        items.forEach((item, i) => {
-          item.style.transform = `translateX(${tx + (i - clampedIndex) * 100}%)`;
-        });
-        dbg('[forceTransformSlide] forced index=' + clampedIndex + ' tx=' + tx + '% (' + items.length + ' items)');
-        return true;
-      }
-
-      async function waitForSlideChange(prevIndex, timeoutMs = 3000) {
-        const start = Date.now();
-        let pollCount = 0;
-        let prevIdxInfo = null;
-        const FORCE_THRESHOLD_MS = 1500; // wait this long before taking over via transform
-        // Grab items reference once at function entry (items are static during a single transition)
-        let items = Array.from(document.querySelectorAll('.pswp__item'));
-
-        while (Date.now() - start < timeoutMs) {
-          pollCount++;
-
-          // Always re-fetch active item from live DOM (never cache DOM references)
-          const imgInfo = getActiveImgInfo();
-          const idxInfo = getCurrentSlideIndexWithStrategy();
-          const currentIndex = idxInfo.index;
-          const currentSrc = imgInfo ? ((imgInfo.img.currentSrc || imgInfo.img.src || '').trim()) : '';
-          const elapsed = Date.now() - start;
-
-          // Primary signal: index changed
-          const indexChanged = prevIdxInfo !== null && currentIndex !== prevIdxInfo;
-
-          dbg('[waitForSlideChange] poll=' + pollCount
-            + ' elapsed=' + elapsed + 'ms'
-            + ' index=' + currentIndex + '(strategy=' + idxInfo.strategy + ')'
-            + ' prevIdx=' + prevIdxInfo
-            + ' indexChanged=' + indexChanged
-            + ' source=' + (imgInfo ? imgInfo.source : 'none')
-            + ' imgComplete=' + (imgInfo ? imgInfo.img.complete : 'N/A')
-            + ' imgNW=' + (imgInfo ? imgInfo.img.naturalWidth : 'N/A')
-            + ' currentSrc=\"' + (currentSrc ? currentSrc.substring(0, 60) : '(empty)') + '\"'
-          );
-
-          if (indexChanged) {
-            dbg('[waitForSlideChange] ✓ INDEX CHANGED at poll=' + pollCount + ' newIndex=' + currentIndex + ' strategy=' + idxInfo.strategy);
-            return {
-              changed: true,
-              indexChanged: true,
-              newIndex: currentIndex,
-              newIndexStrategy: idxInfo.strategy,
-              newImgInfo: imgInfo,
-              loopBack: false,
-              pollCount,
-              timedOut: false,
-              forced: false,
-            };
-          }
-
-          // Mid-polling force: if PhotoSwipe hasn't responded after FORCE_THRESHOLD_MS, take over via transform
-          if (elapsed >= FORCE_THRESHOLD_MS && idxInfo.strategy === 'transform') {
-            const nextIndex = (prevIndex + 1) % items.length;
-            const forced = forceTransformSlide(nextIndex);
-            if (forced) {
-              dbg('[waitForSlideChange] ⚡ FORCED mid-poll at elapsed=' + elapsed + 'ms -> nextIndex=' + nextIndex);
-              // Wait a tick for the DOM to settle then confirm
-              await new Promise(r => setTimeout(r, 200));
-              const postIdxInfo = getCurrentSlideIndexWithStrategy();
-              const postImgInfo = getActiveImgInfo();
-              return {
-                changed: true,
-                indexChanged: true,
-                newIndex: nextIndex,
-                newIndexStrategy: 'forced-transform',
-                newImgInfo: postImgInfo,
-                loopBack: false,
-                pollCount,
-                timedOut: false,
-                forced: true,
-              };
-            }
-          }
-
-          // Loop detection: back to index 0
-          if (prevIndex === 0 && currentIndex === 0 && pollCount > 2) {
-            dbg('[waitForSlideChange] loopBack detected at poll=' + pollCount);
-            return {
-              changed: false,
-              indexChanged: false,
-              newIndex: currentIndex,
-              newIndexStrategy: idxInfo.strategy,
-              newImgInfo: imgInfo,
-              loopBack: true,
-              pollCount,
-              timedOut: false,
-              forced: false,
-            };
-          }
-
-          prevIdxInfo = currentIndex;
-          await new Promise(r => setTimeout(r, 120));
-        }
-
-        // Timeout: last-resort force via transform before giving up
-        const finalIdxInfo = getCurrentSlideIndexWithStrategy();
-        const finalImgInfo = getActiveImgInfo();
-        const nextIndex = (prevIndex + 1) % (items.length || 1);
-        const forced = forceTransformSlide(nextIndex);
-        dbg('[waitForSlideChange] TIMEOUT after ' + timeoutMs + 'ms | final index=' + finalIdxInfo.index + ' strategy=' + finalIdxInfo.strategy + ' | polls=' + pollCount + ' | forced=' + forced + ' (nextIndex=' + nextIndex + ')');
-        return {
-          changed: forced,
-          indexChanged: forced,
-          newIndex: forced ? nextIndex : finalIdxInfo.index,
-          newIndexStrategy: forced ? 'forced-transform-timeout' : finalIdxInfo.strategy,
-          newImgInfo: finalImgInfo,
-          loopBack: false,
-          pollCount,
-          timedOut: true,
-          forced: forced,
-        };
-      }
-
-      // ── Main paging loop ──
-      for (let i = 0; i < MAX_ITER; i++) {
-        const imgInfo = getActiveImgInfo();
-        const idxInfo = getCurrentSlideIndexWithStrategy();
-        const slideIndex = idxInfo.index;
-        const strategy = idxInfo.strategy;
-
-        if (firstIndex === -1) firstIndex = slideIndex;
-
-        if (!imgInfo) {
-          dbg('>>> ITER ' + i + ' | index=' + slideIndex + '(strategy=' + strategy + ') | source=NONE | NO ACTIVE IMG | result so far: ' + result.length);
-          dbg('    RESULT: skipped (no active img found)');
-          consecutiveNoImgReady++;
-          if (consecutiveNoImgReady >= NO_READY_THRESHOLD) { dbg('    STOP: ' + NO_READY_THRESHOLD + ' consecutive no-active-img'); break; }
-          clickNext();
-          await waitForSlideChange(slideIndex);
-          continue;
-        }
-
-        const img = imgInfo.img;
-        const src = (img.currentSrc || img.src || '').trim();
-        dbg('>>> ITER ' + i + ' | index=' + slideIndex + '(strategy=' + strategy + ')' + ' | source=' + imgInfo.source + ' | img.complete=' + img.complete + ' nw=' + img.naturalWidth + ' | src=\"' + (src ? src.substring(0, 60) : '(empty)') + '\"' + ' | firstIndex=' + firstIndex + ' | result so far: ' + result.length);
-
-        if (i > 0 && slideIndex === firstIndex) {
-          dbg('    REASON: loop-back to firstIndex | STOP');
+      if (!waitResult.changed) {
+        consecutiveNoNew++;
+        console.log('[gallery] ITER ' + totalAttempts + ': no change (reason=' + waitResult.reason + '), consecutiveNoNew=' + consecutiveNoNew + '/' + MAX_NO_NEW);
+        if (consecutiveNoNew >= MAX_NO_NEW) {
+          console.log('[gallery] STOP: ' + MAX_NO_NEW + ' consecutive attempts with no new images');
           break;
         }
-
-        if (!img.complete || img.naturalWidth === 0 || !src) {
-          dbg('    img not ready — waiting for load...');
-          const readyResult = await waitForImageReady(img);
-          dbg('    waitForImageReady: ready=' + readyResult.ready + ' complete=' + readyResult.complete + ' nw=' + readyResult.naturalWidth + ' src=\"' + (readyResult.src ? readyResult.src.substring(0, 80) : '(still empty)') + '\"');
-          if (!readyResult.ready) {
-            consecutiveNoImgReady++;
-            if (consecutiveNoImgReady >= NO_READY_THRESHOLD) { dbg('    STOP: ' + NO_READY_THRESHOLD + ' consecutive no-img-ready'); break; }
-            clickNext();
-            await waitForSlideChange(slideIndex);
-            continue;
-          }
-          const loadedSrc = readyResult.src;
-          const loadedNorm = normalizeUrl(loadedSrc);
-          const loadedCid = extractContentId(loadedNorm);
-          if (seenUrls.has(loadedNorm)) { dbg('    loaded URL duplicate | STOP'); }
-          else if (loadedCid && seenIds.has(loadedCid)) { dbg('    loaded cid duplicate | STOP'); }
-          else {
-            seenUrls.set(loadedNorm, true);
-            if (loadedCid) seenIds.set(loadedCid, true);
-            result.push({ url: loadedSrc, width: extractWidthFromUrl(loadedSrc), id: loadedCid });
-            consecutiveNoImgReady = 0;
-            dbg('    RESULT: RECORDED (post-load) [' + result.length + '] | id=' + loadedCid + ' | src=' + loadedSrc.substring(0, 80));
-          }
-          clickNext();
-          await waitForSlideChange(slideIndex);
-          continue;
-        }
-
-        const norm = normalizeUrl(src);
-        const cid = extractContentId(norm);
-        if (seenUrls.has(norm)) { dbg('    duplicate URL | norm=' + norm.substring(0, 80) + ' | STOP'); break; }
-        if (cid && seenIds.has(cid)) { dbg('    duplicate cid | STOP'); break; }
-
-        if (cid) {
-          seenUrls.set(norm, true);
-          seenIds.set(cid, true);
-          result.push({ url: src, width: extractWidthFromUrl(norm), id: cid });
-          dbg('    RESULT: RECORDED [' + result.length + '] | id=' + cid + ' | src=' + src.substring(0, 80));
-        } else {
-          seenUrls.set(norm, true);
-          result.push({ url: src, width: extractWidthFromUrl(norm), id: null });
-          dbg('    RESULT: RECORDED [' + result.length + '] (no cid) | src=' + src.substring(0, 80));
-        }
-        consecutiveNoImgReady = 0;
-
-        const clickRes = clickNext();
-        const waitRes = await waitForSlideChange(slideIndex);
-        dbg('    clickNext used=' + clickRes.used
-          + ' | prevIndex=' + clickRes.prevIndex
-          + ' | newIndex=' + waitRes.newIndex
-          + ' | indexChanged=' + waitRes.indexChanged
-          + ' | loopBack=' + waitRes.loopBack
-          + ' | polls=' + waitRes.pollCount
-          + ' | timedOut=' + waitRes.timedOut
-        );
-        if (!waitRes.indexChanged) {
-          dbg('    [clickNext] ❌ next click failed — index unchanged: ' + clickRes.prevIndex + ' → ' + waitRes.newIndex);
-        }
-        if (waitRes.loopBack) { dbg('    STOP: loop-back'); break; }
-        if (waitRes.timedOut && !waitRes.indexChanged) {
-          consecutiveNoImgReady++;
-          if (consecutiveNoImgReady >= NO_READY_THRESHOLD) { dbg('    STOP: ' + NO_READY_THRESHOLD + ' consecutive no-img-ready'); break; }
-        }
+        continue;
       }
 
-      // ── Build final result ──
-      const deduped = [];
-      const finalSeen = new Set();
-      for (const item of result) {
-        const key = item.url.split('?')[0].toLowerCase();
-        if (!finalSeen.has(key)) {
-          finalSeen.add(key);
-          deduped.push(item.url);
-          dbg('[FINAL-KEEP] ' + item.url.substring(0, 100) + ' (id=' + item.id + ')');
-        } else {
-          dbg('[FINAL-DROP] duplicate key: ' + item.url.substring(0, 100) + ' (id=' + item.id + ')');
-        }
-      }
-      deduped.sort((a, b) => {
-        const wa = extractWidthFromUrl(a);
-        const wb = extractWidthFromUrl(b);
-        return wb - wa;
-      });
+      consecutiveNoNew = 0;
 
-      dbg('[FINAL] result before dedup: ' + result.length + ' | after dedup: ' + deduped.length + ' | dedup drops: ' + (result.length - deduped.length));
-      result = deduped;
+      // Get new snapshot from wait result (full snapshot, not result item)
+      const newSnapshot = waitResult.newSnapshot;
+
+      // Update currentSnapshot for next iteration
+      currentSnapshot = newSnapshot;
+
+      if (!newSnapshot.isValid) {
+        console.log('[gallery] ITER ' + totalAttempts + ': new snapshot invalid, skipping');
+        continue;
+      }
+
+      const newSignature = newSnapshot.signature;
+      const newSrc = newSnapshot.rawSrc;
+
+      if (seenSignatures.has(newSignature)) {
+        console.log('[gallery] ITER ' + totalAttempts + ': LOOP-BACK detected, signature=' + newSignature + ' already seen');
+        if (result.length >= 3) {
+          console.log('[gallery] STOP: loop-back with ' + result.length + ' images collected');
+          break;
+        }
+        console.log('[gallery] loop-back but only ' + result.length + ' images, trying one more...');
+        continue;
+      }
+
+      // Record new image (result item — signature + url only)
+      seenSignatures.add(newSignature);
+      result.push({ signature: newSignature, url: newSrc });
+      console.log('[gallery] ITER ' + totalAttempts + ': RECORDED [' + (result.length - 1) + ']: signature=' + newSignature + ', reason=' + waitResult.reason + ', polls=' + waitResult.polls);
     }
+
+    // Build final result (NEVER return empty if we have results)
+    const finalUrls = [];
+    const finalSeen = new Set();
+    for (const item of result) {
+      if (!item.signature && !item.url) continue;
+      const key = item.signature || item.url.split('?')[0].toLowerCase();
+      if (!finalSeen.has(key)) {
+        finalSeen.add(key);
+        finalUrls.push(item.url);
+        console.log('[gallery] FINAL-KEEP: ' + item.url.substring(0, 80));
+      } else {
+        console.log('[gallery] FINAL-DROP: ' + item.url.substring(0, 80));
+      }
+    }
+
+    finalUrls.sort((a, b) => extractWidthFromUrl(b) - extractWidthFromUrl(a));
+
+    console.log('[gallery] ====== FINISH ======');
+    console.log('[gallery] Total: ' + result.length + ' collected, ' + finalUrls.length + ' unique after dedup');
+
+    // Return what we have, even if less than expected
+    return finalUrls.length > 0 ? finalUrls : [];
+
+  } catch (err) {
+    console.error('[gallery] Error during extraction:', err);
+    // Return whatever we collected, don't lose results due to mid-flow errors
+    const finalUrls = result
+      .filter(item => item.signature || item.url)
+      .map(item => item.url)
+      .filter((url, idx, arr) => arr.indexOf(url) === idx);
+    console.log('[gallery] Returning ' + finalUrls.length + ' photos despite error');
+    return finalUrls;
   } finally {
     _pagingLock = false;
+    closeGallery();
   }
-  return result;
 }
 
 
