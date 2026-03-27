@@ -1,6 +1,6 @@
 /**
  * Minimal type declarations for Chrome Extension API.
- * Used when the web app is opened in a tab by the extension (e.g. /login?from=extension).
+ * Used when the web app is opened in a tab by the extension (e.g. /login?from_extension=1).
  */
 interface ChromeRuntimeMessage {
   action: string;

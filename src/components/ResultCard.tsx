@@ -223,7 +223,8 @@ export function ResultCard({ result, onBack, onShare, hideNav }: ResultProps) {
       const shareResponse = await onShare(analysisId);
       setShareResult(shareResponse);
 
-      const fullUrl = `${window.location.origin}/share/${shareResponse.slug}`;
+      // Use the full shareUrl if provided, otherwise construct from origin
+      const fullUrl = shareResponse.shareUrl || `${window.location.origin}/share/${shareResponse.slug}`;
       await navigator.clipboard.writeText(fullUrl);
       setCopied(true);
 
@@ -237,7 +238,7 @@ export function ResultCard({ result, onBack, onShare, hideNav }: ResultProps) {
 
   const copyToClipboard = async () => {
     if (!shareResult) return;
-    const fullUrl = `${window.location.origin}/share/${shareResult.slug}`;
+    const fullUrl = shareResult.shareUrl || `${window.location.origin}/share/${shareResult.slug}`;
     await navigator.clipboard.writeText(fullUrl);
     setCopied(true);
     setTimeout(() => setCopied(false), 2000);
@@ -452,9 +453,34 @@ export function ResultCard({ result, onBack, onShare, hideNav }: ResultProps) {
           </div>
         )}
 
+        {/* Agent Lingo Translator */}
+        {result.agentLingoTranslation && result.agentLingoTranslation.shouldDisplay === true && result.agentLingoTranslation.phrases && result.agentLingoTranslation.phrases.length > 0 && (
+          <div className="mb-10 bg-white rounded-3xl p-6 @container[size>=480px]:p-10 shadow-[0_1px_8px_rgba(0,0,0,0.06)] animate-in fade-in slide-in-from-bottom-8 duration-700 ease-out" style={{ animationDelay: '200ms' }}>
+            <div className="flex items-center gap-3 mb-6">
+              <div className="w-10 h-10 rounded-xl bg-amber-50 flex items-center justify-center">
+                <MessageSquare size={18} className="text-amber-600" strokeWidth={1.5} />
+              </div>
+              <h3 className="text-base font-semibold text-stone-900">Reality Check</h3>
+            </div>
+
+            <div className="space-y-4">
+              {result.agentLingoTranslation.phrases.map((item, index) => (
+                <div key={index} className="p-4 bg-stone-50 rounded-xl">
+                  <div className="flex items-start gap-3">
+                    <div className="flex-1">
+                      <div className="text-xs font-medium text-stone-400 italic mb-1">"{item.phrase}"</div>
+                      <div className="text-sm text-stone-700">{item.plainEnglish}</div>
+                    </div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
         {/* Light & Thermal Guide */}
         {result.lightThermalGuide && (
-          <div className="mb-10 bg-white rounded-3xl p-6 @container[size>=480px]:p-10 shadow-[0_1px_8px_rgba(0,0,0,0.06)] animate-in fade-in slide-in-from-bottom-8 duration-700 ease-out" style={{ animationDelay: '200ms' }}>
+          <div className="mb-10 bg-white rounded-3xl p-6 @container[size>=480px]:p-10 shadow-[0_1px_8px_rgba(0,0,0,0.06)] animate-in fade-in slide-in-from-bottom-8 duration-700 ease-out" style={{ animationDelay: '250ms' }}>
             <div className="flex items-center gap-3 mb-6">
               <div className="w-10 h-10 rounded-xl bg-amber-50 flex items-center justify-center">
                 <Sun size={18} className="text-amber-600" strokeWidth={1.5} />
@@ -525,31 +551,6 @@ export function ResultCard({ result, onBack, onShare, hideNav }: ResultProps) {
                 </ul>
               </div>
             )}
-          </div>
-        )}
-
-        {/* Agent Lingo Translator */}
-        {result.agentLingoTranslation && result.agentLingoTranslation.shouldDisplay === true && result.agentLingoTranslation.phrases && result.agentLingoTranslation.phrases.length > 0 && (
-          <div className="mb-10 bg-white rounded-3xl p-6 @container[size>=480px]:p-10 shadow-[0_1px_8px_rgba(0,0,0,0.06)] animate-in fade-in slide-in-from-bottom-8 duration-700 ease-out" style={{ animationDelay: '250ms' }}>
-            <div className="flex items-center gap-3 mb-6">
-              <div className="w-10 h-10 rounded-xl bg-amber-50 flex items-center justify-center">
-                <MessageSquare size={18} className="text-amber-600" strokeWidth={1.5} />
-              </div>
-              <h3 className="text-base font-semibold text-stone-900">Agent Lingo Translator</h3>
-            </div>
-
-            <div className="space-y-4">
-              {result.agentLingoTranslation.phrases.map((item, index) => (
-                <div key={index} className="p-4 bg-stone-50 rounded-xl">
-                  <div className="flex items-start gap-3">
-                    <div className="flex-1">
-                      <div className="text-xs font-medium text-stone-400 italic mb-1">"{item.phrase}"</div>
-                      <div className="text-sm text-stone-700">{item.plainEnglish}</div>
-                    </div>
-                  </div>
-                </div>
-              ))}
-            </div>
           </div>
         )}
 
@@ -852,17 +853,18 @@ export function ResultCard({ result, onBack, onShare, hideNav }: ResultProps) {
         )}
 
         {/* Action Bottom */}
-        <div className="flex flex-col items-center pt-16 animate-in fade-in slide-in-from-bottom-8 duration-700 ease-out" style={{ animationDelay: '600ms' }}>
+        <div className="flex flex-col items-center pt-12 animate-in fade-in slide-in-from-bottom-8 duration-700 ease-out" style={{ animationDelay: '600ms' }}>
           <button
             onClick={onBack}
-            className="group relative inline-flex items-center justify-center gap-3 px-10 py-4 bg-white text-stone-800 rounded-full transition-all duration-300 hover:bg-stone-50 hover:-translate-y-0.5 shadow-[0_1px_8px_rgba(0,0,0,0.06)]"
+            className="group relative inline-flex items-center justify-center gap-3 px-10 py-4 rounded-full transition-all duration-300 shadow-[0_8px_30px_rgba(28,25,23,0.15)] hover:shadow-[0_8px_30px_rgba(28,25,23,0.25)] hover:-translate-y-0.5 bg-stone-900 hover:bg-stone-800 text-white"
           >
             <span className="text-[11px] font-bold uppercase tracking-[0.15em]">Analyze Another Listing</span>
             <ArrowRight size={14} className="group-hover:translate-x-1 transition-transform" strokeWidth={2} />
           </button>
 
           {onShare && (
-            <div className="mt-6 flex flex-col items-center gap-3">
+            <div className="mt-10 flex flex-col items-center gap-4">
+              <p className="text-sm font-medium text-stone-500 text-center">Big decision — worth getting a second opinion before you move forward.</p>
               {!shareResult ? (
                 <button
                   onClick={handleShare}

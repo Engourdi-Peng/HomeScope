@@ -121,7 +121,8 @@ export function AuthProvider({ children }: AuthProviderProps) {
   const signInWithGoogle = async () => {
     // 检查是否来自扩展的登录流程（URL 参数传递）
     const urlParams = new URLSearchParams(window.location.search);
-    const fromExtension = urlParams.get('from_extension') === '1';
+    const fromExtension =
+      urlParams.get('from_extension') === '1' || urlParams.get('from') === 'extension';
 
     if (fromExtension) {
       // 扩展触发的登录：设置标记，在 AuthCallback 中通知扩展并关闭标签页

@@ -18,8 +18,8 @@ import { ReportShell } from '../../shared/report/ReportShell';
 import { ResultCard } from '../../components/ResultCard';
 
 export function ExtensionResultView() {
-  const { analysisPhase, analysisProgress, analysisError, analysisResult, listingData, extractionCached } = useAppState();
-  const { retryAnalysis, navigateToHome, startAnalysis, refreshPhotos } = useActions();
+  const { analysisPhase, analysisProgress, analysisError, analysisResult, listingData, extractionCached, authStatus } = useAppState();
+  const { retryAnalysis, navigateToHome, startAnalysis, refreshPhotos, shareAnalysis } = useActions();
   const hasStartedAnalysis = React.useRef(false);
 
   // Auto-start analysis when the report view mounts
@@ -33,6 +33,14 @@ export function ExtensionResultView() {
   const isAnalysing = ['preparing', 'reading_page', 'opening_gallery', 'collecting_photos', 'sending_data', 'analysing', 'generating_report'].includes(analysisPhase);
   const isError = analysisPhase === 'error';
   const hasResult = !!analysisResult;
+
+  const handleShare = async (analysisId: string) => {
+    if (!analysisId) {
+      throw new Error('Analysis ID not found');
+    }
+    const result = await shareAnalysis(analysisId);
+    return { slug: result.slug, shareUrl: result.shareUrl };
+  };
 
   // Unified nav bar — mirrors web ResultCard header, adapted for sidepanel
   const NavBar = (
@@ -110,6 +118,7 @@ export function ExtensionResultView() {
       <ResultCard
         result={analysisResult}
         onBack={navigateToHome}
+        onShare={authStatus === 'logged_in' ? handleShare : undefined}
         hideNav
       />
     </ReportShell>

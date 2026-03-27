@@ -148,6 +148,7 @@ interface AppContextValue {
     navigateToHome: () => void;
     sendMagicLink: (email: string) => Promise<{ success: boolean; error?: string }>;
     initiateGoogleOAuth: () => Promise<{ success: boolean; error?: string }>;
+    shareAnalysis: (analysisId: string) => Promise<{ slug: string; shareUrl: string }>;
   };
 }
 
@@ -914,6 +915,28 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     }
   }, []);
 
+  const shareAnalysis = useCallback(async (analysisId: string): Promise<{ slug: string; shareUrl: string }> => {
+    if (!analysisId) {
+      throw new Error('Analysis ID not found');
+    }
+    try {
+      const result = await sendMessage<{
+        status: string;
+        slug?: string;
+        shareUrl?: string;
+        error?: string;
+      }>({ action: 'share_analysis', analysisId });
+
+      if (result.status === 'success' && result.slug && result.shareUrl) {
+        return { slug: result.slug, shareUrl: result.shareUrl };
+      }
+      throw new Error(result.error || 'Failed to share analysis');
+    } catch (err) {
+      console.error('[ExtApp] shareAnalysis error:', err);
+      throw err;
+    }
+  }, []);
+
   const value: AppContextValue = {
     state,
     dispatch,
@@ -931,6 +954,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       navigateToHome,
       sendMagicLink,
       initiateGoogleOAuth,
+      shareAnalysis,
     },
   };
 

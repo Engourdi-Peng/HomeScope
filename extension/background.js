@@ -340,7 +340,8 @@ async function handleMessage(message, sender, sendResponse) {
       try {
         // Derive site base URL from MAGIC_LINK_REDIRECT to avoid hardcoding
         const siteBase = MAGIC_LINK_REDIRECT.split('/auth/callback')[0];
-        const loginUrl = `${siteBase}/login?from=extension`;
+        // Must match AuthContext: signInWithGoogle sets hs_login_from_extension when from_extension=1
+        const loginUrl = `${siteBase}/login?from_extension=1`;
         await chrome.tabs.create({ url: loginUrl, active: true });
         console.log(`${LOG_PREFIX} initiate_google_oauth: opened login page`);
         sendResponse({ success: true, opened_login_page: true });
@@ -540,6 +541,45 @@ async function handleMessage(message, sender, sendResponse) {
         }
       } catch (err) {
         console.error(`${LOG_PREFIX} get_analysis_history: error —`, err.message);
+        sendResponse({ status: 'error', error: err.message });
+      }
+      break;
+    }
+
+    case 'share_analysis': {
+      const auth = await getSession();
+      if (!auth?.session?.access_token) {
+        sendResponse({ status: 'error', error: 'Please sign in first.' });
+        return;
+      }
+
+      const { analysisId } = message;
+      if (!analysisId) {
+        sendResponse({ status: 'error', error: 'Missing analysisId' });
+        return;
+      }
+
+      try {
+        const res = await fetch(`${SUPABASE_URL}/functions/v1/analyze?action=share`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'apikey': SUPABASE_ANON_KEY,
+            'Authorization': `Bearer ${auth.session.access_token}`,
+          },
+          body: JSON.stringify({ analysisId }),
+        });
+
+        if (!res.ok) {
+          const err = await res.json().catch(() => ({ message: 'Failed to share analysis' }));
+          sendResponse({ status: 'error', error: err.message || 'Failed to share analysis' });
+          return;
+        }
+
+        const data = await res.json();
+        sendResponse({ status: 'success', slug: data.slug, shareUrl: data.shareUrl });
+      } catch (err) {
+        console.error(`${LOG_PREFIX} share_analysis: error —`, err.message);
         sendResponse({ status: 'error', error: err.message });
       }
       break;
