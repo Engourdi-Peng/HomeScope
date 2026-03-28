@@ -6,6 +6,54 @@
 import type { AnalysisResult } from '../types';
 
 /**
+ * 从完整地址中提取 suburb/location
+ * 
+ * 澳洲地址格式: "6 Edinburgh Street, Richmond, VIC 3121, AU"
+ * 地址段:
+ *   [0] 门牌号 + 街道: "6 Edinburgh Street"
+ *   [1] Suburb: "Richmond"
+ *   [2] 州 + 邮编: "VIC 3121"
+ *   [3] 国家: "AU"
+ * 
+ * @param address 完整地址，如 "6 Edinburgh Street, Richmond, VIC 3121, AU"
+ * @returns 提取的 suburb 或 null（如果解析失败）
+ * 
+ * @example
+ * extractSuburbFromAddress("6 Edinburgh Street, Richmond, VIC 3121, AU")
+ * // => "Richmond"
+ * 
+ * extractSuburbFromAddress("123 Main St, Sydney, NSW 2000")
+ * // => "Sydney"
+ * 
+ * extractSuburbFromAddress("invalid")
+ * // => null
+ */
+export function extractSuburbFromAddress(address: string | null | undefined): string | null {
+  if (!address) return null;
+
+  // 按逗号分割地址
+  const parts = address.split(',').map((p) => p.trim());
+
+  // 澳洲地址至少应该有: 街道, suburb, 州+邮编, [国家]
+  // 我们需要提取第二段 (index 1) 作为 suburb
+  if (parts.length >= 2) {
+    const suburbCandidate = parts[1];
+    
+    // 验证 suburb 看起来是有效的（包含字母，不是纯数字或纯邮编）
+    if (suburbCandidate && /[a-zA-Z]/.test(suburbCandidate)) {
+      // 过滤掉明显的州缩写和邮编组合
+      // VIC, NSW, QLD, SA, WA, TAS, ACT, NT
+      const statePattern = /^(VIC|NSW|QLD|SA|WA|TAS|ACT|NT)\s*\d{4}$/i;
+      if (!statePattern.test(suburbCandidate)) {
+        return suburbCandidate;
+      }
+    }
+  }
+
+  return null;
+}
+
+/**
  * Slug 输入参数
  */
 export interface SlugInput {

@@ -4,7 +4,7 @@ import { ResultCard } from '../components/ResultCard';
 import { useNavigate, useParams } from 'react-router-dom';
 import { getPublicAnalysis } from '../lib/api';
 import { usePublicPageSEO } from '../hooks/useSEOMeta';
-import { generateSEOContentBlock } from '../lib/seo-utils';
+import { generateSEOContentBlock, extractSuburbFromAddress } from '../lib/seo-utils';
 
 const BASE_URL = 'https://www.tryhomescope.com';
 
@@ -77,11 +77,28 @@ export function SharePage() {
     fetchPublicAnalysis();
   }, [slug]);
 
-  // SEO title and description from API or generate defaults
-  const seoTitle = analysisData?.seo_title || `HomeScope Analysis: ${result?.overallScore}/100 - ${result?.verdict}`;
-  const seoDescription = analysisData?.seo_description || (result?.quickSummary 
-    ? `${result.quickSummary.slice(0, 150)}${result.quickSummary.length > 150 ? '...' : ''}`
-    : `Property analysis result with score ${result?.overallScore}/100`);
+  // 从地址中提取 suburb
+  const suburb = extractSuburbFromAddress(analysisData?.address);
+
+  // 获取 bedrooms 数量
+  const bedrooms = result?.roomCounts?.bedrooms || result?.roomCounts?.bedroom || null;
+
+  // 动态生成 SEO title
+  // - 如果有 suburb 和 bedrooms: "Is this rental worth it in {suburb}? {bedrooms} bedroom analysis | HomeScope"
+  // - 如果只有 suburb: "Is this rental worth it in {suburb}? Rental analysis | HomeScope"
+  // - 如果都没有: "Is this rental worth it? Rental analysis | HomeScope"
+  const seoTitle = suburb && bedrooms
+    ? `Is this rental worth it in ${suburb}? ${bedrooms} bedroom analysis | HomeScope`
+    : suburb
+      ? `Is this rental worth it in ${suburb}? Rental analysis | HomeScope`
+      : 'Is this rental worth it? Rental analysis | HomeScope';
+
+  // 动态生成 SEO description
+  const seoDescription = suburb && bedrooms
+    ? `AI rental analysis of a ${bedrooms}-bedroom property in ${suburb}. Discover pros, cons, hidden risks and whether it's worth applying.`
+    : bedrooms
+      ? `AI rental analysis of a ${bedrooms}-bedroom property. Discover pros, cons, hidden risks and whether it's worth applying.`
+      : 'AI-powered rental property analysis. Discover pros, cons, hidden risks and whether it\'s worth applying.';
 
   // 设置公开分享页 SEO（index, follow, canonical, OG）
   usePublicPageSEO(seoTitle, seoDescription, slug || '');
@@ -118,28 +135,16 @@ export function SharePage() {
 
   // Generate SEO content block for the bottom of the page
   const seoContentBlock = result ? generateSEOContentBlock({
-    suburb: analysisData?.address || null,
-    bedrooms: result.roomCounts?.bedrooms || result.roomCounts?.bedroom || null,
+    suburb: suburb,
+    bedrooms: bedrooms,
     whatLooksGood: result.whatLooksGood || [],
     riskSignals: result.riskSignals || [],
     verdict: result.verdict || null,
     quickSummary: result.quickSummary || null,
   }) : '';
 
-  // Extract suburb from address if available
-  const suburb = analysisData?.address || null;
-
   return (
     <>
-      {/* SEO Meta Tags - 公开分享页使用完整 SEO */}
-      <title>{seoTitle}</title>
-      <meta name="description" content={seoDescription} />
-      <meta property="og:title" content={seoTitle} />
-      <meta property="og:description" content={seoDescription} />
-      <meta property="og:type" content="article" />
-      <meta property="og:url" content={`${BASE_URL}/share/${slug}`} />
-      <link rel="canonical" href={`${BASE_URL}/share/${slug}`} />
-      
       {/* Structured Data for Google */}
       <script type="application/ld+json">
         {JSON.stringify({
