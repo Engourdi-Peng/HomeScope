@@ -1,6 +1,7 @@
 import React from 'react';
 import { ChevronRight, ExternalLink } from 'lucide-react';
 import { useAppState, useActions } from '../store';
+import type { AnalysisResult, AnalysisSummary, ListingInfo } from '../../../shared/types/analysis';
 
 function formatReportDate(dateStr: string): string {
   try {
@@ -27,6 +28,20 @@ function getScoreColor(score?: number) {
   if (score >= 75) return '#16a34a'; // green-600
   if (score >= 50) return '#ea580c'; // amber-600
   return '#dc2626'; // red-600
+}
+
+/** Inject listingInfo into full_result using AnalysisSummary metadata, matching Share/Account logic */
+function enrichWithListingInfo(result: AnalysisResult, summary: AnalysisSummary): AnalysisResult {
+  const listingInfo: ListingInfo = {
+    title: summary.title || undefined,
+    address: summary.address || undefined,
+    coverImageUrl: summary.cover_image_url || undefined,
+    priceAmount: summary.weekly_rent || undefined,
+    bedrooms: summary.bedrooms || undefined,
+    bathrooms: summary.bathrooms || undefined,
+    carSpaces: summary.car_spaces || undefined,
+  };
+  return { ...result, listingInfo };
 }
 
 export function HistorySection() {
@@ -70,7 +85,10 @@ export function HistorySection() {
                 type="button"
                 className={`ext-report-row${isActive ? ' ext-report-row--active' : ''}${!clickable ? ' ext-report-row--disabled' : ''}`}
                 onClick={() => {
-                  if (clickable && item.full_result) navigateToReport(item.full_result);
+                  if (clickable && item.full_result) {
+                    const enriched = enrichWithListingInfo(item.full_result, item);
+                    navigateToReport(enriched);
+                  }
                 }}
                 disabled={!clickable}
               >

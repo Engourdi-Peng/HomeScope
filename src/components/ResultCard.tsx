@@ -901,7 +901,7 @@ export function ResultCard({ result, onBack, onShare, hideNav, isPublicShare }: 
                 >
                   <Share2 size={14} />
                   <span className="text-[10px] font-bold uppercase tracking-[0.15em]">
-                    {isSharing ? 'Generating share link...' : 'Share Privately'}
+                    {isSharing ? 'Generating share link...' : 'Share report'}
                   </span>
                 </button>
               ) : (
