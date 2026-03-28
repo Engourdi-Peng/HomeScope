@@ -1,13 +1,18 @@
 import { useEffect, useState } from 'react';
-import type { AnalysisResult } from '../types';
+import type { AnalysisResult, AnalysisSummary, ListingInfo } from '../types';
 import { ResultCard } from '../components/ResultCard';
 import { useNavigate, useParams } from 'react-router-dom';
 import { getPublicAnalysis } from '../lib/api';
+import { usePublicPageSEO } from '../hooks/useSEOMeta';
+import { generateSEOContentBlock } from '../lib/seo-utils';
+
+const BASE_URL = 'https://www.tryhomescope.com';
 
 export function SharePage() {
   const navigate = useNavigate();
   const { slug } = useParams<{ slug: string }>();
   const [result, setResult] = useState<AnalysisResult | null>(null);
+  const [analysisData, setAnalysisData] = useState<AnalysisSummary | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -25,6 +30,9 @@ export function SharePage() {
           setError('Analysis not found');
           return;
         }
+
+        // Store full analysis data including SEO fields
+        setAnalysisData(analysis);
 
         // Get full result if available, otherwise build from summary
         const fullResult = analysis.full_result as AnalysisResult | undefined;
@@ -47,6 +55,16 @@ export function SharePage() {
           ? { ...requiredFields, ...fullResult }
           : requiredFields;
 
+        // Build listingInfo from analysis data
+        const listingInfo: ListingInfo = {
+          title: analysis.title || undefined,
+          address: analysis.address || undefined,
+          coverImageUrl: analysis.cover_image_url || undefined,
+        };
+
+        // Add to transformed result
+        (transformedResult as AnalysisResult & { listingInfo: ListingInfo }).listingInfo = listingInfo;
+
         setResult(transformedResult);
       } catch (err) {
         console.error('Failed to fetch public analysis:', err);
@@ -58,6 +76,15 @@ export function SharePage() {
 
     fetchPublicAnalysis();
   }, [slug]);
+
+  // SEO title and description from API or generate defaults
+  const seoTitle = analysisData?.seo_title || `HomeScope Analysis: ${result?.overallScore}/100 - ${result?.verdict}`;
+  const seoDescription = analysisData?.seo_description || (result?.quickSummary 
+    ? `${result.quickSummary.slice(0, 150)}${result.quickSummary.length > 150 ? '...' : ''}`
+    : `Property analysis result with score ${result?.overallScore}/100`);
+
+  // 设置公开分享页 SEO（index, follow, canonical, OG）
+  usePublicPageSEO(seoTitle, seoDescription, slug || '');
 
   // Loading state
   if (loading) {
@@ -89,34 +116,47 @@ export function SharePage() {
     );
   }
 
-  // SEO Meta tags
-  const seoTitle = `HomeScope Analysis: ${result.overallScore}/100 - ${result.verdict}`;
-  const seoDescription = result.quickSummary 
-    ? `${result.quickSummary.slice(0, 150)}${result.quickSummary.length > 150 ? '...' : ''}`
-    : `Property analysis result with score ${result.overallScore}/100`;
+  // Generate SEO content block for the bottom of the page
+  const seoContentBlock = result ? generateSEOContentBlock({
+    suburb: analysisData?.address || null,
+    bedrooms: result.roomCounts?.bedrooms || result.roomCounts?.bedroom || null,
+    whatLooksGood: result.whatLooksGood || [],
+    riskSignals: result.riskSignals || [],
+    verdict: result.verdict || null,
+    quickSummary: result.quickSummary || null,
+  }) : '';
+
+  // Extract suburb from address if available
+  const suburb = analysisData?.address || null;
 
   return (
     <>
-      {/* SEO Meta Tags */}
+      {/* SEO Meta Tags - 公开分享页使用完整 SEO */}
       <title>{seoTitle}</title>
       <meta name="description" content={seoDescription} />
       <meta property="og:title" content={seoTitle} />
       <meta property="og:description" content={seoDescription} />
-      <meta property="og:type" content="website" />
+      <meta property="og:type" content="article" />
+      <meta property="og:url" content={`${BASE_URL}/share/${slug}`} />
+      <link rel="canonical" href={`${BASE_URL}/share/${slug}`} />
       
       {/* Structured Data for Google */}
       <script type="application/ld+json">
         {JSON.stringify({
           "@context": "https://schema.org",
-          "@type": "Product",
-          "name": "HomeScope Property Analysis",
+          "@type": "Article",
+          "headline": seoTitle,
           "description": seoDescription,
-          "aggregateRating": {
-            "@type": "AggregateRating",
-            "ratingValue": result.overallScore,
-            "bestRating": 100,
-            "worstRating": 0,
-            "ratingCount": 1
+          "datePublished": analysisData?.created_at,
+          "dateModified": analysisData?.updated_at,
+          "author": {
+            "@type": "Organization",
+            "name": "HomeScope"
+          },
+          "publisher": {
+            "@type": "Organization",
+            "name": "HomeScope",
+            "url": BASE_URL
           }
         })}
       </script>
@@ -135,8 +175,32 @@ export function SharePage() {
         <div className="relative z-10 w-full max-w-[56rem]">
           <ResultCard 
             result={result} 
-            onBack={() => navigate('/')} 
+            onBack={() => navigate('/')}
+            isPublicShare={true}
           />
+
+          {/* SEO Content Block - 仅在公开分享页显示 */}
+          {seoContentBlock && (
+            <div className="mt-12 p-6 bg-white/50 backdrop-blur-sm rounded-xl border border-stone-200">
+              <div className="prose prose-stone prose-sm max-w-none">
+                {seoContentBlock.split('\n').map((line, index) => {
+                  if (line.startsWith('## ')) {
+                    return <h2 key={index} className="text-lg font-semibold text-stone-900 mt-6 mb-3">{line.replace('## ', '')}</h2>;
+                  }
+                  if (line.startsWith('### ')) {
+                    return <h3 key={index} className="text-md font-medium text-stone-800 mt-4 mb-2">{line.replace('### ', '')}</h3>;
+                  }
+                  if (line.startsWith('- ')) {
+                    return <li key={index} className="text-stone-700 ml-4">{line.replace('- ', '')}</li>;
+                  }
+                  if (line.trim()) {
+                    return <p key={index} className="text-stone-600 mb-2">{line}</p>;
+                  }
+                  return null;
+                })}
+              </div>
+            </div>
+          )}
         </div>
       </div>
     </>

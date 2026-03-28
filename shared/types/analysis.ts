@@ -84,8 +84,30 @@ export interface RealityCheck {
 }
 
 // ===== 10. 完整分析结果 =====
+export interface ListingInfo {
+  /** 房源标题/名称，优先显示 */
+  title?: string;
+  /** 房源完整地址 */
+  address?: string;
+  /** 价格（带格式，如 "$900 per week"） */
+  price?: string;
+  /** 价格数值（纯数字） */
+  priceAmount?: number;
+  /** 卧室数 */
+  bedrooms?: number | null;
+  /** 浴室数 */
+  bathrooms?: number | null;
+  /** 车位 */
+  parking?: number | null;
+  /** 封面图 URL（第一张图） */
+  coverImageUrl?: string;
+}
+
 export interface AnalysisResult {
   id?: string;
+
+  /** 房源简要信息（用于报告页顶部显示） */
+  listingInfo?: ListingInfo | null;
 
   // 核心评分
   overallScore: number;          // 0-100
@@ -215,7 +237,29 @@ export interface AnalyzeRequest {
   optionalDetails?: OptionalDetails;
 }
 
-// ===== 13. 分析摘要（数据库记录）=====
+// ===== 13.1 SEO 相关类型 =====
+
+/**
+ * 报告 SEO 元信息
+ */
+export interface ReportSEO {
+  seo_slug: string | null;
+  seo_title: string | null;
+  seo_description: string | null;
+}
+
+/**
+ * 报告可见性配置
+ */
+export interface ReportVisibility {
+  is_public: boolean;
+  shared_at: string | null;
+}
+
+// ===== 13.2 分析摘要（数据库记录）=====
+/**
+ * 扩展后的分析摘要，包含 SEO 和可见性字段
+ */
 export interface AnalysisSummary {
   id: string;
   user_id: string;
@@ -231,6 +275,12 @@ export interface AnalysisSummary {
     riskSignals?: string[];
   };
   full_result?: AnalysisResult;
+  // SEO 字段
+  is_public: boolean;
+  share_slug?: string | null;
+  seo_title?: string | null;
+  seo_description?: string | null;
+  shared_at?: string | null;
   created_at: string;
   updated_at: string;
 }

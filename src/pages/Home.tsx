@@ -284,7 +284,22 @@ export function Home() {
           setProgressPct(progress.progress ?? stageToPct(progress.stage));
 
           if (progress.status === 'done' && progress.result) {
-            sessionStorage.setItem('analysisResult', JSON.stringify(progress.result));
+            // Build listingInfo from current form data for the report header
+            const coverImageUrl = imageUrls.length > 0 ? imageUrls[0] : undefined;
+            const listingInfo = {
+              title: optionalDetails.suburb ? `${optionalDetails.suburb}` : undefined,
+              price: optionalDetails.weeklyRent ? `$${optionalDetails.weeklyRent} per week` : undefined,
+              priceAmount: optionalDetails.weeklyRent ? parseInt(optionalDetails.weeklyRent, 10) : undefined,
+              bedrooms: optionalDetails.bedrooms ? parseInt(optionalDetails.bedrooms, 10) : undefined,
+              bathrooms: optionalDetails.bathrooms ? parseInt(optionalDetails.bathrooms, 10) : undefined,
+              parking: optionalDetails.parking ? parseInt(optionalDetails.parking, 10) : undefined,
+              coverImageUrl,
+            };
+            const resultWithListingInfo = {
+              ...progress.result,
+              listingInfo,
+            };
+            sessionStorage.setItem('analysisResult', JSON.stringify(resultWithListingInfo));
             setIsComplete(true);
             setProgressPct(100);
             setProgressLabel('Analysis complete');

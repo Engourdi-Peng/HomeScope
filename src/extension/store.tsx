@@ -12,9 +12,60 @@ import type {
   ListingDataV2,
   PageStateInfo,
 } from './types';
-import type { AnalysisSummary } from '../../shared/types/analysis';
+import type { AnalysisSummary, ListingInfo } from '../../shared/types/analysis';
 import { PING_TIMEOUT_MS, EXTRACTION_COOLDOWN_MS } from '../../shared/constants';
 import { ExtractionErrorCode, getUserErrorMessage } from '../../shared/errors';
+
+// ===== Helper: Inject listingInfo into analysis result =====
+function isV2Data(data: ListingData | ListingDataV2 | null): data is ListingDataV2 {
+  return data !== null && 'source' in data;
+}
+
+function injectListingInfo(result: AnalysisResult, listingData: ListingData | ListingDataV2 | null): AnalysisResult {
+  if (!listingData) return result;
+
+  const isV2 = isV2Data(listingData);
+
+  // Build listingInfo
+  const listingInfo: ListingInfo = {};
+
+  // Title: prefer title, fallback to address
+  if (isV2) {
+    listingInfo.title = (listingData as ListingDataV2).title || null;
+    listingInfo.address = (listingData as ListingDataV2).address || null;
+    listingInfo.price = (listingData as ListingDataV2).price || null;
+    listingInfo.priceAmount = (listingData as ListingDataV2).priceAmount || null;
+    listingInfo.bedrooms = (listingData as ListingDataV2).bedrooms || null;
+    listingInfo.bathrooms = (listingData as ListingDataV2).bathrooms || null;
+    listingInfo.parking = (listingData as ListingDataV2).parking || null;
+    listingInfo.coverImageUrl = ((listingData as ListingDataV2).imageUrls?.length ?? 0) > 0
+      ? (listingData as ListingDataV2).imageUrls![0]
+      : null;
+  } else {
+    listingInfo.title = (listingData as ListingData).address?.full || null;
+    listingInfo.address = (listingData as ListingData).address?.full || null;
+    listingInfo.price = (listingData as ListingData).price?.display || null;
+    listingInfo.bedrooms = (listingData as ListingData).property?.bedrooms || null;
+    listingInfo.bathrooms = (listingData as ListingData).property?.bathrooms || null;
+    listingInfo.parking = (listingData as ListingData).property?.parking || null;
+    listingInfo.coverImageUrl = ((listingData as ListingData).images?.length ?? 0) > 0
+      ? (listingData as ListingData).images![0]
+      : null;
+  }
+
+  // Remove null values
+  const cleanListingInfo: ListingInfo = {};
+  for (const [key, value] of Object.entries(listingInfo)) {
+    if (value != null) {
+      (cleanListingInfo as Record<string, unknown>)[key] = value;
+    }
+  }
+
+  return {
+    ...result,
+    listingInfo: Object.keys(cleanListingInfo).length > 0 ? cleanListingInfo : null,
+  };
+}
 
 // ===== Initial State =====
 
@@ -716,8 +767,11 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         });
 
         if (statusResponse.status === 'done' && statusResponse.result) {
+          // Inject listingInfo from extracted listingData into the result
+          const resultWithListingInfo = injectListingInfo(statusResponse.result, state.listingData);
+
           // Analysis completed successfully
-          dispatch({ type: 'SET_ANALYSIS_RESULT', result: statusResponse.result });
+          dispatch({ type: 'SET_ANALYSIS_RESULT', result: resultWithListingInfo });
           dispatch({ type: 'SET_ANALYSIS_PHASE', phase: 'done' });
           dispatch({ type: 'SET_CURRENT_VIEW', view: 'report' });
 

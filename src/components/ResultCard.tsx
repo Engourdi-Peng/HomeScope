@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import type { AnalysisResult } from '../types';
+import { ListingHeader } from './ListingHeader';
 import { Check, AlertCircle, ArrowRight, ArrowLeft, TrendingUp, AlertTriangle, MessageCircle, Eye, DollarSign, Share2, Copy, CheckCircle, Sun, MessageSquare, Send, SquareCheck } from 'lucide-react';
 
 function AnimatedNumber({ target, duration = 1500 }: { target: number; duration?: number }) {
@@ -34,6 +35,8 @@ interface ResultProps {
   onShare?: (analysisId: string) => Promise<{ slug: string; shareUrl: string }>;
   /** 在插件模式下由 ExtensionResultView 提供导航，ResultCard 内部导航栏应隐藏 */
   hideNav?: boolean;
+  /** 是否为公开分享页，用于显示不同的分享文案 */
+  isPublicShare?: boolean;
 }
 
 const verdictConfig = {
@@ -195,7 +198,7 @@ function SectionDivider() {
   return <div className="h-px bg-stone-200 my-14"></div>;
 }
 
-export function ResultCard({ result, onBack, onShare, hideNav }: ResultProps) {
+export function ResultCard({ result, onBack, onShare, hideNav, isPublicShare }: ResultProps) {
   const [isSharing, setIsSharing] = useState(false);
   const [shareResult, setShareResult] = useState<{ slug: string; shareUrl: string } | null>(null);
   const [copied, setCopied] = useState(false);
@@ -214,6 +217,18 @@ export function ResultCard({ result, onBack, onShare, hideNav }: ResultProps) {
   const detectedRoomsText = detectedRooms.length > 0 ? formatDetectedRooms(detectedRooms) : '';
   const detectedRoomsCount = detectedRooms.length;
 
+  // Clipboard helper compatible with extension side panel
+  const copyToClipboardFallback = (text: string) => {
+    const textarea = document.createElement('textarea');
+    textarea.value = text;
+    textarea.style.position = 'fixed';
+    textarea.style.opacity = '0';
+    document.body.appendChild(textarea);
+    textarea.select();
+    document.execCommand('copy');
+    document.body.removeChild(textarea);
+  };
+
   const handleShare = async () => {
     if (!onShare) return;
     const analysisId = result.id || '';
@@ -225,7 +240,7 @@ export function ResultCard({ result, onBack, onShare, hideNav }: ResultProps) {
 
       // Use the full shareUrl if provided, otherwise construct from origin
       const fullUrl = shareResponse.shareUrl || `${window.location.origin}/share/${shareResponse.slug}`;
-      await navigator.clipboard.writeText(fullUrl);
+      copyToClipboardFallback(fullUrl);
       setCopied(true);
 
       setTimeout(() => setCopied(false), 2000);
@@ -236,10 +251,10 @@ export function ResultCard({ result, onBack, onShare, hideNav }: ResultProps) {
     }
   };
 
-  const copyToClipboard = async () => {
+  const copyToClipboard = () => {
     if (!shareResult) return;
     const fullUrl = shareResult.shareUrl || `${window.location.origin}/share/${shareResult.slug}`;
-    await navigator.clipboard.writeText(fullUrl);
+    copyToClipboardFallback(fullUrl);
     setCopied(true);
     setTimeout(() => setCopied(false), 2000);
   };
@@ -274,6 +289,11 @@ export function ResultCard({ result, onBack, onShare, hideNav }: ResultProps) {
       )}
 
       <div className="space-y-0">
+
+        {/* Listing Header - 房源简要信息区块 */}
+        {result.listingInfo && (
+          <ListingHeader listing={result.listingInfo} />
+        )}
 
         {/* Report Summary */}
         {(result.finalRecommendation?.reason || result.quickSummary) && (
@@ -864,7 +884,15 @@ export function ResultCard({ result, onBack, onShare, hideNav }: ResultProps) {
 
           {onShare && (
             <div className="mt-10 flex flex-col items-center gap-4">
-              <p className="text-sm font-medium text-stone-500 text-center">Big decision — worth getting a second opinion before you move forward.</p>
+              {isPublicShare ? (
+                <p className="text-sm font-medium text-stone-500 text-center">
+                  Share this analysis with friends or save it for later.
+                </p>
+              ) : (
+                <p className="text-sm font-medium text-stone-500 text-center">
+                  Big decision — worth getting a second opinion before you move forward.
+                </p>
+              )}
               {!shareResult ? (
                 <button
                   onClick={handleShare}
@@ -873,7 +901,7 @@ export function ResultCard({ result, onBack, onShare, hideNav }: ResultProps) {
                 >
                   <Share2 size={14} />
                   <span className="text-[10px] font-bold uppercase tracking-[0.15em]">
-                    {isSharing ? 'Generating share link...' : 'Share Result'}
+                    {isSharing ? 'Generating share link...' : 'Share Privately'}
                   </span>
                 </button>
               ) : (
