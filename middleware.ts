@@ -7,12 +7,10 @@
  * This solves the SPA SEO problem where static index.html
  * doesn't include dynamic titles for each share page.
  * 
- * Note: For full SEO (Googlebot, social previews), deploy with
- * vercel-edge-functions/share-seo.ts or use SSG/ISR.
+ * Uses Web Fetch APIs + @vercel/functions (not next/server — Vite SPA).
  */
 
-import type { NextRequest } from 'vercel/server';
-import { NextResponse } from 'vercel/server';
+import { next } from '@vercel/functions';
 
 const SUPABASE_URL = process.env.SUPABASE_URL || 'https://trteewgplkqiedonomzg.supabase.co';
 const SUPABASE_ANON_KEY = process.env.SUPABASE_ANON_KEY || '';
@@ -191,6 +189,13 @@ function injectMetaTags(html: string, title: string, description: string, url: s
     );
   }
 
+  if (!html.includes('rel="canonical"')) {
+    html = html.replace(
+      '</head>',
+      `<link rel="canonical" href="${escapeHtml(url)}" /></head>`
+    );
+  }
+
   return html;
 }
 
@@ -198,39 +203,38 @@ export const config = {
   matcher: '/share/:slug*',
 };
 
-export default async function middleware(request: NextRequest) {
-  const url = request.nextUrl.clone();
+export default async function middleware(request: Request) {
+  const url = new URL(request.url);
   const pathname = url.pathname;
-  
+
   // Only process GET requests
   if (request.method !== 'GET') {
-    return NextResponse.next();
+    return next();
   }
-  
+
   // Extract slug from /share/{slug}
   const match = pathname.match(/^\/share\/(.+?)(\/.*)?$/);
   if (!match) {
-    return NextResponse.next();
+    return next();
   }
-  
+
   const slug = match[1];
-  
+
   // Fetch SEO data from Supabase
   const seoData = await fetchSEOData(slug);
-  
+
   // If no SEO data found, let the page handle it (will show error)
   if (!seoData || !seoData.exists) {
-    return NextResponse.next();
+    return next();
   }
-  
+
   // Build the absolute URL for fetching index.html
-  const origin = url.origin;
-  const indexUrl = `${origin}/index.html`;
-  
+  const indexUrl = new URL('/index.html', url.origin).toString();
+
   // Fetch the static index.html
   const response = await fetch(indexUrl);
   const html = await response.text();
-  
+
   // Inject dynamic meta tags
   const modifiedHtml = injectMetaTags(
     html,
@@ -238,9 +242,9 @@ export default async function middleware(request: NextRequest) {
     seoData.description,
     `${SITE_URL}/share/${slug}`
   );
-  
+
   // Return modified HTML response with caching headers
-  return new NextResponse(modifiedHtml, {
+  return new Response(modifiedHtml, {
     status: 200,
     headers: {
       'Content-Type': 'text/html; charset=utf-8',
