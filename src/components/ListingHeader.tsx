@@ -39,8 +39,8 @@ export function ListingHeader({ listing }: ListingHeaderProps) {
   }
 
   return (
-    <div className="mb-8 animate-in fade-in slide-in-from-bottom-6 duration-500 ease-out">
-      <div className="flex gap-4 p-4 bg-white rounded-2xl border border-stone-200 shadow-[0_1px_4px_rgba(0,0,0,0.04)]">
+    <div className="mb-8 animate-in fade-in slide-in-from-bottom-6 duration-500 ease-out px-4 sm:px-0">
+      <div className="flex gap-4">
         {/* 封面图（如果有） */}
         {listing.coverImageUrl && (
           <div className="w-20 h-20 sm:w-24 sm:h-24 shrink-0 rounded-xl overflow-hidden bg-stone-100">
@@ -58,17 +58,17 @@ export function ListingHeader({ listing }: ListingHeaderProps) {
 
         {/* 信息区域 */}
         <div className="flex-1 min-w-0 flex flex-col justify-center gap-1">
-          {/* 标题 */}
-          {title && (
+          {/* 地址副标题 */}
+          {addressSubtitle && (
             <h1 className="text-lg sm:text-xl font-semibold text-stone-900 truncate leading-tight">
-              {title}
+              {addressSubtitle}
             </h1>
           )}
 
-          {/* 地址副标题 */}
-          {addressSubtitle && (
-            <p className="text-sm text-stone-500 truncate leading-snug">
-              {addressSubtitle}
+          {/* 标题 */}
+          {title && (
+            <p className="text-sm text-stone-500 leading-snug line-clamp-2">
+              {title}
             </p>
           )}
 
