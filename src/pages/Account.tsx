@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react';
 import { useNavigate, Link } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
 import { getAnalysisHistory, getAnalysisById } from '../lib/api';
-import type { AnalysisSummary } from '../types';
+import type { AnalysisSummary, AnalysisResult, ListingInfo } from '../types';
 import { User, Sparkles, Clock, ChevronRight, ChevronLeft, LogOut, AlertCircle, RefreshCw, RefreshCcw, FileText, Shield, Mail, ArrowLeft } from 'lucide-react';
 
 export function AccountPage() {
@@ -75,6 +75,19 @@ export function AccountPage() {
 
       if (result) {
         result.id = analysis.id;
+
+        // Inject listingInfo from analysis metadata (same as Share.tsx)
+        const listingInfo: ListingInfo = {
+          title: analysis.title || undefined,
+          address: analysis.address || undefined,
+          coverImageUrl: analysis.cover_image_url || undefined,
+          priceAmount: analysis.weekly_rent || undefined,
+          bedrooms: analysis.bedrooms || undefined,
+          bathrooms: analysis.bathrooms || undefined,
+          carSpaces: analysis.car_spaces || undefined,
+        };
+        (result as AnalysisResult & { listingInfo: ListingInfo }).listingInfo = listingInfo;
+
         sessionStorage.setItem('analysisResult', JSON.stringify(result));
         navigate('/result');
       }
