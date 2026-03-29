@@ -127,9 +127,14 @@ export function AuthProvider({ children }: AuthProviderProps) {
     if (fromExtension) {
       // 扩展触发的登录：设置标记，在 AuthCallback 中通知扩展并关闭标签页
       localStorage.setItem('hs_login_from_extension', '1');
+      console.log('[Auth] signInWithGoogle: from_extension detected, set hs_login_from_extension=1');
+    } else {
+      console.log('[Auth] signInWithGoogle: normal web flow (no from_extension)');
     }
 
-    const redirectTo = `${window.location.origin}/auth/callback`;
+    // ⚠️ 关键修复：redirectTo 必须携带 from_extension=1，确保 callback 能识别扩展登录
+    // 否则即使从扩展打开 /login?from_extension=1，Supabase OAuth 回调时也会丢失这个参数
+    const redirectTo = `${window.location.origin}/auth/callback?from_extension=1`;
     console.log('[Auth] signInWithGoogle: redirectTo =', redirectTo, 'fromExtension =', fromExtension);
 
     const { error } = await supabase.auth.signInWithOAuth({
@@ -142,6 +147,7 @@ export function AuthProvider({ children }: AuthProviderProps) {
     if (error) {
       // 登录失败时清除标记
       localStorage.removeItem('hs_login_from_extension');
+      console.error('[Auth] signInWithGoogle: OAuth error —', error.message);
       throw error;
     }
   };

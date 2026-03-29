@@ -14,7 +14,28 @@ ADD COLUMN IF NOT EXISTS share_slug TEXT;
 CREATE INDEX IF NOT EXISTS analyses_share_slug_idx ON public.analyses(share_slug) WHERE is_public = TRUE;
 
 -- ========================================
--- 添加公开访问的 RLS 策略
+-- 添加 SEO 相关字段
+-- ========================================
+
+-- 添加 seo_title 字段（公开页 SEO 标题）
+ALTER TABLE public.analyses 
+ADD COLUMN IF NOT EXISTS seo_title TEXT;
+
+-- 添加 seo_description 字段（公开页 SEO 描述）
+ALTER TABLE public.analyses 
+ADD COLUMN IF NOT EXISTS seo_description TEXT;
+
+-- 添加 shared_at 字段（首次分享时间）
+ALTER TABLE public.analyses 
+ADD COLUMN IF NOT EXISTS shared_at TIMESTAMPTZ;
+
+-- 为 SEO 字段添加索引
+CREATE INDEX IF NOT EXISTS analyses_seo_title_idx ON public.analyses(seo_title);
+CREATE INDEX IF NOT EXISTS analyses_seo_description_idx ON public.analyses(seo_description);
+CREATE INDEX IF NOT EXISTS analyses_shared_at_idx ON public.analyses(shared_at);
+
+-- ========================================
+-- 更新公开访问的 RLS 策略
 -- ========================================
 
 -- 允许所有人读取 is_public = TRUE 的分析记录

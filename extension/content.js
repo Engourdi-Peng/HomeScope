@@ -27,21 +27,31 @@
 // They send messages via window.postMessage, which we listen for here.
 window.addEventListener('message', (event) => {
   // Only accept messages from the page (same window instance)
-  if (event.source !== window) return;
+  if (event.source !== window) {
+    console.log('[HomeScope CS] postMessage: rejected — event.source !== window (source=' + (event.source ? 'other' : 'null') + ')');
+    return;
+  }
 
   // Validate message source
-  if (event.data?.source !== 'homescope-auth-bridge') return;
+  if (event.data?.source !== 'homescope-auth-bridge') {
+    console.log('[HomeScope CS] postMessage: rejected — wrong source="' + event.data?.source + '" (expected "homescope-auth-bridge")');
+    return;
+  }
+
+  console.log('[HomeScope CS] postMessage: received source="' + event.data.source + '" type="' + event.data.type + '"');
+  console.log('[HomeScope CS]   event.origin:', event.origin);
+  console.log('[HomeScope CS]   current page origin:', window.location.origin);
+  console.log('[HomeScope CS]   current page URL:', window.location.href);
 
   if (event.data?.type === 'HOMESCOPE_SYNC_SESSION') {
-    console.log('[HomeScope CS] Received HOMESCOPE_SYNC_SESSION from page, userId=' +
-      (event.data.payload?.user?.id || 'unknown'));
+    const payload = event.data.payload || {};
+    console.log('[HomeScope CS] HOMESCOPE_SYNC_SESSION: userId=' + (payload.user?.id || 'unknown') + ' hasAccessToken=' + !!payload.access_token + ' hasRefreshToken=' + !!payload.refresh_token);
 
     chrome.runtime.sendMessage(
       { action: 'sync_session_from_site', payload: event.data.payload },
       (response) => {
         if (chrome.runtime.lastError) {
-          console.error('[HomeScope CS] sync_session_from_site: chrome.runtime.lastError=',
-            chrome.runtime.lastError.message);
+          console.error('[HomeScope CS] sync_session_from_site: chrome.runtime.lastError=', chrome.runtime.lastError.message);
           event.source.postMessage({
             source: 'homescope-auth-bridge',
             type: 'HOMESCOPE_SESSION_ACK',
@@ -50,7 +60,7 @@ window.addEventListener('message', (event) => {
           }, event.origin);
           return;
         }
-        console.log('[HomeScope CS] sync_session_from_site: background responded:', JSON.stringify(response));
+        console.log('[HomeScope CS] sync_session_from_site: background response success=' + (response?.success !== false) + ' userId=' + (response?.user?.id || 'unknown'));
         event.source.postMessage({
           source: 'homescope-auth-bridge',
           type: 'HOMESCOPE_SESSION_ACK',

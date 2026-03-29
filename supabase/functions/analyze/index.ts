@@ -37,6 +37,7 @@ declare const Deno: {
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL") || "https://trteewgplkqiedonomzg.supabase.co";
 const SUPABASE_SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") || "";
 const SUPABASE_ANON_KEY = Deno.env.get("SUPABASE_ANON_KEY") || "";
+const SITE_URL = Deno.env.get("SITE_URL") || "https://www.tryhomescope.com";
 
 const corsHeaders: Record<string, string> = {
   "Access-Control-Allow-Origin": "*",
@@ -135,6 +136,95 @@ async function getCurrentUser(req: Request): Promise<{ user: UserProfile | null;
 function hasAvailableCredits(user: UserProfile | null): boolean {
   if (!user) return false;
   return (user.credits_remaining - user.credits_reserved) > 0;
+}
+
+// ========== SEO Helper Functions ==========
+
+/**
+ * Convert string to URL-safe slug
+ */
+function toSlug(text: string): string {
+  return text
+    .toLowerCase()
+    .replace(/[^a-z0-9\s-]/g, '')
+    .replace(/\s+/g, '-')
+    .replace(/-+/g, '-')
+    .replace(/^-|-$/g, '');
+}
+
+/**
+ * Generate semantic share slug
+ * Format: suburb-bedroom-propertyType-rental-analysis-{id}
+ */
+function generateShareSlug(input: {
+  suburb?: string | null;
+  bedrooms?: number | null;
+  propertyType?: string | null;
+  reportId: string;
+}): string {
+  const parts: string[] = [];
+
+  if (input.suburb) {
+    parts.push(toSlug(input.suburb));
+  }
+
+  if (input.bedrooms != null) {
+    parts.push(`${input.bedrooms}-bedroom`);
+  }
+
+  if (input.propertyType) {
+    parts.push(toSlug(input.propertyType));
+  }
+
+  parts.push('rental-analysis');
+  parts.push(String(input.reportId));
+
+  return parts.join('-');
+}
+
+/**
+ * Generate SEO title and description
+ */
+function generateSEOFields(input: {
+  suburb?: string | null;
+  bedrooms?: number | null;
+  bathrooms?: number | null;
+  weeklyRent?: number | null;
+  verdict?: string | null;
+  reportId: string;
+}): { seo_title: string; seo_description: string } {
+  const { suburb, bedrooms, bathrooms, weeklyRent, verdict } = input;
+
+  // Generate SEO title
+  let seo_title: string;
+  if (suburb && bedrooms) {
+    seo_title = `Is this rental worth it in ${suburb}? ${bedrooms} bedroom analysis`;
+  } else if (bedrooms) {
+    seo_title = `Is this rental worth it? ${bedrooms} bedroom analysis`;
+  } else {
+    seo_title = `Rental property analysis | HomeScope`;
+  }
+
+  // Generate SEO description
+  let seo_description: string;
+  if (suburb && bedrooms) {
+    seo_description = `AI rental analysis of a ${bedrooms}-bedroom property in ${suburb}. `;
+    if (bathrooms) seo_description += `${bathrooms} bathroom, `;
+    if (weeklyRent) seo_description += `$${weeklyRent}/week. `;
+    seo_description += 'Review the pros, cons, risks and final verdict before applying.';
+  } else if (bedrooms) {
+    seo_description = `AI rental analysis of a ${bedrooms}-bedroom property. `;
+    if (bathrooms) seo_description += `${bathrooms} bathroom, `;
+    if (weeklyRent) seo_description += `$${weeklyRent}/week. `;
+    seo_description += 'Review the pros, cons, risks and final verdict before applying.';
+  } else {
+    seo_description = 'AI-powered rental property analysis. Review detailed pros, cons, risks and expert verdict before making your decision.';
+  }
+
+  return {
+    seo_title: seo_title.slice(0, 60),
+    seo_description: seo_description.slice(0, 160),
+  };
 }
 
 // ========== Dev Mode / Test Account Whitelist ==========
@@ -2049,36 +2139,76 @@ Deno.serve(async (req) => {
       }
 
       const analysis = analyses[0];
-      
-      // Generate share slug from score and verdict (English only)
-      const score = analysis.overall_score || 0;
-      const verdict = analysis.verdict || "unknown";
-      
-      // Get bedrooms and bathrooms from stored summary
-      const summary = analysis.summary || {};
-      const bedrooms = summary.bedrooms || "";
-      const bathrooms = summary.bathrooms || "";
-      
-      // Map verdict to English slug-friendly format
-      const verdictMap: Record<string, string> = {
-        'Worth Inspecting': 'worth-inspecting',
-        'Apply With Caution': 'apply-with-caution',
-        'Proceed With Caution': 'proceed-with-caution',
-        'Not Recommended': 'not-recommended',
-        'Likely Overpriced / Risky': 'risky',
-        'Need More Evidence': 'need-more-evidence',
-        'Strong Apply': 'strong-apply',
-      };
-      const verdictSlug = verdictMap[verdict] || verdict.toLowerCase().replace(/\s+/g, '-');
-      
-      // Build slug: 78-worth-inspecting-2bed-1bath
-      let slug = `${score}-${verdictSlug}`;
-      if (bedrooms) slug += `-${bedrooms}bed`;
-      if (bathrooms) slug += `-${bathrooms}bath`;
-      
-      slug = slug.replace(/\s+/g, '-').toLowerCase();
 
-      // Update to public
+      // If already public, return existing share info (don't regenerate)
+      if (analysis.is_public && analysis.share_slug) {
+        return jsonResponse({
+          success: true,
+          slug: analysis.share_slug,
+          shareUrl: `${SITE_URL}/share/${analysis.share_slug}`,
+          alreadyShared: true
+        });
+      }
+
+      // Generate semantic share slug
+      const suburb = analysis.address || null;
+      const summary = analysis.summary || {};
+      const fullResult = analysis.full_result || {};
+
+      // Extract bedrooms/bathrooms from summary or full_result
+      let bedrooms: number | null = null;
+      let bathrooms: number | null = null;
+      let propertyType: string | null = null;
+
+      if (summary.bedrooms) {
+        const bedroomsMatch = String(summary.bedrooms).match(/(\d+)/);
+        if (bedroomsMatch) bedrooms = parseInt(bedroomsMatch[1], 10);
+      }
+      if (summary.bathrooms) {
+        const bathroomsMatch = String(summary.bathrooms).match(/(\d+)/);
+        if (bathroomsMatch) bathrooms = parseInt(bathroomsMatch[1], 10);
+      }
+      if (summary.propertyType) {
+        propertyType = String(summary.propertyType);
+      }
+
+      // Extract from full_result if not in summary
+      if (!bedrooms && fullResult.roomCounts) {
+        const bedroomCount = fullResult.roomCounts['bedroom'] || fullResult.roomCounts['bedrooms'];
+        if (bedroomCount) bedrooms = bedroomCount;
+      }
+      if (!propertyType && fullResult.inspectionFit) {
+        // Could extract from inspectionFit if needed
+      }
+
+      // Build semantic slug: sydney-2-bedroom-apartment-rental-analysis-58
+      const seo_slug = generateShareSlug({
+        suburb,
+        bedrooms,
+        propertyType,
+        reportId: analysisId
+      });
+
+      // Generate SEO title and description
+      const { seo_title, seo_description } = generateSEOFields({
+        suburb,
+        bedrooms,
+        bathrooms,
+        weeklyRent: summary.weeklyRent ? parseInt(String(summary.weeklyRent).replace(/[^0-9]/g, ''), 10) : null,
+        verdict: analysis.verdict,
+        reportId: analysisId
+      });
+
+      // Update to public with full SEO data
+      const now = new Date().toISOString();
+      const updateData: Record<string, unknown> = {
+        is_public: true,
+        share_slug: seo_slug,
+        seo_title,
+        seo_description,
+        shared_at: now,
+      };
+
       const updateResponse = await fetch(
         `${SUPABASE_URL}/rest/v1/analyses?id=eq.${analysisId}`,
         {
@@ -2089,10 +2219,7 @@ Deno.serve(async (req) => {
             "Content-Type": "application/json",
             "Prefer": "return=representation",
           },
-          body: JSON.stringify({
-            is_public: true,
-            share_slug: slug,
-          }),
+          body: JSON.stringify(updateData),
         }
       );
 
@@ -2101,11 +2228,12 @@ Deno.serve(async (req) => {
         return jsonResponse({ message: "Failed to share analysis" }, 500);
       }
 
-      const updated = await updateResponse.json();
-      return jsonResponse({ 
-        success: true, 
-        slug,
-        shareUrl: `/share/${slug}`
+      return jsonResponse({
+        success: true,
+        slug: seo_slug,
+        seo_title,
+        seo_description,
+        shareUrl: `${SITE_URL}/share/${seo_slug}`
       });
     } catch (err) {
       console.error("Error sharing analysis:", err);
@@ -2142,7 +2270,7 @@ Deno.serve(async (req) => {
 
       const analysis = analyses[0];
       
-      // Return only public-safe data
+      // Return only public-safe data including SEO fields
       return jsonResponse({
         analysis: {
           id: analysis.id,
@@ -2154,7 +2282,12 @@ Deno.serve(async (req) => {
           summary: analysis.summary,
           full_result: analysis.full_result,
           created_at: analysis.created_at,
+          updated_at: analysis.updated_at,
           share_slug: analysis.share_slug,
+          seo_title: analysis.seo_title,
+          seo_description: analysis.seo_description,
+          shared_at: analysis.shared_at,
+          is_public: true,
         }
       });
     } catch (err) {

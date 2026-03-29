@@ -14,11 +14,12 @@
     "storage",
     "tabs",
     "identity",
-    "cookies",
-    "webRequest"
+    "cookies"
   ],
   "host_permissions": [
-    "<all_urls>"
+    "https://www.realestate.com.au/*",
+    "https://www.tryhomescope.com/*",
+    "https://trteewgplkqiedonomzg.supabase.co/*"
   ],
   "background": {
     "service_worker": "background.js",
@@ -30,7 +31,10 @@
   },
   "content_scripts": [
     {
-      "matches": ["<all_urls>"],
+      "matches": [
+        "https://www.realestate.com.au/*",
+        "https://www.tryhomescope.com/*"
+      ],
       "js": ["content.js"],
       "run_at": "document_idle"
     }
@@ -38,7 +42,7 @@
   "web_accessible_resources": [
     {
       "resources": ["assets/*"],
-      "matches": ["<all_urls>"]
+      "matches": ["https://www.tryhomescope.com/*"]
     }
   ]
 }

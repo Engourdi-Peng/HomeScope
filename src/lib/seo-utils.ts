@@ -4,6 +4,7 @@
  */
 
 import type { AnalysisResult } from '../types';
+import { parseAddress } from '~shared/address';
 
 /**
  * 从完整地址中提取 suburb/location
@@ -29,28 +30,7 @@ import type { AnalysisResult } from '../types';
  * // => null
  */
 export function extractSuburbFromAddress(address: string | null | undefined): string | null {
-  if (!address) return null;
-
-  // 按逗号分割地址
-  const parts = address.split(',').map((p) => p.trim());
-
-  // 澳洲地址至少应该有: 街道, suburb, 州+邮编, [国家]
-  // 我们需要提取第二段 (index 1) 作为 suburb
-  if (parts.length >= 2) {
-    const suburbCandidate = parts[1];
-    
-    // 验证 suburb 看起来是有效的（包含字母，不是纯数字或纯邮编）
-    if (suburbCandidate && /[a-zA-Z]/.test(suburbCandidate)) {
-      // 过滤掉明显的州缩写和邮编组合
-      // VIC, NSW, QLD, SA, WA, TAS, ACT, NT
-      const statePattern = /^(VIC|NSW|QLD|SA|WA|TAS|ACT|NT)\s*\d{4}$/i;
-      if (!statePattern.test(suburbCandidate)) {
-        return suburbCandidate;
-      }
-    }
-  }
-
-  return null;
+  return parseAddress(address).suburb;
 }
 
 /**

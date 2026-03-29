@@ -14,12 +14,18 @@ import type { Session } from '@supabase/supabase-js';
  * 3. background 保存 session，自动关闭 callback tab
  */
 function pushSessionToExtension(session: Session): void {
-  console.log('[AuthCallback] pushSessionToExtension: sending postMessage...');
-  console.log('[AuthCallback]   access_token exists:', !!session.access_token);
-  console.log('[AuthCallback]   user.id:', session.user?.id);
+  const hasAccessToken = !!session.access_token;
+  const hasRefreshToken = !!session.refresh_token;
+  const userId = session.user?.id;
+
+  console.log('[HomeScope AuthCallback] pushSessionToExtension: START');
+  console.log('[HomeScope AuthCallback]   hasAccessToken:', hasAccessToken);
+  console.log('[HomeScope AuthCallback]   hasRefreshToken:', hasRefreshToken);
+  console.log('[HomeScope AuthCallback]   userId:', userId);
+  console.log('[HomeScope AuthCallback]   accessToken:', session.access_token ? session.access_token.substring(0, 10) + '...' : 'null');
 
   // 发送 session 到 content script（通过 postMessage）
-  window.postMessage({
+  const message = {
     source: 'homescope-auth-bridge',
     type: 'HOMESCOPE_SYNC_SESSION',
     payload: {
@@ -27,22 +33,28 @@ function pushSessionToExtension(session: Session): void {
       refresh_token: session.refresh_token,
       user: session.user
     }
-  }, window.location.origin);
+  };
 
-  console.log('[AuthCallback] postMessage sent HOMESCOPE_SYNC_SESSION');
+  console.log('[HomeScope AuthCallback]   targetOrigin:', window.location.origin);
+  console.log('[HomeScope AuthCallback]   message.type:', message.type);
+
+  window.postMessage(message, window.location.origin);
+
+  console.log('[HomeScope AuthCallback] pushSessionToExtension: postMessage dispatched');
 }
 
-/** 等待 session 建立（轮询 getSession，最长 3 秒） */
-async function waitForSession(maxAttempts = 10, intervalMs = 300): Promise<Session | null> {
+/** 等待 session 建立（轮询 getSession，最长 5 秒） */
+async function waitForSession(maxAttempts = 15, intervalMs = 350): Promise<Session | null> {
+  console.log('[HomeScope AuthCallback] waitForSession: starting...');
   for (let i = 0; i < maxAttempts; i++) {
     const { data } = await supabase.auth.getSession();
     if (data.session) {
-      console.log(`[AuthCallback] waitForSession: found session after ${i + 1} attempt(s)`);
+      console.log(`[HomeScope AuthCallback] waitForSession: found session after ${i + 1} attempt(s)`);
       return data.session;
     }
     await new Promise((r) => setTimeout(r, intervalMs));
   }
-  console.warn('[AuthCallback] waitForSession: session not found after max attempts');
+  console.warn('[HomeScope AuthCallback] waitForSession: timeout after', maxAttempts, 'attempts');
   return null;
 }
 
@@ -54,49 +66,78 @@ export function AuthCallback() {
 
   useEffect(() => {
     const handleCallback = async () => {
-      console.log('[AuthCallback] PAGE LOADED');
-      console.log('[AuthCallback]   location.href:', window.location.href);
+      // ── 1. 打印完整 URL 信息 ──
+      console.log('[HomeScope AuthCallback] PAGE LOADED');
+      console.log('[HomeScope AuthCallback]   location.href:', window.location.href);
+      console.log('[HomeScope AuthCallback]   pathname:', window.location.pathname);
+      console.log('[HomeScope AuthCallback]   searchParams:', window.location.search);
+      console.log('[HomeScope AuthCallback]   hash:', window.location.hash);
 
-      // 检查是否来自扩展的登录流程
-      const fromExtension = localStorage.getItem('hs_login_from_extension') === '1';
-      console.log('[AuthCallback]   from_extension (via localStorage):', fromExtension);
+      // ── 2. 检查各种来源标记 ──
+      const urlParams = new URLSearchParams(window.location.search);
+      const fromExtensionUrl = urlParams.get('from_extension');
+      const fromExtensionLocalStorage = localStorage.getItem('hs_login_from_extension');
+      const isFromExtension = fromExtensionUrl === '1' || fromExtensionLocalStorage === '1';
 
-      // AuthContext.initAuth() 已经 exchange 过 code 了，这里只读 session
-      const { data } = await supabase.auth.getSession();
-      let session: Session | null = data.session ?? null;
-      console.log('[AuthCallback]   getSession result: session exists =', !!session);
+      console.log('[HomeScope AuthCallback]   from_extension (URL param):', fromExtensionUrl);
+      console.log('[HomeScope AuthCallback]   from_extension (localStorage):', fromExtensionLocalStorage);
+      console.log('[HomeScope AuthCallback]   isFromExtension判定:', isFromExtension);
 
-      if (!session) {
-        console.log('[AuthCallback]   session not immediately available, polling waitForSession...');
-        session = await waitForSession();
-        console.log('[AuthCallback]   waitForSession result: session exists =', !!session);
+      // ── 3. AuthContext.initAuth() 已经 exchange 过 code 了，这里只读 session ──
+      let session: Session | null = null;
+      try {
+        const result = await supabase.auth.getSession();
+        session = result.data.session ?? null;
+        console.log('[HomeScope AuthCallback]   getSession: session exists =', !!session);
+        if (session) {
+          console.log('[HomeScope AuthCallback]   getSession: userId =', session.user?.id);
+        }
+      } catch (err) {
+        console.error('[HomeScope AuthCallback]   getSession EXCEPTION:', err);
       }
 
-      // ── 扩展流程：推送 session 后关闭标签页 ──
-      if (fromExtension && session) {
-        console.log('[AuthCallback]   from_extension=1 → entering extension sync flow');
-        console.log('[AuthCallback]   session ready, sending to extension...');
+      // ── 4. 如果 session 不存在，轮询等待 ──
+      if (!session) {
+        console.log('[HomeScope AuthCallback]   session not immediately available, polling waitForSession...');
+        session = await waitForSession();
+        console.log('[HomeScope AuthCallback]   waitForSession result: session exists =', !!session);
+      }
+
+      // ── 5. 判定是否来自扩展登录流程 ──
+      console.log('[HomeScope AuthCallback]   FINAL判定: isFromExtension =', isFromExtension, '(URL=', fromExtensionUrl, ', LS=', fromExtensionLocalStorage, ')');
+
+      // ── 6. 扩展流程：推送 session 后关闭标签页 ──
+      if (isFromExtension && session) {
+        console.log('[HomeScope AuthCallback]   → 扩展同步流程: calling pushSessionToExtension...');
         pushSessionToExtension(session);
         setStatus('success');
         setMessage('登录成功！HomeScope 扩展已同步会话。此标签页将自动关闭。');
-        console.log('[AuthCallback]   pushSessionToExtension → sent, background will save session and close tab');
+        console.log('[HomeScope AuthCallback]   → 扩展同步流程: complete, background will save and close tab');
 
         // 清除标记
         localStorage.removeItem('hs_login_from_extension');
         return;
       }
 
-      // ── 普通网页流程 ──
-      console.log('[AuthCallback]   normal web flow (no from_extension)');
+      // ── 7. 扩展流程：无 session ──
+      if (isFromExtension && !session) {
+        console.warn('[HomeScope AuthCallback]   → 扩展同步流程: isFromExtension=true but NO session! clearing flag');
+        localStorage.removeItem('hs_login_from_extension');
+        setStatus('error');
+        setMessage('登录流程异常：未检测到有效会话。请在扩展中重试。');
+        return;
+      }
+
+      // ── 8. 普通网页流程 ──
+      console.log('[HomeScope AuthCallback]   → 普通网页流程 (isFromExtension=false)');
       if (session) {
         setStatus('success');
         setMessage('Login successful! Redirecting...');
-        // 清除标记（以防万一）
         localStorage.removeItem('hs_login_from_extension');
         window.history.replaceState({}, '', '/');
         setTimeout(() => navigate('/', { replace: true }), 1500);
       } else {
-        console.error('[AuthCallback]   no session, showing error');
+        console.error('[HomeScope AuthCallback]   → 普通网页流程: NO session, showing error');
         setStatus('error');
         setMessage('No active session found. Please sign in.');
       }

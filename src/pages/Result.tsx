@@ -4,11 +4,15 @@ import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
 import { shareAnalysis } from '../lib/api';
 import { ReportScreen } from '../shared/report/ReportScreen';
+import { usePrivatePageSEO } from '../hooks/useSEOMeta';
 
 export function ResultPage() {
   const navigate = useNavigate();
   const { isAuthenticated } = useAuth();
   const [result, setResult] = useState<AnalysisResult | null>(null);
+
+  // 私密报告页：设置 noindex, nofollow
+  usePrivatePageSEO();
 
   useEffect(() => {
     const stored = sessionStorage.getItem('analysisResult');
@@ -23,7 +27,12 @@ export function ResultPage() {
 
   const handleBack = () => {
     sessionStorage.removeItem('analysisResult');
-    navigate('/');
+    // 返回上一页，如果无法返回则跳转首页
+    if (window.history.length > 1) {
+      navigate(-1);
+    } else {
+      navigate('/');
+    }
   };
 
   const handleShare = async (analysisId: string) => {

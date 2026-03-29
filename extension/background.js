@@ -27,17 +27,15 @@ const SUPABASE_URL = __SUPABASE_URL__;
 const SUPABASE_ANON_KEY = __SUPABASE_ANON_KEY__;
 const MAGIC_LINK_REDIRECT = __MAGIC_LINK_REDIRECT__;
 
-const LOG_PREFIX = '[HomeScope BG]';
-
 // ===== Image collection DISABLED =====
 // REMOVED: chrome.webRequest.onCompleted auto-collected gallery images on page load.
 // Policy: "严禁后台预抓图库图片" — image collection is now exclusively user-triggered.
 // All gallery image collection must go through the START_USER_EXTRACTION flow in content.js.
-// The HS_IMAGES_KEY storage, isMainGalleryImage(), _saveImageToCache(), and webRequest listener
-// below were deleted as part of this policy change.
 
 // ===== tabId → listingUrl mapping (valid for service worker lifetime) =====
 const _tabListingMap = new Map();
+
+const LOG_PREFIX = '[HomeScope BG]';
 
 // ===== Auth: single source of truth =====
 
@@ -53,7 +51,14 @@ let _authListeners = [];
 // Whether legacy session migration has been attempted this session
 let _migrationAttempted = false;
 
-// ----- Helper: normalise Supabase user object to ExtUser -----
+// ── Token redaction helper (只打印前6后4位) ──
+function redactToken(token) {
+  if (!token || typeof token !== 'string') return 'null';
+  if (token.length <= 12) return token.substring(0, 3) + '...';
+  return token.substring(0, 6) + '...' + token.substring(token.length - 4);
+}
+
+// ── Helper: normalise Supabase user object to ExtUser ──
 function toExtUser(supabaseUser) {
   if (!supabaseUser) return null;
   const meta = supabaseUser.user_metadata || {};
@@ -136,7 +141,10 @@ async function migrateLegacySession() {
 // ----- Primary session getter (cache → migrated storage only) -----
 async function getSession() {
   // 1. In-memory cache
-  if (_cachedAuth) return _cachedAuth;
+  if (_cachedAuth) {
+    console.log(`${LOG_PREFIX} getSession: cache HIT → userId=${_cachedAuth.user?.id}, hasAccessToken=${!!_cachedAuth.session?.access_token}, hasRefreshToken=${!!_cachedAuth.session?.refresh_token}`);
+    return _cachedAuth;
+  }
 
   // 2. One-time legacy migration (runs at most once per service worker lifetime)
   await migrateLegacySession();
@@ -145,38 +153,51 @@ async function getSession() {
   const stored = await chrome.storage.local.get([HS_SESSION_KEY, HS_USER_KEY]);
   if (stored[HS_SESSION_KEY] && stored[HS_USER_KEY]) {
     _cachedAuth = { session: stored[HS_SESSION_KEY], user: stored[HS_USER_KEY] };
-    console.log(`${LOG_PREFIX} getSession: loaded from canonical storage, userId=${stored[HS_USER_KEY]?.id}`);
+    console.log(`${LOG_PREFIX} getSession: canonical storage HIT → userId=${stored[HS_USER_KEY]?.id}, hasAccessToken=${!!stored[HS_SESSION_KEY]?.access_token}, hasRefreshToken=${!!stored[HS_SESSION_KEY]?.refresh_token}, accessToken=${redactToken(stored[HS_SESSION_KEY]?.access_token)}`);
     return _cachedAuth;
   }
 
-  console.log(`${LOG_PREFIX} getSession: no session found`);
+  console.log(`${LOG_PREFIX} getSession: no session found (cache miss + storage miss)`);
   return null;
 }
 
 // ----- Save session to canonical storage -----
-async function saveSession(session, user) {
+async function saveSession(session, user, source = 'unknown') {
+  console.log(`${LOG_PREFIX} saveSession: called from="${source}" userId=${user?.id}`);
+  console.log(`${LOG_PREFIX} saveSession: session payload — hasAccessToken=${!!session?.access_token}, hasRefreshToken=${!!session?.refresh_token}, accessToken=${redactToken(session?.access_token)}`);
+
   try {
     await chrome.storage.local.set({
       [HS_SESSION_KEY]: session,
       [HS_USER_KEY]: user,
     });
+    console.log(`${LOG_PREFIX} saveSession: written to chrome.storage.local`);
+
+    // 立即重新读取验证
+    const verification = await chrome.storage.local.get([HS_SESSION_KEY, HS_USER_KEY]);
+    const verified = verification[HS_SESSION_KEY] && verification[HS_USER_KEY];
+    console.log(`${LOG_PREFIX} saveSession: verification=${verified ? 'PASS' : 'FAIL'} — re-read hasSession=${!!verification[HS_SESSION_KEY]}, hasUser=${!!verification[HS_USER_KEY]}`);
+
     _cachedAuth = { user, session };
-    console.log(`${LOG_PREFIX} saveSession: written hs_session (access_token=${!!session.access_token}) and hs_user (id=${user?.id})`);
+    console.log(`${LOG_PREFIX} saveSession: in-memory cache updated`);
     _authListeners.forEach((cb) => cb(user));
     console.log(`${LOG_PREFIX} saveSession: notifying ${_authListeners.length} auth listeners`);
-    console.log(`${LOG_PREFIX} saveSession: success, userId=${user?.id}`);
+    console.log(`${LOG_PREFIX} saveSession: complete, userId=${user?.id}`);
   } catch (err) {
-    console.error(`${LOG_PREFIX} saveSession: FAILED —`, err.message);
+    console.error(`${LOG_PREFIX} saveSession: FAILED — ${err.message}`);
     throw err;
   }
 }
 
 // ----- Clear session -----
-async function clearSession() {
+async function clearSession(reason = 'unknown') {
+  console.log(`${LOG_PREFIX} clearSession: reason="${reason}"`);
   await chrome.storage.local.remove([HS_SESSION_KEY, HS_USER_KEY]);
+  console.log(`${LOG_PREFIX} clearSession: removed hs_session and hs_user from storage`);
   _cachedAuth = null;
+  console.log(`${LOG_PREFIX} clearSession: in-memory cache cleared`);
   _authListeners.forEach((cb) => cb(null));
-  console.log(`${LOG_PREFIX} logout: session cleared`);
+  console.log(`${LOG_PREFIX} clearSession: notified ${_authListeners.length} listeners`);
 }
 
 // ----- Broadcast auth change to all extension contexts -----
@@ -225,12 +246,18 @@ async function rpcSendMagicLink(email) {
 async function refreshSessionIfNeeded() {
   const stored = await getSession();
   if (!stored?.session?.refresh_token) {
-    console.log(`${LOG_PREFIX} refreshSessionIfNeeded: no refresh token, skipped`);
+    console.log(`${LOG_PREFIX} refreshSessionIfNeeded: skip — no refresh_token (session=${!!stored}, refresh_token=${!!stored?.session?.refresh_token})`);
     return stored;
   }
 
-  console.log(`${LOG_PREFIX} refreshSessionIfNeeded: refreshing...`);
+  console.log(`${LOG_PREFIX} refreshSessionIfNeeded: attempting refresh...`);
+  console.log(`${LOG_PREFIX} refreshSessionIfNeeded: refresh_token=${redactToken(stored.session.refresh_token)}`);
+  console.log(`${LOG_PREFIX} refreshSessionIfNeeded: userId=${stored.user?.id}`);
+
   try {
+    const refreshUrl = `${SUPABASE_URL}/auth/v1/token?grant_type=refresh_token`;
+    console.log(`${LOG_PREFIX} refreshSessionIfNeeded: POST ${refreshUrl}`);
+
     const res = await fetch(`${SUPABASE_URL}/auth/v1/token?grant_type=refresh_token`, {
       method: 'POST',
       headers: {
@@ -240,22 +267,40 @@ async function refreshSessionIfNeeded() {
       },
       body: JSON.stringify({ refresh_token: stored.session.refresh_token }),
     });
+
+    console.log(`${LOG_PREFIX} refreshSessionIfNeeded: response status=${res.status}`);
+
     if (res.ok) {
       const data = await res.json();
+      console.log(`${LOG_PREFIX} refreshSessionIfNeeded: SUCCESS — new access_token=${redactToken(data.access_token)}, hasRefreshToken=${!!data.refresh_token}`);
       await saveSession(data, stored.user);
-      console.log(`${LOG_PREFIX} refreshSessionIfNeeded: success`);
+      console.log(`${LOG_PREFIX} refreshSessionIfNeeded: session updated in storage`);
       return { session: data, user: stored.user };
     } else {
-      const errText = await res.text();
-      console.warn(`${LOG_PREFIX} refreshSessionIfNeeded: FAILED (${res.status}) — clearing session`);
-      await clearSession();
-      broadcastAuthChanged(false, null);
+      // 读取错误响应体（用于诊断）
+      let errBody = {};
+      try {
+        errBody = await res.json();
+      } catch (_) {}
+      const errMsg = errBody?.error_description || errBody?.msg || errBody?.message || '';
+      const errCode = errBody?.error || '';
+      console.warn(`${LOG_PREFIX} refreshSessionIfNeeded: FAILED status=${res.status} error_code="${errCode}" error_msg="${errMsg}"`);
+
+      // 区分错误类型：
+      // - invalid_grant: refresh_token 无效或已过期（用户需重新登录）
+      // - invalid_request / malformed: 请求本身有问题
+      if (errCode === 'invalid_grant' || res.status === 400) {
+        console.warn(`${LOG_PREFIX} refreshSessionIfNeeded: invalid_grant detected — clearing session (user must re-login)`);
+        await clearSession('refresh_failure');
+        broadcastAuthChanged(false, null);
+      } else {
+        // 其他错误（网络问题、服务器错误）— 暂时保留旧 session
+        console.warn(`${LOG_PREFIX} refreshSessionIfNeeded: non-token error (status=${res.status}) — keeping session, will retry later`);
+      }
       return null;
     }
   } catch (err) {
-    console.warn(`${LOG_PREFIX} refreshSessionIfNeeded: FAILED (network) — clearing session`);
-    await clearSession();
-    broadcastAuthChanged(false, null);
+    console.warn(`${LOG_PREFIX} refreshSessionIfNeeded: FAILED (network exception) — ${err.message} — keeping session, will retry later`);
     return null;
   }
 }
@@ -353,13 +398,14 @@ async function handleMessage(message, sender, sendResponse) {
     }
 
     case 'logout': {
-      console.log(`${LOG_PREFIX} logout: requested`);
+      console.log(`${LOG_PREFIX} message: logout received`);
       try {
-        await clearSession();
+        await clearSession('user_action');
         broadcastAuthChanged(false, null);
+        console.log(`${LOG_PREFIX} logout: complete`);
         sendResponse({ success: true });
       } catch (err) {
-        console.error(`${LOG_PREFIX} logout: error —`, err.message);
+        console.error(`${LOG_PREFIX} logout: error — ${err.message}`);
         sendResponse({ success: false, error: err.message });
       }
       break;
@@ -367,28 +413,40 @@ async function handleMessage(message, sender, sendResponse) {
 
     // Canonical bridge: website AuthCallback forwards session here via injected <script>
     case 'sync_session_from_site': {
-      console.log(`${LOG_PREFIX} sync_session_from_site: received`);
+      console.log(`${LOG_PREFIX} message: sync_session_from_site received`);
       try {
         const p = message.payload;
+        console.log(`${LOG_PREFIX} sync_session_from_site: payload check — hasAccessToken=${!!p?.access_token}, hasRefreshToken=${!!p?.refresh_token}, userId=${p?.user?.id || 'missing'}, accessToken=${redactToken(p?.access_token)}`);
+
         if (!p?.access_token || !p?.user) {
-          console.error(`${LOG_PREFIX} sync_session_from_site: invalid payload`);
+          console.error(`${LOG_PREFIX} sync_session_from_site: INVALID payload — missing access_token or user`);
           sendResponse({ success: false, error: 'Invalid session payload' });
           return;
         }
-        // 记录回调标签页 ID，后续用于关闭它
-        const callbackTabId = sender?.tab?.id;
-        console.log(`${LOG_PREFIX} sync_session_from_site: userId=${p.user.id}, callbackTabId=${callbackTabId}`);
+
+        // 优先使用 sender.tab.id（content script → background 的标准 sender）
+        // fallback：查找 HomeScope callback 标签页
+        let callbackTabId = sender?.tab?.id;
+        if (callbackTabId == null) {
+          const tabs = await chrome.tabs.query({ url: '*://*.tryhomescope.com/auth/callback*' });
+          callbackTabId = tabs[0]?.id ?? null;
+        }
+        console.log(`${LOG_PREFIX} sync_session_from_site: callbackTabId=${callbackTabId}, userId=${p.user.id}`);
+
         const session = { access_token: p.access_token, refresh_token: p.refresh_token || '' };
         const extUser = toExtUser(p.user);
-        await saveSession(session, extUser);
+        console.log(`${LOG_PREFIX} sync_session_from_site: calling saveSession...`);
+        await saveSession(session, extUser, 'oauth_callback');
+
+        console.log(`${LOG_PREFIX} sync_session_from_site: calling broadcastAuthChanged(true, userId=${extUser?.id})...`);
         broadcastAuthChanged(true, extUser);
-        console.log(`${LOG_PREFIX} sync_session_from_site: success, saved session for userId=${extUser?.id}`);
+        console.log(`${LOG_PREFIX} sync_session_from_site: complete, userId=${extUser?.id}`);
 
         // 关闭回调标签页（由扩展打开的，background 有权限关闭）
         if (callbackTabId != null) {
           console.log(`${LOG_PREFIX} sync_session_from_site: closing callback tab ${callbackTabId}...`);
           chrome.tabs.remove(callbackTabId).catch((err) => {
-            console.warn(`${LOG_PREFIX} sync_session_from_site: failed to close tab —`, err.message);
+            console.warn(`${LOG_PREFIX} sync_session_from_site: failed to close tab — ${err.message}`);
           });
         } else {
           console.warn(`${LOG_PREFIX} sync_session_from_site: no callbackTabId, cannot auto-close`);
@@ -396,7 +454,7 @@ async function handleMessage(message, sender, sendResponse) {
 
         sendResponse({ success: true, user: extUser });
       } catch (err) {
-        console.error(`${LOG_PREFIX} sync_session_from_site: error —`, err.message);
+        console.error(`${LOG_PREFIX} sync_session_from_site: EXCEPTION — ${err.message}`);
         sendResponse({ success: false, error: err.message });
       }
       break;

@@ -89,7 +89,11 @@ html, body {
   overflow-y: auto;
 }
 
-/* 报告页：ResultShell 自己处理滚动，插件容器不需要额外干预 */
+/* 报告页：.ext-app--report (App.tsx) 是滚动容器，sticky NavBar 相对于它定位 */
+.ext-app--report {
+  overflow-y: auto;
+  height: 100%;
+}
 
 .ext-content {
   flex: 1;
