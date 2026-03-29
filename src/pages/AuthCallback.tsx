@@ -80,31 +80,25 @@ export function AuthCallback() {
       console.log('[HomeScope AuthCallback]   searchParams:', window.location.search);
       console.log('[HomeScope AuthCallback]   hash:', window.location.hash);
 
-      // ── 2. 检查扩展登录来源标记（优先级：sessionStorage > localStorage > URL） ──
-      // 优先从 sessionStorage 读取（主要传递方式）
+      // ── 2. 判断是否来自扩展登录的唯一可靠方式：URL 参数 flow_id ──
+      // sessionStorage/localStorage 跨标签页（OAuth 重定向）不可见，
+      // 只有 flow_id 作为 URL 参数能穿越重定向。
+      const urlParams = new URLSearchParams(window.location.search);
+      const flowIdFromUrl = urlParams.get('flow_id');
+
+      // 尝试从 sessionStorage 读取（备用，登录页和 callback 页同标签时才有效）
       let extFlowFromSession = null;
       try {
         const stored = sessionStorage.getItem('hs_ext_flow');
-        if (stored) {
-          extFlowFromSession = JSON.parse(stored);
-          console.log('[HomeScope AuthCallback]   sessionStorage hs_ext_flow:', extFlowFromSession);
-        }
-      } catch (e) {
-        console.warn('[HomeScope AuthCallback]   sessionStorage parse error:', e);
-      }
+        if (stored) extFlowFromSession = JSON.parse(stored);
+      } catch (e) {}
 
-      // 降级到 localStorage
-      const fromExtensionLocalStorage = localStorage.getItem('hs_login_from_extension');
-      const flowIdLocalStorage = localStorage.getItem('hs_flow_id');
+      const flowId = extFlowFromSession?.flowId || flowIdFromUrl;
+      const isFromExtension = !!(flowId);
 
-      // 判定是否来自扩展登录
-      const isFromExtension = extFlowFromSession?.from === 1 || fromExtensionLocalStorage === '1';
-      const flowId = extFlowFromSession?.flowId || flowIdLocalStorage;
-
-      console.log('[HomeScope AuthCallback]   from_extension (sessionStorage):', extFlowFromSession?.from);
-      console.log('[HomeScope AuthCallback]   from_extension (localStorage):', fromExtensionLocalStorage);
-      console.log('[HomeScope AuthCallback]   isFromExtension判定:', isFromExtension);
-      console.log('[HomeScope AuthCallback]   flowId used:', flowId);
+      console.log('[HomeScope AuthCallback]   flowId from URL:', flowIdFromUrl);
+      console.log('[HomeScope AuthCallback]   flowId from sessionStorage:', extFlowFromSession?.flowId);
+      console.log('[HomeScope AuthCallback]   FINAL isFromExtension:', isFromExtension, '(based on flowId presence)');
 
       // ── 3. AuthContext.initAuth() 已经 exchange 过 code 了，这里只读 session ──
       let session: Session | null = null;
@@ -127,20 +121,18 @@ export function AuthCallback() {
       }
 
       // ── 5. 判定是否来自扩展登录流程 ──
-      console.log('[HomeScope AuthCallback]   FINAL判定: isFromExtension =', isFromExtension, '(sessionStorage=', extFlowFromSession?.from, ', localStorage=', fromExtensionLocalStorage, ')');
+      console.log('[HomeScope AuthCallback]   FINAL判定: isFromExtension =', isFromExtension, '(flowId=', flowId, ')');
 
-      // ── 6. 扩展流程：推送 session 后关闭标签页 ──
+      // ── 6. 扩展流程：推送 session 后等待 background 关闭标签页 ──
       if (isFromExtension && session) {
         console.log('[HomeScope AuthCallback]   → 扩展同步流程: calling pushSessionToExtension...');
         pushSessionToExtension(session, { flowId });
         setStatus('success');
         setMessage('登录成功！HomeScope 扩展已同步会话。此标签页将自动关闭。');
-        console.log('[HomeScope AuthCallback]   → 扩展同步流程: complete, background will save and close tab');
+        console.log('[HomeScope AuthCallback]   → 扩展同步流程: complete, background will save session. Tab close is handled by background ONLY when flowId exists.');
 
-        // 清除标记（同时清理 sessionStorage 和 localStorage）
+        // 清除标记
         sessionStorage.removeItem('hs_ext_flow');
-        localStorage.removeItem('hs_login_from_extension');
-        localStorage.removeItem('hs_flow_id');
         return;
       }
 
@@ -148,8 +140,6 @@ export function AuthCallback() {
       if (isFromExtension && !session) {
         console.warn('[HomeScope AuthCallback]   → 扩展同步流程: isFromExtension=true but NO session! clearing flag');
         sessionStorage.removeItem('hs_ext_flow');
-        localStorage.removeItem('hs_login_from_extension');
-        localStorage.removeItem('hs_flow_id');
         setStatus('error');
         setMessage('登录流程异常：未检测到有效会话。请在扩展中重试。');
         return;
@@ -161,8 +151,6 @@ export function AuthCallback() {
         setStatus('success');
         setMessage('Login successful! Redirecting...');
         sessionStorage.removeItem('hs_ext_flow');
-        localStorage.removeItem('hs_login_from_extension');
-        localStorage.removeItem('hs_flow_id');
         window.history.replaceState({}, '', '/');
         setTimeout(() => navigate('/', { replace: true }), 1500);
       } else {

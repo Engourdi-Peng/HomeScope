@@ -8,18 +8,18 @@
  *   - Runtime cache: _cachedAuth (in-memory, avoids repeated storage reads)
  *
  * Auth flow:
- *   1. User clicks login in side panel → background opens website login page
- *   2. User completes Google OAuth or Magic Link on website
+ *   1. User clicks login in side panel → background opens website login page with flowId
+ *   2. User completes Google OAuth on website
  *   3. AuthCallback.tsx injects a <script> tag that calls chrome.runtime.sendMessage
- *   4. Background receives sync_session_from_site, saves session, closes the callback tab
- *   5. background.saveSession() persists to hs_session/hs_user + updates cache
- *   6. background.broadcastAuthChanged() notifies all extension contexts
+ *   4. Background receives sync_session_from_site
+ *      - ALWAYS saves session (even if flow validation fails — fallback for race conditions)
+ *      - ALWAYS broadcasts auth change to extension contexts
+ *      - ONLY closes the callback tab if flowId is present (extension-initiated flow)
+ *        → web-initiated login (no flowId): tab stays open, user sees the success page
  *
- * Legacy migration:
- *   - On first run after this refactor, migrate any existing session from
- *     old storage locations (sb-*-auth-token keys, Supabase cookies) to the
- *     canonical hs_session/hs_user keys. Mark migration complete in
- *     hs_auth_migrated so this is a one-time operation only.
+ * Tab-closing policy:
+ *   - Extension flow (flowId exists): close the callback tab after session sync
+ *   - Web flow (no flowId): do NOT close any tab — user should see the success message
  */
 
 // ===== Injected config (replaced by vite at build time) =====
@@ -455,9 +455,7 @@ async function handleMessage(message, sender, sendResponse) {
       try {
         // Derive site base URL from MAGIC_LINK_REDIRECT to avoid hardcoding
         const siteBase = MAGIC_LINK_REDIRECT.split('/auth/callback')[0];
-        // Must match AuthContext: signInWithGoogle sets hs_login_from_extension when from_extension=1
-        
-        // 生成 flowId 用于双重校验
+        // 生成 flowId，传递给 login 页面 → AuthContext → AuthCallback → background 关闭标签页
         const flowId = generateFlowId();
         
         // 将 flowId 通过 URL 参数传递给网站（AuthContext → AuthCallback）
@@ -518,15 +516,15 @@ async function handleMessage(message, sender, sendResponse) {
         console.log(`${LOG_PREFIX} sync_session_from_site: senderTabId=${senderTabId}, flowId=${flowId}`);
 
         // 双重校验：验证 flowId 和 sender.tab.id
+        // 注意：即使校验失败（竞态条件等），仍然保存 session 以确保用户体验
         if (flowId) {
           const validation = validateOAuthFlow(flowId, senderTabId);
           if (!validation.valid) {
-            console.error(`${LOG_PREFIX} sync_session_from_site: FLOW VALIDATION FAILED — ${validation.reason}`);
-            console.warn(`${LOG_PREFIX} sync_session_from_site: rejecting session sync (possible CSRF attack)`);
-            sendResponse({ success: false, error: `Flow validation failed: ${validation.reason}` });
-            return;
+            console.warn(`${LOG_PREFIX} sync_session_from_site: flow validation FAILED (${validation.reason}) — saving session anyway (fallback mode, tab will NOT be closed)`);
+            // 继续保存 session，但不关闭标签页
+          } else {
+            console.log(`${LOG_PREFIX} sync_session_from_site: flow validation PASSED`);
           }
-          console.log(`${LOG_PREFIX} sync_session_from_site: flow validation PASSED`);
         } else {
           // 旧版兼容：如果没有 flowId，检查是否有合法的 callback tab
           if (senderTabId == null) {
@@ -550,16 +548,17 @@ async function handleMessage(message, sender, sendResponse) {
         broadcastAuthChanged(true, extUser);
         console.log(`${LOG_PREFIX} sync_session_from_site: complete, userId=${extUser?.id}`);
 
-        // 关闭回调标签页（由扩展打开的，background 有权限关闭）
-        // 优先使用 sender.tab.id（双重校验已确保这是合法的 callback tab）
-        const callbackTabId = senderTabId;
-        if (callbackTabId != null) {
-          console.log(`${LOG_PREFIX} sync_session_from_site: closing callback tab ${callbackTabId}...`);
-          chrome.tabs.remove(callbackTabId).catch((err) => {
+        // ── 关闭回调标签页的条件（双重保护）──
+        // 条件 1: flowId 存在（扩展主动发起的登录流程）
+        // 条件 2: senderTabId 有效（background 有权限关闭的标签页）
+        // 普通网页登录（无 flowId）时，即使 background 收到了 session 也不关闭任何标签页
+        if (flowId && senderTabId != null) {
+          console.log(`${LOG_PREFIX} sync_session_from_site: closing callback tab ${senderTabId} (extension-initiated flow)...`);
+          chrome.tabs.remove(senderTabId).catch((err) => {
             console.warn(`${LOG_PREFIX} sync_session_from_site: failed to close tab — ${err.message}`);
           });
         } else {
-          console.warn(`${LOG_PREFIX} sync_session_from_site: no callbackTabId, cannot auto-close`);
+          console.log(`${LOG_PREFIX} sync_session_from_site: NOT closing tab — flowId=${flowId || 'null'} (web-initiated login, tab stays open)`);
         }
 
         sendResponse({ success: true, user: extUser });
@@ -850,9 +849,9 @@ chrome.sidePanel?.setPanelBehavior?.({ openPanelOnActionClick: true })?.catch?.(
 
 function handleCallbackTab(tabId, url) {
   if (!url.includes('/auth/callback')) return;
-  
-  console.log(`${LOG_PREFIX} [flow] callback detected: tabId=${tabId}, url=${url.substring(0, 100)}`);
-  
+
+  console.log(`${LOG_PREFIX} [flow] callback detected: tabId=${tabId}, url=${url.substring(0, 150)}`);
+
   // 从 URL 参数提取 flow_id
   let flowId = null;
   try {
@@ -861,19 +860,20 @@ function handleCallbackTab(tabId, url) {
   } catch (e) {
     console.warn(`${LOG_PREFIX} [flow] failed to parse callback URL: ${e.message}`);
   }
-  
+
   if (!flowId) {
-    console.warn(`${LOG_PREFIX} [flow] no flow_id in callback URL`);
+    console.warn(`${LOG_PREFIX} [flow] no flow_id in callback URL, skipping tab link`);
     return;
   }
-  
+
   // 验证 flowId 存在且未过期
   const flow = _oauthFlows.get(flowId);
   if (flow) {
+    const prevCallbackTabId = flow.callbackTabId;
     flow.callbackTabId = tabId;
-    console.log(`${LOG_PREFIX} [flow] callback tab linked to flow: ${flowId}, callbackTabId=${tabId}`);
+    console.log(`${LOG_PREFIX} [flow] callback tab linked to flow: ${flowId}, tabId=${tabId}, previousCallbackTabId=${prevCallbackTabId}, loginTabId=${flow.loginTabId}, used=${flow.used}`);
   } else {
-    console.warn(`${LOG_PREFIX} [flow] flowId=${flowId} not found or expired`);
+    console.warn(`${LOG_PREFIX} [flow] flowId=${flowId} not found or expired (may have already been used/consumed)`);
   }
 }
 

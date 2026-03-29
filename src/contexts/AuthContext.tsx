@@ -119,47 +119,34 @@ export function AuthProvider({ children }: AuthProviderProps) {
 
   // Google 登录
   const signInWithGoogle = async () => {
-    // 检查是否来自扩展的登录流程（URL 参数传递）
+    // 检查 URL 参数：flow_id 表示这是扩展发起的登录流程
     const urlParams = new URLSearchParams(window.location.search);
-    const fromExtension =
-      urlParams.get('from_extension') === '1' || urlParams.get('from') === 'extension';
-    const flowId = urlParams.get('flow_id'); // 双重校验的 flow ID
+    const flowId = urlParams.get('flow_id'); // flowId 是扩展流程的唯一标记
 
-    if (fromExtension) {
-      // 扩展触发的登录：同时存入 sessionStorage 和 localStorage
-      // - sessionStorage: 主要传递方式，在标签页生命周期内始终可用
-      // - localStorage: 作为 fallback 兼容
-      const extFlowData = JSON.stringify({ from: 1, flowId });
+    if (flowId) {
+      // 扩展触发的登录：flowId 存入 sessionStorage（跨标签页传递）
+      const extFlowData = JSON.stringify({ flowId });
       sessionStorage.setItem('hs_ext_flow', extFlowData);
-      localStorage.setItem('hs_login_from_extension', '1');
-      if (flowId) {
-        localStorage.setItem('hs_flow_id', flowId);
-      }
-      console.log('[Auth] signInWithGoogle: from_extension detected, stored in sessionStorage:', extFlowData);
+      console.log('[Auth] signInWithGoogle: extension flow detected, flowId:', flowId);
     } else {
-      console.log('[Auth] signInWithGoogle: normal web flow (no from_extension)');
+      console.log('[Auth] signInWithGoogle: normal web flow (no flow_id in URL)');
     }
 
     // redirectTo 只传 flowId（sessionStorage 作为主要传递方式）
     const callbackParams = new URLSearchParams();
-    if (flowId) {
-      callbackParams.set('flow_id', flowId);
-    }
+    if (flowId) callbackParams.set('flow_id', flowId);
     const redirectTo = `${window.location.origin}/auth/callback${callbackParams.toString() ? '?' + callbackParams.toString() : ''}`;
-    console.log('[Auth] signInWithGoogle: redirectTo =', redirectTo, 'fromExtension =', fromExtension, 'flowId =', flowId);
+    console.log('[Auth] signInWithGoogle: redirectTo =', redirectTo);
 
     const { error } = await supabase.auth.signInWithOAuth({
       provider: 'google',
       options: {
-        redirectTo: redirectTo,
+        redirectTo,
       },
     });
 
     if (error) {
-      // 登录失败时清除标记
       sessionStorage.removeItem('hs_ext_flow');
-      localStorage.removeItem('hs_login_from_extension');
-      localStorage.removeItem('hs_flow_id');
       console.error('[Auth] signInWithGoogle: OAuth error —', error.message);
       throw error;
     }
