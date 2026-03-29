@@ -50,17 +50,8 @@ function pushSessionToExtension(session: Session, options: PushSessionOptions = 
   console.log('[HomeScope AuthCallback] pushSessionToExtension: postMessage dispatched');
 }
 
-/** flow_id 可能在 ?flow_id=、#...&flow_id=，或同标签登录页写入的 sessionStorage */
-function extractFlowIdFromPage(): string | null {
-  const searchParams = new URLSearchParams(window.location.search);
-  let fid = searchParams.get('flow_id');
-  if (fid) return fid;
-  const h = window.location.hash;
-  if (h && h.length > 1) {
-    const hashParams = new URLSearchParams(h.startsWith('#') ? h.slice(1) : h);
-    fid = hashParams.get('flow_id');
-    if (fid) return fid;
-  }
+/** 扩展 flow_id 只存在于同标签 sessionStorage（跨标签不可见） */
+function getFlowId(): string | null {
   try {
     const stored = sessionStorage.getItem('hs_ext_flow');
     if (stored) {
@@ -81,96 +72,64 @@ export function AuthCallback() {
 
   useEffect(() => {
     let finished = false;
-    let pollId: ReturnType<typeof setInterval> | null = null;
-    const { data: { subscription } } = supabase.auth.onAuthStateChange((event, sess) => {
-      if (finished) return;
-      if (event === 'SIGNED_IN' && sess) {
-        console.log('[HomeScope AuthCallback] onAuthStateChange SIGNED_IN, userId=', sess.user?.id);
-        void completeWithSession(sess);
-      }
-    });
 
-    const flowId = extractFlowIdFromPage();
+    const flowId = getFlowId();
     const isFromExtension = !!flowId;
 
-    console.log('[HomeScope AuthCallback] PAGE LOADED');
-    console.log('[HomeScope AuthCallback]   href:', window.location.href);
-    console.log('[HomeScope AuthCallback]   flowId:', flowId, 'isFromExtension:', isFromExtension);
+    console.log('[HomeScope AuthCallback] PAGE LOADED, isFromExtension:', isFromExtension, ', flowId:', flowId);
 
-    async function tryGetSession(): Promise<Session | null> {
-      try {
-        const { data, error } = await supabase.auth.getSession();
-        if (error) console.warn('[HomeScope AuthCallback] getSession error:', error.message);
-        return data.session ?? null;
-      } catch (e) {
-        console.error('[HomeScope AuthCallback] getSession exception:', e);
-        return null;
-      }
-    }
-
-    async function completeWithSession(session: Session) {
-      if (finished) return;
+    async function pushIfSession(session: { user: { id: string }; access_token: string; refresh_token?: string } | null) {
+      if (finished || !session) return;
       finished = true;
-      if (pollId) clearInterval(pollId);
       subscription.unsubscribe();
-
-      console.log('[HomeScope AuthCallback] completeWithSession, isFromExtension=', isFromExtension);
+      clearTimeout(timeoutId);
+      sessionStorage.removeItem('hs_ext_flow');
 
       if (isFromExtension) {
         pushSessionToExtension(session, { flowId });
         setStatus('success');
         setMessage('登录成功！HomeScope 扩展已同步会话。此标签页将自动关闭。');
-        sessionStorage.removeItem('hs_ext_flow');
-        return;
+      } else {
+        setStatus('success');
+        setMessage('Login successful! Redirecting...');
+        window.history.replaceState({}, '', '/');
+        setTimeout(() => navigate('/', { replace: true }), 1500);
       }
-
-      setStatus('success');
-      setMessage('Login successful! Redirecting...');
-      sessionStorage.removeItem('hs_ext_flow');
-      window.history.replaceState({}, '', '/');
-      setTimeout(() => navigate('/', { replace: true }), 1500);
     }
 
-    function completeWithError(msg: string) {
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((event, sess) => {
+      if (event === 'SIGNED_IN' && sess) {
+        console.log('[HomeScope AuthCallback] onAuthStateChange SIGNED_IN, userId=', sess.user?.id);
+        void pushIfSession(sess);
+      }
+    });
+
+    // 立即主动检查 session（AuthContext 可能在 AuthCallback 之前处理了 callback，
+    // 导致 SIGNED_IN 事件在 AuthCallback 监听器注册前就触发了）
+    void (async () => {
+      const { data } = await supabase.auth.getSession();
+      if (data.session) {
+        console.log('[HomeScope AuthCallback] immediate getSession: found session, userId=', data.session.user?.id);
+        await pushIfSession(data.session);
+      }
+    })();
+
+    const timeoutId = setTimeout(() => {
       if (finished) return;
       finished = true;
-      if (pollId) clearInterval(pollId);
       subscription.unsubscribe();
       sessionStorage.removeItem('hs_ext_flow');
       setStatus('error');
-      setMessage(msg);
-    }
-
-    let attempts = 0;
-    const maxAttempts = 55; // ~11s
-
-    pollId = setInterval(async () => {
-      if (finished) return;
-      attempts += 1;
-      const session = await tryGetSession();
-      if (session) {
-        await completeWithSession(session);
-        return;
-      }
-      if (attempts >= maxAttempts) {
-        completeWithError(
-          isFromExtension
-            ? '登录流程异常：未检测到有效会话。请在扩展中重试。'
-            : 'No active session found. Please sign in.'
-        );
-      }
-    }, 200);
-
-    void (async () => {
-      await new Promise((r) => setTimeout(r, 80));
-      if (finished) return;
-      const session = await tryGetSession();
-      if (session) await completeWithSession(session);
-    })();
+      setMessage(
+        isFromExtension
+          ? '登录流程异常：未检测到有效会话。请在扩展中重试。'
+          : 'No active session found. Please sign in.'
+      );
+    }, 20000);
 
     return () => {
       finished = true;
-      if (pollId) clearInterval(pollId);
+      clearTimeout(timeoutId);
       subscription.unsubscribe();
     };
   }, [navigate]);

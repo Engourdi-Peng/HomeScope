@@ -61,39 +61,36 @@ export function AuthProvider({ children }: AuthProviderProps) {
         // 如果存在 code，交换 session（AuthContext 是唯一负责 exchangeCodeForSession 的地方）
         if (code) {
           try {
+            console.log('[AuthContext] initAuth: exchanging code...');
             const { error } = await supabase.auth.exchangeCodeForSession(code);
 
             if (!error) {
-              // 清除 URL 中的 code 参数，但保留 from_extension=1（让 AuthCallback 能读到它）
+              console.log('[AuthContext] initAuth: exchangeCodeForSession succeeded');
+              // 清除 URL 中的 code 参数
               const url = new URL(window.location.href);
               url.searchParams.delete('code');
               window.history.replaceState({}, '', url.pathname + url.search);
+              // 不再立即 getSession — session 通过 onAuthStateChange 的 SIGNED_IN 事件传来
+            } else {
+              console.warn('[AuthContext] initAuth: exchangeCodeForSession error:', error.message);
             }
           } catch (err) {
-            console.error('exchangeCodeForSession exception:', err);
+            console.error('[AuthContext] initAuth: exchangeCodeForSession exception:', err);
           }
-        }
-
-        // 获取当前会话（可能因无效 refresh token 抛错）
-        const { data: { session }, error } = await supabase.auth.getSession();
-
-        if (error) {
-          // 无效或过期的 refresh token：清除本地 session，当作未登录
-          await supabase.auth.signOut();
-          setUser(null);
-          setProfile(null);
         } else {
-          setUser(session?.user ?? null);
-          if (session?.user) {
-            fetchProfile(session.user.id);
+          // 无 code：检查是否有已存在的 session（页面刷新时）
+          try {
+            const { data: { session } } = await supabase.auth.getSession();
+            if (session) {
+              setUser(session.user ?? null);
+              if (session.user) fetchProfile(session.user.id);
+            }
+          } catch {
+            /* ignore — getSession may throw on invalid refresh token */
           }
         }
       } catch (err) {
-        // 捕获 getSession 抛出的异常（如 AuthApiError: Invalid Refresh Token）
-        console.warn('Auth init error (clearing session):', err);
-        await supabase.auth.signOut();
-        setUser(null);
-        setProfile(null);
+        console.warn('[AuthContext] initAuth error:', err);
       } finally {
         setIsLoading(false);
       }
@@ -101,15 +98,18 @@ export function AuthProvider({ children }: AuthProviderProps) {
 
     initAuth();
 
-    // 监听认证状态变化
-    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event: string, session: { user: User } | null) => {
-      setUser(session?.user ?? null);
-      if (session?.user) {
+    // 监听认证状态变化（SIGNED_IN 在 exchangeCodeForSession 写入 IndexedDB 完成后触发）
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((event: string, session: { user: User } | null) => {
+      console.log('[AuthContext] onAuthStateChange:', event, session?.user?.id ?? 'null');
+      if (event === 'SIGNED_IN' && session?.user) {
+        setUser(session.user);
         fetchProfile(session.user.id);
-      } else {
+        setIsLoading(false);
+      } else if (event === 'SIGNED_OUT') {
+        setUser(null);
         setProfile(null);
+        setIsLoading(false);
       }
-      setIsLoading(false);
     });
 
     return () => {
