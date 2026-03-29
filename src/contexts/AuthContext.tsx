@@ -137,13 +137,16 @@ export function AuthProvider({ children }: AuthProviderProps) {
       console.log('[Auth] signInWithGoogle: normal web flow (no from_extension)');
     }
 
-    // ⚠️ 关键修复：redirectTo 必须携带 from_extension=1 和 flow_id，确保 callback 能识别扩展登录
-    // 否则即使从扩展打开 /login?from_extension=1，Supabase OAuth 回调时也会丢失这个参数
-    const callbackParams = new URLSearchParams({ from_extension: '1' });
-    if (flowId) {
-      callbackParams.set('flow_id', flowId);
+    // 修复：只在扩展触发的登录流程中才传递 from_extension=1
+    // 否则普通网页登录也会被误判为扩展登录，导致登录后自动关闭标签页
+    const callbackParams = new URLSearchParams();
+    if (fromExtension) {
+      callbackParams.set('from_extension', '1');
+      if (flowId) {
+        callbackParams.set('flow_id', flowId);
+      }
     }
-    const redirectTo = `${window.location.origin}/auth/callback?${callbackParams.toString()}`;
+    const redirectTo = `${window.location.origin}/auth/callback${callbackParams.toString() ? '?' + callbackParams.toString() : ''}`;
     console.log('[Auth] signInWithGoogle: redirectTo =', redirectTo, 'fromExtension =', fromExtension, 'flowId =', flowId);
 
     const { error } = await supabase.auth.signInWithOAuth({

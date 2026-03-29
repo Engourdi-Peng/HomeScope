@@ -19,6 +19,7 @@
   "host_permissions": [
     "https://www.realestate.com.au/*",
     "https://www.tryhomescope.com/*",
+    "https://tryhomescope.com/*",
     "https://trteewgplkqiedonomzg.supabase.co/*"
   ],
   "background": {
@@ -33,7 +34,8 @@
     {
       "matches": [
         "https://www.realestate.com.au/*",
-        "https://www.tryhomescope.com/*"
+        "https://www.tryhomescope.com/*",
+        "https://tryhomescope.com/*"
       ],
       "js": ["content.js"],
       "run_at": "document_idle"
@@ -42,7 +44,7 @@
   "web_accessible_resources": [
     {
       "resources": ["assets/*"],
-      "matches": ["https://www.tryhomescope.com/*"]
+      "matches": ["https://www.tryhomescope.com/*", "https://tryhomescope.com/*"]
     }
   ]
 }
