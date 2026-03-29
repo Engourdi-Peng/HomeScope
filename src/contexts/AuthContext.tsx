@@ -123,19 +123,28 @@ export function AuthProvider({ children }: AuthProviderProps) {
     const urlParams = new URLSearchParams(window.location.search);
     const fromExtension =
       urlParams.get('from_extension') === '1' || urlParams.get('from') === 'extension';
+    const flowId = urlParams.get('flow_id'); // 双重校验的 flow ID
 
     if (fromExtension) {
       // 扩展触发的登录：设置标记，在 AuthCallback 中通知扩展并关闭标签页
       localStorage.setItem('hs_login_from_extension', '1');
       console.log('[Auth] signInWithGoogle: from_extension detected, set hs_login_from_extension=1');
+      if (flowId) {
+        localStorage.setItem('hs_flow_id', flowId);
+        console.log('[Auth] signInWithGoogle: flow_id detected:', flowId);
+      }
     } else {
       console.log('[Auth] signInWithGoogle: normal web flow (no from_extension)');
     }
 
-    // ⚠️ 关键修复：redirectTo 必须携带 from_extension=1，确保 callback 能识别扩展登录
+    // ⚠️ 关键修复：redirectTo 必须携带 from_extension=1 和 flow_id，确保 callback 能识别扩展登录
     // 否则即使从扩展打开 /login?from_extension=1，Supabase OAuth 回调时也会丢失这个参数
-    const redirectTo = `${window.location.origin}/auth/callback?from_extension=1`;
-    console.log('[Auth] signInWithGoogle: redirectTo =', redirectTo, 'fromExtension =', fromExtension);
+    const callbackParams = new URLSearchParams({ from_extension: '1' });
+    if (flowId) {
+      callbackParams.set('flow_id', flowId);
+    }
+    const redirectTo = `${window.location.origin}/auth/callback?${callbackParams.toString()}`;
+    console.log('[Auth] signInWithGoogle: redirectTo =', redirectTo, 'fromExtension =', fromExtension, 'flowId =', flowId);
 
     const { error } = await supabase.auth.signInWithOAuth({
       provider: 'google',
@@ -147,6 +156,7 @@ export function AuthProvider({ children }: AuthProviderProps) {
     if (error) {
       // 登录失败时清除标记
       localStorage.removeItem('hs_login_from_extension');
+      localStorage.removeItem('hs_flow_id');
       console.error('[Auth] signInWithGoogle: OAuth error —', error.message);
       throw error;
     }

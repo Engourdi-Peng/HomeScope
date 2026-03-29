@@ -13,7 +13,12 @@ import type { Session } from '@supabase/supabase-js';
  * 2. content script 在 isolated world 监听 message，转发到 background
  * 3. background 保存 session，自动关闭 callback tab
  */
-function pushSessionToExtension(session: Session): void {
+interface PushSessionOptions {
+  flowId?: string | null;
+}
+
+function pushSessionToExtension(session: Session, options: PushSessionOptions = {}): void {
+  const { flowId } = options;
   const hasAccessToken = !!session.access_token;
   const hasRefreshToken = !!session.refresh_token;
   const userId = session.user?.id;
@@ -22,6 +27,7 @@ function pushSessionToExtension(session: Session): void {
   console.log('[HomeScope AuthCallback]   hasAccessToken:', hasAccessToken);
   console.log('[HomeScope AuthCallback]   hasRefreshToken:', hasRefreshToken);
   console.log('[HomeScope AuthCallback]   userId:', userId);
+  console.log('[HomeScope AuthCallback]   flowId:', flowId);
   console.log('[HomeScope AuthCallback]   accessToken:', session.access_token ? session.access_token.substring(0, 10) + '...' : 'null');
 
   // 发送 session 到 content script（通过 postMessage）
@@ -31,7 +37,8 @@ function pushSessionToExtension(session: Session): void {
     payload: {
       access_token: session.access_token,
       refresh_token: session.refresh_token,
-      user: session.user
+      user: session.user,
+      flowId: flowId || null // 双重校验的 flowId
     }
   };
 
@@ -78,10 +85,18 @@ export function AuthCallback() {
       const fromExtensionUrl = urlParams.get('from_extension');
       const fromExtensionLocalStorage = localStorage.getItem('hs_login_from_extension');
       const isFromExtension = fromExtensionUrl === '1' || fromExtensionLocalStorage === '1';
+      
+      // 读取 flowId（双重校验）
+      const flowIdUrl = urlParams.get('flow_id');
+      const flowIdLocalStorage = localStorage.getItem('hs_flow_id');
+      const flowId = flowIdUrl || flowIdLocalStorage;
 
       console.log('[HomeScope AuthCallback]   from_extension (URL param):', fromExtensionUrl);
       console.log('[HomeScope AuthCallback]   from_extension (localStorage):', fromExtensionLocalStorage);
       console.log('[HomeScope AuthCallback]   isFromExtension判定:', isFromExtension);
+      console.log('[HomeScope AuthCallback]   flow_id (URL param):', flowIdUrl);
+      console.log('[HomeScope AuthCallback]   flow_id (localStorage):', flowIdLocalStorage);
+      console.log('[HomeScope AuthCallback]   flowId used:', flowId);
 
       // ── 3. AuthContext.initAuth() 已经 exchange 过 code 了，这里只读 session ──
       let session: Session | null = null;
@@ -109,13 +124,14 @@ export function AuthCallback() {
       // ── 6. 扩展流程：推送 session 后关闭标签页 ──
       if (isFromExtension && session) {
         console.log('[HomeScope AuthCallback]   → 扩展同步流程: calling pushSessionToExtension...');
-        pushSessionToExtension(session);
+        pushSessionToExtension(session, { flowId });
         setStatus('success');
         setMessage('登录成功！HomeScope 扩展已同步会话。此标签页将自动关闭。');
         console.log('[HomeScope AuthCallback]   → 扩展同步流程: complete, background will save and close tab');
 
         // 清除标记
         localStorage.removeItem('hs_login_from_extension');
+        localStorage.removeItem('hs_flow_id');
         return;
       }
 
@@ -123,6 +139,7 @@ export function AuthCallback() {
       if (isFromExtension && !session) {
         console.warn('[HomeScope AuthCallback]   → 扩展同步流程: isFromExtension=true but NO session! clearing flag');
         localStorage.removeItem('hs_login_from_extension');
+        localStorage.removeItem('hs_flow_id');
         setStatus('error');
         setMessage('登录流程异常：未检测到有效会话。请在扩展中重试。');
         return;
@@ -134,6 +151,7 @@ export function AuthCallback() {
         setStatus('success');
         setMessage('Login successful! Redirecting...');
         localStorage.removeItem('hs_login_from_extension');
+        localStorage.removeItem('hs_flow_id');
         window.history.replaceState({}, '', '/');
         setTimeout(() => navigate('/', { replace: true }), 1500);
       } else {

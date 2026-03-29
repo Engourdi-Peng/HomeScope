@@ -35,6 +35,76 @@ const MAGIC_LINK_REDIRECT = __MAGIC_LINK_REDIRECT__;
 // ===== tabId → listingUrl mapping (valid for service worker lifetime) =====
 const _tabListingMap = new Map();
 
+// ===== OAuth Flow Management (双重校验) =====
+// 记录扩展发起的 OAuth 登录流程，用于回调时验证
+const _oauthFlows = new Map();
+// flow 超时时间：10 分钟
+const FLOW_TIMEOUT_MS = 10 * 60 * 1000;
+
+// 生成唯一的 flowId
+function generateFlowId() {
+  return `hs_${Date.now()}_${Math.random().toString(36).substring(2, 11)}`;
+}
+
+// 清理超时的 flow
+function cleanupExpiredFlows() {
+  const now = Date.now();
+  for (const [flowId, flow] of _oauthFlows.entries()) {
+    if (now - flow.createdAt > FLOW_TIMEOUT_MS) {
+      _oauthFlows.delete(flowId);
+      console.log(`${LOG_PREFIX} [flow] expired and cleaned: ${flowId}`);
+    }
+  }
+}
+
+// 开始 OAuth 流程时调用
+function startOAuthFlow(loginTabId, callbackTabId) {
+  const flowId = generateFlowId();
+  _oauthFlows.set(flowId, {
+    loginTabId,
+    callbackTabId,
+    createdAt: Date.now(),
+    used: false,
+  });
+  console.log(`${LOG_PREFIX} [flow] started: ${flowId}, loginTab=${loginTabId}, callbackTab=${callbackTabId}`);
+  return flowId;
+}
+
+// 验证 OAuth 流程
+function validateOAuthFlow(flowId, senderTabId) {
+  cleanupExpiredFlows();
+  
+  const flow = _oauthFlows.get(flowId);
+  if (!flow) {
+    console.warn(`${LOG_PREFIX} [flow] validate FAILED: flowId=${flowId} not found or expired`);
+    return { valid: false, reason: 'FLOW_NOT_FOUND' };
+  }
+  
+  if (flow.used) {
+    console.warn(`${LOG_PREFIX} [flow] validate FAILED: flowId=${flowId} already used`);
+    return { valid: false, reason: 'FLOW_ALREADY_USED' };
+  }
+  
+  // 双重校验：flowId 匹配 + sender.tab.id 匹配预期 callbackTabId
+  if (flow.callbackTabId !== senderTabId) {
+    // 竞态条件处理：如果 callbackTabId 还未更新，但 senderTabId 是有效的 callback tab
+    if (flow.callbackTabId === null && senderTabId !== null) {
+      console.warn(`${LOG_PREFIX} [flow] validate WARNING: callbackTabId not yet updated (race condition), updating to senderTabId=${senderTabId}`);
+      flow.callbackTabId = senderTabId;
+    } else {
+      console.warn(`${LOG_PREFIX} [flow] validate FAILED: sender.tab.id mismatch. expected=${flow.callbackTabId}, got=${senderTabId}`);
+      return { valid: false, reason: 'TAB_ID_MISMATCH' };
+    }
+  }
+  
+  // 标记为已使用（防止重放攻击）
+  flow.used = true;
+  _oauthFlows.delete(flowId);
+  
+  console.log(`${LOG_PREFIX} [flow] validate SUCCESS: ${flowId}`);
+  return { valid: true, flow };
+}
+
 const LOG_PREFIX = '[HomeScope BG]';
 
 // ===== Auth: single source of truth =====
@@ -386,10 +456,27 @@ async function handleMessage(message, sender, sendResponse) {
         // Derive site base URL from MAGIC_LINK_REDIRECT to avoid hardcoding
         const siteBase = MAGIC_LINK_REDIRECT.split('/auth/callback')[0];
         // Must match AuthContext: signInWithGoogle sets hs_login_from_extension when from_extension=1
-        const loginUrl = `${siteBase}/login?from_extension=1`;
-        await chrome.tabs.create({ url: loginUrl, active: true });
-        console.log(`${LOG_PREFIX} initiate_google_oauth: opened login page`);
-        sendResponse({ success: true, opened_login_page: true });
+        
+        // 生成 flowId 用于双重校验
+        const flowId = generateFlowId();
+        
+        // 将 flowId 通过 URL 参数传递给网站（AuthContext → AuthCallback）
+        const loginUrl = `${siteBase}/login?from_extension=1&flow_id=${flowId}`;
+        
+        // 打开登录页面，background 记录 login tab
+        const loginTab = await chrome.tabs.create({ url: loginUrl, active: true });
+        const loginTabId = loginTab.id;
+        
+        // 记录 flow（callbackTabId 暂时未知，等用户完成 OAuth 后会打开 callback 页面）
+        _oauthFlows.set(flowId, {
+          loginTabId,
+          callbackTabId: null, // 稍后填充
+          createdAt: Date.now(),
+          used: false,
+        });
+        
+        console.log(`${LOG_PREFIX} initiate_google_oauth: opened login page, flowId=${flowId}`);
+        sendResponse({ success: true, opened_login_page: true, flowId });
       } catch (err) {
         console.error(`${LOG_PREFIX} initiate_google_oauth: error —`, err.message);
         sendResponse({ success: false, error: err.message });
@@ -412,11 +499,13 @@ async function handleMessage(message, sender, sendResponse) {
     }
 
     // Canonical bridge: website AuthCallback forwards session here via injected <script>
+    // 双重校验：只有"扩展发起" + "当前 tab 就是那个被扩展打开的 callback tab"时才允许关闭
     case 'sync_session_from_site': {
       console.log(`${LOG_PREFIX} message: sync_session_from_site received`);
       try {
         const p = message.payload;
-        console.log(`${LOG_PREFIX} sync_session_from_site: payload check — hasAccessToken=${!!p?.access_token}, hasRefreshToken=${!!p?.refresh_token}, userId=${p?.user?.id || 'missing'}, accessToken=${redactToken(p?.access_token)}`);
+        const flowId = p?.flowId;
+        console.log(`${LOG_PREFIX} sync_session_from_site: payload check — hasAccessToken=${!!p?.access_token}, hasRefreshToken=${!!p?.refresh_token}, userId=${p?.user?.id || 'missing'}, flowId=${flowId || 'MISSING'}, accessToken=${redactToken(p?.access_token)}`);
 
         if (!p?.access_token || !p?.user) {
           console.error(`${LOG_PREFIX} sync_session_from_site: INVALID payload — missing access_token or user`);
@@ -424,14 +513,33 @@ async function handleMessage(message, sender, sendResponse) {
           return;
         }
 
-        // 优先使用 sender.tab.id（content script → background 的标准 sender）
-        // fallback：查找 HomeScope callback 标签页
-        let callbackTabId = sender?.tab?.id;
-        if (callbackTabId == null) {
-          const tabs = await chrome.tabs.query({ url: '*://*.tryhomescope.com/auth/callback*' });
-          callbackTabId = tabs[0]?.id ?? null;
+        // 获取 callback tab id（content script → background 的标准 sender）
+        const senderTabId = sender?.tab?.id ?? null;
+        console.log(`${LOG_PREFIX} sync_session_from_site: senderTabId=${senderTabId}, flowId=${flowId}`);
+
+        // 双重校验：验证 flowId 和 sender.tab.id
+        if (flowId) {
+          const validation = validateOAuthFlow(flowId, senderTabId);
+          if (!validation.valid) {
+            console.error(`${LOG_PREFIX} sync_session_from_site: FLOW VALIDATION FAILED — ${validation.reason}`);
+            console.warn(`${LOG_PREFIX} sync_session_from_site: rejecting session sync (possible CSRF attack)`);
+            sendResponse({ success: false, error: `Flow validation failed: ${validation.reason}` });
+            return;
+          }
+          console.log(`${LOG_PREFIX} sync_session_from_site: flow validation PASSED`);
+        } else {
+          // 旧版兼容：如果没有 flowId，检查是否有合法的 callback tab
+          if (senderTabId == null) {
+            const tabs = await chrome.tabs.query({ url: '*://*.tryhomescope.com/auth/callback*' });
+            const fallbackTabId = tabs[0]?.id ?? null;
+            console.warn(`${LOG_PREFIX} sync_session_from_site: no flowId, using fallback tab detection: ${fallbackTabId}`);
+            if (fallbackTabId == null) {
+              console.error(`${LOG_PREFIX} sync_session_from_site: BLOCKED — no flowId and no callback tab detected`);
+              sendResponse({ success: false, error: 'No valid OAuth flow found' });
+              return;
+            }
+          }
         }
-        console.log(`${LOG_PREFIX} sync_session_from_site: callbackTabId=${callbackTabId}, userId=${p.user.id}`);
 
         const session = { access_token: p.access_token, refresh_token: p.refresh_token || '' };
         const extUser = toExtUser(p.user);
@@ -443,6 +551,8 @@ async function handleMessage(message, sender, sendResponse) {
         console.log(`${LOG_PREFIX} sync_session_from_site: complete, userId=${extUser?.id}`);
 
         // 关闭回调标签页（由扩展打开的，background 有权限关闭）
+        // 优先使用 sender.tab.id（双重校验已确保这是合法的 callback tab）
+        const callbackTabId = senderTabId;
         if (callbackTabId != null) {
           console.log(`${LOG_PREFIX} sync_session_from_site: closing callback tab ${callbackTabId}...`);
           chrome.tabs.remove(callbackTabId).catch((err) => {
@@ -733,7 +843,49 @@ function sleep(ms) {
 }
 
 chrome.sidePanel?.setPanelBehavior?.({ openPanelOnActionClick: true })?.catch?.(() => {});
-chrome.tabs.onUpdated.addListener(() => {});
+
+// ===== OAuth Flow: 监听 callback 标签页打开/更新 =====
+// 注意：Supabase OAuth 使用"原地重定向"（在同一个标签页从 /login 重定向到 /auth/callback）
+// 因此需要同时监听 onCreated（外部打开的链接）和 onUpdated（重定向）
+
+function handleCallbackTab(tabId, url) {
+  if (!url.includes('/auth/callback')) return;
+  
+  console.log(`${LOG_PREFIX} [flow] callback detected: tabId=${tabId}, url=${url.substring(0, 100)}`);
+  
+  // 从 URL 参数提取 flow_id
+  let flowId = null;
+  try {
+    const urlObj = new URL(url);
+    flowId = urlObj.searchParams.get('flow_id');
+  } catch (e) {
+    console.warn(`${LOG_PREFIX} [flow] failed to parse callback URL: ${e.message}`);
+  }
+  
+  if (!flowId) {
+    console.warn(`${LOG_PREFIX} [flow] no flow_id in callback URL`);
+    return;
+  }
+  
+  // 验证 flowId 存在且未过期
+  const flow = _oauthFlows.get(flowId);
+  if (flow) {
+    flow.callbackTabId = tabId;
+    console.log(`${LOG_PREFIX} [flow] callback tab linked to flow: ${flowId}, callbackTabId=${tabId}`);
+  } else {
+    console.warn(`${LOG_PREFIX} [flow] flowId=${flowId} not found or expired`);
+  }
+}
+
+chrome.tabs.onCreated.addListener((tab) => {
+  handleCallbackTab(tab.id, tab.url || '');
+});
+
+// 监听标签页 URL 变化（OAuth 完成后从 /login 重定向到 /auth/callback）
+chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
+  if (changeInfo.status !== 'loading') return;
+  handleCallbackTab(tabId, tab.url || '');
+});
 
 // ===== Token refresh scheduler (prevents 7-day Supabase expiry) =====
 // Runs on extension startup and periodically to keep the session alive.
