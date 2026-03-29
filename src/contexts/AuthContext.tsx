@@ -126,25 +126,24 @@ export function AuthProvider({ children }: AuthProviderProps) {
     const flowId = urlParams.get('flow_id'); // 双重校验的 flow ID
 
     if (fromExtension) {
-      // 扩展触发的登录：设置标记，在 AuthCallback 中通知扩展并关闭标签页
+      // 扩展触发的登录：同时存入 sessionStorage 和 localStorage
+      // - sessionStorage: 主要传递方式，在标签页生命周期内始终可用
+      // - localStorage: 作为 fallback 兼容
+      const extFlowData = JSON.stringify({ from: 1, flowId });
+      sessionStorage.setItem('hs_ext_flow', extFlowData);
       localStorage.setItem('hs_login_from_extension', '1');
-      console.log('[Auth] signInWithGoogle: from_extension detected, set hs_login_from_extension=1');
       if (flowId) {
         localStorage.setItem('hs_flow_id', flowId);
-        console.log('[Auth] signInWithGoogle: flow_id detected:', flowId);
       }
+      console.log('[Auth] signInWithGoogle: from_extension detected, stored in sessionStorage:', extFlowData);
     } else {
       console.log('[Auth] signInWithGoogle: normal web flow (no from_extension)');
     }
 
-    // 修复：只在扩展触发的登录流程中才传递 from_extension=1
-    // 否则普通网页登录也会被误判为扩展登录，导致登录后自动关闭标签页
+    // redirectTo 只传 flowId（sessionStorage 作为主要传递方式）
     const callbackParams = new URLSearchParams();
-    if (fromExtension) {
-      callbackParams.set('from_extension', '1');
-      if (flowId) {
-        callbackParams.set('flow_id', flowId);
-      }
+    if (flowId) {
+      callbackParams.set('flow_id', flowId);
     }
     const redirectTo = `${window.location.origin}/auth/callback${callbackParams.toString() ? '?' + callbackParams.toString() : ''}`;
     console.log('[Auth] signInWithGoogle: redirectTo =', redirectTo, 'fromExtension =', fromExtension, 'flowId =', flowId);
@@ -158,6 +157,7 @@ export function AuthProvider({ children }: AuthProviderProps) {
 
     if (error) {
       // 登录失败时清除标记
+      sessionStorage.removeItem('hs_ext_flow');
       localStorage.removeItem('hs_login_from_extension');
       localStorage.removeItem('hs_flow_id');
       console.error('[Auth] signInWithGoogle: OAuth error —', error.message);

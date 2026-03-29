@@ -80,22 +80,30 @@ export function AuthCallback() {
       console.log('[HomeScope AuthCallback]   searchParams:', window.location.search);
       console.log('[HomeScope AuthCallback]   hash:', window.location.hash);
 
-      // ── 2. 检查各种来源标记 ──
-      const urlParams = new URLSearchParams(window.location.search);
-      const fromExtensionUrl = urlParams.get('from_extension');
-      const fromExtensionLocalStorage = localStorage.getItem('hs_login_from_extension');
-      const isFromExtension = fromExtensionUrl === '1' || fromExtensionLocalStorage === '1';
-      
-      // 读取 flowId（双重校验）
-      const flowIdUrl = urlParams.get('flow_id');
-      const flowIdLocalStorage = localStorage.getItem('hs_flow_id');
-      const flowId = flowIdUrl || flowIdLocalStorage;
+      // ── 2. 检查扩展登录来源标记（优先级：sessionStorage > localStorage > URL） ──
+      // 优先从 sessionStorage 读取（主要传递方式）
+      let extFlowFromSession = null;
+      try {
+        const stored = sessionStorage.getItem('hs_ext_flow');
+        if (stored) {
+          extFlowFromSession = JSON.parse(stored);
+          console.log('[HomeScope AuthCallback]   sessionStorage hs_ext_flow:', extFlowFromSession);
+        }
+      } catch (e) {
+        console.warn('[HomeScope AuthCallback]   sessionStorage parse error:', e);
+      }
 
-      console.log('[HomeScope AuthCallback]   from_extension (URL param):', fromExtensionUrl);
+      // 降级到 localStorage
+      const fromExtensionLocalStorage = localStorage.getItem('hs_login_from_extension');
+      const flowIdLocalStorage = localStorage.getItem('hs_flow_id');
+
+      // 判定是否来自扩展登录
+      const isFromExtension = extFlowFromSession?.from === 1 || fromExtensionLocalStorage === '1';
+      const flowId = extFlowFromSession?.flowId || flowIdLocalStorage;
+
+      console.log('[HomeScope AuthCallback]   from_extension (sessionStorage):', extFlowFromSession?.from);
       console.log('[HomeScope AuthCallback]   from_extension (localStorage):', fromExtensionLocalStorage);
       console.log('[HomeScope AuthCallback]   isFromExtension判定:', isFromExtension);
-      console.log('[HomeScope AuthCallback]   flow_id (URL param):', flowIdUrl);
-      console.log('[HomeScope AuthCallback]   flow_id (localStorage):', flowIdLocalStorage);
       console.log('[HomeScope AuthCallback]   flowId used:', flowId);
 
       // ── 3. AuthContext.initAuth() 已经 exchange 过 code 了，这里只读 session ──
@@ -119,7 +127,7 @@ export function AuthCallback() {
       }
 
       // ── 5. 判定是否来自扩展登录流程 ──
-      console.log('[HomeScope AuthCallback]   FINAL判定: isFromExtension =', isFromExtension, '(URL=', fromExtensionUrl, ', LS=', fromExtensionLocalStorage, ')');
+      console.log('[HomeScope AuthCallback]   FINAL判定: isFromExtension =', isFromExtension, '(sessionStorage=', extFlowFromSession?.from, ', localStorage=', fromExtensionLocalStorage, ')');
 
       // ── 6. 扩展流程：推送 session 后关闭标签页 ──
       if (isFromExtension && session) {
@@ -129,7 +137,8 @@ export function AuthCallback() {
         setMessage('登录成功！HomeScope 扩展已同步会话。此标签页将自动关闭。');
         console.log('[HomeScope AuthCallback]   → 扩展同步流程: complete, background will save and close tab');
 
-        // 清除标记
+        // 清除标记（同时清理 sessionStorage 和 localStorage）
+        sessionStorage.removeItem('hs_ext_flow');
         localStorage.removeItem('hs_login_from_extension');
         localStorage.removeItem('hs_flow_id');
         return;
@@ -138,6 +147,7 @@ export function AuthCallback() {
       // ── 7. 扩展流程：无 session ──
       if (isFromExtension && !session) {
         console.warn('[HomeScope AuthCallback]   → 扩展同步流程: isFromExtension=true but NO session! clearing flag');
+        sessionStorage.removeItem('hs_ext_flow');
         localStorage.removeItem('hs_login_from_extension');
         localStorage.removeItem('hs_flow_id');
         setStatus('error');
@@ -150,6 +160,7 @@ export function AuthCallback() {
       if (session) {
         setStatus('success');
         setMessage('Login successful! Redirecting...');
+        sessionStorage.removeItem('hs_ext_flow');
         localStorage.removeItem('hs_login_from_extension');
         localStorage.removeItem('hs_flow_id');
         window.history.replaceState({}, '', '/');
