@@ -11,7 +11,7 @@
  */
 
 import { next } from '@vercel/functions';
-import { parseAddress } from '~shared/address';
+import { parseAddress } from './shared/address';
 
 const SUPABASE_URL = process.env.SUPABASE_URL || 'https://trteewgplkqiedonomzg.supabase.co';
 const SUPABASE_ANON_KEY = process.env.SUPABASE_ANON_KEY || '';
@@ -20,7 +20,7 @@ const SITE_URL = process.env.SITE_URL || 'https://www.tryhomescope.com';
 /**
  * Extract suburb from Australian address format
  * e.g., "6 Edinburgh Street, Richmond, VIC 3121, AU" → "Richmond"
- * @deprecated Use parseAddress from ~shared/address instead
+ * @deprecated Use parseAddress from shared/address instead
  */
 function extractSuburbFromAddress(address: string | null | undefined): string | null {
   return parseAddress(address).suburb;

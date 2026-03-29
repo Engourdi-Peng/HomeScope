@@ -4,7 +4,7 @@
  */
 
 import type { AnalysisResult } from '../types';
-import { parseAddress } from '~shared/address';
+import { parseAddress } from '../../shared/address';
 
 /**
  * 从完整地址中提取 suburb/location

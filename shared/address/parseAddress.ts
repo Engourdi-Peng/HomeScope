@@ -15,9 +15,6 @@ export interface ParsedAddress {
   raw: string;
 }
 
-// 澳大利亚州代码
-const AU_STATES = ['VIC', 'NSW', 'QLD', 'SA', 'WA', 'TAS', 'ACT', 'NT'];
-
 // 州代码正则: 匹配 "VIC 3335" 或 "VIC  3335" 等格式
 const STATE_POSTCODE_PATTERN = /^((?:VIC|NSW|QLD|SA|WA|TAS|ACT|NT)\s*?)(\d{4})$/i;
 

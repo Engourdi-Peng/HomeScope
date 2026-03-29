@@ -8,7 +8,7 @@
  * - Frontend React app still mounts and takes over for interactivity
  */
 import type { VercelRequest, VercelResponse } from '@vercel/node';
-import { parseAddress } from '~shared/address';
+import { parseAddress } from '../shared/address';
 
 const SUPABASE_URL = process.env.SUPABASE_URL || 'https://trteewgplkqiedonomzg.supabase.co';
 const SUPABASE_ANON_KEY = process.env.SUPABASE_ANON_KEY || '';
