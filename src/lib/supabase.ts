@@ -6,7 +6,8 @@ export const supabase: SupabaseClient = createClient(SUPABASE_URL, SUPABASE_ANON
     autoRefreshToken: true,
     persistSession: true,
     detectSessionInUrl: true,
-    // PKCE flow is the default in modern Supabase JS SDK (v2+)
+    // 显式 PKCE：回调为 ?code=...，避免隐式 #access_token= 导致 flow_id 丢失、与扩展校验脱节
+    flowType: 'pkce',
   },
 });
 

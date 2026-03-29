@@ -50,18 +50,26 @@ function pushSessionToExtension(session: Session, options: PushSessionOptions = 
   console.log('[HomeScope AuthCallback] pushSessionToExtension: postMessage dispatched');
 }
 
-/** 等待 session 建立（轮询 getSession，最长 5 秒） */
-async function waitForSession(maxAttempts = 15, intervalMs = 350): Promise<Session | null> {
-  console.log('[HomeScope AuthCallback] waitForSession: starting...');
-  for (let i = 0; i < maxAttempts; i++) {
-    const { data } = await supabase.auth.getSession();
-    if (data.session) {
-      console.log(`[HomeScope AuthCallback] waitForSession: found session after ${i + 1} attempt(s)`);
-      return data.session;
-    }
-    await new Promise((r) => setTimeout(r, intervalMs));
+/** flow_id 可能在 ?flow_id=、#...&flow_id=，或同标签登录页写入的 sessionStorage */
+function extractFlowIdFromPage(): string | null {
+  const searchParams = new URLSearchParams(window.location.search);
+  let fid = searchParams.get('flow_id');
+  if (fid) return fid;
+  const h = window.location.hash;
+  if (h && h.length > 1) {
+    const hashParams = new URLSearchParams(h.startsWith('#') ? h.slice(1) : h);
+    fid = hashParams.get('flow_id');
+    if (fid) return fid;
   }
-  console.warn('[HomeScope AuthCallback] waitForSession: timeout after', maxAttempts, 'attempts');
+  try {
+    const stored = sessionStorage.getItem('hs_ext_flow');
+    if (stored) {
+      const parsed = JSON.parse(stored) as { flowId?: string };
+      if (parsed?.flowId) return parsed.flowId;
+    }
+  } catch {
+    /* ignore */
+  }
   return null;
 }
 
@@ -72,95 +80,99 @@ export function AuthCallback() {
   const [message, setMessage] = useState('Processing your login...');
 
   useEffect(() => {
-    const handleCallback = async () => {
-      // ── 1. 打印完整 URL 信息 ──
-      console.log('[HomeScope AuthCallback] PAGE LOADED');
-      console.log('[HomeScope AuthCallback]   location.href:', window.location.href);
-      console.log('[HomeScope AuthCallback]   pathname:', window.location.pathname);
-      console.log('[HomeScope AuthCallback]   searchParams:', window.location.search);
-      console.log('[HomeScope AuthCallback]   hash:', window.location.hash);
-
-      // ── 2. 判断是否来自扩展登录的唯一可靠方式：URL 参数 flow_id ──
-      // sessionStorage/localStorage 跨标签页（OAuth 重定向）不可见，
-      // 只有 flow_id 作为 URL 参数能穿越重定向。
-      const urlParams = new URLSearchParams(window.location.search);
-      const flowIdFromUrl = urlParams.get('flow_id');
-
-      // 尝试从 sessionStorage 读取（备用，登录页和 callback 页同标签时才有效）
-      let extFlowFromSession = null;
-      try {
-        const stored = sessionStorage.getItem('hs_ext_flow');
-        if (stored) extFlowFromSession = JSON.parse(stored);
-      } catch (e) {}
-
-      const flowId = extFlowFromSession?.flowId || flowIdFromUrl;
-      const isFromExtension = !!(flowId);
-
-      console.log('[HomeScope AuthCallback]   flowId from URL:', flowIdFromUrl);
-      console.log('[HomeScope AuthCallback]   flowId from sessionStorage:', extFlowFromSession?.flowId);
-      console.log('[HomeScope AuthCallback]   FINAL isFromExtension:', isFromExtension, '(based on flowId presence)');
-
-      // ── 3. AuthContext.initAuth() 已经 exchange 过 code 了，这里只读 session ──
-      let session: Session | null = null;
-      try {
-        const result = await supabase.auth.getSession();
-        session = result.data.session ?? null;
-        console.log('[HomeScope AuthCallback]   getSession: session exists =', !!session);
-        if (session) {
-          console.log('[HomeScope AuthCallback]   getSession: userId =', session.user?.id);
-        }
-      } catch (err) {
-        console.error('[HomeScope AuthCallback]   getSession EXCEPTION:', err);
+    let finished = false;
+    let pollId: ReturnType<typeof setInterval> | null = null;
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((event, sess) => {
+      if (finished) return;
+      if (event === 'SIGNED_IN' && sess) {
+        console.log('[HomeScope AuthCallback] onAuthStateChange SIGNED_IN, userId=', sess.user?.id);
+        void completeWithSession(sess);
       }
+    });
 
-      // ── 4. 如果 session 不存在，轮询等待 ──
-      if (!session) {
-        console.log('[HomeScope AuthCallback]   session not immediately available, polling waitForSession...');
-        session = await waitForSession();
-        console.log('[HomeScope AuthCallback]   waitForSession result: session exists =', !!session);
+    const flowId = extractFlowIdFromPage();
+    const isFromExtension = !!flowId;
+
+    console.log('[HomeScope AuthCallback] PAGE LOADED');
+    console.log('[HomeScope AuthCallback]   href:', window.location.href);
+    console.log('[HomeScope AuthCallback]   flowId:', flowId, 'isFromExtension:', isFromExtension);
+
+    async function tryGetSession(): Promise<Session | null> {
+      try {
+        const { data, error } = await supabase.auth.getSession();
+        if (error) console.warn('[HomeScope AuthCallback] getSession error:', error.message);
+        return data.session ?? null;
+      } catch (e) {
+        console.error('[HomeScope AuthCallback] getSession exception:', e);
+        return null;
       }
+    }
 
-      // ── 5. 判定是否来自扩展登录流程 ──
-      console.log('[HomeScope AuthCallback]   FINAL判定: isFromExtension =', isFromExtension, '(flowId=', flowId, ')');
+    async function completeWithSession(session: Session) {
+      if (finished) return;
+      finished = true;
+      if (pollId) clearInterval(pollId);
+      subscription.unsubscribe();
 
-      // ── 6. 扩展流程：推送 session 后等待 background 关闭标签页 ──
-      if (isFromExtension && session) {
-        console.log('[HomeScope AuthCallback]   → 扩展同步流程: calling pushSessionToExtension...');
+      console.log('[HomeScope AuthCallback] completeWithSession, isFromExtension=', isFromExtension);
+
+      if (isFromExtension) {
         pushSessionToExtension(session, { flowId });
         setStatus('success');
         setMessage('登录成功！HomeScope 扩展已同步会话。此标签页将自动关闭。');
-        console.log('[HomeScope AuthCallback]   → 扩展同步流程: complete, background will save session. Tab close is handled by background ONLY when flowId exists.');
-
-        // 清除标记
         sessionStorage.removeItem('hs_ext_flow');
         return;
       }
 
-      // ── 7. 扩展流程：无 session ──
-      if (isFromExtension && !session) {
-        console.warn('[HomeScope AuthCallback]   → 扩展同步流程: isFromExtension=true but NO session! clearing flag');
-        sessionStorage.removeItem('hs_ext_flow');
-        setStatus('error');
-        setMessage('登录流程异常：未检测到有效会话。请在扩展中重试。');
-        return;
-      }
+      setStatus('success');
+      setMessage('Login successful! Redirecting...');
+      sessionStorage.removeItem('hs_ext_flow');
+      window.history.replaceState({}, '', '/');
+      setTimeout(() => navigate('/', { replace: true }), 1500);
+    }
 
-      // ── 8. 普通网页流程 ──
-      console.log('[HomeScope AuthCallback]   → 普通网页流程 (isFromExtension=false)');
+    function completeWithError(msg: string) {
+      if (finished) return;
+      finished = true;
+      if (pollId) clearInterval(pollId);
+      subscription.unsubscribe();
+      sessionStorage.removeItem('hs_ext_flow');
+      setStatus('error');
+      setMessage(msg);
+    }
+
+    let attempts = 0;
+    const maxAttempts = 55; // ~11s
+
+    pollId = setInterval(async () => {
+      if (finished) return;
+      attempts += 1;
+      const session = await tryGetSession();
       if (session) {
-        setStatus('success');
-        setMessage('Login successful! Redirecting...');
-        sessionStorage.removeItem('hs_ext_flow');
-        window.history.replaceState({}, '', '/');
-        setTimeout(() => navigate('/', { replace: true }), 1500);
-      } else {
-        console.error('[HomeScope AuthCallback]   → 普通网页流程: NO session, showing error');
-        setStatus('error');
-        setMessage('No active session found. Please sign in.');
+        await completeWithSession(session);
+        return;
       }
-    };
+      if (attempts >= maxAttempts) {
+        completeWithError(
+          isFromExtension
+            ? '登录流程异常：未检测到有效会话。请在扩展中重试。'
+            : 'No active session found. Please sign in.'
+        );
+      }
+    }, 200);
 
-    handleCallback();
+    void (async () => {
+      await new Promise((r) => setTimeout(r, 80));
+      if (finished) return;
+      const session = await tryGetSession();
+      if (session) await completeWithSession(session);
+    })();
+
+    return () => {
+      finished = true;
+      if (pollId) clearInterval(pollId);
+      subscription.unsubscribe();
+    };
   }, [navigate]);
 
   return (

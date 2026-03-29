@@ -847,26 +847,45 @@ chrome.sidePanel?.setPanelBehavior?.({ openPanelOnActionClick: true })?.catch?.(
 // 注意：Supabase OAuth 使用"原地重定向"（在同一个标签页从 /login 重定向到 /auth/callback）
 // 因此需要同时监听 onCreated（外部打开的链接）和 onUpdated（重定向）
 
+/** 从完整 tab URL 提取 flow_id（query 或 hash 片段里的 flow_id） */
+function extractFlowIdFromTabUrl(urlString) {
+  try {
+    const u = new URL(urlString);
+    let fid = u.searchParams.get('flow_id');
+    if (fid) return fid;
+    if (u.hash && u.hash.length > 1) {
+      const hp = new URLSearchParams(u.hash.startsWith('#') ? u.hash.slice(1) : u.hash);
+      fid = hp.get('flow_id');
+      if (fid) return fid;
+    }
+  } catch (e) {
+    console.warn(`${LOG_PREFIX} [flow] extractFlowIdFromTabUrl parse error: ${e.message}`);
+  }
+  return null;
+}
+
 function handleCallbackTab(tabId, url) {
   if (!url.includes('/auth/callback')) return;
 
   console.log(`${LOG_PREFIX} [flow] callback detected: tabId=${tabId}, url=${url.substring(0, 150)}`);
 
-  // 从 URL 参数提取 flow_id
-  let flowId = null;
-  try {
-    const urlObj = new URL(url);
-    flowId = urlObj.searchParams.get('flow_id');
-  } catch (e) {
-    console.warn(`${LOG_PREFIX} [flow] failed to parse callback URL: ${e.message}`);
-  }
+  let flowId = extractFlowIdFromTabUrl(url);
 
+  // 无 flow_id 时：OAuth 隐式回跳常把 query 清掉，用「同一 tab = 扩展打开的 loginTab」兜底
   if (!flowId) {
-    console.warn(`${LOG_PREFIX} [flow] no flow_id in callback URL, skipping tab link`);
+    for (const [fid, flow] of _oauthFlows.entries()) {
+      if (flow.used) continue;
+      if (flow.loginTabId === tabId) {
+        flowId = fid;
+        flow.callbackTabId = tabId;
+        console.log(`${LOG_PREFIX} [flow] linked callback tab ${tabId} to flow ${flowId} via loginTabId match (no flow_id in URL)`);
+        return;
+      }
+    }
+    console.warn(`${LOG_PREFIX} [flow] no flow_id in URL and no loginTabId match for tabId=${tabId}`);
     return;
   }
 
-  // 验证 flowId 存在且未过期
   const flow = _oauthFlows.get(flowId);
   if (flow) {
     const prevCallbackTabId = flow.callbackTabId;
