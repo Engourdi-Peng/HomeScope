@@ -1283,6 +1283,7 @@ Return ONLY valid JSON. No markdown. No code fences. No extra text.
       "area_type": "kitchen" | "bathroom" | "bedroom" | "living_room" | "garage" | "laundry" | "exterior" | "hallway" | "storage" | "dining" | "unknown",
       "score": number(0-100),
       "explanation": "short plain description of what you saw (max ~12 words)",
+      "photo_count": number,
       "insights": ["what you noticed 1", "what you noticed 2", "what you noticed 3"]
     }
   ],
@@ -2637,11 +2638,11 @@ Deno.serve(async (req) => {
         verdict: mapVerdict(recommendation.verdict),
         realityCheck: decision.overall_verdict || '',
         reality_check: realityCheckResult,
-        spaceAnalysis: (decision.space_analysis as { area_type: string; score: number; explanation?: string; insights?: string[] }[] || aggregatedSpaceAnalysis).map((s: any) => ({
+        spaceAnalysis: (decision.space_analysis as { area_type: string; score: number; explanation?: string; insights?: string[]; photo_count?: number }[] || aggregatedSpaceAnalysis).map((s: any) => ({
           spaceType: s.area_type || s.spaceType,
           score: s.score,
           explanation: s.explanation || '',
-          photoCount: s.photoCount || 0,
+          photoCount: s.photo_count || s.photoCount || 0,
           observations: s.insights || s.observations || []
         })),
         propertyStrengths: decision.property_strengths || [],

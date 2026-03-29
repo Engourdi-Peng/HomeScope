@@ -865,7 +865,11 @@ function extractFlowIdFromTabUrl(urlString) {
 }
 
 function handleCallbackTab(tabId, url) {
-  if (!url.includes('/auth/callback')) return;
+  // 同时支持 /auth/callback 和根路径 /（Supabase 有时会回跳到根路径带 code 参数）
+  const isCallback =
+    url.includes('/auth/callback') ||
+    (url.includes('tryhomescope.com/') && url.includes('code='));
+  if (!isCallback) return;
 
   console.log(`${LOG_PREFIX} [flow] callback detected: tabId=${tabId}, url=${url.substring(0, 150)}`);
 

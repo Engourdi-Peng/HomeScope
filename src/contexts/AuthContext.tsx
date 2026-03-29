@@ -99,12 +99,40 @@ export function AuthProvider({ children }: AuthProviderProps) {
     initAuth();
 
     // 监听认证状态变化（SIGNED_IN 在 exchangeCodeForSession 写入 IndexedDB 完成后触发）
-    const { data: { subscription } } = supabase.auth.onAuthStateChange((event: string, session: { user: User } | null) => {
+  const { data: { subscription } } = supabase.auth.onAuthStateChange((event: string, session: { user: User } | null) => {
       console.log('[AuthContext] onAuthStateChange:', event, session?.user?.id ?? 'null');
       if (event === 'SIGNED_IN' && session?.user) {
         setUser(session.user);
         fetchProfile(session.user.id);
         setIsLoading(false);
+
+        // ── 扩展流程：推送 session 到 extension ──────────────────────
+        // 无论是 /auth/callback 还是根路径 /（Supabase 有时回跳到根路径）
+        // 只要 hs_ext_flow 存在，就说明是扩展触发的登录，需要把 session 同步给扩展
+        try {
+          const extFlowRaw = sessionStorage.getItem('hs_ext_flow');
+          if (extFlowRaw) {
+            const extFlow = JSON.parse(extFlowRaw) as { flowId?: string };
+            const flowId = extFlow?.flowId || null;
+            const message = {
+              source: 'homescope-auth-bridge',
+              type: 'HOMESCOPE_SYNC_SESSION',
+              payload: {
+                access_token: session.access_token,
+                refresh_token: session.refresh_token,
+                user: session.user,
+                flowId,
+              },
+            };
+            console.log('[AuthContext] onAuthStateChange: extension flow detected, pushing session via postMessage, flowId=', flowId);
+            window.postMessage(message, window.location.origin);
+            // 立即清理 sessionStorage（防止重复推送）
+            sessionStorage.removeItem('hs_ext_flow');
+          }
+        } catch {
+          /* ignore storage errors */
+        }
+        // ─────────────────────────────────────────────────────────
       } else if (event === 'SIGNED_OUT') {
         setUser(null);
         setProfile(null);
