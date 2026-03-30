@@ -191,9 +191,8 @@ function injectMetaTags(html: string, title: string, description: string, url: s
 }
 
 export const config = {
-  // 只处理 /share/* 路由，API/静态文件由 vercel.json rewrite 处理
-  // Vercel Edge Matcher 不支持负向前瞻(?!)和捕获组()，所以分两条写
-  matcher: ['/share/:slug*', '/share/:slug*/*'],
+  // 只处理 /share/* 路由；勿使用 `/share/:slug*/*`（path-to-regexp 会报 Unexpected MODIFIER）
+  matcher: '/share/:slug*',
 };
 
 export default async function middleware(request: Request) {
