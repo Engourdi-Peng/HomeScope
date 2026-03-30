@@ -9,14 +9,10 @@
  */
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 
-const SUPABASE_URL = process.env.VITE_SUPABASE_URL || process.env.SUPABASE_URL || 'https://trteewgplkqiedonomzg.supabase.co';
-// SERVICE_ROLE_KEY bypasses RLS; falls back to ANON_KEY if not set.
-// For public sitemap we only read is_public=true rows, so ANON_KEY suffices.
-const SUPABASE_SERVICE_ROLE_KEY =
-  process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.VITE_SUPABASE_SERVICE_ROLE_KEY || '';
-const SUPABASE_ANON_KEY =
-  process.env.VITE_SUPABASE_ANON_KEY || process.env.SUPABASE_ANON_KEY || '';
-// Prefer SERVICE_ROLE_KEY (bypasses RLS), fall back to ANON_KEY
+const SUPABASE_URL =
+  process.env.SUPABASE_URL || 'https://trteewgplkqiedonomzg.supabase.co';
+const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY || '';
+const SUPABASE_ANON_KEY = process.env.SUPABASE_ANON_KEY || '';
 const API_KEY = SUPABASE_SERVICE_ROLE_KEY || SUPABASE_ANON_KEY;
 const SITE_URL = process.env.SITE_URL || 'https://www.tryhomescope.com';
 

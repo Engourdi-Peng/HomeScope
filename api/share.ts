@@ -6,8 +6,9 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { parseAddress } from '../shared/address/index.js';
 
-const SUPABASE_URL = process.env.VITE_SUPABASE_URL || process.env.SUPABASE_URL || 'https://trteewgplkqiedonomzg.supabase.co';
-const SUPABASE_ANON_KEY = process.env.VITE_SUPABASE_ANON_KEY || process.env.SUPABASE_ANON_KEY || '';
+const SUPABASE_URL =
+  process.env.SUPABASE_URL || 'https://trteewgplkqiedonomzg.supabase.co';
+const SUPABASE_ANON_KEY = process.env.SUPABASE_ANON_KEY || '';
 const SITE_URL = process.env.SITE_URL || 'https://www.tryhomescope.com';
 
 interface SEOData {
