@@ -13,7 +13,7 @@ const PRODUCTS = [
   {
     id: 'starter',
     title: 'Starter',
-    price: '$6.99',
+    price: 'AU$6.99',
     reportCount: '3 REPORTS',
     description: 'Perfect for trying the tool',
     features: [
@@ -28,7 +28,7 @@ const PRODUCTS = [
   {
     id: 'standard',
     title: 'Standard',
-    price: '$14.99',
+    price: 'AU$14.99',
     reportCount: '10 REPORTS',
     description: 'Most popular - enough for a full house search',
     features: [
@@ -43,7 +43,7 @@ const PRODUCTS = [
   {
     id: 'pro',
     title: 'Pro',
-    price: '$39',
+    price: 'AU$39',
     reportCount: '40 REPORTS',
     description: 'For heavy users and professionals',
     features: [
