@@ -191,7 +191,12 @@ function injectMetaTags(html: string, title: string, description: string, url: s
 }
 
 export const config = {
-  matcher: '/share/:slug*',
+  // 只处理 /share/* 路由，其他由 vercel.json rewrite 规则处理
+  // 使用负向前瞻排除 /api/*、/sitemap.xml 等，确保 API 路由不会被 middleware 拦截
+  matcher: [
+    '/share/:slug*',
+    '/((?!(api|sitemap\\.xml|robots\\.txt|og-default\\.png|assets|_vercel)).*)',
+  ],
 };
 
 export default async function middleware(request: Request) {

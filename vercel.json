@@ -1,15 +1,9 @@
 {
-  "redirects": [
-    {
-      "source": "/share/:slug",
-      "destination": "/api/share?slug=:slug",
-      "permanent": false
-    }
-  ],
   "rewrites": [
-    {
-      "source": "/(.*)",
-      "destination": "/index.html"
-    }
+    { "source": "/api/sitemap", "destination": "/api/sitemap" },
+    { "source": "/api/share", "destination": "/api/share" },
+    { "source": "/sitemap.xml", "destination": "/api/sitemap" },
+    { "source": "/share/:slug", "destination": "/api/share?slug=:slug" },
+    { "source": "/(.*)", "destination": "/index.html" }
   ]
 }

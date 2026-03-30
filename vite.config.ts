@@ -167,6 +167,8 @@ export default defineConfig(({ command }) => {
     cleanDir(outDir);
   }
 
+  const isDev = command === 'serve';
+
   return {
     plugins: [
       react(),
@@ -184,9 +186,26 @@ export default defineConfig(({ command }) => {
       alias: aliases,
     },
     define: sharedDefine,
+    server: {
+      proxy: isDev ? {
+        // 开发环境：代理 API 请求到本地 Vercel Functions
+        // 需要在项目目录运行: npx vercel dev
+        // 如果本地没有运行 vercel dev，此代理会失败（connection refused），
+        // 但不会影响应用正常工作，只是 sitemap 在 dev 下不可用而已。
+        '/api': {
+          target: 'http://localhost:3000',
+          changeOrigin: true,
+        },
+        '/sitemap.xml': {
+          target: 'http://localhost:3000',
+          changeOrigin: true,
+        },
+      } : {},
+    },
     build: {
       outDir,
       emptyOutDir: command === 'build',
+      copyPublicDir: true, // 确保 public 目录的文件被复制到 dist
       rollupOptions: {
         input: isExtensionBuild
           ? resolve(__dirname, 'src', 'extension', 'sidepanel-ext.tsx')
