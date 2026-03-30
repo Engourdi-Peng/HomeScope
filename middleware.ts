@@ -11,7 +11,7 @@
  */
 
 import { next } from '@vercel/functions';
-import { parseAddress } from './shared/address';
+import { parseAddress } from './shared/address/index.js';
 
 const SUPABASE_URL = process.env.SUPABASE_URL || 'https://trteewgplkqiedonomzg.supabase.co';
 const SUPABASE_ANON_KEY = process.env.SUPABASE_ANON_KEY || '';
@@ -191,12 +191,9 @@ function injectMetaTags(html: string, title: string, description: string, url: s
 }
 
 export const config = {
-  // 只处理 /share/* 路由，其他由 vercel.json rewrite 规则处理
-  // 使用负向前瞻排除 /api/*、/sitemap.xml 等，确保 API 路由不会被 middleware 拦截
-  matcher: [
-    '/share/:slug*',
-    '/((?!(api|sitemap\\.xml|robots\\.txt|og-default\\.png|assets|_vercel)).*)',
-  ],
+  // 只处理 /share/* 路由，API/静态文件由 vercel.json rewrite 处理
+  // Vercel Edge Matcher 不支持负向前瞻(?!)和捕获组()，所以分两条写
+  matcher: ['/share/:slug*', '/share/:slug*/*'],
 };
 
 export default async function middleware(request: Request) {

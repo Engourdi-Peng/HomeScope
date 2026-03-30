@@ -14,7 +14,7 @@
  */
 
 // 地址解析
-export { parseAddress, extractSuburb, type ParsedAddress } from './parseAddress';
+export { parseAddress, extractSuburb, type ParsedAddress } from './parseAddress.js';
 
 // Slug 生成
 export {
@@ -23,4 +23,4 @@ export {
   generateShortIdFromTimestamp,
   isValidShareSlug,
   type ShareSlugOptions,
-} from './generateSlug';
+} from './generateSlug.js';

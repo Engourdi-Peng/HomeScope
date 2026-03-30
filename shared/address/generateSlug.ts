@@ -6,8 +6,8 @@
  * 包含字段: suburb, state(可选), bedrooms, rental-analysis, shortId
  */
 
-import { parseAddress } from './parseAddress';
-import type { ParsedAddress } from './parseAddress';
+import { parseAddress } from './parseAddress.js';
+import type { ParsedAddress } from './parseAddress.js';
 
 /**
  * 字符串转换为 URL 友好的小写 slug
