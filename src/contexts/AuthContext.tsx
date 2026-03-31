@@ -60,22 +60,60 @@ export function AuthProvider({ children }: AuthProviderProps) {
 
         // 如果存在 code，交换 session（AuthContext 是唯一负责 exchangeCodeForSession 的地方）
         if (code) {
+          // 先检查是否已有 session（避免重复 exchange 或竞态条件）
           try {
-            console.log('[AuthContext] initAuth: exchanging code...');
-            const { error } = await supabase.auth.exchangeCodeForSession(code);
-
-            if (!error) {
-              console.log('[AuthContext] initAuth: exchangeCodeForSession succeeded');
-              // 清除 URL 中的 code 参数
-              const url = new URL(window.location.href);
-              url.searchParams.delete('code');
-              window.history.replaceState({}, '', url.pathname + url.search);
-              // 不再立即 getSession — session 通过 onAuthStateChange 的 SIGNED_IN 事件传来
-            } else {
-              console.warn('[AuthContext] initAuth: exchangeCodeForSession error:', error.message);
+            const { data: existingSession } = await supabase.auth.getSession();
+            if (existingSession?.session) {
+              console.log('[AuthContext] initAuth: session already exists, skipping exchange');
+              setUser(existingSession.session.user ?? null);
+              if (existingSession.session.user) fetchProfile(existingSession.session.user.id);
+              return;
             }
-          } catch (err) {
-            console.error('[AuthContext] initAuth: exchangeCodeForSession exception:', err);
+          } catch {
+            // getSession 失败继续尝试 exchange
+          }
+
+          let exchangeSucceeded = false;
+          let retryCount = 0;
+          const maxRetries = 2;
+
+          while (!exchangeSucceeded && retryCount <= maxRetries) {
+            try {
+              console.log(`[AuthContext] initAuth: exchanging code... (attempt ${retryCount + 1})`);
+              const { error } = await supabase.auth.exchangeCodeForSession(code);
+
+              if (!error) {
+                console.log('[AuthContext] initAuth: exchangeCodeForSession succeeded');
+                exchangeSucceeded = true;
+                // 清除 URL 中的 code 参数
+                const url = new URL(window.location.href);
+                url.searchParams.delete('code');
+                window.history.replaceState({}, '', url.pathname + url.search);
+                // 不再立即 getSession — session 通过 onAuthStateChange 的 SIGNED_IN 事件传来
+              } else if (error.message?.includes('PKCE code verifier not found')) {
+                // PKCE verifier 尚未就绪，等待后重试（处理 SDK 初始化竞态）
+                retryCount++;
+                if (retryCount <= maxRetries) {
+                  console.warn(`[AuthContext] initAuth: PKCE verifier not ready, retrying in 300ms... (${retryCount}/${maxRetries})`);
+                  await new Promise(resolve => setTimeout(resolve, 300));
+                } else {
+                  console.error('[AuthContext] initAuth: PKCE verifier exchange failed after retries:', error.message);
+                }
+              } else {
+                console.warn('[AuthContext] initAuth: exchangeCodeForSession error:', error.message);
+                exchangeSucceeded = true;
+              }
+            } catch (err) {
+              const errMsg = err instanceof Error ? err.message : String(err);
+              if (errMsg.includes('PKCE code verifier not found') && retryCount < maxRetries) {
+                retryCount++;
+                console.warn(`[AuthContext] initAuth: PKCE verifier not ready (exception), retrying in 300ms... (${retryCount}/${maxRetries})`);
+                await new Promise(resolve => setTimeout(resolve, 300));
+              } else {
+                console.error('[AuthContext] initAuth: exchangeCodeForSession exception:', err);
+                exchangeSucceeded = true;
+              }
+            }
           }
         } else {
           // 无 code：检查是否有已存在的 session（页面刷新时）
