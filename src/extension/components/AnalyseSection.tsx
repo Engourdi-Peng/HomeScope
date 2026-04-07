@@ -193,6 +193,10 @@ export function AnalyseSection() {
       </button>
 
       {isAnalysing && (
+        <p className="ext-deep-audit-hint">Deep audit in progress. Trust us, it's better than trekking to a dud inspection in the rain.</p>
+      )}
+
+      {isAnalysing && (
         <AnalysisProgressPanel
           phase={analysisPhase}
           progress={analysisProgress}
