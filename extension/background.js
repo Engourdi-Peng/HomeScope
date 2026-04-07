@@ -209,6 +209,8 @@ async function migrateLegacySession() {
 }
 
 // ----- Primary session getter (cache → migrated storage only) -----
+// NOTE: Prefer getAuth() for API calls — it auto-refreshes expired tokens.
+// Use getSession() only when you need to check login state without making API calls.
 async function getSession() {
   // 1. In-memory cache
   if (_cachedAuth) {
@@ -229,6 +231,13 @@ async function getSession() {
 
   console.log(`${LOG_PREFIX} getSession: no session found (cache miss + storage miss)`);
   return null;
+}
+
+// ----- Auth getter for API calls: refreshes token if needed, then returns session -----
+// Use this instead of getSession() for any handler that makes API calls.
+async function getAuth() {
+  await refreshSessionIfNeeded();
+  return getSession();
 }
 
 // ----- Save session to canonical storage -----
@@ -412,7 +421,7 @@ async function handleMessage(message, sender, sendResponse) {
 
     case 'get_user_data': {
       try {
-        const auth = await getSession();
+        const auth = await getAuth();
         if (!auth?.user) {
           sendResponse({ status: 'success', data: { credits_remaining: 0 } });
           return;
@@ -570,8 +579,8 @@ async function handleMessage(message, sender, sendResponse) {
     }
 
     case 'analyze': {
-      // Step 1: Get session
-      const auth = await getSession();
+      // Step 1: Get fresh session (auto-refresh if needed)
+      const auth = await getAuth();
       if (!auth?.session?.access_token) {
         sendResponse({ status: 'error', error: 'Please sign in first to analyze listings.' });
         return;
@@ -643,7 +652,7 @@ async function handleMessage(message, sender, sendResponse) {
 
     case 'get_analysis_status': {
       // Query analysis status and result from backend
-      const auth = await getSession();
+      const auth = await getAuth();
       if (!auth?.session?.access_token) {
         sendResponse({ status: 'error', error: 'Please sign in first.' });
         return;
@@ -683,7 +692,7 @@ async function handleMessage(message, sender, sendResponse) {
 
     case 'get_analysis_history': {
       try {
-        const auth = await getSession();
+        const auth = await getAuth();
         if (!auth?.session?.access_token) {
           sendResponse({ status: 'success', analyses: [] });
           return;
@@ -714,7 +723,7 @@ async function handleMessage(message, sender, sendResponse) {
     }
 
     case 'share_analysis': {
-      const auth = await getSession();
+      const auth = await getAuth();
       if (!auth?.session?.access_token) {
         sendResponse({ status: 'error', error: 'Please sign in first.' });
         return;
