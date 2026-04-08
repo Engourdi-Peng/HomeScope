@@ -26,7 +26,7 @@ export function AuthProvider({ children }: AuthProviderProps) {
   const [profile, setProfile] = useState<Profile | null>(null);
   const [isLoading, setIsLoading] = useState(true);
 
-  const creditsRemaining = profile?.credits_remaining ?? 0;
+  const creditsRemaining = Math.max(0, (profile?.credits_remaining ?? 0) - (profile?.credits_reserved ?? 0));
   const isAuthenticated = !!user;
 
   // 获取用户 profile

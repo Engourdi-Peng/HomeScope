@@ -190,7 +190,7 @@ export function Home() {
     console.log('=== Analyze Permission Check ===');
     console.log('isAuthenticated:', isAuthenticated);
     console.log('user email:', user?.email);
-    console.log('creditsRemaining:', creditsRemaining);
+    console.log('creditsRemaining (available):', creditsRemaining);
 
     // 1. 未登录用户不能 Analyze
     if (!isAuthenticated) {
@@ -200,7 +200,7 @@ export function Home() {
       return;
     }
 
-    // 2. 已登录但 credits_remaining <= 0 - 提前拦截，避免浪费用户时间
+    // 2. 已登录但无可用积分 - 提前拦截，避免浪费用户时间
     if (creditsRemaining <= 0) {
       console.log('analyze blocked reason: NO_CREDITS');
       setError('You\'ve used all credits. Purchase more to continue.');
@@ -247,6 +247,7 @@ export function Home() {
 
       // ========== Step 3: Build request with imageUrls ==========
       const requestData = {
+        reportMode: optionalDetails.reportMode || 'rent',
         imageUrls,
         description,
         optionalDetails: Object.keys(optionalDetails).length > 0 ? optionalDetails : undefined,
@@ -286,10 +287,15 @@ export function Home() {
           if (progress.status === 'done' && progress.result) {
             // Build listingInfo from current form data for the report header
             const coverImageUrl = imageUrls.length > 0 ? imageUrls[0] : undefined;
+            const isRent = (optionalDetails.reportMode || 'rent') === 'rent';
             const listingInfo = {
               title: optionalDetails.suburb ? `${optionalDetails.suburb}` : undefined,
-              price: optionalDetails.weeklyRent ? `$${optionalDetails.weeklyRent} per week` : undefined,
-              priceAmount: optionalDetails.weeklyRent ? parseInt(optionalDetails.weeklyRent, 10) : undefined,
+              price: isRent
+                ? optionalDetails.weeklyRent ? `$${optionalDetails.weeklyRent} per week` : undefined
+                : optionalDetails.askingPrice ? `$${parseInt(optionalDetails.askingPrice.replace(/[^0-9]/g, ''), 10).toLocaleString()}` : undefined,
+              priceAmount: isRent
+                ? optionalDetails.weeklyRent ? parseInt(optionalDetails.weeklyRent, 10) : undefined
+                : optionalDetails.askingPrice ? parseInt(optionalDetails.askingPrice.replace(/[^0-9]/g, ''), 10) : undefined,
               bedrooms: optionalDetails.bedrooms ? parseInt(optionalDetails.bedrooms, 10) : undefined,
               bathrooms: optionalDetails.bathrooms ? parseInt(optionalDetails.bathrooms, 10) : undefined,
               parking: optionalDetails.parking ? parseInt(optionalDetails.parking, 10) : undefined,

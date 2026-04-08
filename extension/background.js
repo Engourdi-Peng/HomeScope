@@ -427,12 +427,15 @@ async function handleMessage(message, sender, sendResponse) {
           return;
         }
         const res = await fetch(
-          `${SUPABASE_URL}/rest/v1/profiles?select=credits_remaining&id=eq.${auth.user.id}`,
+          `${SUPABASE_URL}/rest/v1/profiles?select=credits_remaining,credits_reserved&id=eq.${auth.user.id}`,
           { headers: { apikey: SUPABASE_ANON_KEY, Authorization: `Bearer ${auth.session?.access_token || SUPABASE_ANON_KEY}` } }
         );
         if (res.ok) {
           const rows = await res.json();
-          sendResponse({ status: 'success', data: { credits_remaining: rows?.[0]?.credits_remaining ?? 0 } });
+          const remaining = rows?.[0]?.credits_remaining ?? 0;
+          const reserved = rows?.[0]?.credits_reserved ?? 0;
+          const available = Math.max(0, remaining - reserved);
+          sendResponse({ status: 'success', data: { credits_remaining: available } });
         } else {
           sendResponse({ status: 'success', data: { credits_remaining: 0 } });
         }
