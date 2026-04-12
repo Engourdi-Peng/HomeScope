@@ -1,7 +1,9 @@
-// Supabase Edge Function - Rental Property Analyzer
+// Supabase Edge Function - Rental & Sale Property Analyzer
 // Deploy with: supabase functions deploy analyze
 
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
+
+type ReportMode = 'rent' | 'sale';
 
 type AnalysisStage =
   | "upload_received"
@@ -154,13 +156,15 @@ function toSlug(text: string): string {
 
 /**
  * Generate semantic share slug
- * Format: suburb-bedroom-propertyType-rental-analysis-{id}
+ * Format: suburb-bedroom-propertyType-rental-analysis-{id}  (rent mode)
+ *         suburb-bedroom-propertyType-sale-analysis-{id}     (sale mode)
  */
 function generateShareSlug(input: {
   suburb?: string | null;
   bedrooms?: number | null;
   propertyType?: string | null;
   reportId: string;
+  reportMode?: ReportMode;
 }): string {
   const parts: string[] = [];
 
@@ -176,7 +180,7 @@ function generateShareSlug(input: {
     parts.push(toSlug(input.propertyType));
   }
 
-  parts.push('rental-analysis');
+  parts.push(input.reportMode === 'sale' ? 'sale-analysis' : 'rental-analysis');
   parts.push(String(input.reportId));
 
   return parts.join('-');
@@ -190,35 +194,64 @@ function generateSEOFields(input: {
   bedrooms?: number | null;
   bathrooms?: number | null;
   weeklyRent?: number | null;
+  askingPrice?: number | null;
   verdict?: string | null;
   reportId: string;
+  reportMode?: ReportMode;
 }): { seo_title: string; seo_description: string } {
-  const { suburb, bedrooms, bathrooms, weeklyRent, verdict } = input;
+  const { suburb, bedrooms, bathrooms, weeklyRent, askingPrice, verdict, reportMode } = input;
+  const isRent = reportMode !== 'sale';
 
   // Generate SEO title
   let seo_title: string;
-  if (suburb && bedrooms) {
-    seo_title = `Is this rental worth it in ${suburb}? ${bedrooms} bedroom analysis`;
-  } else if (bedrooms) {
-    seo_title = `Is this rental worth it? ${bedrooms} bedroom analysis`;
+  if (isRent) {
+    if (suburb && bedrooms) {
+      seo_title = `Is this rental worth it in ${suburb}? ${bedrooms} bedroom analysis`;
+    } else if (bedrooms) {
+      seo_title = `Is this rental worth it? ${bedrooms} bedroom analysis`;
+    } else {
+      seo_title = `Rental property analysis | HomeScope`;
+    }
   } else {
-    seo_title = `Rental property analysis | HomeScope`;
+    if (suburb && bedrooms) {
+      seo_title = `Is this property worth buying in ${suburb}? ${bedrooms} bedroom analysis`;
+    } else if (bedrooms) {
+      seo_title = `Is this property worth buying? ${bedrooms} bedroom analysis`;
+    } else {
+      seo_title = `Property purchase analysis | HomeScope`;
+    }
   }
 
   // Generate SEO description
   let seo_description: string;
-  if (suburb && bedrooms) {
-    seo_description = `AI rental analysis of a ${bedrooms}-bedroom property in ${suburb}. `;
-    if (bathrooms) seo_description += `${bathrooms} bathroom, `;
-    if (weeklyRent) seo_description += `$${weeklyRent}/week. `;
-    seo_description += 'Review the pros, cons, risks and final verdict before applying.';
-  } else if (bedrooms) {
-    seo_description = `AI rental analysis of a ${bedrooms}-bedroom property. `;
-    if (bathrooms) seo_description += `${bathrooms} bathroom, `;
-    if (weeklyRent) seo_description += `$${weeklyRent}/week. `;
-    seo_description += 'Review the pros, cons, risks and final verdict before applying.';
+  if (isRent) {
+    if (suburb && bedrooms) {
+      seo_description = `AI rental analysis of a ${bedrooms}-bedroom property in ${suburb}. `;
+      if (bathrooms) seo_description += `${bathrooms} bathroom, `;
+      if (weeklyRent) seo_description += `$${weeklyRent}/week. `;
+      seo_description += 'Review the pros, cons, risks and final verdict before applying.';
+    } else if (bedrooms) {
+      seo_description = `AI rental analysis of a ${bedrooms}-bedroom property. `;
+      if (bathrooms) seo_description += `${bathrooms} bathroom, `;
+      if (weeklyRent) seo_description += `$${weeklyRent}/week. `;
+      seo_description += 'Review the pros, cons, risks and final verdict before applying.';
+    } else {
+      seo_description = 'AI-powered rental property analysis. Review detailed pros, cons, risks and expert verdict before making your decision.';
+    }
   } else {
-    seo_description = 'AI-powered rental property analysis. Review detailed pros, cons, risks and expert verdict before making your decision.';
+    if (suburb && bedrooms) {
+      seo_description = `AI purchase analysis of a ${bedrooms}-bedroom property in ${suburb}. `;
+      if (bathrooms) seo_description += `${bathrooms} bathroom, `;
+      if (askingPrice) seo_description += `$${askingPrice.toLocaleString()}. `;
+      seo_description += 'Review the pros, cons, risks and final verdict before making an offer.';
+    } else if (bedrooms) {
+      seo_description = `AI purchase analysis of a ${bedrooms}-bedroom property. `;
+      if (bathrooms) seo_description += `${bathrooms} bathroom, `;
+      if (askingPrice) seo_description += `$${askingPrice.toLocaleString()}. `;
+      seo_description += 'Review the pros, cons, risks and final verdict before making an offer.';
+    } else {
+      seo_description = 'AI-powered property purchase analysis. Review detailed pros, cons, risks and expert verdict before making your decision.';
+    }
   }
 
   return {
@@ -681,7 +714,8 @@ async function createAnalysisRecord(
   userId: string,
   imageUrls: string[],
   description: string,
-  optionalDetails?: Record<string, unknown>
+  optionalDetails?: Record<string, unknown>,
+  reportMode?: ReportMode
 ): Promise<void> {
   // Extract title/address from description if available
   const title = extractTitleFromDescription(description);
@@ -807,19 +841,62 @@ Classify each photo into one of:
 - "unknown"
 
 ================================
-SCORE GUIDELINES (be conservative, avoid inflated scores):
+SCORE DISTRIBUTION — USE FULL RANGE
 ================================
 
-SCORE INTERPRETATION:
-- 90-100: Exceptional, modern, well-maintained
-- 80-89: Strong, above average, clearly appealing
-- 70-79: Solid, functional, generally good
-- 60-69: Average, acceptable, mixed evidence
-- 50-59: Below average, noticeable weaknesses
-- 0-49: Poor, outdated, unclear, problematic
+Give scores that actually reflect what you see. Not everyone scores 65.
 
-MOST ORDINARY RENTAL PHOTOS SHOULD SCORE 55-75.
-Do not give high scores unless evidence is clearly strong.
+Score ranges:
+- 90-100: Exceptional. Rare. Looks genuinely outstanding.
+- 80-89: Strong. Well-presented, clearly above average.
+- 70-79: Good. Solid, functional, worthwhile.
+- 60-69: Average. Acceptable but nothing special.
+- 50-59: Below average. Noticeable weaknesses.
+- 40-49: Poor. Significant issues visible.
+- Below 40: Very poor. Serious problems.
+
+IMPORTANT: Only give 70+ scores when genuinely justified by what you see.
+
+================================
+LOW SCORE TRIGGERS — TWO-TIER SYSTEM
+================================
+
+MAJOR ISSUES → score MUST be below 55:
+- Room is very dark with minimal natural light
+- Visible damage, wear, or deterioration
+- Outdated fixtures throughout
+- Significantly smaller than expected
+
+SEVERE ISSUES → score can go 40–50:
+- Major structural issues visible
+- Signs of neglect or poor maintenance
+- Extremely cramped or uncomfortable
+- Multiple major problems in one space
+
+================================
+HIGH SCORE TRIGGERS — SCORE SHOULD BE ABOVE 75
+================================
+
+If MOST of the following (3 out of 4) are true, score SHOULD be above 75:
+- Modern appliances or recent renovation
+- Good natural light
+- Clean and well-maintained
+- Functional layout with adequate space
+
+If ALL four are true, score SHOULD be 80 or above.
+
+================================
+FINAL CALIBRATION — PREVENT MID-RANGE CLUSTERING
+================================
+
+If your score ends up between 60–70:
+- Re-evaluate the strongest signals
+- Push the score UP or DOWN decisively
+
+Do NOT leave scores in the 60–70 range unless evidence is genuinely mixed and balanced.
+
+Key principle: Bad spaces should fall below 60. Good spaces should exceed 70.
+Avoid the "safe zone" of 63–68.
 
 SPACE-SPECIFIC SCORING:
 
@@ -891,11 +968,14 @@ RULES:
 - summary: one short sentence only
 - spatialMetrics: evaluate based on overall evidence across all photos
 - spaceAnalysis: only include spaces that have photos, max 3 observations per space
-- Follow scoring guidelines - be conservative, most rentals score 55-75`;
+- Be decisive — avoid defaulting to mid-range scores
+- Strong positives → score above 75
+- Strong negatives → score below 60`;
 
-const STEP2_SYSTEM_PROMPT = `You are an Australian renter helping another renter decide whether a listing is worth their time.
+// STEP2_RENT_PROMPT — the original RENT-specific prompt
+const STEP2_RENT_PROMPT = `You are an Australian renter helping another renter decide whether a listing is worth their time.
 
-Think of it like getting advice from a mate who's rented for years and knows the traps. Be practical, direct, and honest. You're not trying to sell the place — you're trying to help someone avoid a bad decision.
+Think of it like getting advice from a mate who's rented a dozen places and knows what's annoying. Be practical, direct, and honest. You're not trying to sell the place — you're trying to help someone avoid a bad decision.
 
 CRITICAL CONSTRAINT - DO NOT MODIFY OUTPUT STRUCTURE:
 Do not modify any existing output keys, JSON structure, or field names. Only change wording inside string values.
@@ -1143,6 +1223,10 @@ Bad (too report-like):
 INSPECTION FIT — WHO IS THIS FOR
 ================================
 
+CRITICAL: Even if evidence is limited, ALWAYS provide 2-3 realistic scenarios 
+for both good_for and not_ideal_for. Base these on what IS visible rather than what isn't.
+Never return empty arrays — if photos show some areas, provide recommendations based on those observations.
+
 Think practically: who would actually be okay living here? Who would hate it?
 
 good_for — realistic scenarios:
@@ -1168,6 +1252,11 @@ TONE for final_recommendation:
 ================================
 AGENT QUESTIONS — WHAT TO ASK
 ================================
+
+CRITICAL: ALWAYS provide exactly 3 questions, even if evidence is limited.
+Never return an empty array — base questions on actual observations from the photos you analyzed.
+Focus on things you can observe from photos, or things mentioned in the description.
+If photos are missing for certain areas, ask about those specifically.
 
 Three questions you'd actually want answered before signing a lease. Practical questions. Inspection-ready questions.
 
@@ -1251,6 +1340,7 @@ Before you output your JSON, check:
    - Medium: 3-4 photos OR basic description
    - Low: fewer than 3 photos OR minimal description
 7. If the property looks like a cosmetic flip — mention it in hidden_risks.
+8. good_for, not_ideal_for, and agent_questions MUST NOT be empty — always provide based on available evidence
 
 ================================
 OUTPUT FORMAT — STRICT JSON ONLY
@@ -1456,6 +1546,521 @@ Return:
   "reasoning": ["reason 1", "reason 2"]
 }`;
 
+// STEP2_SYSTEM_PROMPT alias for backward compatibility
+const STEP2_SYSTEM_PROMPT = STEP2_RENT_PROMPT;
+
+const STEP2_SALE_PROMPT = `You are an Australian property buyer helping another buyer decide whether a listing is worth pursuing.
+
+Think of it like getting advice from a mate who's bought and sold property in Australia and knows the traps. Be practical, direct, and honest. You're not trying to sell the place — you're trying to help someone avoid a costly mistake. Buying property is a major financial decision, so be thorough and cautious.
+
+CRITICAL CONSTRAINT - DO NOT MODIFY OUTPUT STRUCTURE:
+Do not modify any existing output keys, JSON structure, or field names. Only change wording inside string values.
+
+CRITICAL RULES:
+1. Only analyze based on provided visual data and listing text. Do not assume details not provided.
+2. Be skeptical of marketing language: "high yields", "rare opportunity", "won't last", "must sell", "genuine vendor"
+3. When listing claims conflict with visual evidence, prioritize what you can SEE
+4. Never claim to know exact market values — use "estimated" language and be conservative
+
+================================
+TONE &amp; LANGUAGE (AUSTRALIA)
+================================
+Write in natural Australian English, as if advising a local buyer.
+
+CRITICAL STYLE RULES:
+- Sound like a person, not a report
+- Keep sentences short (ideally under 15 words)
+- Use cautious, practical wording — this is a big financial decision
+- Slightly conversational, but still clear
+- Avoid formal or corporate tone
+
+DO:
+- "The presentation is decent but nothing special"
+- "Worth getting a building inspection"
+- "Could struggle to resell at this price"
+- "Location is the main drawcard here"
+
+DO NOT:
+- "This property appears to"
+- "Overall, this indicates"
+- "It is recommended that"
+- "In conclusion"
+
+AVOID:
+- Overly long explanations
+- Balanced essay-style sentences
+- Repetitive phrasing
+- Overly bullish or bearish language
+
+Make it feel like advice from someone who has bought property in Australia.
+
+================================
+STYLE GUIDELINES:
+================================
+- Use plain, conversational Australian tone (not formal, not robotic)
+- Avoid generic AI phrases like "overall", "in conclusion", "this property appears to"
+- Prefer practical, lived-experience language:
+  - "price looks a bit punchy for what you're getting"
+  - "location is the main reason to consider this"
+  - "could be a solid long-term hold if the body corp isn't too high"
+- Keep sentences short and direct
+- Avoid exaggeration — buying is serious
+- Be honest, slightly opinionated, but not harsh
+- Sound like a helpful local who has been through the process
+
+Do NOT:
+- Use American terms
+- Use overly technical or academic language
+- Repeat the same phrasing across sections
+- Make claims about future property values without clear visual evidence
+
+================================
+WHAT YOU'RE WORKING WITH
+================================
+
+You have:
+- photos the buyer uploaded
+- the listing description
+- optional property details (asking price, suburb, bedrooms, bathrooms, parking)
+
+That's it. Do NOT make up suburb data, growth rates, crime rates, school rankings, or anything not in the listing. If something isn't in the evidence, say you don't know.
+
+================================
+HOW TO TALK — IMPORTANT
+================================
+
+Write like a real Australian property buyer, not a real estate agent or a property investment newsletter.
+
+Do NOT write like:
+- a real estate agent
+- a property spruiker
+- a news article
+
+Write like:
+- a practical friend who has bought property before
+- someone who cares more about not making a mistake than missing an opportunity
+
+================================
+SCORING GUIDELINES
+================================
+
+SCORE INTERPRETATION (be conservative, most properties score 55-75):
+- 90-100: Exceptional. Rarely seen. Looks genuinely outstanding for the price point.
+- 80-89: Strong. Well-presented, ticks most boxes. Above average for the market.
+- 70-79: Solid. Decent property, nothing major wrong with it. Average buyer would be happy.
+- 60-69: Average. Some positives, some negatives. Worth considering but not rushing.
+- 50-59: Below average. Noticeable weaknesses. Needs a good reason to justify.
+- 0-49: Poor. Significant issues visible. Most buyers would walk away.
+
+MOST ORDINARY PROPERTIES SHOULD SCORE 55-75.
+Do not give high scores unless evidence is clearly strong.
+
+The score reflects how this property looks as a purchase decision — not as a rental. Consider:
+- Value for money compared to what you can SEE
+- Structural and cosmetic condition from photos
+- Presentation quality
+- Any red flags that would affect resale or livability
+- Kitchen and bathroom condition — the two biggest cost items
+
+================================
+FINAL RECOMMENDATION VERDICT
+================================
+
+Map your overall score to the verdict:
+- 75+: "Strong Buy" — genuinely worth considering, good value for presentation
+- 55-74: "Consider Carefully" — could work but there are things to watch
+- Below 55: "Probably Skip" — significant concerns, better options likely
+
+Your reason should be 2-3 sentences in plain Aussie buyer voice. Focus on the key reason to buy or pass.
+
+================================
+PRICE ASSESSMENT — BE CAREFUL
+================================
+
+Only estimate this if you have enough information: suburb, bedrooms, bathrooms, condition from photos, and an asking price.
+
+Never claim you know exact market values. Be cautious and approximate. "Fair" means the price seems reasonable for what you're getting. "Overpriced" means it looks like you're paying a premium for presentation rather than genuine quality.
+
+How to explain in Australian:
+- Fair: "Seems about right for what you're getting in that condition."
+- Slightly overpriced: "Asking price is a bit ambitious — might be worth negotiating or finding out what's included."
+- Underpriced: "Looks like decent value if the condition holds up on inspection."
+- Overpriced: "You're paying a fair bit more than the photos seem to justify."
+
+================================
+INVESTMENT POTENTIAL — IF APPLICABLE
+================================
+
+Only assess if there's enough evidence from photos and description. Be conservative — this is hard to judge from photos alone.
+
+Consider:
+- Location factors visible (proximity to transport, shops, amenities if mentioned)
+- Property presentation quality (affects rental yield)
+- Condition maintenance (affects holding costs)
+- Any visible issues that would be expensive to fix
+
+DO NOT make specific predictions about capital growth — say you don't have that data.
+
+================================
+AFFORDABILITY CHECK — PRACTICAL GUIDANCE
+================================
+
+CRITICAL: Only provide affordability_check if askingPrice is EXPLICITLY provided in optionalDetails.
+This is a user-entered value, NOT derived from description parsing.
+
+If NO explicit asking price is provided → set affordability_check = null (do not calculate or estimate).
+
+If askingPrice IS provided, use rough approximations:
+- Assume 20% deposit
+- Use rough interest rate estimates if needed
+- Keep it practical — "this would be a stretch for most first-home buyers" not precise calculations
+
+TONE: Keep it grounded. Not everyone can afford every property and that's okay.
+
+================================
+LAND VALUE ANALYSIS — AUSSIE CONTEXT
+================================
+
+For House properties, land value is often the key driver of long-term appreciation.
+
+Calculate (if you have land_size and asking_price):
+- Price per sqm: Total Price / Land Size
+- If land > 600sqm in metro area → mention "Land Banking Potential"
+- If property is on main road or next to commercial → note lower land value impact
+
+For Apartment/Unit:
+- Check body corporate fees mentioned — high fees impact yield
+- Note scarcity based on total units in complex (more = less scarcity)
+- Mention "Scarcity Value: Low/Medium/High"
+
+Provide land_value_analysis ONLY if you have land_size data (from optionalDetails.landSize).
+
+================================
+HOLDING COSTS — WHAT YOU'LL ACTUALLY PAY
+================================
+
+Only calculate and provide holding_costs if askingPrice is EXPLICITLY in optionalDetails.
+
+Estimate these upfront costs:
+1. Stamp Duty (based on common state rates):
+   - VIC: ~5.5% (first home buyer may get exemption/reduction)
+   - NSW: ~4%
+   - QLD: ~3.5%
+   - SA/WA/TAS: ~4%
+   - ACT/NT: ~3-4%
+   
+2. Transfer/Registration fees: ~0.5-1% of price
+
+3. Legal/Conveyancing: $1,500-3,000
+
+4. Building & Pest Inspection: $500-1,000
+
+5. If deposit < 20% → add LMI (Lender's Mortgage Insurance) ≈ 1-3% of loan
+
+For cash flow analysis (if potential rent is mentioned):
+- Calculate weekly mortgage interest (estimate 7% rate on 80% LVR)
+- Compare with potential rent → "Positive Gearing" or "Negative Gearing"
+
+Total upfront = deposit + stamp duty + fees + inspection
+
+================================
+RED FLAG DETECTION — SCAN THE DESCRIPTION
+================================
+
+CRITICAL: Scan the listing description carefully for these keywords.
+
+Look for these warning keywords and generate alerts:
+
+LEGAL FLAGS (Red - High Severity):
+- "easement" / "encumbrance" → "Title may have restrictions on use"
+- "unapproved" / "not approved" → "Check local council compliance"
+- "heritage" / "character" → "May have renovation restrictions"
+- "covenant" → "Check what you're allowed to do on the land"
+
+STRUCTURAL FLAGS (Orange - Medium):
+- "asbestos" / "fibro" / "fibro" → "Older construction materials — get inspection"
+- "highset" / "high set" (QLD) → "Verify legal height clearance for living areas"
+- "renovated" / "refreshed" / "new kitchen" → "Check underlying condition — cosmetic flip risk"
+- "original" / "original condition" → "Check if major systems need updating"
+- "structural" / "structural works" → "Check nature and cost of structural work"
+
+FINANCIAL FLAGS (Yellow - Watch):
+- "body corporate" / "strata" → "High fees impact yield — get exact figure"
+- "vacant possession" → "No rental history to verify yield"
+- "sold before" / "passed in" → "May indicate overpricing or condition issues"
+- "motivated seller" / "must sell" → "Could be negotiation opportunity"
+
+LOCATION FLAGS (Blue - Regional/Metro):
+- "flood" / "floodplain" / "flood prone" → "Check QHR/flood maps — insurance implications"
+- "busy road" / "arterial" / "truck route" → "Noise/amenity impact — visit at different times"
+- "adjacent to" / "next to" commercial/industrial → "Check future development potential"
+- "tanner" / "tanner" (suburb hint) → "Research specific area characteristics"
+
+For EACH flag found, generate a red_flag_alert object with:
+- keyword: the matched word/phrase
+- category: "legal" | "structural" | "financial" | "location"
+- severity: "high" | "medium" | "low"
+- message: brief plain explanation
+- action: one practical next step
+
+Only include if you actually find keywords in the description.
+
+================================
+STATE-SPECIFIC RECOMMENDATIONS
+================================
+
+Based on the suburb location, provide relevant state-specific advice:
+
+QLD (Queensland):
+- "Check Flood Map via QHR (Queensland Heritage Register) for flood history"
+- "If highset/elevated, verify lower level is legal height (2.4m+)"
+- "Pool must comply with fence regulations — ask for pool safety certificate"
+- "Body corporate meeting minutes can reveal issues — request copies"
+
+VIC (Victoria):
+- "Get Section 32 from vendor — legally required disclosure document"
+- "Check for owner occupier vs investor ratio in body corp"
+- "Research 134O planning restrictions if applicable"
+
+NSW (New South Wales):
+- "Request Planning Certificate from council ($50-100)"
+- "Check for DA history on property via council website"
+- "Vendor Declaration (e.g., Form 6) reveals known issues"
+
+SA/WA/TAS/ACT/NT:
+- Apply similar document requests as relevant to state
+
+Include state_specific_advice in output if suburb information is available.
+
+================================
+HIDDEN RISKS — WHAT'S NOT OBVIOUS
+================================
+
+Hidden risks are the things that might not show up in photos but could cost you later.
+
+Examples:
+- "The kitchen might look better in photos than it actually is in person"
+- "No visible ventilation in the bathroom — worth checking for mould issues"
+- "Limited storage mentioned in the description but not shown in photos"
+- "Parking access might be tight for larger vehicles"
+- "Body corporate fees not disclosed — worth asking"
+- "Recent cosmetic refresh but underlying condition unclear"
+
+Keep it to 3-4 real concerns. Don't invent risks.
+
+CRITICAL: Even if evidence is limited, ALWAYS provide inspection_focus based on what IS visible 
+rather than what isn't. Never return an empty array — if photos show some areas, provide 
+focus questions based on those observations.
+
+TONE for inspection_focus:
+- Sound like someone who's been through the process
+- Keep it practical, not bureaucratic
+
+================================
+CONSISTENCY CHECK — IMPORTANT
+================================
+
+Before you output your JSON, check:
+
+1. If your insights say "dated", "dark", "tight", "worn", "cramped" — the score should be below 70. Don't pretend it's fine.
+2. If key photos are missing — lower the score and confidence level.
+3. If the listing is weak or hard to trust — don't give it HIGH competition risk.
+4. final_recommendation verdict must match the score. 75+ = Strong Buy. 55-74 = Consider Carefully. Below 55 = Probably Skip.
+5. decision_priority: score > 75 → HIGH, score 55-75 → MEDIUM, score < 55 → LOW.
+6. confidence_level: depends on photo count and description quality.
+   - High: 5+ good photos AND detailed description
+   - Medium: 3-4 photos OR basic description
+   - Low: fewer than 3 photos OR minimal description
+7. If the property looks like a cosmetic flip — mention it in hidden_risks.
+8. inspection_focus, recommendation.good_fit_for, recommendation.not_ideal_for, 
+   and agent_questions MUST NOT be empty — always provide based on available evidence
+
+// ===== Sale Mode 新增字段一致性检查 =====
+
+9. would_i_buy.answer must align with overall score and deal_breakers.overall_severity:
+   - If any CRITICAL deal_breaker exists → answer should be "NO"
+   - If HIGH severity issues exist → answer should be "NO" or "MAYBE" depending on mitigability
+   - If MODERATE or lower → answer can be "MAYBE" or "YES"
+10. next_move.decision must align with deal_breakers:
+    - If any CRITICAL deal_breaker exists → decision should be "SKIP"
+    - If HIGH severity issues exist → decision should be "PROCEED_WITH_CAUTION"
+    - If only MODERATE or lower → decision can be "PROCEED"
+11. deal_breakers.overall_severity must be the highest severity among all items.
+    - If any CRITICAL item → overall_severity = CRITICAL
+    - Else if any HIGH item → overall_severity = HIGH
+    - Else if any MODERATE item → overall_severity = MODERATE
+    - Else → overall_severity = LOW
+
+================================
+OUTPUT FORMAT — STRICT JSON ONLY
+================================
+
+Return ONLY valid JSON. No markdown. No code fences. No extra text.
+
+{
+  "final_recommendation": {
+    "verdict": "Strong Buy" | "Consider Carefully" | "Probably Skip",
+    "reason": "2-3 sentence explanation in plain Aussie buyer voice"
+  },
+
+  "score_context": {
+    "market_position": "Above Average" | "Average" | "Below Average",
+    "explanation": "one short honest sentence"
+  },
+
+  "overall_score": number(0-100),
+  "decision_priority": "HIGH" | "MEDIUM" | "LOW",
+  "confidence_level": "High" | "Medium" | "Low",
+  "overall_verdict": "one short sentence takeaway",
+
+  "pros": ["honest point 1", "honest point 2", "honest point 3", "honest point 4"],
+  "cons": ["honest point 1", "honest point 2", "honest point 3", "honest point 4"],
+  "hidden_risks": ["concern 1", "concern 2", "concern 3"],
+
+  "space_analysis": [
+    {
+      "area_type": "kitchen" | "bathroom" | "bedroom" | "living_room" | "garage" | "laundry" | "exterior" | "hallway" | "storage" | "dining" | "unknown",
+      "score": number(0-100),
+      "explanation": "short plain description of what you saw (max ~12 words)",
+      "photo_count": number,
+      "insights": ["what you noticed 1", "what you noticed 2", "what you noticed 3"]
+    }
+  ],
+
+  "property_strengths": ["honest strength 1", "honest strength 2", "honest strength 3", "honest strength 4"],
+  "potential_issues": ["honest issue 1", "honest issue 2", "honest issue 3", "honest issue 4"],
+
+  "risks": ["risk 1", "risk 2", "risk 3"],
+
+  "competition_risk": {
+    "level": "LOW" | "MEDIUM" | "HIGH",
+    "reasons": ["reason 1", "reason 2", "reason 3"]
+  },
+
+  "price_assessment": {
+    "estimated_min": number,
+    "estimated_max": number,
+    "asking_price": number,
+    "verdict": "underpriced" | "fair" | "slightly_overpriced" | "overpriced",
+    "explanation": "short plain explanation in Aussie buyer voice"
+  },
+
+  "investment_potential": {
+    "growth_outlook": "Strong" | "Moderate" | "Weak" | "Unknown",
+    "rental_yield_estimate": "string (e.g. '4-5%')",
+    "capital_growth_5yr": "estimate string or 'Unable to assess from available evidence'",
+    "key_positives": ["positive 1", "positive 2"],
+    "key_concerns": ["concern 1", "concern 2"]
+  },
+
+  "affordability_check": {
+    "estimated_deposit_20pct": number,
+    "estimated_loan": number,
+    "estimated_monthly_repayment": "string (e.g. '$3,500-$4,000/month')",
+    "assessment": "manageable" | "stretch" | "challenging",
+    "note": "short plain explanation"
+  },
+
+  "inspection_focus": ["inspection focus 1", "inspection focus 2", "inspection focus 3"],
+
+  "long_term_outlook": {
+    "verdict": "Strong Hold Potential" | "Neutral" | "Risky",
+    "reasoning": "2-3 sentence explanation"
+  },
+
+  "light_thermal_guide": {
+    "natural_light_summary": "Gets a decent amount of natural light during the day",
+    "sun_exposure": "Low" | "Moderate" | "High" | "Unknown",
+    "thermal_risk": "Likely Cold" | "Balanced" | "Likely Hot" | "Unknown",
+    "summer_comfort": "Should be comfortable in summer — decent ventilation",
+    "winter_comfort": "Could feel a bit cold — worth checking for draughts",
+    "confidence": "Low" | "Medium" | "High",
+    "evidence": ["large windows visible", "no obvious sun blockages"]
+  },
+
+  "land_value_analysis": {
+    "land_size": number(sqm),
+    "price_per_sqm": number,
+    "land_banking_potential": boolean,
+    "scarcity_indicator": "High" | "Medium" | "Low",
+    "property_type": "House" | "Apartment" | "Unit" | "Townhouse" | "Unknown",
+    "explanation": "short explanation of land value assessment"
+  },
+
+  "holding_costs": {
+    "deposit_20pct": number,
+    "stamp_duty": number,
+    "stamp_duty_state": "VIC" | "NSW" | "QLD" | "SA" | "WA" | "TAS" | "ACT" | "NT" | "Other",
+    "transfer_fees": number,
+    "legal_costs": number,
+    "inspection_costs": number,
+    "estimated_monthly_repayment": "string (e.g. '$3,100-$3,400/month')",
+    "total_upfront_costs": number,
+    "cash_flow_analysis": {
+      "potential_rent": number(weekly),
+      "weekly_mortgage_interest": number,
+      "weekly_difference": number,
+      "verdict": "Positive Gearing" | "Negative Gearing" | "Neutral"
+    }
+  },
+
+  "red_flag_alerts": [
+    {
+      "keyword": "easement" | "asbestos" | "body corporate" | etc,
+      "category": "legal" | "structural" | "financial" | "location",
+      "severity": "high" | "medium" | "low",
+      "message": "brief plain explanation",
+      "action": "one practical next step"
+    }
+  ],
+
+  "state_specific_advice": {
+    "state": "VIC" | "NSW" | "QLD" | "SA" | "WA" | "TAS" | "ACT" | "NT" | "Unknown",
+    "recommendations": ["recommendation 1", "recommendation 2", "recommendation 3"]
+  },
+
+  // ===== Sale Mode 新增决策导向字段 =====
+
+  "deal_breakers": {
+    "summary": "one sentence summary of overall risk level",
+    "overall_severity": "LOW" | "MODERATE" | "HIGH" | "CRITICAL",
+    "items": [
+      {
+        "title": "risk title",
+        "severity": "LOW" | "MODERATE" | "HIGH" | "CRITICAL",
+        "category": "STRUCTURAL" | "LOCATION" | "LEGAL" | "FINANCIAL" | "OTHER",
+        "description": "what the issue is",
+        "why_it_matters": "why this matters to a buyer",
+        "mitigation": "can it be fixed? how?"
+      }
+    ]
+  },
+
+  "next_move": {
+    "decision": "PROCEED" | "PROCEED_WITH_CAUTION" | "SKIP",
+    "headline": "very short one sentence action advice (e.g. 'Proceed to inspection' or 'Skip this property')",
+    "reasoning": "2-3 sentence explanation of why this is the right move",
+    "suggested_actions": ["action 1", "action 2", "action 3"]
+  },
+
+  "would_i_buy": {
+    "answer": "YES" | "MAYBE" | "NO",
+    "confidence": "HIGH" | "MEDIUM" | "LOW",
+    "reason": "one sentence reason"
+  }
+}
+
+RULES:
+- Return STRICT JSON only — no markdown, no code fences, no extra commentary
+- Keep all text SHORT and CONCISE; use bullet-style observations where it fits
+- If evidence is missing — say so, indicate uncertainty, and lower your score and confidence
+- Don't over-praise average properties — most should score 55-75; follow the scoring rubric strictly
+- Use Australian English spelling and phrasing naturally
+- Sound like a person, not a report
+- Follow all the scoring and consistency rules above
+
+Based on the visual analysis provided, generate the purchase decision report.`;
+
 // ========== Reality Check Types & Functions ==========
 
 type RealityCheckVerdict = "Mostly factual" | "Some promotional wording" | "Marketing-heavy";
@@ -1651,6 +2256,14 @@ function mapVerdict(verdict?: string): 'Worth Inspecting' | 'Proceed With Cautio
   return 'Need More Evidence';
 }
 
+function mapSaleVerdict(verdict?: string): 'Worth Inspecting' | 'Proceed With Caution' | 'Likely Overpriced / Risky' | 'Need More Evidence' {
+  const v = verdict?.toLowerCase() || '';
+  if (v.includes('strong buy')) return 'Worth Inspecting';
+  if (v.includes('consider carefully') || v.includes('consider')) return 'Proceed With Caution';
+  if (v.includes('probably skip') || v.includes('skip')) return 'Likely Overpriced / Risky';
+  return 'Need More Evidence';
+}
+
 interface PhotoAnalysis {
   photoIndex: number;
   areaType: string;
@@ -1739,6 +2352,113 @@ interface Step2Decision {
   };
 }
 
+/**
+ * Sale-specific decision output from Step 2 AI model
+ */
+interface Step2DecisionSale {
+  overall_score?: number;
+  decision_priority?: 'HIGH' | 'MEDIUM' | 'LOW';
+  confidence_level?: 'High' | 'Medium' | 'Low';
+  overall_verdict?: string;
+  pros?: string[];
+  cons?: string[];
+  hidden_risks?: string[];
+  final_recommendation?: {
+    verdict: string;
+    reason: string;
+  };
+  score_context?: {
+    market_position: string;
+    explanation: string;
+  };
+  risks?: string[];
+  space_analysis?: {
+    area_type: string;
+    score: number;
+    explanation?: string;
+    insights?: string[];
+  }[];
+  property_strengths?: string[];
+  potential_issues?: string[];
+  competition_risk?: { level: string; reasons: string[] };
+  inspection_fit?: Step2InspectionFit;
+  recommendation?: Step2Recommendation;
+  questions_to_ask?: string[];
+  agent_questions?: string[];
+  price_assessment?: {
+    estimated_min: number;
+    estimated_max: number;
+    asking_price: number;
+    verdict: 'underpriced' | 'fair' | 'slightly_overpriced' | 'overpriced';
+    explanation: string;
+  };
+  investment_potential?: {
+    growth_outlook?: 'Strong' | 'Moderate' | 'Weak' | 'Unknown';
+    rental_yield_estimate?: string;
+    capital_growth_5yr?: string;
+    key_positives?: string[];
+    key_concerns?: string[];
+  };
+  affordability_check?: {
+    estimated_deposit_20pct?: number;
+    estimated_loan?: number;
+    estimated_monthly_repayment?: string;
+    assessment?: 'manageable' | 'stretch' | 'challenging';
+    note?: string;
+  };
+  inspection_focus?: string[];
+  long_term_outlook?: {
+    verdict?: 'Strong Hold Potential' | 'Neutral' | 'Risky';
+    reasoning?: string;
+  };
+  light_thermal_guide?: {
+    natural_light_summary?: string;
+    sun_exposure?: 'Low' | 'Moderate' | 'High' | 'Unknown';
+    thermal_risk?: 'Likely Cold' | 'Balanced' | 'Likely Hot' | 'Unknown';
+    summer_comfort?: string;
+    winter_comfort?: string;
+    confidence?: 'Low' | 'Medium' | 'High';
+    evidence?: string[];
+  };
+  // === Sale 模式新增字段 ===
+  land_value_analysis?: {
+    land_size?: number;
+    price_per_sqm?: number;
+    land_banking_potential?: boolean;
+    scarcity_indicator?: 'High' | 'Medium' | 'Low';
+    property_type?: 'House' | 'Apartment' | 'Unit' | 'Townhouse' | 'Unknown';
+    explanation?: string;
+  };
+  holding_costs?: {
+    deposit_20pct?: number;
+    stamp_duty?: number;
+    stamp_duty_state?: 'VIC' | 'NSW' | 'QLD' | 'SA' | 'WA' | 'TAS' | 'ACT' | 'NT' | 'Other';
+    transfer_fees?: number;
+    legal_costs?: number;
+    inspection_costs?: number;
+    estimated_monthly_repayment?: string;
+    total_upfront_costs?: number;
+    cash_flow_analysis?: {
+      potential_rent?: number;
+      weekly_mortgage_interest?: number;
+      weekly_difference?: number;
+      verdict?: 'Positive Gearing' | 'Negative Gearing' | 'Neutral';
+    };
+  };
+  red_flag_alerts?: {
+    keyword: string;
+    category: 'legal' | 'structural' | 'financial' | 'location';
+    severity: 'high' | 'medium' | 'low';
+    message: string;
+    action: string;
+  }[];
+  state_specific_advice?: {
+    state?: 'VIC' | 'NSW' | 'QLD' | 'SA' | 'WA' | 'TAS' | 'ACT' | 'NT' | 'Unknown';
+    recommendations?: string[];
+  };
+  // === Sale 模式新增字段 END ===
+}
+
 function aggregateSpaceAnalysis(photos: PhotoAnalysis[]): SpaceAggregationResult[] {
   const groupedByArea = new Map<string, PhotoAnalysis[]>();
   
@@ -1753,9 +2473,56 @@ function aggregateSpaceAnalysis(photos: PhotoAnalysis[]): SpaceAggregationResult
   const aggregated: SpaceAggregationResult[] = [];
   
   for (const [areaType, areaPhotos] of groupedByArea) {
-    const totalScore = areaPhotos.reduce((sum, p) => sum + (p.score || 50), 0);
-    const avgScore = Math.round(totalScore / areaPhotos.length);
+    const scores = areaPhotos.map(p => p.score || 50);
+    const avgScore = scores.reduce((a, b) => a + b, 0) / scores.length;
+    const minScore = Math.min(...scores);
+    const maxScore = Math.max(...scores);
+    const scoreRange = maxScore - minScore;
     
+    // 基础分数
+    let finalScore = Math.round(avgScore);
+    
+    // ========== 强化极值调整 ==========
+    
+    // 1. 强弱点放大：如果范围大，说明有明显的分化
+    if (scoreRange > 25) {
+      // 有明显分化，放大差异
+      if (minScore < 55) {
+        finalScore = Math.max(minScore, Math.round(finalScore - 12));
+      }
+      if (maxScore > 78) {
+        finalScore = Math.min(92, Math.round(finalScore + 10));
+      }
+    } else {
+      // 范围较小，按正常调整
+      if (minScore < 50) {
+        const penalty = Math.min(12, (50 - minScore) * 0.4);
+        finalScore = Math.max(minScore, Math.round(finalScore - penalty));
+      }
+      if (maxScore > 80) {
+        const bonus = Math.min(6, (maxScore - 80) * 0.25);
+        finalScore = Math.min(92, Math.round(finalScore + bonus));
+      }
+    }
+    
+    // 2. 厨房/浴室对低分更敏感（更狠的惩罚）
+    if ((areaType === 'kitchen' || areaType === 'bathroom') && minScore < 58) {
+      finalScore = Math.max(minScore, finalScore - 8);
+    }
+    
+    // 3. 强制避免中间值：如果最终分数在 60-70 之间，考虑推动
+    if (finalScore >= 60 && finalScore <= 70) {
+      // 如果整体偏弱，降到 60 以下
+      if (minScore < 55 || avgScore < 62) {
+        finalScore = Math.max(minScore + 5, 55);
+      }
+      // 如果整体偏强，提升到 70 以上
+      else if (maxScore > 75 && avgScore > 68) {
+        finalScore = Math.min(78, Math.round(avgScore + 5));
+      }
+    }
+    
+    // 收集信号和观察
     const allSignals: string[] = [];
     for (const photo of areaPhotos) {
       if (photo.signals && Array.isArray(photo.signals)) {
@@ -1777,13 +2544,13 @@ function aggregateSpaceAnalysis(photos: PhotoAnalysis[]): SpaceAggregationResult
     const insights = Array.from(uniqueInsights.values()).slice(0, 4);
     
     let finalInsights = insights;
-    if (areaPhotos.length === 1 && avgScore < 50) {
+    if (areaPhotos.length === 1 && finalScore < 50) {
       finalInsights = [`${capitalizeFirst(areaType)} space unclear from photo`];
     }
     
     aggregated.push({
       spaceType: areaType,
-      score: avgScore,
+      score: finalScore,
       photoCount: areaPhotos.length,
       insights: finalInsights
     });
@@ -1939,39 +2706,102 @@ function isValidHttpUrl(url: string): boolean {
   }
 }
 
-function buildStep1Messages(imageUrls: string[] = []) {
+function buildStep1Messages(imageUrls: string[] = [], batchIndex = 0) {
   // Filter and validate URLs
   const validUrls = Array.isArray(imageUrls)
     ? imageUrls.filter(isValidHttpUrl)
     : [];
 
-  const userContent: Step1UserContent[] = validUrls.slice(0, 20).map((url) => ({
+  const BATCH_SIZE = 20;
+  const start = batchIndex * BATCH_SIZE;
+  const end = start + BATCH_SIZE;
+  const batchUrls = validUrls.slice(start, end);
+
+  // Adjust photoIndex to be global across batches
+  const photoIndexOffset = start;
+
+  const userContent: Step1UserContent[] = batchUrls.map((url) => ({
     type: "image_url",
     image_url: { url },
   }));
 
   userContent.push({
     type: "text",
-    text: "Analyze these property photos and return short structured JSON only.",
+    text: `Analyze these property photos (batch ${batchIndex + 1}) and return short structured JSON only. Use photoIndex 0-${batchUrls.length - 1} for each photo in this batch.`,
   });
 
-  return [
-    { role: "system", content: STEP1_SYSTEM_PROMPT },
-    { role: "user", content: userContent },
-  ];
+  return {
+    messages: [
+      { role: "system", content: STEP1_SYSTEM_PROMPT },
+      { role: "user", content: userContent },
+    ],
+    photoIndexOffset,
+    batchSize: batchUrls.length,
+  };
+}
+
+/**
+ * Merge multiple visual analysis results from batched Step 1 calls.
+ * Adjusts photoIndex to be global and merges spaceAnalysis by spaceType.
+ */
+function mergeVisualAnalysis(
+  results: Array<{ photos?: Array<Record<string, unknown>>; spaceAnalysis?: Array<Record<string, unknown>> }>
+): Record<string, unknown> {
+  const allPhotos: Array<Record<string, unknown>> = [];
+  const spaceAnalysisMap = new Map<string, Record<string, unknown>>();
+
+  for (const result of results) {
+    if (!result) continue;
+
+    // Merge photos with adjusted index
+    if (Array.isArray(result.photos)) {
+      for (const photo of result.photos) {
+        allPhotos.push({ ...photo });
+      }
+    }
+
+    // Merge spaceAnalysis by spaceType
+    if (Array.isArray(result.spaceAnalysis)) {
+      for (const space of result.spaceAnalysis) {
+        const spaceType = space.spaceType as string;
+        if (spaceType && spaceAnalysisMap.has(spaceType)) {
+          // Merge observations from duplicate space types
+          const existing = spaceAnalysisMap.get(spaceType)!;
+          const existingObs = (existing.observations as string[]) || [];
+          const newObs = (space.observations as string[]) || [];
+          existing.observations = [...new Set([...existingObs, ...newObs])].slice(0, 5);
+          // Average the scores
+          const existingScore = (existing.score as number) || 0;
+          const newScore = (space.score as number) || 0;
+          existing.score = Math.round((existingScore + newScore) / 2);
+        } else {
+          spaceAnalysisMap.set(spaceType, { ...space });
+        }
+      }
+    }
+  }
+
+  return {
+    photos: allPhotos,
+    spaceAnalysis: Array.from(spaceAnalysisMap.values()),
+  };
 }
 
 function buildStep2Messages(
+  reportMode: ReportMode,
   visualAnalysis: Record<string, unknown> | null,
   description?: string,
   optionalDetails?: {
     weeklyRent?: string;
+    askingPrice?: string;
     suburb?: string;
     bedrooms?: string | number;
     bathrooms?: string | number;
     parking?: string | number;
   },
 ) {
+  const systemPrompt = reportMode === 'sale' ? STEP2_SALE_PROMPT : STEP2_RENT_PROMPT;
+
   let textContent = visualAnalysis
     ? `VISUAL ANALYSIS RESULTS:\n${JSON.stringify(visualAnalysis, null, 2)}\n\n`
     : "VISUAL ANALYSIS RESULTS:\nNo photos provided - analysis based on listing description only.\n\n";
@@ -1982,8 +2812,10 @@ function buildStep2Messages(
 
   if (optionalDetails) {
     const details: string[] = [];
-    if (optionalDetails.weeklyRent) {
+    if (reportMode === 'rent' && optionalDetails.weeklyRent) {
       details.push(`Weekly Rent: ${optionalDetails.weeklyRent}`);
+    } else if (reportMode === 'sale' && optionalDetails.askingPrice) {
+      details.push(`Asking Price: ${optionalDetails.askingPrice}`);
     }
     if (optionalDetails.suburb) {
       details.push(`Location: ${optionalDetails.suburb}`);
@@ -2003,11 +2835,12 @@ function buildStep2Messages(
     }
   }
 
+  const reportType = reportMode === 'sale' ? 'purchase' : 'rental';
   textContent +=
-    "Based on the visual analysis and listing details, provide your rental decision report in JSON format.";
+    `Based on the visual analysis and listing details, provide your ${reportType} decision report in JSON format.`;
 
   return [
-    { role: "system", content: STEP2_SYSTEM_PROMPT },
+    { role: "system", content: systemPrompt },
     { role: "user", content: textContent },
   ];
 }
@@ -2160,6 +2993,8 @@ Deno.serve(async (req) => {
       let bedrooms: number | null = null;
       let bathrooms: number | null = null;
       let propertyType: string | null = null;
+      let reportMode: ReportMode = 'rent';
+      let askingPrice: number | null = null;
 
       if (summary.bedrooms) {
         const bedroomsMatch = String(summary.bedrooms).match(/(\d+)/);
@@ -2181,23 +3016,39 @@ Deno.serve(async (req) => {
       if (!propertyType && fullResult.inspectionFit) {
         // Could extract from inspectionFit if needed
       }
+      if (fullResult.reportMode) {
+        reportMode = fullResult.reportMode as ReportMode;
+      }
+      if (fullResult.price_assessment?.asking_price) {
+        askingPrice = Number(fullResult.price_assessment.asking_price);
+      }
 
       // Build semantic slug: sydney-2-bedroom-apartment-rental-analysis-58
       const seo_slug = generateShareSlug({
         suburb,
         bedrooms,
         propertyType,
-        reportId: analysisId
+        reportId: analysisId,
+        reportMode,
       });
+
+      // Extract weeklyRent from full_result if available
+      const weeklyRent = summary.weeklyRent
+        ? parseInt(String(summary.weeklyRent).replace(/[^0-9]/g, ''), 10)
+        : fullResult.rent_fairness?.listing_price
+          ? Number(fullResult.rent_fairness.listing_price)
+          : null;
 
       // Generate SEO title and description
       const { seo_title, seo_description } = generateSEOFields({
         suburb,
         bedrooms,
         bathrooms,
-        weeklyRent: summary.weeklyRent ? parseInt(String(summary.weeklyRent).replace(/[^0-9]/g, ''), 10) : null,
+        weeklyRent: reportMode === 'rent' ? weeklyRent : undefined,
+        askingPrice: reportMode === 'sale' ? askingPrice : undefined,
         verdict: analysis.verdict,
-        reportId: analysisId
+        reportId: analysisId,
+        reportMode,
       });
 
       // Update to public with full SEO data
@@ -2314,8 +3165,10 @@ Deno.serve(async (req) => {
     id?: string;
     imageUrls?: string[];
     description?: string;
+    reportMode?: ReportMode;
     optionalDetails?: {
       weeklyRent?: string;
+      askingPrice?: string;
       suburb?: string;
       bedrooms?: string | number;
       bathrooms?: string | number;
@@ -2360,6 +3213,7 @@ Deno.serve(async (req) => {
   if (action === "submit" || !action) {
     const imageUrls = Array.isArray(body.imageUrls) ? body.imageUrls.filter(isValidHttpUrl) : [];
     const description = typeof body.description === "string" ? body.description : "";
+    const reportMode: ReportMode = body.reportMode === 'sale' ? 'sale' : 'rent';
 
     if (imageUrls.length === 0 && !description.trim()) {
       return jsonResponse({ message: "Please provide images or description" }, 400);
@@ -2375,7 +3229,8 @@ Deno.serve(async (req) => {
         user.id,
         imageUrls,
         description,
-        body.optionalDetails
+        body.optionalDetails,
+        reportMode
       );
     }
 
@@ -2445,6 +3300,7 @@ Deno.serve(async (req) => {
     const imageUrls = Array.isArray(body.imageUrls) ? body.imageUrls.filter(isValidHttpUrl) : [];
     const description = typeof body.description === "string" ? body.description : "";
     const optionalDetails = body.optionalDetails ?? {};
+    const reportMode: ReportMode = body.reportMode === 'sale' ? 'sale' : 'rent';
 
     const openRouterApiKey = Deno.env.get("OPENROUTER_API_KEY");
     if (!openRouterApiKey) {
@@ -2491,53 +3347,91 @@ Deno.serve(async (req) => {
         });
       }
 
-      // Step 1: Visual analysis
+      // Step 1: Visual analysis (batched for stability)
       if (imageUrls.length > 0) {
-        console.log("\n[Step 1] Visual analysis start");
+        console.log("\n[Step 1] Visual analysis start (batched)");
         
-        const step1Messages = buildStep1Messages(imageUrls);
+        const MAX_BATCHES = 2; // 最多 2 批 = 40 张图片
+        const BATCH_SIZE = 20;
+        const numBatches = Math.min(Math.ceil(imageUrls.length / BATCH_SIZE), MAX_BATCHES);
+        
+        const batchResults: Array<Record<string, unknown>> = [];
+        let batchSuccessCount = 0;
 
-        const step1RequestBody = {
-          model: "openai/gpt-4.1-mini",
-          messages: step1Messages,
-          temperature: 0.1,
-          max_tokens: 3000,
-        };
+        for (let batchIndex = 0; batchIndex < numBatches; batchIndex++) {
+          console.log(`[Step 1 Batch ${batchIndex + 1}/${numBatches}] Processing...`);
+          
+          const { messages, photoIndexOffset } = buildStep1Messages(imageUrls, batchIndex);
 
-        const step1Response = await fetch(
-          "https://openrouter.ai/api/v1/chat/completions",
-          {
-            method: "POST",
-            headers: {
-              Authorization: `Bearer ${openRouterApiKey}`,
-              "Content-Type": "application/json",
-              "HTTP-Referer": "https://trteewgplkqiedonomzg.supabase.co",
-              "X-Title": "Rental Property Analyzer",
-            },
-            body: JSON.stringify(step1RequestBody),
-          },
-        );
+          const step1RequestBody = {
+            model: "openai/gpt-4.1-mini",
+            messages: messages,
+            temperature: 0.1,
+            max_tokens: 4000, // 稍微提高以适应更多输出
+          };
 
-        if (!step1Response.ok) {
-          const errorData = await step1Response.json().catch(() => ({}));
-          console.error("Step 1 Error Response:", JSON.stringify(errorData));
-          throw new Error(
-            (errorData as { error?: { message?: string } }).error?.message ||
-              `Step 1 failed: ${step1Response.status}`,
-          );
+          try {
+            const step1Response = await fetch(
+              "https://openrouter.ai/api/v1/chat/completions",
+              {
+                method: "POST",
+                headers: {
+                  Authorization: `Bearer ${openRouterApiKey}`,
+                  "Content-Type": "application/json",
+                  "HTTP-Referer": "https://trteewgplkqiedonomzg.supabase.co",
+                  "X-Title": "Rental Property Analyzer",
+                },
+                body: JSON.stringify(step1RequestBody),
+              },
+            );
+
+            if (!step1Response.ok) {
+              const errorData = await step1Response.json().catch(() => ({}));
+              console.error(`[Step 1 Batch ${batchIndex + 1}] Error Response:`, JSON.stringify(errorData));
+              // 继续下一批，不抛出异常
+              continue;
+            }
+
+            const step1Data = await step1Response.json();
+            const step1Content = step1Data?.choices?.[0]?.message?.content;
+
+            if (!step1Content) {
+              console.warn(`[Step 1 Batch ${batchIndex + 1}] No response content`);
+              continue;
+            }
+
+            try {
+              const batchResult = safeParseModelJson(step1Content) as Record<string, unknown>;
+              
+              // Adjust photoIndex to be global
+              if (Array.isArray(batchResult.photos)) {
+                for (const photo of batchResult.photos) {
+                  if (typeof photo.photoIndex === 'number') {
+                    photo.photoIndex = photo.photoIndex + photoIndexOffset;
+                  }
+                }
+              }
+              
+              batchResults.push(batchResult);
+              batchSuccessCount++;
+              console.log(`[Step 1 Batch ${batchIndex + 1}] Success, ${(batchResult.photos as unknown[])?.length || 0} photos analyzed`);
+            } catch {
+              console.warn(`[Step 1 Batch ${batchIndex + 1}] JSON parse failed, skipping batch`);
+            }
+          } catch (batchError) {
+            console.error(`[Step 1 Batch ${batchIndex + 1}] Request failed:`, batchError);
+            // 继续下一批
+          }
         }
 
-        const step1Data = await step1Response.json();
-        const step1Content = step1Data?.choices?.[0]?.message?.content;
-
-        if (!step1Content) {
-          throw new Error("No response from Step 1");
-        }
-
-        try {
-          visualAnalysis = safeParseModelJson(step1Content);
-        } catch {
-          throw new Error("Invalid JSON from Step 1 - failed to parse model response");
+        // Merge results from all successful batches
+        if (batchResults.length > 0) {
+          visualAnalysis = mergeVisualAnalysis(batchResults as Parameters<typeof mergeVisualAnalysis>[0]);
+          console.log(`[Step 1] Merged ${batchResults.length} batches, total photos: ${(visualAnalysis.photos as unknown[])?.length || 0}`);
+        } else {
+          // 所有批次都失败了
+          console.warn("[Step 1] All batches failed, proceeding without visual analysis");
+          visualAnalysis = null;
         }
 
         console.log("[Step 1] Visual analysis complete");
@@ -2562,6 +3456,7 @@ Deno.serve(async (req) => {
       console.log("\n[Step 2] Decision reasoning start");
 
       const step2Messages = buildStep2Messages(
+        reportMode,
         visualAnalysis,
         description,
         optionalDetails,
@@ -2616,8 +3511,145 @@ Deno.serve(async (req) => {
         .sort();
 
       const overallScoreNum = typeof decision.overall_score === 'number' ? decision.overall_score : 0;
+
+      // Determine verdict based on report mode
+      const verdictStr = recommendation.verdict || '';
+      const mappedVerdict = reportMode === 'sale' ? mapSaleVerdict(verdictStr) : mapVerdict(verdictStr);
+
+      // Build mode-specific fields
+      const rentFields = reportMode === 'rent' ? {
+        rent_fairness: (decision as any).rent_fairness ? {
+          estimated_min: typeof (decision as any).rent_fairness.estimated_min === 'number' ? (decision as any).rent_fairness.estimated_min : null,
+          estimated_max: typeof (decision as any).rent_fairness.estimated_max === 'number' ? (decision as any).rent_fairness.estimated_max : null,
+          listing_price: typeof (decision as any).rent_fairness.listing_price === 'number' ? (decision as any).rent_fairness.listing_price : null,
+          verdict: (decision as any).rent_fairness.verdict || 'fair',
+          explanation: (decision as any).rent_fairness.explanation || ''
+        } : null,
+        applicationStrategy: (decision as any).application_strategy
+          ? {
+              urgency: (decision as any).application_strategy.urgency || 'Medium',
+              applySpeed: (decision as any).application_strategy.apply_speed || '',
+              checklist: Array.isArray((decision as any).application_strategy.checklist)
+                ? (decision as any).application_strategy.checklist
+                : [],
+              reasoning: Array.isArray((decision as any).application_strategy.reasoning)
+                ? (decision as any).application_strategy.reasoning
+                : []
+            }
+          : null,
+      } : { rent_fairness: null, applicationStrategy: null };
+
+      const saleFields = reportMode === 'sale' ? {
+        price_assessment: (decision as any).price_assessment ? {
+          estimated_min: typeof (decision as any).price_assessment.estimated_min === 'number' ? (decision as any).price_assessment.estimated_min : null,
+          estimated_max: typeof (decision as any).price_assessment.estimated_max === 'number' ? (decision as any).price_assessment.estimated_max : null,
+          asking_price: typeof (decision as any).price_assessment.asking_price === 'number' ? (decision as any).price_assessment.asking_price : null,
+          verdict: (decision as any).price_assessment.verdict || 'fair',
+          explanation: (decision as any).price_assessment.explanation || ''
+        } : null,
+        investment_potential: (decision as any).investment_potential ? {
+          growth_outlook: (decision as any).investment_potential.growth_outlook || 'Unknown',
+          rental_yield_estimate: (decision as any).investment_potential.rental_yield_estimate || '',
+          capital_growth_5yr: (decision as any).investment_potential.capital_growth_5yr || '',
+          key_positives: Array.isArray((decision as any).investment_potential.key_positives)
+            ? (decision as any).investment_potential.key_positives : [],
+          key_concerns: Array.isArray((decision as any).investment_potential.key_concerns)
+            ? (decision as any).investment_potential.key_concerns : []
+        } : null,
+        affordability_check: (decision as any).affordability_check ? {
+          estimated_deposit_20pct: typeof (decision as any).affordability_check.estimated_deposit_20pct === 'number'
+            ? (decision as any).affordability_check.estimated_deposit_20pct : null,
+          estimated_loan: typeof (decision as any).affordability_check.estimated_loan === 'number'
+            ? (decision as any).affordability_check.estimated_loan : null,
+          estimated_monthly_repayment: (decision as any).affordability_check.estimated_monthly_repayment || '',
+          assessment: (decision as any).affordability_check.assessment || 'manageable',
+          note: (decision as any).affordability_check.note || ''
+        } : null,
+        // === Sale 模式新增字段映射 ===
+        land_value_analysis: (decision as any).land_value_analysis ? {
+          landSize: typeof (decision as any).land_value_analysis.land_size === 'number'
+            ? (decision as any).land_value_analysis.land_size : undefined,
+          pricePerSqm: typeof (decision as any).land_value_analysis.price_per_sqm === 'number'
+            ? (decision as any).land_value_analysis.price_per_sqm : undefined,
+          landBankingPotential: (decision as any).land_value_analysis.land_banking_potential === true,
+          scarcityIndicator: (decision as any).land_value_analysis.scarcity_indicator || 'Medium',
+          propertyType: (decision as any).land_value_analysis.property_type || 'Unknown',
+          explanation: (decision as any).land_value_analysis.explanation || ''
+        } : null,
+        holding_costs: (decision as any).holding_costs ? {
+          deposit20pct: typeof (decision as any).holding_costs.deposit_20pct === 'number'
+            ? (decision as any).holding_costs.deposit_20pct : 0,
+          stampDuty: typeof (decision as any).holding_costs.stamp_duty === 'number'
+            ? (decision as any).holding_costs.stamp_duty : 0,
+          stampDutyState: (decision as any).holding_costs.stamp_duty_state || 'Other',
+          transferFees: typeof (decision as any).holding_costs.transfer_fees === 'number'
+            ? (decision as any).holding_costs.transfer_fees : 0,
+          legalCosts: typeof (decision as any).holding_costs.legal_costs === 'number'
+            ? (decision as any).holding_costs.legal_costs : 0,
+          inspectionCosts: typeof (decision as any).holding_costs.inspection_costs === 'number'
+            ? (decision as any).holding_costs.inspection_costs : 0,
+          estimatedMonthlyRepayment: (decision as any).holding_costs.estimated_monthly_repayment || '',
+          totalUpfrontCosts: typeof (decision as any).holding_costs.total_upfront_costs === 'number'
+            ? (decision as any).holding_costs.total_upfront_costs : undefined,
+          cashFlowAnalysis: (decision as any).holding_costs.cash_flow_analysis ? {
+            potentialRent: typeof (decision as any).holding_costs.cash_flow_analysis.potential_rent === 'number'
+              ? (decision as any).holding_costs.cash_flow_analysis.potential_rent : undefined,
+            weeklyMortgageInterest: typeof (decision as any).holding_costs.cash_flow_analysis.weekly_mortgage_interest === 'number'
+              ? (decision as any).holding_costs.cash_flow_analysis.weekly_mortgage_interest : 0,
+            weeklyDifference: typeof (decision as any).holding_costs.cash_flow_analysis.weekly_difference === 'number'
+              ? (decision as any).holding_costs.cash_flow_analysis.weekly_difference : 0,
+            verdict: (decision as any).holding_costs.cash_flow_analysis.verdict || 'Neutral'
+          } : undefined
+        } : null,
+        red_flag_alerts: Array.isArray((decision as any).red_flag_alerts)
+          ? (decision as any).red_flag_alerts.map((alert: any) => ({
+            keyword: alert.keyword || '',
+            category: alert.category || 'financial',
+            severity: alert.severity || 'low',
+            message: alert.message || '',
+            action: alert.action || ''
+          }))
+          : undefined,
+        state_specific_advice: (decision as any).state_specific_advice ? {
+          state: (decision as any).state_specific_advice.state || 'Unknown',
+          recommendations: Array.isArray((decision as any).state_specific_advice.recommendations)
+            ? (decision as any).state_specific_advice.recommendations
+            : []
+        } : null,
+        // === Sale 模式新增增强字段映射 ===
+        deal_breakers: (decision as any).deal_breakers ? {
+          summary: (decision as any).deal_breakers.summary || '',
+          overall_severity: (decision as any).deal_breakers.overall_severity || 'LOW',
+          items: Array.isArray((decision as any).deal_breakers.items)
+            ? (decision as any).deal_breakers.items.map((item: any) => ({
+                title: item.title || '',
+                severity: item.severity || 'LOW',
+                category: item.category || 'OTHER',
+                description: item.description || '',
+                why_it_matters: item.why_it_matters || '',
+                mitigation: item.mitigation || ''
+              }))
+            : []
+        } : null,
+        next_move: (decision as any).next_move ? {
+          decision: (decision as any).next_move.decision || 'PROCEED_WITH_CAUTION',
+          headline: (decision as any).next_move.headline || '',
+          reasoning: (decision as any).next_move.reasoning || '',
+          suggested_actions: Array.isArray((decision as any).next_move.suggested_actions)
+            ? (decision as any).next_move.suggested_actions
+            : []
+        } : null,
+        would_i_buy: (decision as any).would_i_buy ? {
+          answer: (decision as any).would_i_buy.answer || 'MAYBE',
+          confidence: (decision as any).would_i_buy.confidence || 'MEDIUM',
+          reason: (decision as any).would_i_buy.reason || ''
+        } : null,
+        // === Sale 模式新增字段映射 END ===
+      } : { price_assessment: null, investment_potential: null, affordability_check: null };
+
       const result = {
         id, // Analysis ID for sharing functionality
+        reportMode, // NEW: report mode indicator
         overallScore: overallScoreNum,
         finalRecommendation: decision.final_recommendation ? {
           verdict: decision.final_recommendation.verdict || 'Apply With Caution',
@@ -2635,7 +3667,7 @@ Deno.serve(async (req) => {
         riskSignals: decision.cons || [],
         hiddenRisks: decision.hidden_risks || [],
         risks: decision.risks || [],
-        verdict: mapVerdict(recommendation.verdict),
+        verdict: mappedVerdict,
         realityCheck: decision.overall_verdict || '',
         reality_check: realityCheckResult,
         spaceAnalysis: (decision.space_analysis as { area_type: string; score: number; explanation?: string; insights?: string[]; photo_count?: number }[] || aggregatedSpaceAnalysis).map((s: any) => ({
@@ -2653,19 +3685,14 @@ Deno.serve(async (req) => {
           not_ideal_for: decision.inspection_fit?.not_ideal_for || recommendation.not_ideal_for || []
         },
         recommendation: {
-          verdict: mapVerdict(recommendation.verdict),
+          verdict: mappedVerdict,
           goodFitIf: recommendation.good_fit_for || [],
           notIdealIf: recommendation.not_ideal_for || []
         },
         questionsToAsk: decision.questions_to_ask || decision.agent_questions || [],
         agentQuestions: decision.agent_questions || decision.questions_to_ask || [],
-        rent_fairness: decision.rent_fairness ? {
-          estimated_min: typeof decision.rent_fairness.estimated_min === 'number' ? decision.rent_fairness.estimated_min : null,
-          estimated_max: typeof decision.rent_fairness.estimated_max === 'number' ? decision.rent_fairness.estimated_max : null,
-          listing_price: typeof decision.rent_fairness.listing_price === 'number' ? decision.rent_fairness.listing_price : null,
-          verdict: decision.rent_fairness.verdict || 'fair',
-          explanation: decision.rent_fairness.explanation || ''
-        } : null,
+        ...rentFields,
+        ...saleFields,
         lightThermalGuide: decision.light_thermal_guide
           ? {
               naturalLightSummary: decision.light_thermal_guide.natural_light_summary || '',
@@ -2691,18 +3718,6 @@ Deno.serve(async (req) => {
                 : []
             }
           : { shouldDisplay: false, phrases: [] },
-        applicationStrategy: decision.application_strategy
-          ? {
-              urgency: decision.application_strategy.urgency || 'Medium',
-              applySpeed: decision.application_strategy.apply_speed || '',
-              checklist: Array.isArray(decision.application_strategy.checklist)
-                ? decision.application_strategy.checklist
-                : [],
-              reasoning: Array.isArray(decision.application_strategy.reasoning)
-                ? decision.application_strategy.reasoning
-                : []
-            }
-          : null,
         photos: Array.isArray(visualAnalysis?.photos) ? visualAnalysis.photos : [],
         visualAnalysis: visualAnalysis
           ? {

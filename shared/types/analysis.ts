@@ -21,14 +21,164 @@ export interface Photo {
 
 // ===== 3. 可选详情 =====
 export interface OptionalDetails {
+  reportMode?: 'rent' | 'sale';
   weeklyRent?: string;
+  askingPrice?: string;
   suburb?: string;
   bedrooms?: string;
   bathrooms?: string;
   parking?: string;
+  /** 土地面积 (sqm) - 用于土地价值分析 */
+  landSize?: string;
+  /** 房产类型 - 用于区分 House/Apartment */
+  propertyType?: string;
 }
 
-// ===== 4. 竞争风险 =====
+// ===== 6a. 售价评估 (Sale 专用) =====
+export interface PriceAssessment {
+  estimated_min?: number;
+  estimated_max?: number;
+  asking_price?: number;
+  verdict: string;
+  explanation: string;
+}
+
+// ===== 6b. 投资潜力 (Sale 专用) =====
+export interface InvestmentPotential {
+  growth_outlook?: 'Strong' | 'Moderate' | 'Weak' | 'Unknown';
+  rental_yield_estimate?: string;
+  capital_growth_5yr?: string;
+  key_positives?: string[];
+  key_concerns?: string[];
+}
+
+// ===== 6c. 可负担性检查 (Sale 专用) =====
+export interface AffordabilityCheck {
+  estimated_deposit_20pct?: number;
+  estimated_loan?: number;
+  estimated_monthly_repayment?: string;
+  assessment?: 'manageable' | 'stretch' | 'challenging';
+  note?: string;
+}
+
+// ===== 6d. 土地价值分析 (Sale 专用) =====
+/**
+ * 澳洲买房土地价值分析
+ * 用于评估土地占比和长期增值潜力
+ */
+export interface LandValueAnalysis {
+  landSize?: number;           // 土地面积 sqm
+  pricePerSqm?: number;        // 每平米单价
+  landBankingPotential?: boolean;  // 是否具有土地银行潜力
+  scarcityIndicator?: 'High' | 'Medium' | 'Low';  // 稀缺性指标
+  propertyType?: 'House' | 'Apartment' | 'Unit' | 'Townhouse' | 'Unknown';
+  explanation?: string;        // 分析说明
+}
+
+// ===== 6e. 持有成本明细 (Sale 专用) =====
+/**
+ * 澳洲买房持有成本精算
+ * 包含首付、印花税、隐性成本等
+ */
+export interface HoldingCosts {
+  deposit20pct: number;
+  stampDuty: number;
+  stampDutyState?: 'VIC' | 'NSW' | 'QLD' | 'SA' | 'WA' | 'TAS' | 'ACT' | 'NT' | 'Other';
+  transferFees: number;
+  legalCosts: number;
+  inspectionCosts: number;
+  /** 月还款估算字符串，如 "$3,100-$3,400/month" */
+  estimatedMonthlyRepayment: string;
+  /** 现金流分析（如果有租金数据） */
+  cashFlowAnalysis?: {
+    potentialRent?: number;        // 潜在租金（每周）
+    weeklyMortgageInterest: number; // 每周房贷利息支出
+    weeklyDifference: number;      // 每周差额（租金 - 利息）
+    verdict: 'Positive Gearing' | 'Negative Gearing' | 'Neutral';
+  };
+  /** 总 upfront 成本（首付 + 印花税 + 各项费用） */
+  totalUpfrontCosts?: number;
+}
+
+// ===== 6f. 红色警报 (Sale 专用) =====
+/**
+ * 澳洲买房风险关键词警报
+ * 扫描 description 中的危险信号
+ */
+export interface RedFlagAlert {
+  keyword: string;           // 触发警报的关键词
+  category: 'legal' | 'structural' | 'financial' | 'location';
+  severity: 'high' | 'medium' | 'low';
+  message: string;          // 警报消息
+  action: string;            // 建议行动
+}
+
+// ===== 6g. 州特殊建议 (Sale 专用) =====
+// ===== 6h. Deal Breakers (Sale 专用) =====
+// ===== 6i. Next Move (Sale 专用) =====
+// ===== 6j. Would I Buy (Sale 专用) =====
+
+/**
+ * 澳洲买房风险关键词警报
+ * 扫描 description 中的危险信号
+ */
+export interface RedFlagAlert {
+  keyword: string;           // 触发警报的关键词
+  category: 'legal' | 'structural' | 'financial' | 'location';
+  severity: 'high' | 'medium' | 'low';
+  message: string;          // 警报消息
+  action: string;            // 建议行动
+}
+
+/**
+ * Deal Breakers - 致命风险合并模块
+ * 将 risks + red_flag_alerts + potentialIssues + hiddenRisks 合并输出
+ */
+export interface DealBreakerItem {
+  title: string;                                    // 风险标题
+  severity: 'LOW' | 'MODERATE' | 'HIGH' | 'CRITICAL';  // 严重级别
+  category: 'STRUCTURAL' | 'LOCATION' | 'LEGAL' | 'FINANCIAL' | 'OTHER';  // 分类
+  description: string;                              // 具体问题描述
+  why_it_matters: string;                           // 为什么重要/严重
+  mitigation: string;                               // 是否可解决 + 如何解决
+}
+
+export interface DealBreakers {
+  summary: string;                                  // 一句话总结整体风险级别
+  overall_severity: 'LOW' | 'MODERATE' | 'HIGH' | 'CRITICAL';
+  items: DealBreakerItem[];
+}
+
+/**
+ * Next Move - 下一步行动建议
+ * 决策导向的最终建议
+ */
+export interface NextMove {
+  decision: 'PROCEED' | 'PROCEED_WITH_CAUTION' | 'SKIP';
+  headline: string;           // 非常短的一句话
+  reasoning: string;          // 决策理由
+  suggested_actions: string[];  // 建议的具体行动
+}
+
+/**
+ * Would I Buy - Hero Card 判断
+ * 一眼定生死的核心判断
+ */
+export interface WouldIBuy {
+  answer: 'YES' | 'MAYBE' | 'NO';
+  confidence: 'HIGH' | 'MEDIUM' | 'LOW';
+  reason: string;             // 一句话理由
+}
+
+// ===== 6g. 州特殊建议 (Sale 专用) =====
+/**
+ * 澳洲各州特殊建议
+ * 不同州有不同的法律和流程要求
+ */
+export interface StateSpecificAdvice {
+  state: 'VIC' | 'NSW' | 'QLD' | 'SA' | 'WA' | 'TAS' | 'ACT' | 'NT' | 'Unknown';
+  recommendations: string[];
+}
 export interface CompetitionRisk {
   level: 'LOW' | 'MEDIUM' | 'HIGH';
   reasons: string[];
@@ -106,6 +256,9 @@ export interface ListingInfo {
 export interface AnalysisResult {
   id?: string;
 
+  /** 报告模式：rent=租房报告, sale=买房报告 */
+  reportMode?: 'rent' | 'sale';
+
   /** 房源简要信息（用于报告页顶部显示） */
   listingInfo?: ListingInfo | null;
 
@@ -135,7 +288,20 @@ export interface AnalysisResult {
   risks?: string[];
   inspectionFit?: InspectionFit;
   competitionRisk?: CompetitionRisk;
-  rent_fairness?: RentFairness;
+  rent_fairness?: RentFairness | null;
+  price_assessment?: PriceAssessment | null;
+  investment_potential?: InvestmentPotential | null;
+  affordability_check?: AffordabilityCheck | null;
+  // === Sale 模式新增字段 ===
+  land_value_analysis?: LandValueAnalysis | null;   // 土地价值分析
+  holding_costs?: HoldingCosts | null;              // 持有成本明细
+  red_flag_alerts?: RedFlagAlert[];                 // 红色警报列表
+  state_specific_advice?: StateSpecificAdvice | null; // 州特殊建议
+  // === Sale 模式新增增强字段 ===
+  deal_breakers?: DealBreakers | null;            // Deal Breakers 合并风险模块
+  next_move?: NextMove | null;                     // Next Move 行动建议
+  would_i_buy?: WouldIBuy | null;                 // Would I Buy 判断
+  // === Sale 模式新增字段 END ===
   reality_check?: RealityCheck;
 
   // 视觉分析
@@ -232,6 +398,7 @@ export interface AnalysisProgress {
 
 // ===== 12. 分析请求 =====
 export interface AnalyzeRequest {
+  reportMode?: 'rent' | 'sale';
   imageUrls: string[];
   description: string;
   optionalDetails?: OptionalDetails;

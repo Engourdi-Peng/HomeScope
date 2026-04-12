@@ -41,6 +41,7 @@ export interface SlugInput {
   bedrooms?: number | null;
   propertyType?: string | null;
   reportId: string | number;
+  reportMode?: 'rent' | 'sale';
 }
 
 /**
@@ -51,8 +52,10 @@ export interface SEOFieldsInput {
   bedrooms?: number | null;
   bathrooms?: number | null;
   weeklyRent?: number | null;
+  askingPrice?: number | null;
   verdict?: string | null;
   reportId: string | number;
+  reportMode?: 'rent' | 'sale';
 }
 
 /**
@@ -120,7 +123,7 @@ export function generateShareSlug(input: SlugInput): string {
   }
 
   // 添加通用描述和 reportId
-  parts.push('rental-analysis');
+  parts.push(input.reportMode === 'sale' ? 'sale-analysis' : 'rental-analysis');
   parts.push(String(input.reportId));
 
   return parts.join('-');
@@ -139,42 +142,77 @@ export function generateShareSlug(input: SlugInput): string {
  * - 自动降级，不硬拼假信息
  */
 export function generateSEOFields(input: SEOFieldsInput): { seo_title: string; seo_description: string } {
-  const { suburb, bedrooms, bathrooms, weeklyRent, verdict, reportId } = input;
+  const { suburb, bedrooms, bathrooms, weeklyRent, askingPrice, verdict, reportMode } = input;
+  const isRent = reportMode !== 'sale';
 
   // 生成 SEO title
   let seo_title: string;
 
-  if (suburb && bedrooms) {
-    seo_title = `Is this rental worth it in ${suburb}? ${bedrooms} bedroom analysis`;
-  } else if (bedrooms) {
-    seo_title = `Is this rental worth it? ${bedrooms} bedroom analysis`;
+  if (isRent) {
+    if (suburb && bedrooms) {
+      seo_title = `Is this rental worth it in ${suburb}? ${bedrooms} bedroom analysis`;
+    } else if (bedrooms) {
+      seo_title = `Is this rental worth it? ${bedrooms} bedroom analysis`;
+    } else {
+      seo_title = `Rental property analysis | HomeScope`;
+    }
   } else {
-    seo_title = `Rental property analysis | HomeScope`;
+    if (suburb && bedrooms) {
+      seo_title = `Is this property worth buying in ${suburb}? ${bedrooms} bedroom analysis`;
+    } else if (bedrooms) {
+      seo_title = `Is this property worth buying? ${bedrooms} bedroom analysis`;
+    } else {
+      seo_title = `Property purchase analysis | HomeScope`;
+    }
   }
 
   // 生成 SEO description
   let seo_description: string;
 
-  if (suburb && bedrooms) {
-    seo_description = `AI rental analysis of a ${bedrooms}-bedroom property in ${suburb}. `;
-    if (bathrooms) {
-      seo_description += `${bathrooms} bathroom, `;
+  if (isRent) {
+    if (suburb && bedrooms) {
+      seo_description = `AI rental analysis of a ${bedrooms}-bedroom property in ${suburb}. `;
+      if (bathrooms) {
+        seo_description += `${bathrooms} bathroom, `;
+      }
+      if (weeklyRent) {
+        seo_description += `$${weeklyRent}/week. `;
+      }
+      seo_description += 'Review the pros, cons, risks and final verdict before applying.';
+    } else if (bedrooms) {
+      seo_description = `AI rental analysis of a ${bedrooms}-bedroom property. `;
+      if (bathrooms) {
+        seo_description += `${bathrooms} bathroom, `;
+      }
+      if (weeklyRent) {
+        seo_description += `$${weeklyRent}/week. `;
+      }
+      seo_description += 'Review the pros, cons, risks and final verdict before applying.';
+    } else {
+      seo_description = 'AI-powered rental property analysis. Review detailed pros, cons, risks and expert verdict before making your decision.';
     }
-    if (weeklyRent) {
-      seo_description += `$${weeklyRent}/week. `;
-    }
-    seo_description += 'Review the pros, cons, risks and final verdict before applying.';
-  } else if (bedrooms) {
-    seo_description = `AI rental analysis of a ${bedrooms}-bedroom property. `;
-    if (bathrooms) {
-      seo_description += `${bathrooms} bathroom, `;
-    }
-    if (weeklyRent) {
-      seo_description += `$${weeklyRent}/week. `;
-    }
-    seo_description += 'Review the pros, cons, risks and final verdict before applying.';
   } else {
-    seo_description = 'AI-powered rental property analysis. Review detailed pros, cons, risks and expert verdict before making your decision.';
+    if (suburb && bedrooms) {
+      seo_description = `AI purchase analysis of a ${bedrooms}-bedroom property in ${suburb}. `;
+      if (bathrooms) {
+        seo_description += `${bathrooms} bathroom, `;
+      }
+      if (askingPrice) {
+        seo_description += `$${askingPrice.toLocaleString()}. `;
+      }
+      seo_description += 'Review the pros, cons, risks and final verdict before making an offer.';
+    } else if (bedrooms) {
+      seo_description = `AI purchase analysis of a ${bedrooms}-bedroom property. `;
+      if (bathrooms) {
+        seo_description += `${bathrooms} bathroom, `;
+      }
+      if (askingPrice) {
+        seo_description += `$${askingPrice.toLocaleString()}. `;
+      }
+      seo_description += 'Review the pros, cons, risks and final verdict before making an offer.';
+    } else {
+      seo_description = 'AI-powered property purchase analysis. Review detailed pros, cons, risks and expert verdict before making your decision.';
+    }
   }
 
   return {

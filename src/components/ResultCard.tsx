@@ -132,6 +132,9 @@ const rentFairnessConfig = {
   },
 };
 
+// Price Assessment config for sale mode (same verdicts as rentFairnessConfig)
+const priceAssessmentConfig = rentFairnessConfig;
+
 function getSpaceTypeLabel(spaceType: string): string {
   const labels: Record<string, string> = {
     kitchen: 'Kitchen',
@@ -335,6 +338,26 @@ export function ResultCard({ result, onBack, onShare, hideNav, isPublicShare }: 
               }`}>
                 {result.decisionPriority} PRIORITY
               </div>
+
+              {/* Would I Buy? - Sale mode only */}
+              {result.reportMode === 'sale' && result.would_i_buy && (
+                <div className={`mt-4 px-5 py-3 rounded-2xl text-sm font-bold uppercase tracking-wide border-2 ${
+                  result.would_i_buy.answer === 'YES'
+                    ? 'bg-green-500/20 text-green-300 border-green-500/50'
+                    : result.would_i_buy.answer === 'NO'
+                    ? 'bg-red-500/20 text-red-300 border-red-500/50'
+                    : 'bg-amber-500/20 text-amber-300 border-amber-500/50'
+                }`}>
+                  <div className="flex items-center gap-2">
+                    <span className="text-lg">
+                      {result.would_i_buy.answer === 'YES' ? 'YES' : result.would_i_buy.answer === 'NO' ? 'NO' : 'MAYBE'}
+                    </span>
+                    <span className="text-[10px] font-normal opacity-70 ml-1">
+                      {result.would_i_buy.confidence} CONFIDENCE
+                    </span>
+                  </div>
+                </div>
+              )}
             </div>
 
             {/* Divider — 仅在横向布局时显示 */}
@@ -433,43 +456,176 @@ export function ResultCard({ result, onBack, onShare, hideNav, isPublicShare }: 
 
         <SectionDivider />
 
-        {/* Rent Fairness */}
-        {result.rent_fairness && (
+        {/* Rent Fairness (rent mode) / Price Assessment (sale mode) */}
+        {(result.reportMode === 'sale' ? result.price_assessment : result.rent_fairness) && (
           <div className="mb-10 bg-white rounded-3xl p-6 @container[size>=480px]:p-10 shadow-[0_1px_8px_rgba(0,0,0,0.06)] animate-in fade-in slide-in-from-bottom-8 duration-700 ease-out" style={{ animationDelay: '150ms' }}>
             <div className="flex items-center gap-3 mb-6">
               <div className="w-10 h-10 rounded-xl bg-stone-100 flex items-center justify-center">
                 <DollarSign size={18} className="text-stone-600" strokeWidth={1.5} />
               </div>
-              <h3 className="text-base font-semibold text-stone-900">Rent Fairness</h3>
+              <h3 className="text-base font-semibold text-stone-900">
+                {result.reportMode === 'sale' ? 'Price Assessment' : 'Rent Fairness'}
+              </h3>
             </div>
 
-            <div className="grid grid-cols-1 @container[size>=480px]:grid-cols-2 gap-6 mb-6">
-              <div className="p-4 bg-stone-50 rounded-xl">
-                <div className="text-[10px] font-medium uppercase tracking-widest text-stone-500 mb-2">Estimated Market Range</div>
-                <div className="text-xl font-semibold text-stone-800">
-                  ${result.rent_fairness.estimated_min} – ${result.rent_fairness.estimated_max}
-                  <span className="text-sm font-normal text-stone-500 ml-1">/ week</span>
-                </div>
-              </div>
+            {result.reportMode === 'sale' && result.price_assessment ? (
+              <>
+                <div className="grid grid-cols-1 @container[size>=480px]:grid-cols-2 gap-6 mb-6">
+                  <div className="p-4 bg-stone-50 rounded-xl">
+                    <div className="text-[10px] font-medium uppercase tracking-widest text-stone-500 mb-2">Estimated Value Range</div>
+                    <div className="text-xl font-semibold text-stone-800">
+                      {result.price_assessment.estimated_min ? `$${result.price_assessment.estimated_min.toLocaleString()}` : '—'}
+                      {' – '}
+                      {result.price_assessment.estimated_max ? `$${result.price_assessment.estimated_max.toLocaleString()}` : '—'}
+                    </div>
+                  </div>
 
-              <div className="p-4 bg-stone-50 rounded-xl">
-                <div className="text-[10px] font-medium uppercase tracking-widest text-stone-500 mb-2">Listing Price</div>
-                <div className="text-xl font-semibold text-stone-800">
-                  ${result.rent_fairness.listing_price}
-                  <span className="text-sm font-normal text-stone-500 ml-1">/ week</span>
+                  <div className="p-4 bg-stone-50 rounded-xl">
+                    <div className="text-[10px] font-medium uppercase tracking-widest text-stone-500 mb-2">Asking Price</div>
+                    <div className="text-xl font-semibold text-stone-800">
+                      {result.price_assessment.asking_price ? `$${result.price_assessment.asking_price.toLocaleString()}` : '—'}
+                    </div>
+                  </div>
                 </div>
-              </div>
-            </div>
 
-            <div className="mb-4">
-              <span className={`inline-flex items-center gap-2 px-4 py-2 rounded-full text-sm font-semibold ${rentFairnessConfig[result.rent_fairness.verdict as keyof typeof rentFairnessConfig]?.bgColor || rentFairnessConfig.fair.bgColor} ${rentFairnessConfig[result.rent_fairness.verdict as keyof typeof rentFairnessConfig]?.color || rentFairnessConfig.fair.color} border ${rentFairnessConfig[result.rent_fairness.verdict as keyof typeof rentFairnessConfig]?.borderColor || rentFairnessConfig.fair.borderColor}`}>
-                {rentFairnessConfig[result.rent_fairness.verdict as keyof typeof rentFairnessConfig]?.label || 'Fair'}
+                <div className="mb-4">
+                  <span className={`inline-flex items-center gap-2 px-4 py-2 rounded-full text-sm font-semibold ${priceAssessmentConfig[result.price_assessment.verdict as keyof typeof priceAssessmentConfig]?.bgColor || priceAssessmentConfig.fair.bgColor} ${priceAssessmentConfig[result.price_assessment.verdict as keyof typeof priceAssessmentConfig]?.color || priceAssessmentConfig.fair.color} border ${priceAssessmentConfig[result.price_assessment.verdict as keyof typeof priceAssessmentConfig]?.borderColor || priceAssessmentConfig.fair.borderColor}`}>
+                    {priceAssessmentConfig[result.price_assessment.verdict as keyof typeof priceAssessmentConfig]?.label || 'Fair'}
+                  </span>
+                </div>
+
+                {result.price_assessment.explanation && (
+                  <p className="text-sm text-stone-600 leading-relaxed">{result.price_assessment.explanation}</p>
+                )}
+              </>
+            ) : result.rent_fairness ? (
+              <>
+                <div className="grid grid-cols-1 @container[size>=480px]:grid-cols-2 gap-6 mb-6">
+                  <div className="p-4 bg-stone-50 rounded-xl">
+                    <div className="text-[10px] font-medium uppercase tracking-widest text-stone-500 mb-2">Estimated Market Range</div>
+                    <div className="text-xl font-semibold text-stone-800">
+                      ${result.rent_fairness.estimated_min} – ${result.rent_fairness.estimated_max}
+                      <span className="text-sm font-normal text-stone-500 ml-1">/ week</span>
+                    </div>
+                  </div>
+
+                  <div className="p-4 bg-stone-50 rounded-xl">
+                    <div className="text-[10px] font-medium uppercase tracking-widest text-stone-500 mb-2">Listing Price</div>
+                    <div className="text-xl font-semibold text-stone-800">
+                      ${result.rent_fairness.listing_price}
+                      <span className="text-sm font-normal text-stone-500 ml-1">/ week</span>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="mb-4">
+                  <span className={`inline-flex items-center gap-2 px-4 py-2 rounded-full text-sm font-semibold ${rentFairnessConfig[result.rent_fairness.verdict as keyof typeof rentFairnessConfig]?.bgColor || rentFairnessConfig.fair.bgColor} ${rentFairnessConfig[result.rent_fairness.verdict as keyof typeof rentFairnessConfig]?.color || rentFairnessConfig.fair.color} border ${rentFairnessConfig[result.rent_fairness.verdict as keyof typeof rentFairnessConfig]?.borderColor || rentFairnessConfig.fair.borderColor}`}>
+                    {rentFairnessConfig[result.rent_fairness.verdict as keyof typeof rentFairnessConfig]?.label || 'Fair'}
+                  </span>
+                </div>
+
+                {result.rent_fairness.explanation && (
+                  <p className="text-sm text-stone-600 leading-relaxed">{result.rent_fairness.explanation}</p>
+                )}
+              </>
+            ) : null}
+          </div>
+        )}
+
+        {/* Deal Breakers - Sale mode only, appears after Price Assessment */}
+        {result.reportMode === 'sale' && result.deal_breakers && result.deal_breakers.items && result.deal_breakers.items.length > 0 && (
+          <div className="mb-10 bg-white rounded-3xl p-6 @container[size>=480px]:p-10 shadow-[0_1px_8px_rgba(0,0,0,0.06)] animate-in fade-in slide-in-from-bottom-8 duration-700 ease-out" style={{ animationDelay: '175ms' }}>
+            <div className="flex items-center gap-3 mb-6">
+              <div className={`w-10 h-10 rounded-xl flex items-center justify-center ${
+                result.deal_breakers.overall_severity === 'CRITICAL' ? 'bg-red-100' :
+                result.deal_breakers.overall_severity === 'HIGH' ? 'bg-orange-100' :
+                result.deal_breakers.overall_severity === 'MODERATE' ? 'bg-amber-100' :
+                'bg-green-100'
+              }`}>
+                <AlertTriangle size={18} className={
+                  result.deal_breakers.overall_severity === 'CRITICAL' ? 'text-red-600' :
+                  result.deal_breakers.overall_severity === 'HIGH' ? 'text-orange-600' :
+                  result.deal_breakers.overall_severity === 'MODERATE' ? 'text-amber-600' :
+                  'text-green-600'
+                } strokeWidth={1.5} />
+              </div>
+              <h3 className="text-base font-semibold text-stone-900">Deal Breakers</h3>
+              {/* Overall Severity Badge */}
+              <span className={`ml-auto px-3 py-1 rounded-full text-xs font-bold uppercase tracking-wide border ${
+                result.deal_breakers.overall_severity === 'CRITICAL' ? 'bg-red-100 text-red-700 border-red-200' :
+                result.deal_breakers.overall_severity === 'HIGH' ? 'bg-orange-100 text-orange-700 border-orange-200' :
+                result.deal_breakers.overall_severity === 'MODERATE' ? 'bg-amber-100 text-amber-700 border-amber-200' :
+                'bg-green-100 text-green-700 border-green-200'
+              }`}>
+                {result.deal_breakers.overall_severity === 'CRITICAL' ? 'CRITICAL' :
+                 result.deal_breakers.overall_severity === 'HIGH' ? 'HIGH RISK' :
+                 result.deal_breakers.overall_severity === 'MODERATE' ? 'MODERATE' : 'LOW'}
               </span>
             </div>
 
-            {result.rent_fairness.explanation && (
-              <p className="text-sm text-stone-600 leading-relaxed">{result.rent_fairness.explanation}</p>
+            {/* Summary */}
+            {result.deal_breakers.summary && (
+              <p className="text-sm text-stone-600 mb-6">{result.deal_breakers.summary}</p>
             )}
+
+            {/* Deal Breaker Items */}
+            <div className="space-y-4">
+              {result.deal_breakers.items.map((item, index) => (
+                <div key={index} className={`p-4 rounded-xl border ${
+                  item.severity === 'CRITICAL' ? 'bg-red-50 border-red-200' :
+                  item.severity === 'HIGH' ? 'bg-orange-50 border-orange-200' :
+                  item.severity === 'MODERATE' ? 'bg-amber-50 border-amber-200' :
+                  'bg-stone-50 border-stone-200'
+                }`}>
+                  <div className="flex items-start gap-3">
+                    {/* Severity Icon */}
+                    <span className={`inline-flex items-center justify-center w-6 h-6 rounded-full text-xs font-bold shrink-0 ${
+                      item.severity === 'CRITICAL' ? 'bg-red-500 text-white' :
+                      item.severity === 'HIGH' ? 'bg-orange-500 text-white' :
+                      item.severity === 'MODERATE' ? 'bg-amber-500 text-white' :
+                      'bg-stone-400 text-white'
+                    }`}>
+                      {item.severity === 'CRITICAL' ? '!' : item.severity === 'HIGH' ? '!' : item.severity === 'MODERATE' ? '~' : 'i'}
+                    </span>
+
+                    <div className="flex-1 min-w-0">
+                      {/* Title and Category */}
+                      <div className="flex items-center gap-2 mb-1">
+                        <span className="text-sm font-semibold text-stone-800">{item.title}</span>
+                        <span className={`px-2 py-0.5 rounded text-[10px] font-medium uppercase tracking-wider ${
+                          item.category === 'LEGAL' ? 'bg-purple-100 text-purple-700' :
+                          item.category === 'STRUCTURAL' ? 'bg-blue-100 text-blue-700' :
+                          item.category === 'LOCATION' ? 'bg-teal-100 text-teal-700' :
+                          item.category === 'FINANCIAL' ? 'bg-emerald-100 text-emerald-700' :
+                          'bg-stone-100 text-stone-600'
+                        }`}>
+                          {item.category}
+                        </span>
+                      </div>
+
+                      {/* Description */}
+                      <p className="text-sm text-stone-600 mb-2">{item.description}</p>
+
+                      {/* Why it Matters */}
+                      {item.why_it_matters && (
+                        <div className="mb-2">
+                          <span className="text-[10px] font-medium uppercase tracking-widest text-stone-400">Why it matters: </span>
+                          <span className="text-xs text-stone-500">{item.why_it_matters}</span>
+                        </div>
+                      )}
+
+                      {/* Mitigation */}
+                      {item.mitigation && (
+                        <div className="flex items-start gap-1.5">
+                          <span className="text-[10px] font-medium text-green-600 shrink-0">Fix:</span>
+                          <span className="text-xs text-stone-500">{item.mitigation}</span>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              ))}
+            </div>
           </div>
         )}
 
@@ -574,8 +730,101 @@ export function ResultCard({ result, onBack, onShare, hideNav, isPublicShare }: 
           </div>
         )}
 
-        {/* Application Strategy */}
-        {result.applicationStrategy && (
+        {/* Sale mode: Investment Potential & Affordability Check */}
+        {result.reportMode === 'sale' && (result.investment_potential || result.affordability_check) && (
+          <div className="mb-10 bg-white rounded-3xl p-6 @container[size>=480px]:p-10 shadow-[0_1px_8px_rgba(0,0,0,0.06)] animate-in fade-in slide-in-from-bottom-8 duration-700 ease-out" style={{ animationDelay: '275ms' }}>
+            <div className="flex items-center gap-3 mb-6">
+              <div className="w-10 h-10 rounded-xl bg-blue-50 flex items-center justify-center">
+                <TrendingUp size={18} className="text-blue-600" strokeWidth={1.5} />
+              </div>
+              <h3 className="text-base font-semibold text-stone-900">Investment & Affordability</h3>
+            </div>
+
+            {result.investment_potential && (
+              <div className="mb-6">
+                <div className="text-[10px] font-medium uppercase tracking-widest text-stone-500 mb-3">Investment Outlook</div>
+                <div className="flex flex-wrap gap-2 mb-3">
+                  {result.investment_potential.growth_outlook && (
+                    <span className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-medium bg-blue-50 text-blue-700 border border-blue-200">
+                      Growth: {result.investment_potential.growth_outlook}
+                    </span>
+                  )}
+                  {result.investment_potential.rental_yield_estimate && (
+                    <span className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-medium bg-stone-50 text-stone-700 border border-stone-200">
+                      Est. Yield: {result.investment_potential.rental_yield_estimate}
+                    </span>
+                  )}
+                </div>
+                {result.investment_potential.capital_growth_5yr && (
+                  <p className="text-sm text-stone-600 mb-3">{result.investment_potential.capital_growth_5yr}</p>
+                )}
+                {result.investment_potential.key_positives && result.investment_potential.key_positives.length > 0 && (
+                  <div className="mb-2">
+                    <div className="text-xs font-medium text-green-700 mb-1">Positives</div>
+                    <ul className="space-y-1">
+                      {result.investment_potential.key_positives.map((item, i) => (
+                        <li key={i} className="text-xs text-stone-600 flex items-start gap-2">
+                          <span className="mt-1 w-1 h-1 rounded-full bg-green-400 flex-shrink-0"></span>{item}
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+                {result.investment_potential.key_concerns && result.investment_potential.key_concerns.length > 0 && (
+                  <div>
+                    <div className="text-xs font-medium text-amber-700 mb-1">Concerns</div>
+                    <ul className="space-y-1">
+                      {result.investment_potential.key_concerns.map((item, i) => (
+                        <li key={i} className="text-xs text-stone-600 flex items-start gap-2">
+                          <span className="mt-1 w-1 h-1 rounded-full bg-amber-400 flex-shrink-0"></span>{item}
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+              </div>
+            )}
+
+            {result.affordability_check && (
+              <div className="pt-4 border-t border-stone-100">
+                <div className="text-[10px] font-medium uppercase tracking-widest text-stone-500 mb-3">Affordability Check</div>
+                <div className="grid grid-cols-2 gap-4 mb-3">
+                  {result.affordability_check.estimated_deposit_20pct && (
+                    <div className="p-3 bg-stone-50 rounded-xl">
+                      <div className="text-[10px] text-stone-500 mb-1">Est. Deposit (20%)</div>
+                      <div className="text-sm font-semibold text-stone-800">${result.affordability_check.estimated_deposit_20pct.toLocaleString()}</div>
+                    </div>
+                  )}
+                  {result.affordability_check.estimated_loan && (
+                    <div className="p-3 bg-stone-50 rounded-xl">
+                      <div className="text-[10px] text-stone-500 mb-1">Est. Loan</div>
+                      <div className="text-sm font-semibold text-stone-800">${result.affordability_check.estimated_loan.toLocaleString()}</div>
+                    </div>
+                  )}
+                </div>
+                {result.affordability_check.estimated_monthly_repayment && (
+                  <p className="text-sm text-stone-700 mb-2">Est. repayment: {result.affordability_check.estimated_monthly_repayment}</p>
+                )}
+                {result.affordability_check.assessment && (
+                  <span className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-medium ${
+                    result.affordability_check.assessment === 'manageable' ? 'bg-green-50 text-green-700 border border-green-200' :
+                    result.affordability_check.assessment === 'stretch' ? 'bg-amber-50 text-amber-700 border border-amber-200' :
+                    'bg-red-50 text-red-700 border border-red-200'
+                  }`}>
+                    {result.affordability_check.assessment === 'manageable' ? 'Manageable' :
+                     result.affordability_check.assessment === 'stretch' ? 'A Stretch' : 'Challenging'}
+                  </span>
+                )}
+                {result.affordability_check.note && (
+                  <p className="text-xs text-stone-500 mt-2">{result.affordability_check.note}</p>
+                )}
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* Application Strategy (rent mode only) */}
+        {result.reportMode !== 'sale' && result.applicationStrategy && (
           <div className="mb-10 bg-white rounded-3xl p-6 @container[size>=480px]:p-10 shadow-[0_1px_8px_rgba(0,0,0,0.06)] animate-in fade-in slide-in-from-bottom-8 duration-700 ease-out" style={{ animationDelay: '300ms' }}>
             <div className="flex items-center gap-3 mb-6">
               <div className="w-10 h-10 rounded-xl bg-blue-50 flex items-center justify-center">
@@ -635,6 +884,228 @@ export function ResultCard({ result, onBack, onShare, hideNav, isPublicShare }: 
             )}
           </div>
         )}
+
+        {/* ===== Sale 模式专属新卡片 ===== */}
+
+        {/* Land Value Analysis (Sale mode) */}
+        {result.reportMode === 'sale' && result.land_value_analysis && (
+          <div className="mb-10 bg-white rounded-3xl p-6 @container[size>=480px]:p-10 shadow-[0_1px_8px_rgba(0,0,0,0.06)] animate-in fade-in slide-in-from-bottom-8 duration-700 ease-out" style={{ animationDelay: '225ms' }}>
+            <div className="flex items-center gap-3 mb-6">
+              <div className="w-10 h-10 rounded-xl bg-emerald-50 flex items-center justify-center">
+                <TrendingUp size={18} className="text-emerald-600" strokeWidth={1.5} />
+              </div>
+              <h3 className="text-base font-semibold text-stone-900">Land Value Analysis</h3>
+            </div>
+
+            {result.land_value_analysis.landSize && result.land_value_analysis.pricePerSqm && (
+              <div className="grid grid-cols-2 gap-4 mb-5">
+                <div className="p-4 bg-stone-50 rounded-xl">
+                  <div className="text-[10px] font-medium uppercase tracking-widest text-stone-500 mb-1">Land Size</div>
+                  <div className="text-lg font-semibold text-stone-800">
+                    {result.land_value_analysis.landSize.toLocaleString()} sqm
+                  </div>
+                </div>
+                <div className="p-4 bg-stone-50 rounded-xl">
+                  <div className="text-[10px] font-medium uppercase tracking-widest text-stone-500 mb-1">Price per sqm</div>
+                  <div className="text-lg font-semibold text-stone-800">
+                    ${result.land_value_analysis.pricePerSqm.toLocaleString()}
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {result.land_value_analysis.landBankingPotential && (
+              <div className="mb-4">
+                <span className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-semibold border bg-emerald-50 text-emerald-700 border-emerald-200">
+                  <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 2v20M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/></svg>
+                  Land Banking Potential
+                </span>
+              </div>
+            )}
+
+            {result.land_value_analysis.scarcityIndicator && (
+              <div className="mb-4">
+                <span className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-semibold border ${
+                  result.land_value_analysis.scarcityIndicator === 'High'
+                    ? 'bg-green-50 text-green-700 border-green-200'
+                    : result.land_value_analysis.scarcityIndicator === 'Low'
+                    ? 'bg-red-50 text-red-700 border-red-200'
+                    : 'bg-amber-50 text-amber-700 border-amber-200'
+                }`}>
+                  Scarcity: {result.land_value_analysis.scarcityIndicator}
+                </span>
+              </div>
+            )}
+
+            {result.land_value_analysis.explanation && (
+              <p className="text-sm text-stone-600 leading-relaxed">{result.land_value_analysis.explanation}</p>
+            )}
+          </div>
+        )}
+
+        {/* Holding Costs Breakdown (Sale mode) */}
+        {result.reportMode === 'sale' && result.holding_costs && (
+          <div className="mb-10 bg-white rounded-3xl p-6 @container[size>=480px]:p-10 shadow-[0_1px-8px_rgba(0,0,0,0.06)] animate-in fade-in slide-in-from-bottom-8 duration-700 ease-out" style={{ animationDelay: '250ms' }}>
+            <div className="flex items-center gap-3 mb-6">
+              <div className="w-10 h-10 rounded-xl bg-amber-50 flex items-center justify-center">
+                <DollarSign size={18} className="text-amber-600" strokeWidth={1.5} />
+              </div>
+              <h3 className="text-base font-semibold text-stone-900">Upfront Costs Breakdown</h3>
+            </div>
+
+            <div className="space-y-3 mb-5">
+              {result.holding_costs.deposit20pct > 0 && (
+                <div className="flex justify-between items-center py-2 border-b border-stone-100">
+                  <span className="text-sm text-stone-600">Deposit (20%)</span>
+                  <span className="text-sm font-semibold text-stone-800">${result.holding_costs.deposit20pct.toLocaleString()}</span>
+                </div>
+              )}
+              {result.holding_costs.stampDuty > 0 && (
+                <div className="flex justify-between items-center py-2 border-b border-stone-100">
+                  <span className="text-sm text-stone-600">
+                    Stamp Duty
+                    {result.holding_costs.stampDutyState && result.holding_costs.stampDutyState !== 'Other' && (
+                      <span className="text-xs text-stone-400 ml-1">({result.holding_costs.stampDutyState})</span>
+                    )}
+                  </span>
+                  <span className="text-sm font-semibold text-stone-800">${result.holding_costs.stampDuty.toLocaleString()}</span>
+                </div>
+              )}
+              {result.holding_costs.transferFees > 0 && (
+                <div className="flex justify-between items-center py-2 border-b border-stone-100">
+                  <span className="text-sm text-stone-600">Transfer Fees</span>
+                  <span className="text-sm font-semibold text-stone-800">${result.holding_costs.transferFees.toLocaleString()}</span>
+                </div>
+              )}
+              {result.holding_costs.legalCosts > 0 && (
+                <div className="flex justify-between items-center py-2 border-b border-stone-100">
+                  <span className="text-sm text-stone-600">Legal Costs</span>
+                  <span className="text-sm font-semibold text-stone-800">${result.holding_costs.legalCosts.toLocaleString()}</span>
+                </div>
+              )}
+              {result.holding_costs.inspectionCosts > 0 && (
+                <div className="flex justify-between items-center py-2 border-b border-stone-100">
+                  <span className="text-sm text-stone-600">Building & Pest</span>
+                  <span className="text-sm font-semibold text-stone-800">${result.holding_costs.inspectionCosts.toLocaleString()}</span>
+                </div>
+              )}
+            </div>
+
+            {result.holding_costs.totalUpfrontCosts && result.holding_costs.totalUpfrontCosts > 0 && (
+              <div className="pt-4 border-t-2 border-stone-200">
+                <div className="flex justify-between items-center">
+                  <span className="text-base font-semibold text-stone-800">Total Upfront</span>
+                  <span className="text-lg font-bold text-stone-900">${result.holding_costs.totalUpfrontCosts.toLocaleString()}</span>
+                </div>
+              </div>
+            )}
+
+            {result.holding_costs.estimatedMonthlyRepayment && (
+              <p className="text-sm text-stone-600 mt-4">
+                Est. repayment: {result.holding_costs.estimatedMonthlyRepayment}
+              </p>
+            )}
+
+            {result.holding_costs.cashFlowAnalysis && (
+              <div className="mt-4 p-4 bg-stone-50 rounded-xl">
+                <div className="text-[10px] font-medium uppercase tracking-widest text-stone-500 mb-2">Cash Flow Analysis</div>
+                <div className="flex items-center justify-between">
+                  <span className="text-sm text-stone-600">Potential rent vs mortgage</span>
+                  <span className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-semibold border ${
+                    result.holding_costs.cashFlowAnalysis?.verdict === 'Positive Gearing'
+                      ? 'bg-green-50 text-green-700 border-green-200'
+                      : result.holding_costs.cashFlowAnalysis?.verdict === 'Negative Gearing'
+                      ? 'bg-red-50 text-red-700 border-red-200'
+                      : 'bg-stone-100 text-stone-700 border-stone-200'
+                  }`}>
+                    {result.holding_costs.cashFlowAnalysis?.verdict === 'Positive Gearing' ? 'Positive Gearing' :
+                     result.holding_costs.cashFlowAnalysis?.verdict === 'Negative Gearing' ? 'Negative Gearing' : 'Neutral'}
+                  </span>
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* Red Flag Alerts (Sale mode) */}
+        {result.reportMode === 'sale' && result.red_flag_alerts && result.red_flag_alerts.length > 0 && (
+          <div className="mb-10 bg-white rounded-3xl p-6 @container[size>=480px]:p-10 shadow-[0_1px_8px_rgba(0,0,0,0.06)] animate-in fade-in slide-in-from-bottom-8 duration-700 ease-out" style={{ animationDelay: '262ms' }}>
+            <div className="flex items-center gap-3 mb-6">
+              <div className="w-10 h-10 rounded-xl bg-red-50 flex items-center justify-center">
+                <AlertTriangle size={18} className="text-red-600" strokeWidth={1.5} />
+              </div>
+              <h3 className="text-base font-semibold text-stone-900">Red Flag Alerts</h3>
+            </div>
+
+            <div className="space-y-3">
+              {result.red_flag_alerts.map((alert, index) => (
+                <div key={index} className={`p-4 rounded-xl border ${
+                  alert.severity === 'high'
+                    ? 'bg-red-50 border-red-200'
+                    : alert.severity === 'medium'
+                    ? 'bg-amber-50 border-amber-200'
+                    : 'bg-stone-50 border-stone-200'
+                }`}>
+                  <div className="flex items-start gap-3">
+                    <span className={`inline-flex items-center justify-center w-6 h-6 rounded-full text-xs font-semibold shrink-0 ${
+                      alert.severity === 'high'
+                        ? 'bg-red-500 text-white'
+                        : alert.severity === 'medium'
+                        ? 'bg-amber-500 text-white'
+                        : 'bg-stone-400 text-white'
+                    }`}>
+                      {alert.severity === 'high' ? '!' : alert.severity === 'medium' ? '~' : 'i'}
+                    </span>
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center gap-2 mb-1">
+                        <span className="text-sm font-semibold text-stone-800">{alert.keyword}</span>
+                        <span className="text-[10px] uppercase tracking-widest text-stone-500">{alert.category}</span>
+                      </div>
+                      <p className="text-sm text-stone-600 mb-2">{alert.message}</p>
+                      {alert.action && (
+                        <p className="text-xs text-stone-500 flex items-center gap-1">
+                          <span className="text-stone-400">Action:</span> {alert.action}
+                        </p>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* State-Specific Advice (Sale mode) */}
+        {result.reportMode === 'sale' && result.state_specific_advice && result.state_specific_advice.recommendations && result.state_specific_advice.recommendations.length > 0 && (
+          <div className="mb-10 bg-white rounded-3xl p-6 @container[size>=480px]:p-10 shadow-[0_1px_8px_rgba(0,0,0,0.06)] animate-in fade-in slide-in-from-bottom-8 duration-700 ease-out" style={{ animationDelay: '275ms' }}>
+            <div className="flex items-center gap-3 mb-6">
+              <div className="w-10 h-10 rounded-xl bg-blue-50 flex items-center justify-center">
+                <Eye size={18} className="text-blue-600" strokeWidth={1.5} />
+              </div>
+              <div className="flex items-center gap-2">
+                <h3 className="text-base font-semibold text-stone-900">State-Specific Due Diligence</h3>
+                {result.state_specific_advice.state && result.state_specific_advice.state !== 'Unknown' && (
+                  <span className="px-2 py-0.5 rounded-md bg-blue-100 text-blue-700 text-xs font-medium">
+                    {result.state_specific_advice.state}
+                  </span>
+                )}
+              </div>
+            </div>
+
+            <div className="space-y-3">
+              {result.state_specific_advice.recommendations.map((rec, index) => (
+                <div key={index} className="flex items-start gap-3 p-3 bg-stone-50 rounded-xl">
+                  <div className="w-5 h-5 rounded-md bg-blue-100 flex items-center justify-center shrink-0 mt-0.5">
+                    <Check size={12} className="text-blue-600" strokeWidth={2} />
+                  </div>
+                  <span className="text-sm text-stone-700 leading-relaxed">{rec}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* ===== Sale 模式专属新卡片 END ===== */}
 
         {/* Space Analysis */}
         {spaceAnalysis && spaceAnalysis.length > 0 && (
@@ -755,8 +1226,107 @@ export function ResultCard({ result, onBack, onShare, hideNav, isPublicShare }: 
           </>
         )}
 
-        {/* Recommendation */}
-        {recommendation && (
+        {/* Next Move / Recommendation - Sale mode enhanced with Next Move */}
+        {result.reportMode === 'sale' && (result.next_move || recommendation) && (
+          <>
+            <div className="bg-stone-900 text-white rounded-3xl p-6 @container[size>=480px]:p-12 animate-in fade-in slide-in-from-bottom-8 duration-700 ease-out" style={{ animationDelay: '400ms' }}>
+              {/* Next Move Header */}
+              {result.next_move && (
+                <>
+                  <div className="flex items-center gap-3 mb-6">
+                    <div className="w-10 h-10 rounded-xl bg-stone-800 flex items-center justify-center">
+                      <ArrowRight size={18} className="text-amber-400" strokeWidth={1.5} />
+                    </div>
+                    <h3 className="text-base font-semibold text-white">Next Move</h3>
+                    {/* Decision Badge */}
+                    <span className={`ml-auto px-4 py-1.5 rounded-full text-xs font-bold uppercase tracking-wide border ${
+                      result.next_move.decision === 'PROCEED'
+                        ? 'bg-green-500/30 text-green-300 border-green-500/50'
+                        : result.next_move.decision === 'SKIP'
+                        ? 'bg-red-500/30 text-red-300 border-red-500/50'
+                        : 'bg-amber-500/30 text-amber-300 border-amber-500/50'
+                    }`}>
+                      {result.next_move.decision === 'PROCEED' ? 'Proceed' : result.next_move.decision === 'SKIP' ? 'Skip' : 'Proceed with Caution'}
+                    </span>
+                  </div>
+
+                  {/* Next Move Headline */}
+                  {result.next_move.headline && (
+                    <div className="mb-6">
+                      <p className={`text-xl font-semibold ${
+                        result.next_move.decision === 'PROCEED' ? 'text-green-300' :
+                        result.next_move.decision === 'SKIP' ? 'text-red-300' : 'text-amber-300'
+                      }`}>
+                        {result.next_move.headline}
+                      </p>
+                    </div>
+                  )}
+
+                  {/* Next Move Reasoning */}
+                  {result.next_move.reasoning && (
+                    <p className="text-sm text-stone-300 leading-relaxed mb-6">
+                      {result.next_move.reasoning}
+                    </p>
+                  )}
+
+                  {/* Suggested Actions */}
+                  {result.next_move.suggested_actions && result.next_move.suggested_actions.length > 0 && (
+                    <div className="mb-6">
+                      <div className="text-[10px] font-medium uppercase tracking-widest text-stone-400 mb-3">Suggested Actions</div>
+                      <div className="flex flex-wrap gap-2">
+                        {result.next_move.suggested_actions.map((action, i) => (
+                          <span key={i} className="px-3 py-1.5 bg-white/10 text-white/90 text-xs rounded-full">
+                            {action}
+                          </span>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
+                  <div className="h-px bg-white/10 my-6"></div>
+                </>
+              )}
+
+              {/* Fallback to old recommendation if no next_move */}
+              {!result.next_move && (
+                <>
+                  <div className="flex items-center gap-3 mb-8">
+                    <div className="w-10 h-10 rounded-xl bg-stone-800 flex items-center justify-center">
+                      <AlertTriangle size={18} className="text-amber-400" strokeWidth={1.5} />
+                    </div>
+                    <h3 className="text-base font-semibold text-white">Recommendation</h3>
+                  </div>
+                  <div className="mb-8">
+                    <span className="text-[10px] font-medium uppercase tracking-widest text-stone-400 mb-2 block">Decision</span>
+                    <span className={`text-2xl font-semibold ${config.color.replace('text-', 'text-').replace('600', '400')}`}>
+                      {recommendation.verdict}
+                    </span>
+                  </div>
+                </>
+              )}
+
+              {/* Good Fit / Not Ideal - show if available */}
+              <div className="grid grid-cols-1 @container[size>=480px]:grid-cols-2 gap-8">
+                {(result.inspectionFit?.good_for && result.inspectionFit.good_for.length > 0) || (recommendation?.goodFitIf && recommendation.goodFitIf.length > 0) ? (
+                  <div>
+                    <div className="text-[10px] font-medium uppercase tracking-widest text-green-400 mb-3">Good Fit For</div>
+                    <SimpleBulletList items={result.inspectionFit?.good_for || recommendation?.goodFitIf || []} className="text-white" />
+                  </div>
+                ) : null}
+                {(result.inspectionFit?.not_ideal_for && result.inspectionFit.not_ideal_for.length > 0) || (recommendation?.notIdealIf && recommendation.notIdealIf.length > 0) ? (
+                  <div>
+                    <div className="text-[10px] font-medium uppercase tracking-widest text-red-400 mb-3">Not Ideal For</div>
+                    <SimpleBulletList items={result.inspectionFit?.not_ideal_for || recommendation?.notIdealIf || []} className="text-white" />
+                  </div>
+                ) : null}
+              </div>
+            </div>
+            <SectionDivider />
+          </>
+        )}
+
+        {/* Legacy Recommendation - Only show for non-sale mode */}
+        {result.reportMode !== 'sale' && recommendation && (
           <>
             <div className="bg-stone-900 text-white rounded-3xl p-6 @container[size>=480px]:p-12 animate-in fade-in slide-in-from-bottom-8 duration-700 ease-out" style={{ animationDelay: '400ms' }}>
               <div className="flex items-center gap-3 mb-8">

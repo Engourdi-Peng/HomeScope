@@ -155,7 +155,7 @@ export class RealEstateExtractor implements ListingExtractor {
       parking: rooms.parking,
       propertyType: propertyType || null,
       description: description || undefined,
-      imageUrls: finalImages.slice(0, 20),
+      imageUrls: finalImages.slice(0, 40),
       features: features.length ? [...new Set(features)].slice(0, 20) : undefined,
       extractionConfidence: Math.min(1, confidence),
     };

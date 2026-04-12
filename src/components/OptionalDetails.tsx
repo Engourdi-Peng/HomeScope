@@ -9,9 +9,24 @@ interface OptionalDetailsProps {
 
 export function OptionalDetails({ value, onChange }: OptionalDetailsProps) {
   const [isOpen, setIsOpen] = useState(false);
+  const reportMode = value.reportMode || 'rent';
 
   const handleChange = (field: keyof OptionalDetailsType, fieldValue: string) => {
     onChange({ ...value, [field]: fieldValue });
+  };
+
+  const handleReportModeChange = (mode: 'rent' | 'sale') => {
+    const updated: OptionalDetailsType = {
+      ...value,
+      reportMode: mode,
+    };
+    // 清空另一个价格字段，避免混淆
+    if (mode === 'rent') {
+      delete updated.askingPrice;
+    } else {
+      delete updated.weeklyRent;
+    }
+    onChange(updated);
   };
 
   return (
@@ -25,34 +40,72 @@ export function OptionalDetails({ value, onChange }: OptionalDetailsProps) {
         <ChevronDown size={14} className={`transition-transform duration-500 ${isOpen ? 'rotate-180' : ''}`} strokeWidth={1.5} />
       </button>
       
-      <div className={`w-full grid grid-cols-1 md:grid-cols-3 gap-6 transition-all duration-700 ease-in-out origin-top ${isOpen ? 'opacity-100 scale-y-100 h-auto mt-8' : 'opacity-0 scale-y-0 h-0 m-0 overflow-hidden'}`}>
-        <InputField 
-          label="Price Guide / Rent" 
-          placeholder="$500/week" 
-          value={value.weeklyRent || ''}
-          onChange={(v) => handleChange('weeklyRent', v)}
-        />
-        <InputField 
-          label="Suburb Context" 
-          placeholder="e.g. Surry Hills" 
-          value={value.suburb || ''}
-          onChange={(v) => handleChange('suburb', v)}
-        />
-        <div className="grid grid-cols-2 gap-4">
+      <div className={`w-full transition-all duration-700 ease-in-out origin-top ${isOpen ? 'opacity-100 scale-y-100 h-auto mt-8' : 'opacity-0 scale-y-0 h-0 m-0 overflow-hidden'}`}>
+        {/* Report Mode Toggle */}
+        <div className="flex justify-center mb-6">
+          <div className="inline-flex rounded-full bg-stone-100 p-1 gap-1">
+            <button
+              onClick={() => handleReportModeChange('rent')}
+              className={`px-5 py-2 rounded-full text-xs font-medium transition-all ${
+                reportMode === 'rent'
+                  ? 'bg-white text-stone-800 shadow-sm'
+                  : 'text-stone-500 hover:text-stone-700'
+              }`}
+            >
+              Rent
+            </button>
+            <button
+              onClick={() => handleReportModeChange('sale')}
+              className={`px-5 py-2 rounded-full text-xs font-medium transition-all ${
+                reportMode === 'sale'
+                  ? 'bg-white text-stone-800 shadow-sm'
+                  : 'text-stone-500 hover:text-stone-700'
+              }`}
+            >
+              Buy
+            </button>
+          </div>
+        </div>
+
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+          {/* Price field: rent shows weeklyRent, sale shows askingPrice */}
+          {reportMode === 'rent' ? (
+            <InputField 
+              label="Weekly Rent" 
+              placeholder="$500/week" 
+              value={value.weeklyRent || ''}
+              onChange={(v) => handleChange('weeklyRent', v)}
+            />
+          ) : (
+            <InputField 
+              label="Asking Price" 
+              placeholder="$645,000" 
+              value={value.askingPrice || ''}
+              onChange={(v) => handleChange('askingPrice', v)}
+            />
+          )}
           <InputField 
-            label="Beds" 
-            placeholder="2" 
-            type="number"
-            value={value.bedrooms || ''}
-            onChange={(v) => handleChange('bedrooms', v)}
+            label="Suburb Context" 
+            placeholder="e.g. Surry Hills" 
+            value={value.suburb || ''}
+            onChange={(v) => handleChange('suburb', v)}
           />
-          <InputField 
-            label="Baths" 
-            placeholder="1" 
-            type="number"
-            value={value.bathrooms || ''}
-            onChange={(v) => handleChange('bathrooms', v)}
-          />
+          <div className="grid grid-cols-2 gap-4">
+            <InputField 
+              label="Beds" 
+              placeholder="2" 
+              type="number"
+              value={value.bedrooms || ''}
+              onChange={(v) => handleChange('bedrooms', v)}
+            />
+            <InputField 
+              label="Baths" 
+              placeholder="1" 
+              type="number"
+              value={value.bathrooms || ''}
+              onChange={(v) => handleChange('bathrooms', v)}
+            />
+          </div>
         </div>
       </div>
     </div>

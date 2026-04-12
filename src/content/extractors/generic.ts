@@ -135,7 +135,7 @@ export class GenericPropertyExtractor implements ListingExtractor {
       parking: rooms.parking,
       propertyType,
       description: description || undefined,
-      imageUrls: images.slice(0, 25),
+      imageUrls: images.slice(0, 40),
       features: features.length ? features : undefined,
       extractionConfidence: Math.min(1, confidence),
     };

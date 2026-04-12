@@ -1,19 +1,15 @@
 {
   "manifest_version": 3,
   "name": "HomeScope",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "AI-powered property analysis in your browser",
   "icons": {
     "48": "icon.png",
     "128": "icon.png"
   },
   "permissions": [
-    "activeTab",
-    "scripting",
-    "sidePanel",
     "storage",
     "tabs",
-    "identity",
     "cookies"
   ],
   "host_permissions": [
