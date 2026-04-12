@@ -597,6 +597,8 @@ async function handleMessage(message, sender, sendResponse) {
       const requestBody = {
         imageUrls,
         description,
+        // 自动检测的报告模式（来自 content.js detectReportMode）
+        reportMode: listingData?.reportMode || 'sale',
         optionalDetails: {
           weeklyRent: listingData?.price || listingData?.priceText,
           suburb: listingData?.address,

@@ -387,6 +387,83 @@ function extractAddressFromText(text) {
   return null;
 }
 
+/**
+ * 自动检测房源类型：买房(sale)还是租房(rent)
+ * 用于 realestate.com.au 页面
+ * 
+ * 判断优先级：
+ * 1. URL 路径（最可靠）
+ * 2. 价格格式（per week = 租房，大数字总价 = 买房）
+ * 3. 页面特定元素（Bond、Available 日期、土地面积、按钮文案）
+ * 
+ * @param {Object} listing - 提取的房源数据
+ * @param {string} url - 当前页面 URL
+ * @returns {'sale' | 'rent'}
+ */
+function detectReportMode(listing, url) {
+  const urlLower = url.toLowerCase();
+  const priceText = (listing.priceText || '').toLowerCase();
+  const bodyText = document.body.innerText || '';
+  
+  // ========== 第一优先级：URL ==========
+  // 租房 URL
+  if (urlLower.includes('/rent/') || 
+      urlLower.includes('/rental/') ||
+      urlLower.includes('/to-rent/')) {
+    return 'rent';
+  }
+  
+  // 买房 URL
+  if (urlLower.includes('/buy/') || 
+      urlLower.includes('/for-sale/') ||
+      urlLower.includes('/sale/') ||
+      urlLower.includes('/sold/')) {
+    return 'sale';
+  }
+  
+  // ========== 第二优先级：价格格式 ==========
+  // 租房特征：per week / pw / p/w
+  if (/\b(per\s*week|pw|p\/w|weekly)\b/i.test(priceText)) {
+    return 'rent';
+  }
+  
+  // 租房特征：Bond + 金额（澳洲租房押金通常是 4 周房租）
+  // 匹配 "Bond $2,000" 或 "Bond: 2000" 等格式
+  if (/\bBond\b[:\s]*\$?\d+/i.test(bodyText)) {
+    return 'rent';
+  }
+  
+  // 买房特征：大数字（>=50万）且无周期单位
+  const priceNum = parseFloat(priceText.replace(/[^\d]/g, ''));
+  if (priceNum >= 500000 && !/\b(per|pw|p\/w|weekly|month)\b/i.test(priceText)) {
+    return 'sale';
+  }
+  
+  // ========== 第三优先级：页面特定元素 ==========
+  // 租房特征：Available + 日期（如 "Available 15 May"）
+  if (/\bAvailable\s+\d{1,2}\s+(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)/i.test(bodyText)) {
+    return 'rent';
+  }
+  
+  // 买房特征：土地面积（m² 或 sqm）
+  if (/\d+\s*(m²|sqm|sq\.?m|square\s*met)/i.test(bodyText)) {
+    return 'sale';
+  }
+  
+  // 买房特征：Get Contract 按钮
+  if (/\b(Get\s*Contract|Buy\s*Now|Submit\s*EOI)\b/i.test(bodyText)) {
+    return 'sale';
+  }
+  
+  // 租房特征：Apply Now 按钮
+  if (/\b(Apply\s*Now|Tenant\s*Application)\b/i.test(bodyText)) {
+    return 'rent';
+  }
+  
+  // ========== 默认值：Sale（买房模式） ==========
+  return 'sale';
+}
+
 async function extractListingDataLight() {
   const signals = detectPropertySignals();
   propertySignals = signals;
@@ -435,6 +512,8 @@ async function extractListingDataLight() {
     description,
     imageUrls: [],   // gallery images only collected on user request
     extractionConfidence: confidence,
+    // 自动检测房源类型：买房(sale)还是租房(rent)
+    reportMode: detectReportMode({ priceText: price }, window.location.href),
   };
   const detection = buildPropertyDetection(signals, listing);
   return { listing, detection };
