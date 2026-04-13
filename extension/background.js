@@ -120,6 +120,8 @@ let _cachedAuth = null;
 let _authListeners = [];
 // Whether legacy session migration has been attempted this session
 let _migrationAttempted = false;
+// Refresh lock: prevents concurrent token refresh (race condition fix)
+let _refreshLock = null;
 
 // ── Token redaction helper (只打印前6后4位) ──
 function redactToken(token) {
@@ -288,7 +290,7 @@ function broadcastAuthChanged(authenticated, user) {
       () => {
         const lastErr = chrome.runtime.lastError;
         if (lastErr) {
-          console.warn(`${LOG_PREFIX} broadcastAuthChanged: chrome.runtime.lastError=`, lastErr.message);
+          console.info(`${LOG_PREFIX} broadcastAuthChanged: chrome.runtime.lastError (tab closed before response) — ${lastErr.message}`);
         } else {
           console.log(`${LOG_PREFIX} broadcastAuthChanged: sent OK`);
         }
@@ -322,66 +324,103 @@ async function rpcSendMagicLink(email) {
 }
 
 // ----- Token refresh -----
+// Note: getSession() is called INSIDE the lock to prevent concurrent requests
+// from reading the same stale refresh_token before the lock is acquired.
+// Without this, two simultaneous requests would both read the old token,
+// both hit "Already Used", and the second one would wrongly clear the session.
 async function refreshSessionIfNeeded() {
-  const stored = await getSession();
-  if (!stored?.session?.refresh_token) {
-    console.log(`${LOG_PREFIX} refreshSessionIfNeeded: skip — no refresh_token (session=${!!stored}, refresh_token=${!!stored?.session?.refresh_token})`);
-    return stored;
-  }
-
-  console.log(`${LOG_PREFIX} refreshSessionIfNeeded: attempting refresh...`);
-  console.log(`${LOG_PREFIX} refreshSessionIfNeeded: refresh_token=${redactToken(stored.session.refresh_token)}`);
-  console.log(`${LOG_PREFIX} refreshSessionIfNeeded: userId=${stored.user?.id}`);
-
-  try {
-    const refreshUrl = `${SUPABASE_URL}/auth/v1/token?grant_type=refresh_token`;
-    console.log(`${LOG_PREFIX} refreshSessionIfNeeded: POST ${refreshUrl}`);
-
-    const res = await fetch(`${SUPABASE_URL}/auth/v1/token?grant_type=refresh_token`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        apikey: SUPABASE_ANON_KEY,
-        Authorization: `Bearer ${SUPABASE_ANON_KEY}`,
-      },
-      body: JSON.stringify({ refresh_token: stored.session.refresh_token }),
-    });
-
-    console.log(`${LOG_PREFIX} refreshSessionIfNeeded: response status=${res.status}`);
-
-    if (res.ok) {
-      const data = await res.json();
-      console.log(`${LOG_PREFIX} refreshSessionIfNeeded: SUCCESS — new access_token=${redactToken(data.access_token)}, hasRefreshToken=${!!data.refresh_token}`);
-      await saveSession(data, stored.user);
-      console.log(`${LOG_PREFIX} refreshSessionIfNeeded: session updated in storage`);
-      return { session: data, user: stored.user };
-    } else {
-      // 读取错误响应体（用于诊断）
-      let errBody = {};
-      try {
-        errBody = await res.json();
-      } catch (_) {}
-      const errMsg = errBody?.error_description || errBody?.msg || errBody?.message || '';
-      const errCode = errBody?.error || '';
-      console.warn(`${LOG_PREFIX} refreshSessionIfNeeded: FAILED status=${res.status} error_code="${errCode}" error_msg="${errMsg}"`);
-
-      // 区分错误类型：
-      // - invalid_grant: refresh_token 无效或已过期（用户需重新登录）
-      // - invalid_request / malformed: 请求本身有问题
-      if (errCode === 'invalid_grant' || res.status === 400) {
-        console.warn(`${LOG_PREFIX} refreshSessionIfNeeded: invalid_grant detected — clearing session (user must re-login)`);
-        await clearSession('refresh_failure');
-        broadcastAuthChanged(false, null);
-      } else {
-        // 其他错误（网络问题、服务器错误）— 暂时保留旧 session
-        console.warn(`${LOG_PREFIX} refreshSessionIfNeeded: non-token error (status=${res.status}) — keeping session, will retry later`);
-      }
-      return null;
+  // 如果已有刷新在进行中，等待它完成
+  if (_refreshLock) {
+    console.log(`${LOG_PREFIX} refreshSessionIfNeeded: another refresh in progress, waiting...`);
+    const result = await _refreshLock;
+    if (result) {
+      console.log(`${LOG_PREFIX} refreshSessionIfNeeded: wait resolved with success`);
+      return result;
     }
-  } catch (err) {
-    console.warn(`${LOG_PREFIX} refreshSessionIfNeeded: FAILED (network exception) — ${err.message} — keeping session, will retry later`);
-    return null;
+    // 如果等待的结果是失败，清空锁让当前请求继续尝试
+    console.log(`${LOG_PREFIX} refreshSessionIfNeeded: wait resolved with failure, will attempt fresh refresh`);
+    _refreshLock = null;
   }
+
+  // 加锁后立即获取 session（避免并发请求读取到相同的旧 token）
+  _refreshLock = (async () => {
+    const stored = await getSession();
+    if (!stored?.session?.refresh_token) {
+      console.log(`${LOG_PREFIX} refreshSessionIfNeeded: skip — no refresh_token (session=${!!stored}, refresh_token=${!!stored?.session?.refresh_token})`);
+      return stored;
+    }
+
+    console.log(`${LOG_PREFIX} refreshSessionIfNeeded: attempting refresh...`);
+    console.log(`${LOG_PREFIX} refreshSessionIfNeeded: refresh_token=${redactToken(stored.session.refresh_token)}`);
+    console.log(`${LOG_PREFIX} refreshSessionIfNeeded: userId=${stored.user?.id}`);
+
+    try {
+      const res = await fetch(`${SUPABASE_URL}/auth/v1/token?grant_type=refresh_token`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          apikey: SUPABASE_ANON_KEY,
+          Authorization: `Bearer ${SUPABASE_ANON_KEY}`,
+        },
+        body: JSON.stringify({ refresh_token: stored.session.refresh_token }),
+      });
+
+      console.log(`${LOG_PREFIX} refreshSessionIfNeeded: response status=${res.status}`);
+
+      if (res.ok) {
+        const data = await res.json();
+        console.log(`${LOG_PREFIX} refreshSessionIfNeeded: SUCCESS — new access_token=${redactToken(data.access_token)}, hasRefreshToken=${!!data.refresh_token}`);
+        await saveSession(data, stored.user);
+        console.log(`${LOG_PREFIX} refreshSessionIfNeeded: session updated in storage`);
+        return { session: data, user: stored.user };
+      } else {
+        // 读取错误响应体
+        let errBody = {};
+        try { errBody = await res.json(); } catch (_) {}
+        const errMsg = errBody?.error_description || errBody?.msg || errBody?.message || '';
+        const errCode = errBody?.error || '';
+        console.warn(`${LOG_PREFIX} refreshSessionIfNeeded: FAILED status=${res.status} error_code="${errCode}" error_msg="${errMsg}"`);
+
+        // 区分错误类型
+        const isReuseError = errMsg.toLowerCase().includes('already used');
+        const isInvalidGrant = errCode === 'invalid_grant' || res.status === 400;
+
+        if (isInvalidGrant) {
+          if (isReuseError) {
+            // 竞态：另一方已用旧 token 刷新成功，当前 token 已被替换。
+            // 先重新读取 storage 确认：如果已经有新 token，说明竞态，无需清 session。
+            console.warn(`${LOG_PREFIX} refreshSessionIfNeeded: token reuse detected — re-reading storage to confirm...`);
+            const recheck = await getSession();
+            if (!recheck?.session?.refresh_token) {
+              // storage 已空，确实需要重登
+              console.warn(`${LOG_PREFIX} refreshSessionIfNeeded: storage is empty, clearing session (user must re-login)`);
+              await clearSession('refresh_failure');
+              broadcastAuthChanged(false, null);
+            } else {
+              // storage 还有 token，假设是竞态（另一方已刷新），跳过清 session
+              console.warn(`${LOG_PREFIX} refreshSessionIfNeeded: token still in storage (race condition), skipping clearSession — will retry on next request`);
+            }
+          } else {
+            // 其他 invalid_grant（真正过期、被撤销等）
+            console.warn(`${LOG_PREFIX} refreshSessionIfNeeded: invalid_grant (non-reuse) — clearing session (user must re-login)`);
+            await clearSession('refresh_failure');
+            broadcastAuthChanged(false, null);
+          }
+        } else {
+          // 网络问题、服务器错误 — 暂时保留旧 session
+          console.warn(`${LOG_PREFIX} refreshSessionIfNeeded: non-token error (status=${res.status}) — keeping session, will retry later`);
+        }
+        return null;
+      }
+    } catch (err) {
+      console.warn(`${LOG_PREFIX} refreshSessionIfNeeded: FAILED (network exception) — ${err.message} — keeping session, will retry later`);
+      return null;
+    } finally {
+      _refreshLock = null;
+    }
+  })();
+
+  return _refreshLock;
 }
 
 // Listen to storage changes to keep listeners in sync
@@ -855,7 +894,11 @@ function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-chrome.sidePanel?.setPanelBehavior?.({ openPanelOnActionClick: true })?.catch?.(() => {});
+chrome.action.onClicked.addListener(async (tab) => {
+  if (tab?.id) {
+    await chrome.sidePanel.open({ tabId: tab.id });
+  }
+});
 
 // ===== OAuth Flow: 监听 callback 标签页打开/更新 =====
 // 注意：Supabase OAuth 使用"原地重定向"（在同一个标签页从 /login 重定向到 /auth/callback）

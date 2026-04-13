@@ -632,7 +632,7 @@ async function createAnalysisState(id: string): Promise<void> {
   }
 }
 
-async function getAnalysisState(id: string): Promise<AnalysisState | null> {
+async function getAnalysisState(id: string): Promise<AnalysisState & { reportMode?: string } | null> {
   const response = await fetch(`${SUPABASE_URL}/rest/v1/analysis_states?id=eq.${id}&select=*`, {
     headers: {
       "apikey": SUPABASE_SERVICE_ROLE_KEY,
@@ -650,6 +650,7 @@ async function getAnalysisState(id: string): Promise<AnalysisState | null> {
     status: data[0].status,
     result: data[0].result,
     error: data[0].error,
+    reportMode: data[0].report_mode || undefined,
   };
 }
 
@@ -716,35 +717,66 @@ async function createAnalysisRecord(
   description: string,
   optionalDetails?: Record<string, unknown>,
   reportMode?: ReportMode
-): Promise<void> {
+): Promise<{ success: boolean; error?: string }> {
   // Extract title/address from description if available
   const title = extractTitleFromDescription(description);
   const address = optionalDetails?.suburb as string | undefined;
+  const coverImage = pickCoverImage(imageUrls);
 
-  const response = await fetch(`${SUPABASE_URL}/rest/v1/analyses`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "apikey": SUPABASE_SERVICE_ROLE_KEY,
-      "Authorization": `Bearer ${SUPABASE_SERVICE_ROLE_KEY}`,
-      "Prefer": "return=minimal",
-    },
-    body: JSON.stringify({
-      id,
-      user_id: userId,
-      status: "pending",
-      title: title || null,
-      address: address || null,
-      cover_image_url: pickCoverImage(imageUrls) || null,
-      summary: null,
-      full_result: null,
-    }),
-  });
+  console.log("=== createAnalysisRecord called ===");
+  console.log("Analysis ID:", id);
+  console.log("User ID:", userId);
+  console.log("Title:", title);
+  console.log("Address:", address);
+  console.log("Cover image:", coverImage);
+  console.log("Report mode:", reportMode);
+  console.log("Image URLs count:", imageUrls.length);
 
-  if (!response.ok) {
-    console.error("Failed to create analysis record:", await response.text());
-  } else {
-    console.log("Analysis record created:", id);
+  try {
+    const response = await fetch(`${SUPABASE_URL}/rest/v1/analyses`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "apikey": SUPABASE_SERVICE_ROLE_KEY,
+        "Authorization": `Bearer ${SUPABASE_SERVICE_ROLE_KEY}`,
+        "Prefer": "return=representation",
+      },
+      body: JSON.stringify({
+        id,
+        user_id: userId,
+        status: "pending",
+        title: title || null,
+        address: address || null,
+        cover_image_url: coverImage || null,
+        summary: null,
+        full_result: null,
+        report_mode: reportMode || 'rent',
+      }),
+    });
+
+    console.log("createAnalysisRecord response status:", response.status);
+    const responseText = await response.text();
+    console.log("createAnalysisRecord response body:", responseText);
+
+    if (!response.ok) {
+      console.error("Failed to create analysis record:", responseText);
+      return { success: false, error: responseText };
+    }
+
+    // Parse the response to confirm record was created
+    let createdRecord: Record<string, unknown> | null = null;
+    try {
+      createdRecord = JSON.parse(responseText);
+    } catch {
+      // If no representation returned, consider it successful
+      createdRecord = { id };
+    }
+
+    console.log("Analysis record created successfully:", (createdRecord as { id?: string })?.id || id);
+    return { success: true };
+  } catch (err) {
+    console.error("createAnalysisRecord exception:", err);
+    return { success: false, error: String(err) };
   }
 }
 
@@ -756,58 +788,92 @@ async function updateAnalysisRecord(
   overallScore: number,
   verdict: string,
   summary: Record<string, unknown>,
-  fullResult: Record<string, unknown>
-): Promise<void> {
-  const response = await fetch(`${SUPABASE_URL}/rest/v1/analyses?id=eq.${id}`, {
-    method: "PATCH",
-    headers: {
-      "Content-Type": "application/json",
-      "apikey": SUPABASE_SERVICE_ROLE_KEY,
-      "Authorization": `Bearer ${SUPABASE_SERVICE_ROLE_KEY}`,
-      "Prefer": "return=minimal",
-    },
-    body: JSON.stringify({
-      status: "done",
-      overall_score: overallScore,
-      verdict: verdict,
-      summary: {
-        quickSummary: summary.quickSummary,
-        whatLooksGood: summary.whatLooksGood,
-        riskSignals: summary.riskSignals,
-      },
-      full_result: fullResult,
-      updated_at: new Date().toISOString(),
-    }),
-  });
+  fullResult: Record<string, unknown>,
+  reportMode: ReportMode // 新增参数
+): Promise<{ success: boolean; error?: string }> {
+  console.log("=== updateAnalysisRecord called ===");
+  console.log("Analysis ID:", id);
+  console.log("Overall score:", overallScore);
+  console.log("Verdict:", verdict);
+  console.log("Report mode:", reportMode);
 
-  if (!response.ok) {
-    console.error("Failed to update analysis record:", await response.text());
-  } else {
-    console.log("Analysis record updated:", id);
+  try {
+    const response = await fetch(`${SUPABASE_URL}/rest/v1/analyses?id=eq.${id}`, {
+      method: "PATCH",
+      headers: {
+        "Content-Type": "application/json",
+        "apikey": SUPABASE_SERVICE_ROLE_KEY,
+        "Authorization": `Bearer ${SUPABASE_SERVICE_ROLE_KEY}`,
+        "Prefer": "return=minimal",
+      },
+      body: JSON.stringify({
+        status: "done",
+        overall_score: overallScore,
+        verdict: verdict,
+        summary: {
+          quickSummary: summary.quickSummary,
+          whatLooksGood: summary.whatLooksGood,
+          riskSignals: summary.riskSignals,
+        },
+        full_result: fullResult,
+        report_mode: reportMode, // 同步更新 report_mode 字段
+        updated_at: new Date().toISOString(),
+      }),
+    });
+
+    console.log("updateAnalysisRecord response status:", response.status);
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      console.error("Failed to update analysis record:", errorText);
+      return { success: false, error: errorText };
+    }
+
+    console.log("Analysis record updated successfully:", id);
+    return { success: true };
+  } catch (err) {
+    console.error("updateAnalysisRecord exception:", err);
+    return { success: false, error: String(err) };
   }
 }
 
 /**
  * Mark analysis record as failed
  */
-async function failAnalysisRecord(id: string, error: string): Promise<void> {
-  const response = await fetch(`${SUPABASE_URL}/rest/v1/analyses?id=eq.${id}`, {
-    method: "PATCH",
-    headers: {
-      "Content-Type": "application/json",
-      "apikey": SUPABASE_SERVICE_ROLE_KEY,
-      "Authorization": `Bearer ${SUPABASE_SERVICE_ROLE_KEY}`,
-      "Prefer": "return=minimal",
-    },
-    body: JSON.stringify({
-      status: "failed",
-      summary: { error },
-      updated_at: new Date().toISOString(),
-    }),
-  });
+async function failAnalysisRecord(id: string, error: string): Promise<{ success: boolean; error?: string }> {
+  console.log("=== failAnalysisRecord called ===");
+  console.log("Analysis ID:", id);
+  console.log("Error:", error);
 
-  if (!response.ok) {
-    console.error("Failed to mark analysis as failed:", await response.text());
+  try {
+    const response = await fetch(`${SUPABASE_URL}/rest/v1/analyses?id=eq.${id}`, {
+      method: "PATCH",
+      headers: {
+        "Content-Type": "application/json",
+        "apikey": SUPABASE_SERVICE_ROLE_KEY,
+        "Authorization": `Bearer ${SUPABASE_SERVICE_ROLE_KEY}`,
+        "Prefer": "return=minimal",
+      },
+      body: JSON.stringify({
+        status: "failed",
+        summary: { error },
+        updated_at: new Date().toISOString(),
+      }),
+    });
+
+    console.log("failAnalysisRecord response status:", response.status);
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      console.error("Failed to mark analysis as failed:", errorText);
+      return { success: false, error: errorText };
+    }
+
+    console.log("Analysis marked as failed:", id);
+    return { success: true };
+  } catch (err) {
+    console.error("failAnalysisRecord exception:", err);
+    return { success: false, error: String(err) };
   }
 }
 
@@ -1857,6 +1923,36 @@ TONE for inspection_focus:
 - Keep it practical, not bureaucratic
 
 ================================
+AGENT QUESTIONS — WHAT TO ASK
+================================
+
+CRITICAL: ALWAYS provide exactly 3 questions, even if evidence is limited.
+Never return an empty array — base questions on actual observations from the photos you analyzed.
+Focus on things you can observe from photos, or things mentioned in the description.
+If photos are missing for certain areas, ask about those specifically.
+
+Three questions you'd actually want answered before making an offer. Practical questions. Inspection-ready questions.
+
+Focus on:
+- things you can't tell from photos
+- condition of major systems (kitchen, bathroom, roof, structure)
+- any red flags you spotted in the photos or description
+- things that would affect your decision or negotiation
+
+Good questions for buyers:
+- "What's the current condition of the kitchen and bathrooms?"
+- "Has there been any history of structural issues, damp, or flooding?"
+- "Are there any recent or planned body corporate works that might cost extra?"
+- "What's included in the sale? Are fixtures and fittings negotiable?"
+- "Have there been any recent valuations or sales in the building/street?"
+- "What's the vacancy rate like in this building/area?"
+
+Bad questions (too vague, too formal):
+- "Please provide full maintenance history."
+- "Can you elaborate on the property's recent renovations?"
+- "What is the property's current condition assessment?"
+
+================================
 CONSISTENCY CHECK — IMPORTANT
 ================================
 
@@ -1962,6 +2058,8 @@ Return ONLY valid JSON. No markdown. No code fences. No extra text.
   },
 
   "inspection_focus": ["inspection focus 1", "inspection focus 2", "inspection focus 3"],
+
+  "agent_questions": ["question 1", "question 2", "question 3"],
 
   "long_term_outlook": {
     "verdict": "Strong Hold Potential" | "Neutral" | "Risky",
@@ -2863,7 +2961,28 @@ Deno.serve(async (req) => {
     if (!state) {
       return jsonResponse({ message: "Analysis not found" }, 404);
     }
-    return jsonResponse(state);
+    // Fetch report_mode from analyses table for consistency
+    let reportMode: string = 'rent';
+    try {
+      const analysisRes = await fetch(
+        `${SUPABASE_URL}/rest/v1/analyses?id=eq.${queryId}&select=report_mode`,
+        {
+          headers: {
+            "apikey": SUPABASE_SERVICE_ROLE_KEY,
+            "Authorization": `Bearer ${SUPABASE_SERVICE_ROLE_KEY}`,
+          },
+        }
+      );
+      if (analysisRes.ok) {
+        const analyses = await analysisRes.json();
+        if (analyses && analyses.length > 0 && analyses[0].report_mode) {
+          reportMode = analyses[0].report_mode;
+        }
+      }
+    } catch (e) {
+      console.error("Failed to fetch report_mode:", e);
+    }
+    return jsonResponse({ ...state, report_mode: reportMode });
   }
 
   // GET: List user analyses history
@@ -3140,6 +3259,7 @@ Deno.serve(async (req) => {
           seo_description: analysis.seo_description,
           shared_at: analysis.shared_at,
           is_public: true,
+          report_mode: analysis.report_mode || 'rent',
         }
       });
     } catch (err) {
@@ -3223,8 +3343,9 @@ Deno.serve(async (req) => {
     await createAnalysisState(analysisId);
 
     // Create analysis record in analyses table
+    // MUST succeed before returning - this is critical for history to work
     if (user) {
-      await createAnalysisRecord(
+      const createResult = await createAnalysisRecord(
         analysisId,
         user.id,
         imageUrls,
@@ -3232,6 +3353,21 @@ Deno.serve(async (req) => {
         body.optionalDetails,
         reportMode
       );
+      
+      if (!createResult.success) {
+        console.error("CRITICAL: Failed to create analysis record in submit action:", createResult.error);
+        // Return error so client knows the submit failed
+        return jsonResponse({ 
+          message: "Failed to create analysis record", 
+          code: "CREATE_FAILED",
+          error: createResult.error 
+        }, 500);
+      }
+      
+      console.log("=== submit: analysis record created successfully ===");
+    } else {
+      console.error("CRITICAL: user is null in submit action - should have been caught by permission check");
+      return jsonResponse({ message: "User not authenticated", code: "NOT_AUTHENTICATED" }, 401);
     }
 
     console.log("\n=== Rental Property Analyzer start ===");
@@ -3519,9 +3655,21 @@ Deno.serve(async (req) => {
       // Build mode-specific fields
       const rentFields = reportMode === 'rent' ? {
         rent_fairness: (decision as any).rent_fairness ? {
-          estimated_min: typeof (decision as any).rent_fairness.estimated_min === 'number' ? (decision as any).rent_fairness.estimated_min : null,
-          estimated_max: typeof (decision as any).rent_fairness.estimated_max === 'number' ? (decision as any).rent_fairness.estimated_max : null,
-          listing_price: typeof (decision as any).rent_fairness.listing_price === 'number' ? (decision as any).rent_fairness.listing_price : null,
+          estimated_min: typeof (decision as any).rent_fairness.estimated_min === 'number'
+            ? (decision as any).rent_fairness.estimated_min
+            : typeof (decision as any).rent_fairness.estimated_min === 'string'
+            ? parseInt(String((decision as any).rent_fairness.estimated_min).replace(/[^0-9]/g, ''), 10)
+            : null,
+          estimated_max: typeof (decision as any).rent_fairness.estimated_max === 'number'
+            ? (decision as any).rent_fairness.estimated_max
+            : typeof (decision as any).rent_fairness.estimated_max === 'string'
+            ? parseInt(String((decision as any).rent_fairness.estimated_max).replace(/[^0-9]/g, ''), 10)
+            : null,
+          listing_price: typeof (decision as any).rent_fairness.listing_price === 'number'
+            ? (decision as any).rent_fairness.listing_price
+            : typeof (decision as any).rent_fairness.listing_price === 'string'
+            ? parseInt(String((decision as any).rent_fairness.listing_price).replace(/[^0-9]/g, ''), 10)
+            : null,
           verdict: (decision as any).rent_fairness.verdict || 'fair',
           explanation: (decision as any).rent_fairness.explanation || ''
         } : null,
@@ -3541,9 +3689,21 @@ Deno.serve(async (req) => {
 
       const saleFields = reportMode === 'sale' ? {
         price_assessment: (decision as any).price_assessment ? {
-          estimated_min: typeof (decision as any).price_assessment.estimated_min === 'number' ? (decision as any).price_assessment.estimated_min : null,
-          estimated_max: typeof (decision as any).price_assessment.estimated_max === 'number' ? (decision as any).price_assessment.estimated_max : null,
-          asking_price: typeof (decision as any).price_assessment.asking_price === 'number' ? (decision as any).price_assessment.asking_price : null,
+          estimated_min: typeof (decision as any).price_assessment.estimated_min === 'number'
+            ? (decision as any).price_assessment.estimated_min
+            : typeof (decision as any).price_assessment.estimated_min === 'string'
+            ? parseInt(String((decision as any).price_assessment.estimated_min).replace(/[^0-9]/g, ''), 10)
+            : null,
+          estimated_max: typeof (decision as any).price_assessment.estimated_max === 'number'
+            ? (decision as any).price_assessment.estimated_max
+            : typeof (decision as any).price_assessment.estimated_max === 'string'
+            ? parseInt(String((decision as any).price_assessment.estimated_max).replace(/[^0-9]/g, ''), 10)
+            : null,
+          asking_price: typeof (decision as any).price_assessment.asking_price === 'number'
+            ? (decision as any).price_assessment.asking_price
+            : typeof (decision as any).price_assessment.asking_price === 'string'
+            ? parseInt(String((decision as any).price_assessment.asking_price).replace(/[^0-9]/g, ''), 10)
+            : null,
           verdict: (decision as any).price_assessment.verdict || 'fair',
           explanation: (decision as any).price_assessment.explanation || ''
         } : null,
@@ -3558,9 +3718,15 @@ Deno.serve(async (req) => {
         } : null,
         affordability_check: (decision as any).affordability_check ? {
           estimated_deposit_20pct: typeof (decision as any).affordability_check.estimated_deposit_20pct === 'number'
-            ? (decision as any).affordability_check.estimated_deposit_20pct : null,
+            ? (decision as any).affordability_check.estimated_deposit_20pct
+            : typeof (decision as any).affordability_check.estimated_deposit_20pct === 'string'
+            ? parseInt(String((decision as any).affordability_check.estimated_deposit_20pct).replace(/[^0-9]/g, ''), 10)
+            : null,
           estimated_loan: typeof (decision as any).affordability_check.estimated_loan === 'number'
-            ? (decision as any).affordability_check.estimated_loan : null,
+            ? (decision as any).affordability_check.estimated_loan
+            : typeof (decision as any).affordability_check.estimated_loan === 'string'
+            ? parseInt(String((decision as any).affordability_check.estimated_loan).replace(/[^0-9]/g, ''), 10)
+            : null,
           estimated_monthly_repayment: (decision as any).affordability_check.estimated_monthly_repayment || '',
           assessment: (decision as any).affordability_check.assessment || 'manageable',
           note: (decision as any).affordability_check.note || ''
@@ -3568,9 +3734,15 @@ Deno.serve(async (req) => {
         // === Sale 模式新增字段映射 ===
         land_value_analysis: (decision as any).land_value_analysis ? {
           landSize: typeof (decision as any).land_value_analysis.land_size === 'number'
-            ? (decision as any).land_value_analysis.land_size : undefined,
+            ? (decision as any).land_value_analysis.land_size
+            : typeof (decision as any).land_value_analysis.land_size === 'string'
+            ? parseInt(String((decision as any).land_value_analysis.land_size).replace(/[^0-9]/g, ''), 10)
+            : undefined,
           pricePerSqm: typeof (decision as any).land_value_analysis.price_per_sqm === 'number'
-            ? (decision as any).land_value_analysis.price_per_sqm : undefined,
+            ? (decision as any).land_value_analysis.price_per_sqm
+            : typeof (decision as any).land_value_analysis.price_per_sqm === 'string'
+            ? parseInt(String((decision as any).land_value_analysis.price_per_sqm).replace(/[^0-9]/g, ''), 10)
+            : undefined,
           landBankingPotential: (decision as any).land_value_analysis.land_banking_potential === true,
           scarcityIndicator: (decision as any).land_value_analysis.scarcity_indicator || 'Medium',
           propertyType: (decision as any).land_value_analysis.property_type || 'Unknown',
@@ -3578,26 +3750,53 @@ Deno.serve(async (req) => {
         } : null,
         holding_costs: (decision as any).holding_costs ? {
           deposit20pct: typeof (decision as any).holding_costs.deposit_20pct === 'number'
-            ? (decision as any).holding_costs.deposit_20pct : 0,
+            ? (decision as any).holding_costs.deposit_20pct
+            : typeof (decision as any).holding_costs.deposit_20pct === 'string'
+            ? parseInt(String((decision as any).holding_costs.deposit_20pct).replace(/[^0-9]/g, ''), 10)
+            : 0,
           stampDuty: typeof (decision as any).holding_costs.stamp_duty === 'number'
-            ? (decision as any).holding_costs.stamp_duty : 0,
+            ? (decision as any).holding_costs.stamp_duty
+            : typeof (decision as any).holding_costs.stamp_duty === 'string'
+            ? parseInt(String((decision as any).holding_costs.stamp_duty).replace(/[^0-9]/g, ''), 10)
+            : 0,
           stampDutyState: (decision as any).holding_costs.stamp_duty_state || 'Other',
           transferFees: typeof (decision as any).holding_costs.transfer_fees === 'number'
-            ? (decision as any).holding_costs.transfer_fees : 0,
+            ? (decision as any).holding_costs.transfer_fees
+            : typeof (decision as any).holding_costs.transfer_fees === 'string'
+            ? parseInt(String((decision as any).holding_costs.transfer_fees).replace(/[^0-9]/g, ''), 10)
+            : 0,
           legalCosts: typeof (decision as any).holding_costs.legal_costs === 'number'
-            ? (decision as any).holding_costs.legal_costs : 0,
+            ? (decision as any).holding_costs.legal_costs
+            : typeof (decision as any).holding_costs.legal_costs === 'string'
+            ? parseInt(String((decision as any).holding_costs.legal_costs).replace(/[^0-9]/g, ''), 10)
+            : 0,
           inspectionCosts: typeof (decision as any).holding_costs.inspection_costs === 'number'
-            ? (decision as any).holding_costs.inspection_costs : 0,
+            ? (decision as any).holding_costs.inspection_costs
+            : typeof (decision as any).holding_costs.inspection_costs === 'string'
+            ? parseInt(String((decision as any).holding_costs.inspection_costs).replace(/[^0-9]/g, ''), 10)
+            : 0,
           estimatedMonthlyRepayment: (decision as any).holding_costs.estimated_monthly_repayment || '',
           totalUpfrontCosts: typeof (decision as any).holding_costs.total_upfront_costs === 'number'
-            ? (decision as any).holding_costs.total_upfront_costs : undefined,
+            ? (decision as any).holding_costs.total_upfront_costs
+            : typeof (decision as any).holding_costs.total_upfront_costs === 'string'
+            ? parseInt(String((decision as any).holding_costs.total_upfront_costs).replace(/[^0-9]/g, ''), 10)
+            : undefined,
           cashFlowAnalysis: (decision as any).holding_costs.cash_flow_analysis ? {
             potentialRent: typeof (decision as any).holding_costs.cash_flow_analysis.potential_rent === 'number'
-              ? (decision as any).holding_costs.cash_flow_analysis.potential_rent : undefined,
+              ? (decision as any).holding_costs.cash_flow_analysis.potential_rent
+              : typeof (decision as any).holding_costs.cash_flow_analysis.potential_rent === 'string'
+              ? parseInt(String((decision as any).holding_costs.cash_flow_analysis.potential_rent).replace(/[^0-9]/g, ''), 10)
+              : undefined,
             weeklyMortgageInterest: typeof (decision as any).holding_costs.cash_flow_analysis.weekly_mortgage_interest === 'number'
-              ? (decision as any).holding_costs.cash_flow_analysis.weekly_mortgage_interest : 0,
+              ? (decision as any).holding_costs.cash_flow_analysis.weekly_mortgage_interest
+              : typeof (decision as any).holding_costs.cash_flow_analysis.weekly_mortgage_interest === 'string'
+              ? parseInt(String((decision as any).holding_costs.cash_flow_analysis.weekly_mortgage_interest).replace(/[^0-9]/g, ''), 10)
+              : 0,
             weeklyDifference: typeof (decision as any).holding_costs.cash_flow_analysis.weekly_difference === 'number'
-              ? (decision as any).holding_costs.cash_flow_analysis.weekly_difference : 0,
+              ? (decision as any).holding_costs.cash_flow_analysis.weekly_difference
+              : typeof (decision as any).holding_costs.cash_flow_analysis.weekly_difference === 'string'
+              ? parseInt(String((decision as any).holding_costs.cash_flow_analysis.weekly_difference).replace(/[^0-9]/g, ''), 10)
+              : 0,
             verdict: (decision as any).holding_costs.cash_flow_analysis.verdict || 'Neutral'
           } : undefined
         } : null,
@@ -3767,7 +3966,8 @@ Deno.serve(async (req) => {
           whatLooksGood: result.whatLooksGood,
           riskSignals: result.riskSignals,
         },
-        result as Record<string, unknown>
+        result as Record<string, unknown>,
+        reportMode // 传递 reportMode 以同步到数据库
       );
 
       // Analysis succeeded - complete the credit usage

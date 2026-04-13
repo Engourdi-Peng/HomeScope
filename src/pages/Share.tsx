@@ -55,6 +55,11 @@ export function SharePage() {
           ? { ...requiredFields, ...fullResult }
           : requiredFields;
 
+        // Override reportMode from database (source of truth)
+        transformedResult.reportMode = (analysis as any).report_mode || 
+          transformedResult.reportMode || 
+          'rent';
+
         // Build listingInfo from analysis data
         const listingInfo: ListingInfo = {
           title: analysis.title || undefined,

@@ -7,10 +7,15 @@
     "48": "icon.png",
     "128": "icon.png"
   },
+  "action": {
+    "default_title": "HomeScope"
+  },
   "permissions": [
     "storage",
     "tabs",
-    "cookies"
+    "cookies",
+    "sidePanel",
+    "scripting"
   ],
   "host_permissions": [
     "https://www.realestate.com.au/*",

@@ -767,8 +767,14 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         });
 
         if (statusResponse.status === 'done' && statusResponse.result) {
-          // Inject listingInfo from extracted listingData into the result
+          // Override reportMode from API (source of truth from analyses table)
+          const reportMode = (statusResponse as any).report_mode as string | undefined;
           const resultWithListingInfo = injectListingInfo(statusResponse.result, state.listingData);
+          
+          // Apply reportMode override from API response
+          if (reportMode && resultWithListingInfo) {
+            (resultWithListingInfo as AnalysisResult).reportMode = reportMode as 'rent' | 'sale';
+          }
 
           // Analysis completed successfully
           dispatch({ type: 'SET_ANALYSIS_RESULT', result: resultWithListingInfo });
@@ -786,6 +792,16 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
           if (userData.status === 'success' && userData.data) {
             dispatch({ type: 'SET_AUTH_STATUS', authStatus: 'logged_in', credits: userData.data.credits_remaining });
           }
+
+          // Refresh history so new analysis appears immediately
+          sendMessage<{
+            status: string;
+            analyses?: AnalysisSummary[];
+          }>({ action: 'get_analysis_history', limit: 8, offset: 0 }).then((response) => {
+            if (response.status === 'success' && response.analyses) {
+              dispatch({ type: 'SET_HISTORY', history: response.analyses });
+            }
+          }).catch(() => {});
 
           return;
         }
