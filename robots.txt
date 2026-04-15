@@ -1,0 +1,15 @@
+User-agent: *
+Allow: /
+Allow: /share/*
+
+# Internal / private pages — do not index
+Disallow: /account
+Disallow: /login
+Disallow: /register
+Disallow: /checkout
+Disallow: /payment
+Disallow: /result
+Disallow: /auth/*
+Disallow: /api/*
+
+Sitemap: https://www.tryhomescope.com/sitemap.xml
