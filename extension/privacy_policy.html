@@ -1,115 +1,176 @@
-<!DOCTYPE html>
-<html lang="zh-CN">
-<head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>HomeScope 隐私政策</title>
-  <style>
-    body {
-      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
-      max-width: 800px;
-      margin: 0 auto;
-      padding: 24px;
-      line-height: 1.6;
-      color: #333;
-    }
-    h1 { color: #1a1a1a; border-bottom: 2px solid #007acc; padding-bottom: 8px; }
-    h2 { color: #2c3e50; margin-top: 32px; }
-    .last-updated { color: #666; font-size: 14px; margin-bottom: 24px; }
-    ul { padding-left: 20px; }
-    a { color: #007acc; text-decoration: none; }
-    a:hover { text-decoration: underline; }
-    .contact-section { background: #f5f5f5; padding: 16px; border-radius: 8px; margin-top: 24px; }
-  </style>
-</head>
-<body>
-  <h1>HomeScope 扩展隐私政策</h1>
-  <p class="last-updated">最后更新时间：2025年4月14日</p>
+# Privacy Policy
 
-  <p>感谢您使用 HomeScope 浏览器扩展（以下简称"本扩展"）。我们高度重视您的隐私保护。本隐私政策说明了我们如何收集、使用和保护您的信息。</p>
+**Last updated:** March 2026
 
-  <h2>1. 我们收集的信息</h2>
+## Introduction
 
-  <h3>1.1 用户主动提供的信息</h3>
-  <ul>
-    <li><strong>邮箱地址</strong>：当您使用魔法链接登录时，您需要提供邮箱地址以接收登录链接。</li>
-    <li><strong>用户配置信息</strong>：我们在本地存储中保存您的基本用户信息（如用户ID、邮箱等），用于维持登录状态。</li>
-  </ul>
+This Privacy Policy explains how we collect, use, disclose, and safeguard your information when you use our rental property analysis service, including our website and browser extension ("we", "us", or "our"). We are committed to protecting your personal information in accordance with the Australian Privacy Act 1988 and the Australian Privacy Principles (APPs).
 
-  <h3>1.2 自动收集的信息</h3>
-  <ul>
-    <li><strong>会话令牌</strong>：从 Supabase Auth 服务获取的访问令牌（access_token）和刷新令牌（refresh_token），存储在您的本地浏览器存储中，用于维持您的登录状态和 API 调用认证。</li>
-    <li><strong>房产数据</strong>：当您使用本扩展分析房产时，我们会从 Realestate.com.au 提取房产 listing 信息（包括地址、价格、卧室数量、浴室数量、停车位、描述文本、图片等），这些数据会被发送到我们的分析服务进行处理。</li>
-  </ul>
+## Information We Collect
 
-  <h2>2. 我们如何使用您的信息</h2>
-  <ul>
-    <li><strong>身份认证</strong>：使用会话令牌验证您的身份，确保只有授权用户可以访问服务。</li>
-    <li><strong>房产分析</strong>：处理您请求分析的房产数据，生成 AI 分析报告。</li>
-    <li><strong>服务运营</strong>：维护扩展的正常运行，记录使用日志以便排查问题。</li>
-  </ul>
-  <p><strong>重要说明：</strong>我们不会收集、存储或访问您的 Realestate.com.au 账号信息、密码或登录凭据。本扩展仅在您主动使用时读取网页上的房产 listing 信息，不会以任何方式获取您的个人账户数据。</p>
+We collect the following types of information:
 
-  <h2>3. 数据存储与安全</h2>
-  <ul>
-    <li>所有会话数据仅存储在您的本地浏览器中（chrome.storage.local），我们不会在云端保存您的认证令牌。</li>
-    <li>房产分析数据会发送到我们的 Supabase 后端服务进行处理，处理完成后，<strong>房产图片和原始 listing 数据不会永久存储</strong>。我们仅在必要时临时保留数据以提供服务和质量改进。</li>
-    <li>我们采用行业标准的安全措施保护您的数据，包括 HTTPS 加密传输。</li>
-    <li><strong>数据不用于训练模型</strong>：您提交的房产数据仅用于生成单次分析报告，不会用于训练或改进我们的 AI 模型（除非获得您的明确同意）。</li>
-  </ul>
+- **Account Information**: Email address and authentication data when you sign up
+- **Property Data**: Listing photos, descriptions, and property details that you provide or that are accessed from supported property listing pages when you request an analysis
+- **Usage Data**: Information about how you use our service, including analysis history
+- **Technical Data**: IP address, browser type, and device information
 
-  <h2>4. Cookie 和追踪</h2>
-  <p><strong>本扩展不使用第三方 Cookie 或追踪技术。</strong></p>
-  <p>本扩展不主动设置、读取或修改任何第三方 Cookie。您的 Supabase 会话 Cookie 仅由 Supabase Auth 服务在您登录网站时设置，本扩展不会读取或使用这些 Cookie。</p>
+## Browser Extension
 
-  <h2>5. 数据共享与披露</h2>
-  <p>我们不会向第三方出售、交易或转让您的个人信息，除非：</p>
-  <ul>
-    <li>获得您的明确同意</li>
-    <li>法律要求或政府机构依法要求披露</li>
-    <li>为保护我们的权利、财产或安全，或保护用户、公众的安全</li>
-  </ul>
+If you use our browser extension, additional information may be processed as follows:
 
-  <h2>6. 您的权利</h2>
-  <p>您随时可以：</p>
-  <ul>
-    <li><strong>登出</strong>：通过扩展的登出功能清除本地存储的会话数据。</li>
-    <li><strong>访问和更正</strong>：联系我们要访问或更正您的个人信息。</li>
-    <li><strong>删除数据</strong>：登出后，本地存储的会话数据将被清除。</li>
-  </ul>
+- The extension only accesses property listing content when you actively click "Analyze"
+- No data is collected in the background
+- The extension may read visible content on the current listing page, including text and images, solely to generate the requested analysis
+- The extension does not track your browsing activity outside supported property listing pages
 
-  <h2>7. 第三方服务</h2>
-  <p>本扩展使用以下第三方服务，它们有自己的隐私政策：</p>
-  <ul>
-    <li><strong>Supabase</strong> - 提供身份认证和后端 API 服务：<a href="https://supabase.com/privacy" target="_blank">https://supabase.com/privacy</a></li>
-    <li><strong>Realestate.com.au</strong> - 房产数据来源网站</li>
-  </ul>
-  <p>这些服务可能会收集其平台使用相关的数据，请查阅其隐私政策了解详情。</p>
+## Chrome Extension Permissions
 
-  <h2>8. 数据保留期限</h2>
-  <ul>
-    <li>本地会话数据：在您登出或卸载扩展时清除。</li>
-    <li>分析记录：保留在我们的后端服务中，直到您删除账户或根据服务条款保留期限清理。</li>
-  </ul>
+Our browser extension uses the following Chrome permissions, each with a specific purpose:
 
-  <h2>9. 儿童隐私</h2>
-  <p>本扩展不面向 18 岁以下儿童设计使用。如果我们发现无意中收集了儿童的个人信息，将及时删除。</p>
+### Permissions
 
-  <h2>10. 隐私政策更新</h2>
-  <p>我们可能不时更新本隐私政策。更新后的政策将在扩展页面发布，并在政策顶部标注"最后更新时间"。重大变更时，我们会在扩展更新时通知您。</p>
+- **`storage`** – Stores your authentication session (access tokens, user info) locally in your browser (`chrome.storage.local`). This allows you to stay signed in between sessions. Session data is only transmitted to our servers when making authenticated API requests and is never accessed remotely by us.
 
-  <h2>11. 联系我们</h2>
-  <div class="contact-section">
-    <p>如果您对本隐私政策有任何疑问、关切或想要行使您的隐私权利，请通过以下方式联系我们：</p>
-    <ul>
-      <li><strong>邮箱</strong>：a472018670@gmail.com</li>
-      <li><strong>网站</strong>：<a href="https://tryhomescope.com">https://tryhomescope.com</a></li>
-    </ul>
-  </div>
+- **`tabs`** – Used for three essential functions:
+  - Detecting when you're viewing a property listing on supported sites (Realestate.com.au)
+  - Opening the OAuth login page in a new tab during sign-in
+  - Enabling secure communication between the extension side panel and the property page via `chrome.tabs.sendMessage`
 
-  <hr style="margin-top: 40px; border: none; border-top: 1px solid #ddd;">
-  <p style="text-align: center; color: #888; font-size: 12px;">
-    © 2025 HomeScope. 保留所有权利。
-  </p>
-</body>
-</html>
+- **`sidePanel`** – Allows the extension to run in Chrome's side panel (sidebar), providing a seamless analysis experience alongside the property listing page without interrupting your browsing.
+
+### Host Permissions
+
+The extension requests access to these specific domains:
+
+- `https://www.realestate.com.au/*` – To read property listing content **only when you click "Analyze"**
+- `https://*.tryhomescope.com/*` – For authentication and API communication with our servers
+- `https://*.supabase.co/*` – For secure authentication services provided by Supabase
+
+**Important:** These permissions are strictly limited to the purposes described above. The extension does not access or collect data from these sites unless you actively use the extension's features on a supported property listing page.
+
+## Image Collection Process
+
+When you request a property analysis, we collect listing images through the following process:
+
+1. **User-Initiated** – Image collection only begins after you explicitly click "Analyze"
+2. **Gallery Access** – We programmatically open the photo gallery viewer (PhotoSwipe) on the listing page
+3. **Systematic Capture** – We navigate through all gallery slides to collect every available listing image
+4. **AI Processing** – Images are sent to our AI service for visual analysis
+5. **Temporary Storage** – Images are processed server-side and not permanently stored after analysis completion
+
+**You maintain full control:** You can cancel the analysis at any time by closing the gallery. No images are collected without your explicit action, and the gallery closes automatically after collection finishes.
+
+## How We Use Your Information
+
+We use your information for the following purposes:
+
+- To provide rental property analysis services
+- To generate AI-based insights and reports based on listing data
+- To manage your account and provide customer support
+- To improve and optimise our service (using aggregated, anonymised data)
+- To communicate with you about updates and support
+- To comply with legal obligations
+
+## AI Processing
+
+To generate analysis results, property-related data may be processed by third-party AI service providers (for example, via OpenRouter). This data is used only to generate the requested analysis and is not used by us for advertising, profiling, or unrelated purposes.
+
+## Data Storage and Security
+
+### Local Storage (Your Browser)
+
+- Session tokens and user preferences are stored in your browser's `chrome.storage.local`
+- This data remains on your device and is automatically cleared when you sign out or uninstall the extension
+- We do not have remote access to this local storage
+
+### Server Storage
+
+- Analysis results and account data are stored on secure Supabase servers with encryption at rest and in transit
+- Property listing data is retained to provide the service and maintain your analysis history
+- We implement industry-standard technical and organisational measures to protect against unauthorised access, alteration, or disclosure
+
+## Data Sharing and Disclosure
+
+We do **not** sell your personal information. We may share your information only with:
+
+- **Service providers** who assist in operating our platform (hosting, customer support, analytics)
+- **AI processing providers** used exclusively to generate your analysis results
+- **Payment processors** (e.g., Paddle as Merchant of Record) to handle transactions and refunds
+- **Law enforcement or regulatory bodies** when required by law or court order
+
+If your payment is processed by Paddle, Paddle's privacy policy and consumer terms also apply to payment-related data.
+
+## Your Rights (Australian Privacy Principles)
+
+Under the Australian Privacy Act 1988 and Australian Privacy Principles (APPs), you have the right to:
+
+- **Access** – Request a copy of the personal information we hold about you
+- **Correction** – Ask us to correct inaccurate or incomplete information
+- **Deletion** – Request erasure of your personal information (subject to legal retention limits)
+- **Opt-out** – Object to direct marketing (we do not engage in direct marketing)
+- **Complaint** – Lodge a complaint with the Office of the Australian Information Commissioner (OAIC)
+
+### Extension-Specific Rights
+
+In addition to the above, you can exercise control over extension-related data at any time:
+
+- **Clear local session data** – Sign out from within the extension or uninstall the extension to remove all locally stored data
+- **Delete analysis history** – Request deletion through the extension interface (coming soon) or by contacting us
+- **Disable the extension** – Turn off or remove the extension at any time via Chrome's extension management page (`chrome://extensions/`)
+- **Request complete data deletion** – Contact our support team to delete your account and all associated data
+
+## Cookie and Tracking Policy
+
+**Our browser extension does NOT use cookies, trackers, or any form of user monitoring.**
+
+- We do not set, read, or modify any third-party cookies
+- We do not track your browsing activity across websites
+- We do not embed analytics trackers or advertising identifiers in the extension
+- Supabase authentication cookies (if any) are managed entirely by Supabase's auth service, not by our extension
+- All communication is via direct API calls using your session token
+
+## Data Retention
+
+We retain personal information only for as long as necessary to provide services and meet legal obligations:
+
+- **Local session data** – Stored in your browser until you sign out or uninstall the extension
+- **Analysis history** – Retained on our servers until you delete your account or request deletion
+- **Property data** – Retained only as long as necessary to maintain your analysis history and provide service
+- **Technical logs** – Automatically deleted after 30 days
+- **Account data** – Retained until you request deletion or we terminate the service (with advance notice)
+
+## Children's Privacy
+
+Our service is not directed at children under 18 years of age. We do not knowingly collect personal information from children. If we learn we have collected such information, we will promptly delete it from our systems.
+
+## Changes to This Privacy Policy
+
+We may update this Privacy Policy from time to time to reflect changes in our practices or legal requirements. The "Last updated" date at the top indicates when the policy was most recently revised.
+
+If we make **material changes** that affect how we collect, use, or share your personal information, we will notify you through:
+
+- An in-extension notification banner
+- Email to your registered email address
+- A prominent notice on our website
+
+We encourage you to review this policy periodically to stay informed about our privacy practices.
+
+## Contact Us
+
+If you have any questions about this Privacy Policy, wish to exercise your privacy rights, or have a privacy concern, please contact us:
+
+- **Email**: a472018670@gmail.com
+- **Website**: https://tryhomescope.com/contact
+
+### Complaints
+
+If you believe we have breached your privacy rights under the Privacy Act 1988, you may also contact the **Office of the Australian Information Commissioner (OAIC)**:
+
+- **Website**: https://www.oaic.gov.au
+- **Phone**: 1300 363 992 (Australia) or +61 2 9284 9799
+- **Email**: enquiries@oaic.gov.au
+
+---
+
+**This policy is governed by Australian law. We are committed to complying with the Privacy Act 1988 and the Australian Privacy Principles (APPs).**

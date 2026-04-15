@@ -683,7 +683,6 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     // Step 1: Check cooldown
     const now = Date.now();
     if (!bypassCache && state.cooldownEndsAt !== null && now < state.cooldownEndsAt) {
-      console.log('[ExtApp] startAnalysis: in cooldown, aborting');
       return;
     }
 
@@ -701,7 +700,6 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
 
     // Step 2: Check URL cache
     if (!bypassCache && state.lastExtractedUrl === currentUrl && state.extractionCached && state.listingData) {
-      console.log('[ExtApp] startAnalysis: URL cache hit, skipping extraction');
       dispatch({ type: 'SET_ANALYSIS_PHASE', phase: 'sending_data' });
       await submitAnalysis(state.listingData as ListingData | ListingDataV2);
       return;

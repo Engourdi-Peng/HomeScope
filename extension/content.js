@@ -17,7 +17,6 @@
 
   // ===== Global guard to prevent double-injection in same tab =====
   if (window.__HOMESCOPE_CS_LOADED__) {
-    console.log('[HomeScope CS] Already loaded, skip.');
     return;
   }
   window.__HOMESCOPE_CS_LOADED__ = true;
@@ -28,24 +27,17 @@
 window.addEventListener('message', (event) => {
   // Only accept messages from the page (same window instance)
   if (event.source !== window) {
-    console.log('[HomeScope CS] postMessage: rejected — event.source !== window (source=' + (event.source ? 'other' : 'null') + ')');
     return;
   }
 
   // Validate message source
   if (event.data?.source !== 'homescope-auth-bridge') {
-    console.log('[HomeScope CS] postMessage: rejected — wrong source="' + event.data?.source + '" (expected "homescope-auth-bridge")');
     return;
   }
 
-  console.log('[HomeScope CS] postMessage: received source="' + event.data.source + '" type="' + event.data.type + '"');
-  console.log('[HomeScope CS]   event.origin:', event.origin);
-  console.log('[HomeScope CS]   current page origin:', window.location.origin);
-  console.log('[HomeScope CS]   current page URL:', window.location.href);
 
   if (event.data?.type === 'HOMESCOPE_SYNC_SESSION') {
     const payload = event.data.payload || {};
-    console.log('[HomeScope CS] HOMESCOPE_SYNC_SESSION: userId=' + (payload.user?.id || 'unknown') + ' hasAccessToken=' + !!payload.access_token + ' hasRefreshToken=' + !!payload.refresh_token);
 
     chrome.runtime.sendMessage(
       { action: 'sync_session_from_site', payload: event.data.payload },
@@ -60,7 +52,6 @@ window.addEventListener('message', (event) => {
           }, event.origin);
           return;
         }
-        console.log('[HomeScope CS] sync_session_from_site: background response success=' + (response?.success !== false) + ' userId=' + (response?.user?.id || 'unknown'));
         event.source.postMessage({
           source: 'homescope-auth-bridge',
           type: 'HOMESCOPE_SESSION_ACK',
@@ -72,7 +63,6 @@ window.addEventListener('message', (event) => {
   }
 });
 
-console.log('[HomeScope CS] Content script loaded, page URL:', window.location.href, 'origin:', window.location.origin);
 
 // ─────────────────────────────────────────────────────────────
 // User-triggered extraction session state
@@ -179,7 +169,6 @@ async function startUserExtraction(bypassCache = false) {
     if (!bypassCache) {
       const cached = _sessionCache.get(listingUrl);
       if (cached && Date.now() - cached._cachedAt < SESSION_CACHE_TTL_MS) {
-        console.log('[HomeScope CS] startUserExtraction: cache hit for', listingUrl);
         return cached;
       }
     }
@@ -188,10 +177,8 @@ async function startUserExtraction(bypassCache = false) {
     const { listing: lightListing, detection: lightDetection } = await extractListingDataLight();
 
     // ── Step: Open PhotoSwipe gallery ──
-    console.log('[HomeScope CS] startUserExtraction: opening gallery...');
     const opened = await openGallery();
     if (!opened) {
-      console.log('[HomeScope CS] startUserExtraction: gallery open failed, returning without images');
       // No gallery available — return listing with empty images
       const result = { listing: { ...lightListing, imageUrls: [] }, detection: lightDetection };
       _sessionCache.set(listingUrl, result);
@@ -199,9 +186,7 @@ async function startUserExtraction(bypassCache = false) {
     }
 
     // ── Step: Collect images via PhotoSwipe paging ──
-    console.log('[HomeScope CS] startUserExtraction: collecting photos via PhotoSwipe...');
     const imageUrls = await collectByPhotoSwipePaging();
-    console.log('[HomeScope CS] startUserExtraction: collected', imageUrls.length, 'photos');
 
     // ── Step: Build complete listing ──
     const listing = {
@@ -742,7 +727,6 @@ function parseTranslateX(transform) {
  * Returns { item, index, tx } or null if no items exist.
  */
 function findActivePswpItem() {
-  const dbg = (...args) => console.log('[paging] [findActivePswpItem] ' + args.map(a => typeof a === 'object' ? JSON.stringify(a) : String(a)).join(' '));
   const items = Array.from(document.querySelectorAll('.pswp__item'));
   if (items.length === 0) return null;
 
@@ -778,7 +762,6 @@ function findActivePswpItem() {
  * Returns { img, source: 'item-best'|'global-best' } or null.
  */
 function findBestImgInItem(item, allPswpImgs) {
-  const dbg = (...args) => console.log('[paging] [findBestImgInItem] ' + args.map(a => typeof a === 'object' ? JSON.stringify(a) : String(a)).join(' '));
 
   const imgs = Array.from(item.querySelectorAll('.pswp__img'));
   dbg('item has ' + imgs.length + ' pswp__img nodes');
@@ -959,13 +942,11 @@ async function clickFirstListingImage() {
       img.closest('[class*="gallery"]') ||
       img;
 
-    console.log('[openGallery] strategy=main-image img=' + getElementPath(img) + ' clickable=' + clickable.tagName);
     try { clickable.click(); } catch (_) {
       try { clickable.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true })); } catch (_2) {}
     }
 
     if (await waitForPhotoSwipe(3000)) {
-      console.log('[openGallery] ✓ PhotoSwipe opened via main-image');
       return true;
     }
   }
@@ -987,13 +968,11 @@ async function clickGalleryContainer() {
 
   if (!galleryEl) return false;
 
-  console.log('[openGallery] strategy=gallery-container el=' + getElementPath(galleryEl));
   try { galleryEl.click(); } catch (_) {
     try { galleryEl.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true })); } catch (_2) {}
   }
 
   if (await waitForPhotoSwipe(3000)) {
-    console.log('[openGallery] ✓ PhotoSwipe opened via gallery-container');
     return true;
   }
   return false;
@@ -1026,7 +1005,6 @@ function collectGalleryButtonCandidates() {
  * Returns true if PhotoSwipe is opened, false otherwise.
  */
 async function openGallery() {
-  const log = (msg, data) => console.log('[openGallery] ' + msg, typeof data === 'object' ? JSON.stringify(data) : data);
 
   const existing = document.querySelector('.pswp');
   if (existing && existing.classList.contains('pswp--open')) {
@@ -1345,7 +1323,6 @@ function shouldKeepImage(img, pageAddress) {
  * Used as a fallback when gallery cannot be opened.
  */
 function extractLightImageUrls() {
-  const log = (msg, data) => console.log('[HomeScope Img] ' + msg, typeof data === 'object' ? JSON.stringify(data) : data);
 
   const out = [];
   const seen = new Set();
@@ -1416,7 +1393,6 @@ let _pagingLock = false;
  * @returns {Promise<Array<{url: string, width: number, id: string|null}>|null>}
  */
 async function tryExtractPhotoSwipeItems() {
-  const log = (msg, data) => console.log('[paging] [tryExtractPhotoSwipeItems] ' + msg, data);
 
   const pswpEl = document.querySelector('.pswp');
   if (!pswpEl) {
@@ -1516,7 +1492,6 @@ async function tryExtractPhotoSwipeItems() {
  *   - OEmbed / meta tags
  */
 function scanGalleryFromListView() {
-  const log = (msg) => console.log('[paging] [scanGalleryFromListView] ' + msg);
   const collected = [];
 
   // Patterns for full-res image attributes on <img> elements
@@ -1595,7 +1570,6 @@ function scanGalleryFromListView() {
  * Strategy 6: Scan SSR/RWT data blocks (NEXT_DATA, redux state, etc.)
  */
 function scanGalleryFromSsrData() {
-  const log = (msg) => console.log('[paging] [scanGalleryFromSsrData] ' + msg);
   const collected = [];
 
   // Common SSR data script tags
@@ -1659,7 +1633,6 @@ function scanGalleryFromSsrData() {
  * Common patterns: window.images, window.gallery, window.photos, window.mediaItems, etc.
  */
 function scanGalleryFromWindow() {
-  const log = (msg) => console.log('[paging] [scanGalleryFromWindow] ' + msg);
   const collected = [];
 
   const candidates = [
@@ -1835,13 +1808,11 @@ async function waitForGalleryReady(timeoutMs = 3000) {
     for (const img of imgs) {
       const src = (img.currentSrc || img.src || '').trim();
       if (src && src.startsWith('http') && !src.startsWith('data:') && !src.startsWith('blob:')) {
-        console.log('[gallery] waitForGalleryReady success at poll ' + polls + ' after ' + (Date.now() - start) + 'ms');
         return { ready: true, pollCount: polls };
       }
     }
     await new Promise(r => setTimeout(r, 100));
   }
-  console.log('[gallery] waitForGalleryReady TIMEOUT after ' + polls + ' polls');
   return { ready: false, pollCount: polls };
 }
 
@@ -1995,23 +1966,19 @@ async function waitForRealSlideChange(prevSnapshot, prevCurrIndex, timeoutMs = 4
       if (newCurrIndex !== prevCurrIndex) {
         // currIndex 变了，必须再确认 signature 也变了才算成功
         if (snapshot.isValid && snapshot.signature && snapshot.signature !== prevSnapshot?.signature) {
-          console.log('[gallery] waitForRealSlideChange: A-success pswp-api+signature ' + prevCurrIndex + ' -> ' + newCurrIndex + ', sig changed (' + polls + ' polls, ' + (Date.now() - start) + 'ms)');
           return { changed: true, newSnapshot: snapshot, prevSnapshot, reason: 'pswp-api+signature', newCurrIndex, polls };
         }
         // currIndex 变了但 signature 没变 = PhotoSwipe 内部 glitch，继续等待
-        console.log('[gallery] waitForRealSlideChange: A-glitch currIndex changed but sig same, continue polling');
       }
     }
 
     // Strategy B: signature changed (fallback 或无 API 时的唯一判断)
     if (snapshot.isValid && snapshot.signature && snapshot.signature !== prevSnapshot?.signature) {
       const reason = pswpInfo ? 'signature-only(no-pswp-index)' : 'signature';
-      console.log('[gallery] waitForRealSlideChange: B-success ' + reason + ' ' + (prevSnapshot?.signature || 'null') + ' -> ' + snapshot.signature + ' (' + polls + ' polls, ' + (Date.now() - start) + 'ms)');
       return { changed: true, newSnapshot: snapshot, prevSnapshot, reason, polls };
     }
   }
 
-  console.log('[gallery] waitForRealSlideChange: TIMEOUT after ' + polls + ' polls, ' + (Date.now() - start) + 'ms, prevSignature=' + (prevSnapshot?.signature || 'null') + ', currSignature=' + (lastSnapshot?.signature || 'null'));
   return { changed: false, newSnapshot: lastSnapshot, prevSnapshot, reason: 'timeout', polls };
 }
 
@@ -2023,7 +1990,6 @@ function advanceToNextSlide() {
   if (pswpInfo) {
     try {
       pswpInfo.instance.next();
-      console.log('[gallery] advanceToNextSlide: used=pswp-api');
       return { used: 'pswp-api', success: true };
     } catch (_) {}
   }
@@ -2035,12 +2001,10 @@ function advanceToNextSlide() {
 
   if (btn && !btn.disabled) {
     try { btn.click(); } catch (_) { btn.dispatchEvent(new MouseEvent('click', { bubbles: true })); }
-    console.log('[gallery] advanceToNextSlide: used=button');
     return { used: 'button', success: true };
   }
 
   document.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true }));
-  console.log('[gallery] advanceToNextSlide: used=keyboard');
   return { used: 'keyboard', success: true };
 }
 
@@ -2054,13 +2018,11 @@ function closeGallery() {
     const pswpRoot = document.querySelector('.pswp.pswp--open');
     if (!pswpRoot) return;
 
-    console.log('[gallery] Attempting to close PhotoSwipe...');
 
     // 1️⃣ Try clicking the close button (most stable)
     const closeBtn = pswpRoot.querySelector('.pswp__button--close');
     if (closeBtn) {
       closeBtn.click();
-      console.log('[gallery] closed via close button');
       return;
     }
 
@@ -2073,14 +2035,12 @@ function closeGallery() {
         bubbles: true,
       })
     );
-    console.log('[gallery] dispatched ESC');
 
     // 3️⃣ Fallback: force-remove DOM after animation settles
     setTimeout(() => {
       const stillOpen = document.querySelector('.pswp.pswp--open');
       if (stillOpen) {
         stillOpen.remove();
-        console.log('[gallery] force removed pswp DOM');
       }
     }, 300);
   } catch (err) {
@@ -2095,39 +2055,32 @@ function closeGallery() {
  */
 async function collectByPhotoSwipePaging() {
   if (_pagingLock) {
-    console.log('[gallery] collectByPhotoSwipePaging: skipped (lock held)');
     return [];
   }
   _pagingLock = true;
 
   const result = [];
   try {
-    console.log('[gallery] ====== START PhotoSwipe extraction ======');
 
     const pswp = document.querySelector('.pswp.pswp--open');
     if (!pswp) {
-      console.log('[gallery] PhotoSwipe not open, returning empty');
       return [];
     }
 
     // Wait for gallery to be ready
     const ready = await waitForGalleryReady(3000);
     if (!ready.ready) {
-      console.log('[gallery] Gallery not ready, returning empty');
       return [];
     }
 
     // Get PhotoSwipe instance info
     const pswpInfo = getPhotoSwipeInstance();
     const totalSlides = pswpInfo?.totalSlides || 0;
-    console.log('[gallery] Gallery ready, totalSlides=' + totalSlides);
 
     // Get initial snapshot
     const initialSnapshot = getActiveSlideSnapshot();
-    console.log('[gallery] Initial snapshot: strategy=' + initialSnapshot.strategy + ', signature=' + (initialSnapshot.signature || 'null') + ', rawSrc=' + (initialSnapshot.rawSrc?.substring(0, 60) || 'null'));
 
     if (!initialSnapshot.isValid) {
-      console.log('[gallery] Cannot read any image URL from initial snapshot');
       return [];
     }
 
@@ -2143,7 +2096,6 @@ async function collectByPhotoSwipePaging() {
     const firstSrc = initialSnapshot.rawSrc;
     if (firstSignature && firstSrc) {
       result.push({ signature: firstSignature, url: firstSrc });
-      console.log('[gallery] RECORDED [0]: signature=' + firstSignature + ', url=' + firstSrc.substring(0, 80));
     }
 
     // Maintain currentSnapshot for next comparison (snapshot, not result item)
@@ -2165,7 +2117,6 @@ async function collectByPhotoSwipePaging() {
       const prevCurrIndex = pswpInfoNow?.instance?.currIndex ?? 0;
 
       if (totalSlidesNow > 0 && result.length >= totalSlidesNow) {
-        console.log('[gallery] Reached totalSlides limit (' + totalSlidesNow + '), stopping');
         break;
       }
 
@@ -2181,9 +2132,7 @@ async function collectByPhotoSwipePaging() {
 
       if (!waitResult.changed) {
         consecutiveNoNew++;
-        console.log('[gallery] ITER ' + totalAttempts + ': no change (reason=' + waitResult.reason + '), consecutiveNoNew=' + consecutiveNoNew + '/' + MAX_NO_NEW);
         if (consecutiveNoNew >= MAX_NO_NEW) {
-          console.log('[gallery] STOP: ' + MAX_NO_NEW + ' consecutive attempts with no new images');
           break;
         }
         continue;
@@ -2198,7 +2147,6 @@ async function collectByPhotoSwipePaging() {
       currentSnapshot = newSnapshot;
 
       if (!newSnapshot.isValid) {
-        console.log('[gallery] ITER ' + totalAttempts + ': new snapshot invalid, skipping');
         continue;
       }
 
@@ -2206,19 +2154,15 @@ async function collectByPhotoSwipePaging() {
       const newSrc = newSnapshot.rawSrc;
 
       if (seenSignatures.has(newSignature)) {
-        console.log('[gallery] ITER ' + totalAttempts + ': LOOP-BACK detected, signature=' + newSignature + ' already seen');
         if (result.length >= 3) {
-          console.log('[gallery] STOP: loop-back with ' + result.length + ' images collected');
           break;
         }
-        console.log('[gallery] loop-back but only ' + result.length + ' images, trying one more...');
         continue;
       }
 
       // Record new image (result item — signature + url only)
       seenSignatures.add(newSignature);
       result.push({ signature: newSignature, url: newSrc });
-      console.log('[gallery] ITER ' + totalAttempts + ': RECORDED [' + (result.length - 1) + ']: signature=' + newSignature + ', reason=' + waitResult.reason + ', polls=' + waitResult.polls);
     }
 
     // Build final result (NEVER return empty if we have results)
@@ -2230,16 +2174,12 @@ async function collectByPhotoSwipePaging() {
       if (!finalSeen.has(key)) {
         finalSeen.add(key);
         finalUrls.push(item.url);
-        console.log('[gallery] FINAL-KEEP: ' + item.url.substring(0, 80));
       } else {
-        console.log('[gallery] FINAL-DROP: ' + item.url.substring(0, 80));
       }
     }
 
     finalUrls.sort((a, b) => extractWidthFromUrl(b) - extractWidthFromUrl(a));
 
-    console.log('[gallery] ====== FINISH ======');
-    console.log('[gallery] Total: ' + result.length + ' collected, ' + finalUrls.length + ' unique after dedup');
 
     // Return what we have, even if less than expected
     return finalUrls.length > 0 ? finalUrls : [];
@@ -2251,7 +2191,6 @@ async function collectByPhotoSwipePaging() {
       .filter(item => item.signature || item.url)
       .map(item => item.url)
       .filter((url, idx, arr) => arr.indexOf(url) === idx);
-    console.log('[gallery] Returning ' + finalUrls.length + ' photos despite error');
     return finalUrls;
   } finally {
     _pagingLock = false;
@@ -2262,7 +2201,6 @@ async function collectByPhotoSwipePaging() {
 
 // ── Mark as ready ──
 isReady = true;
-console.log('[HomeScope] Content script loaded — user-triggered extraction mode');
 
 })(); // End of IIFE
 

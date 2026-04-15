@@ -19,13 +19,10 @@ export function GateView() {
 
   // ── 监听 authStatus 变化：background broadcastAuthChanged(true) → store 更新 → 这里捕获 ──
   useEffect(() => {
-    console.log('[HomeScope Gate] authStatus changed:', authStatus);
     if (authStatus === 'logged_in' && waitingRef.current) {
-      console.log('[HomeScope Gate] authStatus → logged_in while waiting, exiting waiting state');
       waitingRef.current = false;
       setWaitingForSync(false);
     } else if (authStatus === 'logged_out' && waitingRef.current) {
-      console.log('[HomeScope Gate] authStatus → logged_out while waiting (unexpected), clearing state');
       waitingRef.current = false;
       setWaitingForSync(false);
     }
@@ -36,11 +33,9 @@ export function GateView() {
   useEffect(() => {
     if (!waitingForSync) return;
 
-    console.log('[HomeScope Gate] waitingForSync=true, starting poll fallback (max 30s)...');
     let elapsed = 0;
     const intervalId = setInterval(async () => {
       elapsed += 1;
-      console.log(`[HomeScope Gate] poll check #${elapsed}/30...`);
 
       try {
         const response = await new Promise<{ state: string; user?: ExtUser }>((resolve, reject) => {
@@ -50,21 +45,16 @@ export function GateView() {
           });
         });
 
-        console.log(`[HomeScope Gate] poll #${elapsed}/30: check_auth_status → state=${response.state}, userId=${response.user?.id}`);
-
         if (response.state === 'authenticated' && response.user) {
-          console.log('[HomeScope Gate] poll: background has session! Forcing logged_in state...');
           waitingRef.current = false;
           setWaitingForSync(false);
           clearInterval(intervalId);
         } else if (elapsed >= 30) {
-          console.warn('[HomeScope Gate] poll: 30s timeout, giving up');
           waitingRef.current = false;
           setWaitingForSync(false);
           clearInterval(intervalId);
         }
       } catch (err) {
-        console.error(`[HomeScope Gate] poll #${elapsed}: error —`, err);
         if (elapsed >= 30) {
           waitingRef.current = false;
           setWaitingForSync(false);
@@ -105,7 +95,6 @@ export function GateView() {
     setError(null);
     waitingRef.current = true;
     setWaitingForSync(true);
-    console.log('[HomeScope Gate] handleGoogleOAuth: waitingForSync=true, will open login page...');
 
     const result = await initiateGoogleOAuth();
 
@@ -116,13 +105,10 @@ export function GateView() {
       setWaitingForSync(false);
       return;
     }
-
-    console.log('[HomeScope Gate] handleGoogleOAuth: login page opened, waiting for sync...');
     // 轮询兜底由 useEffect [waitingForSync] 处理，此处无需 setTimeout
   };
 
   const handleCancelWaiting = () => {
-    console.log('[GateView] handleCancelWaiting: cancelling wait');
     waitingRef.current = false;
     setWaitingForSync(false);
   };

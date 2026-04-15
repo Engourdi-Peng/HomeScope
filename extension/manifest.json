@@ -13,13 +13,11 @@
   "permissions": [
     "storage",
     "tabs",
-    "sidePanel",
-    "scripting"
+    "sidePanel"
   ],
   "host_permissions": [
     "https://www.realestate.com.au/*",
-    "https://www.tryhomescope.com/*",
-    "https://tryhomescope.com/*",
+    "https://*.tryhomescope.com/*",
     "https://trteewgplkqiedonomzg.supabase.co/*"
   ],
   "background": {
@@ -34,20 +32,14 @@
     {
       "matches": [
         "https://www.realestate.com.au/*",
-        "https://www.tryhomescope.com/*",
-        "https://tryhomescope.com/*"
+        "https://*.tryhomescope.com/*",
+        "https://trteewgplkqiedonomzg.supabase.co/*"
       ],
       "js": ["content.js"],
       "run_at": "document_idle"
     }
   ],
-  "web_accessible_resources": [
-    {
-      "resources": ["assets/*"],
-      "matches": ["https://www.tryhomescope.com/*", "https://tryhomescope.com/*"]
-    }
-  ],
-  "privacy_policy_url": "privacy_policy.html",
+  "privacy_policy_url": "https://tryhomescope.com/privacy",
   "homepage_url": "https://tryhomescope.com",
   "support_url": "support.html"
 }
