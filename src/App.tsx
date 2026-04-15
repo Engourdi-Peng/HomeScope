@@ -6,6 +6,7 @@ import { ResultPage } from './pages/Result';
 import { AccountPage } from './pages/Account';
 import { PrivacyPolicy } from './pages/PrivacyPolicy';
 import { TermsOfService } from './pages/TermsOfService';
+import { SupportPage } from './pages/Support';
 import { PricingPage } from './pages/Pricing';
 import { PaymentSuccessPage } from './pages/PaymentSuccess';
 import { Contact } from './pages/Contact';
@@ -43,6 +44,7 @@ function AnimatedRoutes() {
         <Route path="/account" element={<AccountPage />} />
         <Route path="/privacy" element={<PrivacyPolicy />} />
         <Route path="/terms" element={<TermsOfService />} />
+        <Route path="/support" element={<SupportPage />} />
         <Route path="/pricing" element={<PricingPage />} />
         <Route path="/payment-success" element={<PaymentSuccessPage />} />
         <Route path="/contact" element={<Contact />} />

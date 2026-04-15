@@ -172,26 +172,7 @@ async function migrateLegacySession() {
     }
   }
 
-  // Try Supabase cookie fallback
-  if (!legacySession) {
-    try {
-      const cookies = await chrome.cookies.getAll({ domain: '.supabase.co' });
-      for (const c of cookies) {
-        if (c.name.startsWith('sb-') && c.name.endsWith('-auth-token') && c.value) {
-          try {
-            const decoded = decodeURIComponent(c.value);
-            const parsed = JSON.parse(decoded);
-            const sess = parsed?.currentSession || parsed;
-            if (sess?.access_token && sess?.user) {
-              legacySession = { access_token: sess.access_token, refresh_token: sess.refresh_token, user: sess.user };
-              console.log(`${LOG_PREFIX} migrateLegacySession: found legacy session in cookie name=${c.name}`);
-              break;
-            }
-          } catch (_) {}
-        }
-      }
-    } catch (_) {}
-  }
+  // Migration complete — cookies fallback removed (no legacy users, privacy-safe)
 
   if (legacySession) {
     const extUser = toExtUser(legacySession.user);
@@ -633,18 +614,31 @@ async function handleMessage(message, sender, sendResponse) {
       const listingData = message.data;
       const imageUrls = listingData?.imageUrls || listingData?.images || [];
       const description = listingData?.description || listingData?.rawText || '';
+      const reportMode = listingData?.reportMode || 'sale';
+
+      // Build optionalDetails with correct field names based on reportMode
+      const optionalDetails = {
+        suburb: listingData?.address,
+        bedrooms: listingData?.bedrooms != null ? String(listingData.bedrooms) : undefined,
+        bathrooms: listingData?.bathrooms != null ? String(listingData.bathrooms) : undefined,
+        parking: listingData?.parking != null ? String(listingData.parking) : undefined,
+      };
+
+      // Add price field with correct name based on report mode
+      if (listingData?.price || listingData?.priceText) {
+        if (reportMode === 'rent') {
+          optionalDetails.weeklyRent = listingData?.price || listingData?.priceText;
+        } else {
+          // 'sale' mode — use askingPrice
+          optionalDetails.askingPrice = listingData?.price || listingData?.priceText;
+        }
+      }
+
       const requestBody = {
         imageUrls,
         description,
-        // 自动检测的报告模式（来自 content.js detectReportMode）
-        reportMode: listingData?.reportMode || 'sale',
-        optionalDetails: {
-          weeklyRent: listingData?.price || listingData?.priceText,
-          suburb: listingData?.address,
-          bedrooms: listingData?.bedrooms != null ? String(listingData.bedrooms) : undefined,
-          bathrooms: listingData?.bathrooms != null ? String(listingData.bathrooms) : undefined,
-          parking: listingData?.parking != null ? String(listingData.parking) : undefined,
-        },
+        reportMode,
+        optionalDetails,
       };
 
       // Step 3: action=submit — create analysis record and return analysisId

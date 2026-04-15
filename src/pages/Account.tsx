@@ -395,6 +395,16 @@ export function AccountPage() {
               <ChevronRight size={18} className="text-stone-400" />
             </Link>
             <Link
+              to="/support"
+              className="flex items-center justify-between p-3 rounded-xl hover:bg-stone-50 transition-colors"
+            >
+              <div className="flex items-center gap-3">
+                <Mail size={18} className="text-stone-500" />
+                <span className="text-stone-700">Support Center</span>
+              </div>
+              <ChevronRight size={18} className="text-stone-400" />
+            </Link>
+            <Link
               to="/refund"
               className="flex items-center justify-between p-3 rounded-xl hover:bg-stone-50 transition-colors"
             >

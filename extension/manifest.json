@@ -13,7 +13,6 @@
   "permissions": [
     "storage",
     "tabs",
-    "cookies",
     "sidePanel",
     "scripting"
   ],
@@ -47,5 +46,8 @@
       "resources": ["assets/*"],
       "matches": ["https://www.tryhomescope.com/*", "https://tryhomescope.com/*"]
     }
-  ]
+  ],
+  "privacy_policy_url": "privacy_policy.html",
+  "homepage_url": "https://tryhomescope.com",
+  "support_url": "support.html"
 }

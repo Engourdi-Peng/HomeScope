@@ -1,0 +1,115 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>HomeScope 隐私政策</title>
+  <style>
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+      max-width: 800px;
+      margin: 0 auto;
+      padding: 24px;
+      line-height: 1.6;
+      color: #333;
+    }
+    h1 { color: #1a1a1a; border-bottom: 2px solid #007acc; padding-bottom: 8px; }
+    h2 { color: #2c3e50; margin-top: 32px; }
+    .last-updated { color: #666; font-size: 14px; margin-bottom: 24px; }
+    ul { padding-left: 20px; }
+    a { color: #007acc; text-decoration: none; }
+    a:hover { text-decoration: underline; }
+    .contact-section { background: #f5f5f5; padding: 16px; border-radius: 8px; margin-top: 24px; }
+  </style>
+</head>
+<body>
+  <h1>HomeScope 扩展隐私政策</h1>
+  <p class="last-updated">最后更新时间：2025年4月14日</p>
+
+  <p>感谢您使用 HomeScope 浏览器扩展（以下简称"本扩展"）。我们高度重视您的隐私保护。本隐私政策说明了我们如何收集、使用和保护您的信息。</p>
+
+  <h2>1. 我们收集的信息</h2>
+
+  <h3>1.1 用户主动提供的信息</h3>
+  <ul>
+    <li><strong>邮箱地址</strong>：当您使用魔法链接登录时，您需要提供邮箱地址以接收登录链接。</li>
+    <li><strong>用户配置信息</strong>：我们在本地存储中保存您的基本用户信息（如用户ID、邮箱等），用于维持登录状态。</li>
+  </ul>
+
+  <h3>1.2 自动收集的信息</h3>
+  <ul>
+    <li><strong>会话令牌</strong>：从 Supabase Auth 服务获取的访问令牌（access_token）和刷新令牌（refresh_token），存储在您的本地浏览器存储中，用于维持您的登录状态和 API 调用认证。</li>
+    <li><strong>房产数据</strong>：当您使用本扩展分析房产时，我们会从 Realestate.com.au 提取房产 listing 信息（包括地址、价格、卧室数量、浴室数量、停车位、描述文本、图片等），这些数据会被发送到我们的分析服务进行处理。</li>
+  </ul>
+
+  <h2>2. 我们如何使用您的信息</h2>
+  <ul>
+    <li><strong>身份认证</strong>：使用会话令牌验证您的身份，确保只有授权用户可以访问服务。</li>
+    <li><strong>房产分析</strong>：处理您请求分析的房产数据，生成 AI 分析报告。</li>
+    <li><strong>服务运营</strong>：维护扩展的正常运行，记录使用日志以便排查问题。</li>
+  </ul>
+  <p><strong>重要说明：</strong>我们不会收集、存储或访问您的 Realestate.com.au 账号信息、密码或登录凭据。本扩展仅在您主动使用时读取网页上的房产 listing 信息，不会以任何方式获取您的个人账户数据。</p>
+
+  <h2>3. 数据存储与安全</h2>
+  <ul>
+    <li>所有会话数据仅存储在您的本地浏览器中（chrome.storage.local），我们不会在云端保存您的认证令牌。</li>
+    <li>房产分析数据会发送到我们的 Supabase 后端服务进行处理，处理完成后，<strong>房产图片和原始 listing 数据不会永久存储</strong>。我们仅在必要时临时保留数据以提供服务和质量改进。</li>
+    <li>我们采用行业标准的安全措施保护您的数据，包括 HTTPS 加密传输。</li>
+    <li><strong>数据不用于训练模型</strong>：您提交的房产数据仅用于生成单次分析报告，不会用于训练或改进我们的 AI 模型（除非获得您的明确同意）。</li>
+  </ul>
+
+  <h2>4. Cookie 和追踪</h2>
+  <p><strong>本扩展不使用第三方 Cookie 或追踪技术。</strong></p>
+  <p>本扩展不主动设置、读取或修改任何第三方 Cookie。您的 Supabase 会话 Cookie 仅由 Supabase Auth 服务在您登录网站时设置，本扩展不会读取或使用这些 Cookie。</p>
+
+  <h2>5. 数据共享与披露</h2>
+  <p>我们不会向第三方出售、交易或转让您的个人信息，除非：</p>
+  <ul>
+    <li>获得您的明确同意</li>
+    <li>法律要求或政府机构依法要求披露</li>
+    <li>为保护我们的权利、财产或安全，或保护用户、公众的安全</li>
+  </ul>
+
+  <h2>6. 您的权利</h2>
+  <p>您随时可以：</p>
+  <ul>
+    <li><strong>登出</strong>：通过扩展的登出功能清除本地存储的会话数据。</li>
+    <li><strong>访问和更正</strong>：联系我们要访问或更正您的个人信息。</li>
+    <li><strong>删除数据</strong>：登出后，本地存储的会话数据将被清除。</li>
+  </ul>
+
+  <h2>7. 第三方服务</h2>
+  <p>本扩展使用以下第三方服务，它们有自己的隐私政策：</p>
+  <ul>
+    <li><strong>Supabase</strong> - 提供身份认证和后端 API 服务：<a href="https://supabase.com/privacy" target="_blank">https://supabase.com/privacy</a></li>
+    <li><strong>Realestate.com.au</strong> - 房产数据来源网站</li>
+  </ul>
+  <p>这些服务可能会收集其平台使用相关的数据，请查阅其隐私政策了解详情。</p>
+
+  <h2>8. 数据保留期限</h2>
+  <ul>
+    <li>本地会话数据：在您登出或卸载扩展时清除。</li>
+    <li>分析记录：保留在我们的后端服务中，直到您删除账户或根据服务条款保留期限清理。</li>
+  </ul>
+
+  <h2>9. 儿童隐私</h2>
+  <p>本扩展不面向 18 岁以下儿童设计使用。如果我们发现无意中收集了儿童的个人信息，将及时删除。</p>
+
+  <h2>10. 隐私政策更新</h2>
+  <p>我们可能不时更新本隐私政策。更新后的政策将在扩展页面发布，并在政策顶部标注"最后更新时间"。重大变更时，我们会在扩展更新时通知您。</p>
+
+  <h2>11. 联系我们</h2>
+  <div class="contact-section">
+    <p>如果您对本隐私政策有任何疑问、关切或想要行使您的隐私权利，请通过以下方式联系我们：</p>
+    <ul>
+      <li><strong>邮箱</strong>：a472018670@gmail.com</li>
+      <li><strong>网站</strong>：<a href="https://tryhomescope.com">https://tryhomescope.com</a></li>
+    </ul>
+  </div>
+
+  <hr style="margin-top: 40px; border: none; border-top: 1px solid #ddd;">
+  <p style="text-align: center; color: #888; font-size: 12px;">
+    © 2025 HomeScope. 保留所有权利。
+  </p>
+</body>
+</html>

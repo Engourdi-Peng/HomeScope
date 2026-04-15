@@ -1743,7 +1743,13 @@ Your reason should be 2-3 sentences in plain Aussie buyer voice. Focus on the ke
 PRICE ASSESSMENT — BE CAREFUL
 ================================
 
-Only estimate this if you have enough information: suburb, bedrooms, bathrooms, condition from photos, and an asking price.
+CRITICAL: You MUST populate price_assessment.asking_price with the asking price from the listing (optionalDetails.askingPrice if provided).
+
+This field is required whenever the listing shows an asking price. Even if you cannot assess whether it's fair or overpriced due to insufficient information, you MUST still fill in asking_price with the actual listing price.
+
+Do NOT leave asking_price null if the listing contains a price.
+
+Only estimate fair_min / fair_max and determine the verdict if you have enough information: suburb, bedrooms, bathrooms, condition from photos, AND an asking price.
 
 Never claim you know exact market values. Be cautious and approximate. "Fair" means the price seems reasonable for what you're getting. "Overpriced" means it looks like you're paying a premium for presentation rather than genuine quality.
 
