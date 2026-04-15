@@ -1002,6 +1002,16 @@ html, body {
   margin-bottom: 6px;
 }
 
+.ext-listing-address-bold {
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--text-primary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  margin-bottom: 6px;
+}
+
 .ext-listing-price {
   font-size: 15px;
   font-weight: 700;

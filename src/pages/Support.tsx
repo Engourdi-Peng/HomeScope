@@ -163,9 +163,9 @@ export function SupportPage() {
                 2
               </div>
               <div>
-                <h3 className="font-medium text-stone-900 mb-1">Open the photo gallery</h3>
+                <h3 className="font-medium text-stone-900 mb-1">Click "See potential risks"</h3>
                 <p className="text-stone-600">
-                  Click on the first photo to open the full image gallery. Our extension will automatically scroll through all photos.
+                  Our AI will process the listing data, photos, and location information.
                 </p>
               </div>
             </div>
@@ -175,9 +175,9 @@ export function SupportPage() {
                 3
               </div>
               <div>
-                <h3 className="font-medium text-stone-900 mb-1">Click "Analyse Property"</h3>
+                <h3 className="font-medium text-stone-900 mb-1">Extension opens photo gallery automatically</h3>
                 <p className="text-stone-600">
-                  Our AI will process the listing data, photos, and location information.
+                  The extension automatically opens the photo gallery and scrolls through all listing images. You don't need to do anything.
                 </p>
               </div>
             </div>

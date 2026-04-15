@@ -101,26 +101,8 @@ export function ListingSummary() {
         <div className="ext-listing-info">
           <div className="ext-listing-title" title={titleToShow}>{titleToShow}</div>
           {addressToShow && (
-            <div className="ext-listing-address" title={addressToShow}>{addressToShow}</div>
+            <div className="ext-listing-address-bold" title={addressToShow}>{addressToShow}</div>
           )}
-          <div className="ext-listing-price">{priceDisplay}</div>
-          <div className="ext-listing-meta">
-            {bedrooms && (
-              <span className="ext-listing-meta-item">
-                <span>{bedrooms} bed</span>
-              </span>
-            )}
-            {bathrooms && (
-              <span className="ext-listing-meta-item">
-                <span>{bathrooms} bath</span>
-              </span>
-            )}
-            {parking && (
-              <span className="ext-listing-meta-item">
-                <span>{parking} car</span>
-              </span>
-            )}
-          </div>
         </div>
       </div>
     </div>
