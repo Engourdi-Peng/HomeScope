@@ -18,7 +18,14 @@ import { ExtractionErrorCode, getUserErrorMessage } from '../../shared/errors';
 
 // ===== Helper: Inject listingInfo into analysis result =====
 function isV2Data(data: ListingData | ListingDataV2 | null): data is ListingDataV2 {
-  return data !== null && 'source' in data;
+  // V2 使用 images 数组，V1 使用 imageUrls 数组
+  // V2 必定有 listingUrl 字段
+  if (!data) return false;
+  if ('listingUrl' in data) return true;
+  if ('images' in data) return true;
+  // V1: 有 source 但没有 images 和 listingUrl
+  if ('source' in data && !('images' in data)) return false;
+  return false;
 }
 
 function injectListingInfo(result: AnalysisResult, listingData: ListingData | ListingDataV2 | null): AnalysisResult {
@@ -42,14 +49,16 @@ function injectListingInfo(result: AnalysisResult, listingData: ListingData | Li
       ? (listingData as ListingDataV2).imageUrls![0]
       : null;
   } else {
-    listingInfo.title = (listingData as ListingData).address?.full || null;
-    listingInfo.address = (listingData as ListingData).address?.full || null;
-    listingInfo.price = (listingData as ListingData).price?.display || null;
-    listingInfo.bedrooms = (listingData as ListingData).property?.bedrooms || null;
-    listingInfo.bathrooms = (listingData as ListingData).property?.bathrooms || null;
-    listingInfo.parking = (listingData as ListingData).property?.parking || null;
-    listingInfo.coverImageUrl = ((listingData as ListingData).images?.length ?? 0) > 0
-      ? (listingData as ListingData).images![0]
+    // V1 格式: content.js 返回的原始格式
+    // { title, address, priceText, bedrooms, bathrooms, parking, imageUrls, ... }
+    listingInfo.title = (listingData as ListingData).title || null;
+    listingInfo.address = (listingData as ListingData).address || null;
+    listingInfo.price = (listingData as ListingData).priceText || (listingData as ListingData).price || null;
+    listingInfo.bedrooms = (listingData as ListingData).bedrooms ?? null;
+    listingInfo.bathrooms = (listingData as ListingData).bathrooms ?? null;
+    listingInfo.parking = (listingData as ListingData).parking ?? null;
+    listingInfo.coverImageUrl = ((listingData as ListingData).imageUrls?.length ?? 0) > 0
+      ? (listingData as ListingData).imageUrls![0]
       : null;
   }
 
@@ -207,6 +216,8 @@ const AppContext = createContext<AppContextValue | null>(null);
 
 // ===== Message helper =====
 
+const noop = (..._args: unknown[]) => {};
+
 function sendMessage<T = unknown>(message: Record<string, unknown>): Promise<T> {
   return new Promise((resolve, reject) => {
     chrome.runtime.sendMessage(message, (response) => {
@@ -219,20 +230,29 @@ function sendMessage<T = unknown>(message: Record<string, unknown>): Promise<T> 
   });
 }
 
-/** 带超时的 sendMessage */
-async function sendMessageWithTimeout<T = unknown>(
+/** 带超时的 sendMessage — 返回结构化结果，便于错误处理 */
+interface SendMessageResult<T> {
+  success: boolean;
+  data?: T;
+  error?: string;
+}
+
+async function sendMessageWithTimeout<T>(
   message: Record<string, unknown>,
   tabId: number,
   timeoutMs: number
-): Promise<T | null> {
+): Promise<SendMessageResult<T>> {
   return new Promise((resolve) => {
-    const timer = setTimeout(() => resolve(null), timeoutMs);
+    const timer = setTimeout(() => {
+      resolve({ success: false, error: 'TIMEOUT' });
+    }, timeoutMs);
+
     chrome.tabs.sendMessage(tabId, message, (response) => {
       clearTimeout(timer);
       if (chrome.runtime.lastError) {
-        resolve(null);
+        resolve({ success: false, error: chrome.runtime.lastError.message });
       } else {
-        resolve(response as T);
+        resolve({ success: true, data: response as T });
       }
     });
   });
@@ -256,40 +276,107 @@ async function ensureContentScriptThenExtractListing(
   // Step 1: PING — check if content script is already loaded
   let pingOk = false;
   try {
-    const pong: { ready: boolean } | null = await sendMessageWithTimeout(
+    const pongResult = await sendMessageWithTimeout<{ ready: boolean }>(
       { action: 'PONG' },
       tabId,
       1000
     );
-    pingOk = pong?.ready === true;
-  } catch {}
+    pingOk = pongResult.success && pongResult.data?.ready === true;
+    if (!pingOk) {
+      noop('[ExtApp] PING failed:', pongResult.error || 'unknown');
+    }
+  } catch (err) {
+    noop('[ExtApp] PING exception:', err);
+  }
 
-  // Step 2: Inject if needed
+  // Step 2: Inject if needed (only if PING failed)
   if (!pingOk) {
     try {
+      noop('[ExtApp] Content script not responding, attempting injection...');
       await chrome.scripting.executeScript({
         target: { tabId },
         files: ['content.js'],
       });
-    } catch {}
+      noop('[ExtApp] content.js injected successfully');
+
+      // Wait for content script to initialize (retry PING until ready)
+      let reconnected = false;
+      for (let i = 0; i < 10; i++) {
+        await new Promise(r => setTimeout(r, 100));
+        try {
+          const pongResult = await sendMessageWithTimeout<{ ready: boolean }>(
+            { action: 'PONG' },
+            tabId,
+            500
+          );
+          if (pongResult.success && pongResult.data?.ready === true) {
+            reconnected = true;
+            noop(`[ExtApp] Content script ready after ${(i + 1) * 100}ms`);
+            break;
+          }
+        } catch {
+          // Still not ready
+        }
+      }
+      if (!reconnected) {
+        noop('[ExtApp] Content script may not be fully loaded after injection');
+      }
+    } catch (err: any) {
+      noop('[ExtApp] executeScript failed:', err.message, err);
+      // 注入失败，返回明确错误
+      return {
+        data: null,
+        error: `Failed to inject content script: ${err.message}. Please refresh the page.`,
+        detection: null,
+      };
+    }
+  }
+
+  // Step 2b: Verify tab is still valid after injection attempt
+  try {
+    const [activeTab] = await chrome.tabs.query({ active: true, currentWindow: true });
+    if (!activeTab?.id || activeTab.id !== tabId) {
+      return {
+        data: null,
+        error: 'Tab was closed or switched during injection. Please try again.',
+        detection: null,
+      };
+    }
+  } catch (err: any) {
+    noop('[ExtApp] Tab verification failed:', err.message);
+    return {
+      data: null,
+      error: 'Failed to verify tab status. Please try again.',
+      detection: null,
+    };
   }
 
   // Step 3: Extract lightweight listing data (no gallery images)
   try {
+    noop('[ExtApp] Sending EXTRACT_LISTING message...');
     const extractResult = await sendMessageWithTimeout<{
       data?: ListingData | ListingDataV2;
       error?: string;
       detection?: PropertyDetection;
     }>({ action: 'EXTRACT_LISTING', includeGalleryImages: false }, tabId, 8000);
 
-    if (!extractResult) {
+    noop('[ExtApp] EXTRACT_LISTING result:', JSON.stringify({
+      success: extractResult.success,
+      hasData: !!extractResult.data,
+      dataKeys: extractResult.data ? Object.keys(extractResult.data) : [],
+      error: extractResult.error
+    }));
+
+    // 通信失败（timeout 或错误）
+    if (!extractResult.success) {
       return {
         data: null,
-        error: 'No response from page (timeout or tab inactive). Reload the listing page and try again.',
+        error: extractResult.error || 'Failed to communicate with content script. Please try again.',
         detection: null,
       };
     }
 
+    // 内容脚本返回业务错误
     if (extractResult.error) {
       return {
         data: null,
@@ -298,19 +385,25 @@ async function ensureContentScriptThenExtractListing(
       };
     }
 
+    // 缺少数据
     if (!extractResult.data) {
       return {
         data: null,
         error: 'Could not read listing data. Try again.',
-        detection: extractResult.detection ?? null,
+        detection: null,
       };
     }
 
-    const data = extractResult.data as ListingData | ListingDataV2;
+    // extractResult.data 是 content script 返回的 { data: listingData, error, detection }
+    // 需要取出其中的 data 字段才是真正的 listing 数据
+    const innerData = (extractResult.data as { data: ListingData | ListingDataV2 }).data;
+    const innerDetection = (extractResult.data as { detection?: PropertyDetection }).detection;
+
+    const data = innerData as ListingData | ListingDataV2;
     return {
       data,
       error: null,
-      detection: extractResult.detection ?? null,
+      detection: innerDetection ?? null,
     };
   } catch (err) {
     return { data: null, error: String(err), detection: null };
@@ -319,38 +412,72 @@ async function ensureContentScriptThenExtractListing(
 
 /**
  * Pure ping + inject: ensures content script is loaded, returns whether it succeeded.
+ * Uses retry mechanism to handle transient connection failures.
  * Used by startAnalysis (no EXTRACT_LISTING call needed there).
  */
 async function ensureContentScriptLoaded(tabId: number): Promise<boolean> {
-  let pingOk = false;
-  try {
-    const pong: { ready: boolean } | null = await sendMessageWithTimeout(
-      { action: 'PONG' },
-      tabId,
-      1000
-    );
-    pingOk = pong?.ready === true;
-  } catch {}
+  const PING_TIMEOUT_MS = 3000;  // 3 秒超时，给繁忙页面足够时间
+  const MAX_RETRIES = 3;
 
-  if (!pingOk) {
+  for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
+    let pingOk = false;
+    let lastError = '';
+
     try {
-      await chrome.scripting.executeScript({
-        target: { tabId },
-        files: ['content.js'],
-      });
-      // Verify injection worked
+      const pongResult = await sendMessageWithTimeout<{ ready: boolean; instanceId?: string }>(
+        { action: 'PONG' },
+        tabId,
+        PING_TIMEOUT_MS
+      );
+      pingOk = pongResult.success && pongResult.data?.ready === true;
+      if (pingOk) {
+        if (attempt > 1) {
+          noop(`[ExtApp] PING succeeded on attempt ${attempt}`);
+        }
+        return true;
+      }
+      lastError = pongResult.error || 'PONG returned !ready';
+    } catch (err: any) {
+      lastError = err?.message || String(err);
+    }
+
+      noop(`[ExtApp] PING attempt ${attempt}/${MAX_RETRIES} failed: ${lastError}`);
+
+    // 最后一次尝试失败后才注入
+    if (attempt === MAX_RETRIES) {
       try {
-        const pong2: { ready: boolean } | null = await sendMessageWithTimeout(
+        noop('[ExtApp] Content script not responding, injecting...');
+        await chrome.scripting.executeScript({
+          target: { tabId },
+          files: ['content.js'],
+        });
+        noop('[ExtApp] content.js injected successfully');
+
+        // 注入后验证
+        const verifyResult = await sendMessageWithTimeout<{ ready: boolean }>(
           { action: 'PONG' },
           tabId,
-          1000
+          PING_TIMEOUT_MS
         );
-        pingOk = pong2?.ready === true;
-      } catch {}
-    } catch {}
+        pingOk = verifyResult.success && verifyResult.data?.ready === true;
+
+        if (pingOk) {
+          noop('[ExtApp] Content script ready after injection');
+          return true;
+        }
+        noop('[ExtApp] Content script injected but not ready');
+        return false;
+      } catch (err: any) {
+        noop('[ExtApp] executeScript failed:', err?.message || String(err));
+        return false;
+      }
+    }
+
+    // 短暂等待后再重试
+    await new Promise(resolve => setTimeout(resolve, 500));
   }
 
-  return pingOk;
+  return false;
 }
 
 // ── Unified dispatch helper for extraction results ──
@@ -370,6 +497,7 @@ function dispatchExtractionResult(
       readError: result.error,
     });
   } else {
+    noop('[dispatchExtractionResult] Dispatching SET_PROPERTY_STATUS with detected, data keys:', result.data ? Object.keys(result.data) : []);
     dispatch({
       type: 'SET_PROPERTY_STATUS',
       propertyStatus: 'detected',
@@ -449,7 +577,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         });
       }
     } catch (err) {
-      console.error('[ExtApp] Refresh user data failed:', err);
+      noop('[ExtApp] Refresh user data failed:', err);
       dispatch({
         type: 'SET_AUTH_STATUS',
         authStatus: 'logged_in',
@@ -468,7 +596,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         dispatch({ type: 'SET_HISTORY', history: response.analyses });
       }
     } catch (err) {
-      console.error('[ExtApp] Load history failed:', err);
+      noop('[ExtApp] Load history failed:', err);
     } finally {
       dispatch({ type: 'SET_HISTORY_LOADING', loading: false });
     }
@@ -489,7 +617,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
           dispatch({ type: 'SET_AUTH_STATUS', authStatus: 'logged_out' });
         }
       } catch (err) {
-        console.error('[ExtApp] Auth check failed:', err);
+        noop('[ExtApp] Auth check failed:', err);
         dispatch({ type: 'SET_AUTH_STATUS', authStatus: 'logged_out' });
       }
     };
@@ -522,15 +650,17 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         dispatch({ type: 'SET_ANALYSIS_PROGRESS', progress });
 
         // Map backend stage to frontend phase
+        // Note: 'extracting' and 'image' are NOT included in collecting_photos because
+        // they incorrectly match backend stages like 'detecting_rooms' and 'extracting_strengths_and_issues'
         if (stage.includes('uploading') || stage.includes('Reading')) {
           dispatch({ type: 'SET_ANALYSIS_PHASE', phase: 'reading_page' });
         } else if (stage.includes('gallery') || stage.includes('gallery_open') || stage.includes('opening_gallery')) {
           dispatch({ type: 'SET_ANALYSIS_PHASE', phase: 'opening_gallery' });
-        } else if (stage.includes('photo') || stage.includes('Collecting') || stage.includes('extracting') || stage.includes('image')) {
+        } else if (stage.includes('photo')) {
           dispatch({ type: 'SET_ANALYSIS_PHASE', phase: 'collecting_photos' });
-        } else if (stage.includes('send') || stage.includes('uploading') || stage.includes('sending')) {
+        } else if (stage.includes('send') || stage.includes('uploading') || stage.includes('sending') || stage.includes('upload_received')) {
           dispatch({ type: 'SET_ANALYSIS_PHASE', phase: 'sending_data' });
-        } else if (stage.includes('analyse') || stage.includes('evaluating') || stage.includes('strengths') || stage.includes('competition')) {
+        } else if (stage.includes('analyse') || stage.includes('evaluating') || stage.includes('strengths') || stage.includes('competition') || stage.includes('detecting') || stage.includes('evaluating') || stage.includes('extracting_strengths')) {
           dispatch({ type: 'SET_ANALYSIS_PHASE', phase: 'analysing' });
         } else if (stage.includes('生成') || stage.includes('building') || stage.includes('final') || stage.includes('report')) {
           dispatch({ type: 'SET_ANALYSIS_PHASE', phase: 'generating_report' });
@@ -698,11 +828,32 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
 
     const currentUrl = tab.url || '';
 
-    // Step 2: Check URL cache
-    if (!bypassCache && state.lastExtractedUrl === currentUrl && state.extractionCached && state.listingData) {
-      dispatch({ type: 'SET_ANALYSIS_PHASE', phase: 'sending_data' });
-      await submitAnalysis(state.listingData as ListingData | ListingDataV2);
+    // Step 2: Prevent Chrome internal pages (chrome://, about:, etc.)
+    // Chrome extensions cannot inject content scripts into these pages
+    if (currentUrl.startsWith('chrome://') || currentUrl.startsWith('chrome-extension://') || currentUrl.startsWith('about:') || currentUrl.startsWith('edge://') || currentUrl.startsWith('brave://')) {
+      dispatch({
+        type: 'SET_ANALYSIS_PHASE',
+        phase: 'error',
+        error: 'Please navigate to a property listing page (e.g., realestate.com.au). This extension cannot run on browser settings or new tab pages.',
+      });
       return;
+    }
+
+    // Step 3: Check URL cache - validate cached data before reuse
+    if (!bypassCache && state.lastExtractedUrl === currentUrl && state.extractionCached && state.listingData) {
+      const cached = state.listingData as ListingData | ListingDataV2;
+      const hasImages = Array.isArray(cached.imageUrls) && cached.imageUrls.length > 0;
+      const hasValidDesc = cached.description && cached.description.trim().length > 30;
+
+      if (hasImages || hasValidDesc) {
+        noop('[ExtApp] Cache HIT - valid:', { images: cached.imageUrls?.length, descLen: cached.description?.length });
+        dispatch({ type: 'SET_ANALYSIS_PHASE', phase: 'sending_data' });
+        await submitAnalysis(cached);
+        return;
+      }
+
+      noop('[ExtApp] Cache HIT but INVALID - bypassing cache (no images/short desc)');
+      // Continue to force re-extraction
     }
 
     // Step 3: Ensure content script is loaded (reuse shared helper)
@@ -711,27 +862,66 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     // Step 4: Send START_USER_EXTRACTION
     dispatch({ type: 'SET_ANALYSIS_PHASE', phase: 'reading_page' });
 
-    let extractResult: { success: boolean; data?: ListingData | ListingDataV2; error?: string; detection?: PropertyDetection; code?: string } | null = null;
+    // Define the expected response structure from content script
+    type ContentScriptResponse = {
+      success: boolean;
+      data?: ListingData | ListingDataV2;
+      error?: string;
+      detection?: PropertyDetection;
+      code?: string;
+    };
+
+    let extractResult: { success: boolean; data?: ContentScriptResponse; error?: string } | null = null;
     try {
-      extractResult = await sendMessageWithTimeout<{ success: boolean; data?: ListingData | ListingDataV2; error?: string; detection?: PropertyDetection; code?: string }>(
+      extractResult = await sendMessageWithTimeout<ContentScriptResponse>(
         { action: 'START_USER_EXTRACTION', bypassCache },
         tab.id,
-        15000
+        60000  // 60秒，给图片多的页面足够时间
       );
-    } catch {}
+    } catch (err) {
+      noop('[ExtApp] sendMessageWithTimeout threw:', err);
+    }
 
-    if (!extractResult || !extractResult.success || !extractResult.data) {
-      const detection = extractResult?.detection;
-      if (detection && !detection.canAnalyze) {
+    // 检查通信层是否成功
+    if (!extractResult || !extractResult.success) {
+      const errorMsg = extractResult?.error || 'Communication failed';
+      noop('[ExtApp] startAnalysis: sendMessageWithTimeout failed:', errorMsg);
+      dispatch({ type: 'SET_ANALYSIS_PHASE', phase: 'error', error: 'Failed to communicate with content script. Please try again.' });
+      return;
+    }
+
+    // 检查 content script 返回的业务层数据
+    const response = extractResult.data;
+    if (!response) {
+      noop('[ExtApp] startAnalysis: no data in response');
+      dispatch({ type: 'SET_ANALYSIS_PHASE', phase: 'error', error: 'No data received from content script.' });
+      return;
+    }
+
+    // 处理 content script 的业务错误
+    if (!response.success) {
+      const errorMsg = response.error || 'Extraction failed';
+      if (response.detection && !response.detection.canAnalyze) {
         dispatch({ type: 'SET_ANALYSIS_PHASE', phase: 'error', error: "This doesn't look like a property listing page" });
       } else {
-        dispatch({ type: 'SET_ANALYSIS_PHASE', phase: 'error', error: extractResult?.error || 'Could not extract listing data. Please refresh and try again.' });
+        noop('[ExtApp] startAnalysis: extraction failed:', errorMsg, 'code:', response.code);
+        dispatch({ type: 'SET_ANALYSIS_PHASE', phase: 'error', error: errorMsg });
       }
       return;
     }
 
-    const listingData = extractResult.data as ListingData | ListingDataV2;
-    dispatch({ type: 'SET_PROPERTY_STATUS', propertyStatus: 'detected', listingData, propertyDetection: extractResult.detection ?? null });
+    // 成功！提取 listingData
+    const listingData = response.data;
+    if (!listingData) {
+      noop('[ExtApp] startAnalysis: listingData is undefined in response.data');
+      noop('[ExtApp] response keys:', Object.keys(response));
+      dispatch({ type: 'SET_ANALYSIS_PHASE', phase: 'error', error: 'Failed to parse listing data. Please try again.' });
+      return;
+    }
+
+    noop('[ExtApp] startAnalysis: extraction successful, images:', (listingData as any).imageUrls?.length || (listingData as any).images?.length || 0);
+
+    dispatch({ type: 'SET_PROPERTY_STATUS', propertyStatus: 'detected', listingData, propertyDetection: response.detection ?? null });
 
     // Mark URL as cached
     dispatch({ type: 'SET_EXTRACTION_CACHED', extractionCached: true, lastExtractedUrl: currentUrl });
@@ -814,17 +1004,19 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         }
 
         // Update progress based on backend stage
+        // Note: 'extracting' and 'image' are NOT included in collecting_photos because
+        // they incorrectly match backend stages like 'detecting_rooms' and 'extracting_strengths_and_issues'
         if (statusResponse.stage) {
           const stage = statusResponse.stage;
           if (stage.includes('uploading') || stage.includes('Reading')) {
             dispatch({ type: 'SET_ANALYSIS_PHASE', phase: 'reading_page' });
           } else if (stage.includes('gallery') || stage.includes('gallery_open') || stage.includes('opening_gallery')) {
             dispatch({ type: 'SET_ANALYSIS_PHASE', phase: 'opening_gallery' });
-          } else if (stage.includes('photo') || stage.includes('Collecting') || stage.includes('extracting') || stage.includes('image')) {
+          } else if (stage.includes('photo')) {
             dispatch({ type: 'SET_ANALYSIS_PHASE', phase: 'collecting_photos' });
-          } else if (stage.includes('send') || stage.includes('uploading') || stage.includes('sending')) {
+          } else if (stage.includes('send') || stage.includes('uploading') || stage.includes('sending') || stage.includes('upload_received')) {
             dispatch({ type: 'SET_ANALYSIS_PHASE', phase: 'sending_data' });
-          } else if (stage.includes('analyse') || stage.includes('evaluating') || stage.includes('strengths') || stage.includes('competition')) {
+          } else if (stage.includes('analyse') || stage.includes('evaluating') || stage.includes('strengths') || stage.includes('competition') || stage.includes('detecting') || stage.includes('extracting_strengths')) {
             dispatch({ type: 'SET_ANALYSIS_PHASE', phase: 'analysing' });
           } else if (stage.includes('生成') || stage.includes('building') || stage.includes('final') || stage.includes('report')) {
             dispatch({ type: 'SET_ANALYSIS_PHASE', phase: 'generating_report' });
@@ -835,7 +1027,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
           }
         }
       } catch (err) {
-        console.error('[ExtApp] pollAnalysisStatus: error —', err);
+        noop('[ExtApp] pollAnalysisStatus: error —', err);
         // Continue polling despite errors
       }
 
@@ -855,10 +1047,61 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
    * Now returns analysisId immediately and polls from frontend.
    */
   async function submitAnalysis(listingData: ListingData | ListingDataV2) {
-    dispatch({ type: 'SET_ANALYSIS_PHASE', phase: 'sending_data' });
+  dispatch({ type: 'SET_ANALYSIS_PHASE', phase: 'sending_data' });
 
-    try {
-      const response = await sendMessage<{
+  // Guard: ensure listingData is valid
+  if (!listingData || typeof listingData !== 'object') {
+    noop('[Analytics] submitAnalysis called with invalid listingData:', listingData);
+    dispatch({ type: 'SET_ANALYSIS_PHASE', phase: 'error', error: 'Invalid listing data' });
+    return;
+  }
+
+  // DIAG: Enhanced logging for debugging
+  noop('[Analytics] submitAnalysis called with:', JSON.stringify({
+    hasImageUrls: !!listingData.imageUrls,
+    imageUrlsLen: (listingData.imageUrls || []).length,
+    imageUrlsFirst3: (listingData.imageUrls || []).slice(0, 3),
+    hasImages: !!(listingData as any).images,
+    imagesLen: ((listingData as any).images || []).length,
+    hasDescription: !!listingData.description,
+    descriptionLen: listingData.description?.length || 0,
+    descriptionPreview: listingData.description?.substring(0, 100),
+    hasTitle: !!listingData.title,
+    hasAddress: !!listingData.address,
+    hasPrice: !!listingData.price,
+    hasReportMode: !!listingData.reportMode,
+    reportMode: listingData.reportMode,
+    allKeys: Object.keys(listingData)
+  }));
+
+  // Ensure we have either images OR description (Edge Function validation requirement)
+  // Support both field names: imageUrls (from content script) and images (from ListingDataV2)
+  const effectiveImageUrls = listingData.imageUrls ?? (listingData as any).images ?? [];
+  noop('[Analytics] effectiveImageUrls count:', effectiveImageUrls.length);
+
+  if (effectiveImageUrls.length === 0 && !listingData.description) {
+    const fallbackParts = [
+      listingData.title,
+      listingData.address,
+      `Price: ${listingData.price || 'Not specified'}`,
+      listingData.bedrooms ? `${listingData.bedrooms} beds` : null,
+      listingData.bathrooms ? `${listingData.bathrooms} baths` : null,
+    ].filter(Boolean);
+    listingData.description = fallbackParts.join(' | ') || 'Property listing information';
+    noop('[Analytics] Added fallback description:', listingData.description);
+  }
+
+  // DIAG: Log the actual data being sent
+  noop('[Analytics] About to send to background:', JSON.stringify({
+    action: 'analyze',
+    dataKeys: Object.keys(listingData),
+    dataImageUrls: listingData.imageUrls,
+    dataImages: (listingData as any).images,
+    dataDescription: listingData.description
+  }));
+
+  try {
+    const response = await sendMessage<{
         status: string;
         analysisId?: string;
         result?: AnalysisResult;
@@ -885,6 +1128,8 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         error: response.error || 'Analysis failed',
       });
     } catch (err) {
+      // Clear invalid cache on failure to force re-extraction on retry
+      dispatch({ type: 'SET_EXTRACTION_CACHED', extractionCached: false, lastExtractedUrl: null });
       dispatch({ type: 'SET_ANALYSIS_PHASE', phase: 'error', error: String(err) });
     }
   }
@@ -907,7 +1152,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       dispatch({ type: 'SET_AUTH_STATUS', authStatus: 'logged_out' });
       dispatch({ type: 'RESET_ANALYSIS' });
     } catch (err) {
-      console.error('[ExtApp] Logout failed:', err);
+      noop('[ExtApp] Logout failed:', err);
     }
   }, []);
 
@@ -978,7 +1223,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       if (result?.success) return { success: true };
       return { success: false, error: result?.error || 'Google sign-in failed' };
     } catch (err) {
-      console.error('[ExtApp] Google OAuth failed:', err);
+      noop('[ExtApp] Google OAuth failed:', err);
       return { success: false, error: String(err) };
     }
   }, []);
@@ -1000,7 +1245,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       }
       throw new Error(result.error || 'Failed to share analysis');
     } catch (err) {
-      console.error('[ExtApp] shareAnalysis error:', err);
+      noop('[ExtApp] shareAnalysis error:', err);
       throw err;
     }
   }, []);

@@ -2,7 +2,7 @@ import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
 import tailwindcss from '@tailwindcss/vite';
 import { resolve } from 'path';
-import { readFileSync, existsSync, copyFileSync, mkdirSync, readdirSync, rmSync, writeFileSync } from 'fs';
+import { readFileSync, existsSync, copyFileSync, mkdirSync, readdirSync, rmSync, writeFileSync, statSync } from 'fs';
 
 const __dirname = import.meta.dirname;
 
@@ -90,34 +90,53 @@ function copyToExtension(distDir: string, extDir: string) {
     console.log('[vite] Copied sidepanel.html');
   }
 
-  // 复制 assets 目录
+  // 复制 assets 目录（Vite 构建后从 dist/assets 复制到 extension/dist/assets）
   const assetsSrc = resolve(distDir, 'assets');
   const assetsDest = resolve(extDir, 'assets');
   if (existsSync(assetsSrc)) {
+    // assetsSrc 存在（Vite 构建成功），复制到目标目录
     if (!existsSync(assetsDest)) {
       mkdirSync(assetsDest, { recursive: true });
     }
-    const files = readdirSync(assetsSrc);
-    for (const file of files) {
-      copyFileSync(resolve(assetsSrc, file), resolve(assetsDest, file));
+    try {
+      const files = readdirSync(assetsSrc);
+      for (const file of files) {
+        const srcFile = resolve(assetsSrc, file);
+        const destFile = resolve(assetsDest, file);
+        if (existsSync(srcFile) && statSync(srcFile).isFile()) {
+          copyFileSync(srcFile, destFile);
+        }
+      }
+      console.log(`[vite] Copied ${files.length} assets`);
+    } catch (err) {
+      console.warn(`[vite] Warning: could not read assets directory:`, err);
     }
-    console.log(`[vite] Copied ${files.length} assets`);
-  }
 
-  // 同步 sidepanel-ext.css（可能带 hash → 固定名，确保 sidepanel.html 引用有效）
-  const cssFiles = readdirSync(assetsSrc).filter((f) => f.startsWith('sidepanel-ext-') && f.endsWith('.css'));
-  const cssFixed = resolve(assetsDest, 'sidepanel-ext.css');
-  if (cssFiles.length) {
-    copyFileSync(resolve(assetsSrc, cssFiles[0]), cssFixed);
-    console.log(`[vite] Synced sidepanel-ext.css`);
-  }
+    // 同步 sidepanel-ext.css（可能带 hash → 固定名，确保 sidepanel.html 引用有效）
+    try {
+      const cssFiles = readdirSync(assetsSrc).filter((f) => f.startsWith('sidepanel-ext-') && f.endsWith('.css'));
+      const cssFixed = resolve(assetsDest, 'sidepanel-ext.css');
+      if (cssFiles.length) {
+        copyFileSync(resolve(assetsSrc, cssFiles[0]), cssFixed);
+        console.log(`[vite] Synced sidepanel-ext.css`);
+      }
+    } catch (err) {
+      console.warn(`[vite] Warning: could not sync CSS:`, err);
+    }
 
-  // 同步 sidepanel-ext.js（入口文件带 hash → 固定名）
-  const jsFiles = readdirSync(assetsSrc).filter((f) => f.startsWith('sidepanel-ext-') && f.endsWith('.js'));
-  const jsFixed = resolve(assetsDest, 'sidepanel-ext.js');
-  if (jsFiles.length) {
-    copyFileSync(resolve(assetsSrc, jsFiles[0]), jsFixed);
-    console.log(`[vite] Synced sidepanel-ext.js`);
+    // 同步 sidepanel-ext.js（入口文件带 hash → 固定名）
+    try {
+      const jsFiles = readdirSync(assetsSrc).filter((f) => f.startsWith('sidepanel-ext-') && f.endsWith('.js'));
+      const jsFixed = resolve(assetsDest, 'sidepanel-ext.js');
+      if (jsFiles.length) {
+        copyFileSync(resolve(assetsSrc, jsFiles[0]), jsFixed);
+        console.log(`[vite] Synced sidepanel-ext.js`);
+      }
+    } catch (err) {
+      console.warn(`[vite] Warning: could not sync JS:`, err);
+    }
+  } else {
+    console.log(`[vite] No assets directory found (this is normal if sidepanel has no assets)`);
   }
 
   // After all files are copied, inject auth config into background.js and content.js

@@ -9,6 +9,7 @@ import { LoginModal } from '../components/LoginModal';
 import { FAQItem } from '../components/FAQItem';
 import { PricingCard } from '../components/PricingCard';
 import { ListingAnalysisSection } from '../components/ListingAnalysisSection';
+import { ExtensionPromo } from '../components/ExtensionPromo';
 import { useAuth } from '../contexts/AuthContext';
 import { supabase } from '../lib/supabase';
 import * as Accordion from '@radix-ui/react-accordion';
@@ -399,6 +400,9 @@ export function Home() {
             Avoid wasting inspections. Make smarter rental decisions.
           </p>
         </div>
+
+        {/* Extension Promo */}
+        <ExtensionPromo />
 
         {/* 2. Upload Tool - First Screen */}
         <div className="mb-16 animate-in fade-in slide-in-from-bottom-8 duration-700 ease-out" style={{ animationDelay: '100ms' }}>

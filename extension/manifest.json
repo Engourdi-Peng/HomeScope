@@ -4,8 +4,10 @@
   "version": "1.0.1",
   "description": "AI-powered property analysis in your browser",
   "icons": {
+    "16": "icon.png",
     "48": "icon.png",
-    "128": "icon.png"
+    "128": "icon.png",
+    "512": "icon.png"
   },
   "action": {
     "default_title": "HomeScope"
@@ -13,7 +15,8 @@
   "permissions": [
     "storage",
     "tabs",
-    "sidePanel"
+    "sidePanel",
+    "scripting"
   ],
   "host_permissions": [
     "https://www.realestate.com.au/*",
@@ -38,8 +41,5 @@
       "js": ["content.js"],
       "run_at": "document_idle"
     }
-  ],
-  "privacy_policy_url": "https://tryhomescope.com/privacy",
-  "homepage_url": "https://tryhomescope.com",
-  "support_url": "support.html"
+  ]
 }

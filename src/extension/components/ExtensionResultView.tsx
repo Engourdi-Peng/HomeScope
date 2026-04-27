@@ -13,6 +13,8 @@
  */
 import React, { useState } from 'react';
 import { ArrowLeft, Share2, Copy, CheckCircle } from 'lucide-react';
+
+const noop = (..._args: unknown[]) => {};
 import { useAppState, useActions } from '../store';
 import { ReportShell } from '../../shared/report/ReportShell';
 import { ResultCard } from '../../components/ResultCard';
@@ -58,7 +60,7 @@ export function ExtensionResultView() {
       setCopied(true);
       setTimeout(() => setCopied(false), 2000);
     } catch (err) {
-      console.error('Top bar share failed:', err);
+      noop(err);
     } finally {
       setIsSharing(false);
     }

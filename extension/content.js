@@ -1,136 +1,117 @@
 /**
  * HomeScope Content Script
- *
- * EXTRACTION POLICY: User-triggered only.
- * - No automatic image collection on page load, DOM mutation, tab activation, or side panel open.
- * - Gallery image extraction is ONLY permitted via the START_USER_EXTRACTION message handler.
- * - EXTRACT_LISTING / GET_PAGE_STATE only perform lightweight page sensing.
- *
- * Auth bridge (ONLY auth-related code in this file):
- *   - Listens for window.postMessage from web pages (source: 'homescope-auth-bridge')
- *   - Forwards session data to background via chrome.runtime.sendMessage
- *   - Sends ACK back to page via postMessage
+ * Handles page extraction and gallery image collection (user-triggered only).
  */
 
 ;(function() {
   'use strict';
 
-  // ===== Global guard to prevent double-injection in same tab =====
-  if (window.__HOMESCOPE_CS_LOADED__) {
-    return;
-  }
-  window.__HOMESCOPE_CS_LOADED__ = true;
+  const noop = (..._args) => {};
 
-// ── Auth bridge: listen for postMessage from page world ──
-// Pages in the web world cannot access content script's window object directly.
-// They send messages via window.postMessage, which we listen for here.
-window.addEventListener('message', (event) => {
-  // Only accept messages from the page (same window instance)
-  if (event.source !== window) {
-    return;
-  }
+  // ===== Content script instance ID (for debugging multi-injection) =====
+  const INSTANCE_ID = Math.random().toString(36).slice(2, 9);
 
-  // Validate message source
-  if (event.data?.source !== 'homescope-auth-bridge') {
-    return;
-  }
+  // ===== Define handlers FIRST (before any messages can arrive) =====
 
+  // ── Auth bridge handler ──
+  function handleAuthBridge(event) {
+    // Only accept messages from the page (same window instance)
+    if (event.source !== window) {
+      return;
+    }
 
-  if (event.data?.type === 'HOMESCOPE_SYNC_SESSION') {
-    const payload = event.data.payload || {};
+    // Validate message source
+    if (event.data?.source !== 'homescope-auth-bridge') {
+      return;
+    }
 
-    chrome.runtime.sendMessage(
-      { action: 'sync_session_from_site', payload: event.data.payload },
-      (response) => {
-        if (chrome.runtime.lastError) {
-          console.error('[HomeScope CS] sync_session_from_site: chrome.runtime.lastError=', chrome.runtime.lastError.message);
+    if (event.data?.type === 'HOMESCOPE_SYNC_SESSION') {
+      chrome.runtime.sendMessage(
+        { action: 'sync_session_from_site', payload: event.data.payload },
+        (response) => {
+          if (chrome.runtime.lastError) {
+            event.source.postMessage({
+              source: 'homescope-auth-bridge',
+              type: 'HOMESCOPE_SESSION_ACK',
+              success: false,
+              error: chrome.runtime.lastError.message
+            }, event.origin);
+            return;
+          }
           event.source.postMessage({
             source: 'homescope-auth-bridge',
             type: 'HOMESCOPE_SESSION_ACK',
-            success: false,
-            error: chrome.runtime.lastError.message
+            success: response?.success !== false,
+            error: response?.error || null
           }, event.origin);
-          return;
         }
-        event.source.postMessage({
-          source: 'homescope-auth-bridge',
-          type: 'HOMESCOPE_SESSION_ACK',
-          success: response?.success !== false,
-          error: response?.error || null
-        }, event.origin);
-      }
-    );
+      );
+    }
   }
-});
 
+  // ── Message handler ──
+  function handleMessage(message, sender, sendResponse) {
+    const { action } = message;
+    switch (action) {
+      case 'PONG':
+        // Always respond with this instance's ID
+        sendResponse({ ready: true, instanceId: INSTANCE_ID, url: window.location.href, title: document.title });
+        break;
 
-// ─────────────────────────────────────────────────────────────
-// User-triggered extraction session state
-// ─────────────────────────────────────────────────────────────
+      case 'GET_PAGE_STATE':
+        sendResponse(getPageState());
+        break;
 
-let isReady = false;
-let pageData = null;
-let propertySignals = null;
+      case 'EXTRACT_LISTING':
+        extractListingDataLight().then(({ listing, detection }) => {
+          pageData = listing;
+          sendResponse({ data: listing, error: null, detection });
+        }).catch((err) => {
+          sendResponse({ data: null, error: err.message, detection: null });
+        });
+        return true;
 
-/**
- * Extraction session lock — prevents concurrent extraction sessions.
- * Only START_USER_EXTRACTION can hold this lock.
- */
-let _extractionLock = false;
-
-/**
- * In-memory URL result cache (key=listingUrl).
- * Stores the last extraction result for the current URL for SESSION_CACHE_TTL_MS.
- * Enables "reuse last result" when the same URL is re-analysed without re-crawling.
- */
-const _sessionCache = new Map();
-const SESSION_CACHE_TTL_MS = 20 * 1000;
-
-// ─────────────────────────────────────────────────────────────
-// Message handler
-// ─────────────────────────────────────────────────────────────
-
-chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
-  const { action } = message;
-  switch (action) {
-    case 'PONG':
-      sendResponse({ ready: true, url: window.location.href, title: document.title });
-      break;
-
-    case 'GET_PAGE_STATE':
-      // Lightweight page sensing only — never triggers gallery extraction.
-      sendResponse(getPageState());
-      break;
-
-    case 'EXTRACT_LISTING':
-      // Lightweight extraction: title/address/price/rooms/description only, NO gallery images.
-      extractListingDataLight().then(({ listing, detection }) => {
-        pageData = listing;
-        sendResponse({ data: listing, error: null, detection });
-      })
-        .catch((err) => { sendResponse({ data: null, error: err.message, detection: null }); });
-      return true;
-
-    case 'START_USER_EXTRACTION':
-      // EXCLUSIVE gateway for full gallery extraction.
-      // Only one session can run at a time (locked by _extractionLock).
-      startUserExtraction(message.bypassCache).then(({ listing, detection }) => {
-        pageData = listing;
-        sendResponse({ success: true, data: listing, detection });
-      })
-        .catch((err) => {
+      case 'START_USER_EXTRACTION':
+        startUserExtraction(message.bypassCache).then(({ listing, detection }) => {
+          pageData = listing;
+          sendResponse({ success: true, data: listing, detection });
+        }).catch((err) => {
           sendResponse({ success: false, error: err.message, code: err.code || 'EXTRACTION_ERROR' });
         });
-      return true;
+        return true;
 
-    case 'GET_CACHED_DATA':
-      sendResponse({ success: true, data: pageData });
-      break;
+      case 'GET_CACHED_DATA':
+        sendResponse({ success: true, data: pageData });
+        break;
 
-    default:
-      sendResponse({ success: false, error: 'UNKNOWN_ACTION' });
+      default:
+        sendResponse({ success: false, error: 'UNKNOWN_ACTION' });
+    }
   }
-});
+
+  // ===== Register listeners =====
+  chrome.runtime.onMessage.addListener(handleMessage);
+  window.addEventListener('message', handleAuthBridge);
+
+  // ===== User-triggered extraction session state =====
+
+  let isReady = false;
+  let pageData = null;
+  let propertySignals = null;
+
+  /**
+   * Extraction session lock — prevents concurrent extraction sessions.
+   * Only START_USER_EXTRACTION can hold this lock.
+   */
+  let _extractionLock = false;
+
+  /**
+   * In-memory URL result cache (key=listingUrl).
+   * Stores the last extraction result for the current URL for SESSION_CACHE_TTL_MS.
+   * Enables "reuse last result" when the same URL is re-analysed without re-crawling.
+   */
+  const _sessionCache = new Map();
+  const SESSION_CACHE_TTL_MS = 20 * 1000;
 
 // ─────────────────────────────────────────────────────────────
 // User-triggered extraction entry point
@@ -169,30 +150,53 @@ async function startUserExtraction(bypassCache = false) {
     if (!bypassCache) {
       const cached = _sessionCache.get(listingUrl);
       if (cached && Date.now() - cached._cachedAt < SESSION_CACHE_TTL_MS) {
+        _extractionLock = false;
         return cached;
       }
     }
 
-    // ── Step: Extract lightweight data (no gallery images) ──
+    // ── Step: Extract lightweight data ──
     const { listing: lightListing, detection: lightDetection } = await extractListingDataLight();
+    noop('[DIAG] Light extraction result:', JSON.stringify({
+      title: lightListing.title?.substring(0, 50),
+      address: lightListing.address?.substring(0, 50),
+      price: lightListing.price?.substring(0, 30),
+      imageUrlsLen: (lightListing.imageUrls || []).length,
+      descriptionLen: lightListing.description?.length || 0
+    }));
 
     // ── Step: Open PhotoSwipe gallery ──
+    noop('[DIAG] Attempting to open PhotoSwipe gallery...');
     const opened = await openGallery();
-    if (!opened) {
-      // No gallery available — return listing with empty images
-      const result = { listing: { ...lightListing, imageUrls: [] }, detection: lightDetection };
-      _sessionCache.set(listingUrl, result);
-      return result;
-    }
+    noop('[DIAG] openGallery returned:', opened);
 
     // ── Step: Collect images via PhotoSwipe paging ──
-    const imageUrls = await collectByPhotoSwipePaging();
+    let imageUrls = [];
+    if (opened) {
+      noop('[DIAG] PhotoSwipe gallery opened, starting to collect images...');
+      imageUrls = await collectByPhotoSwipePaging();
+      noop('[DIAG] collectByPhotoSwipePaging returned:', imageUrls.length, 'images');
+    } else {
+      noop('[DIAG] PhotoSwipe gallery failed to open — returning listing with empty images');
+    }
 
     // ── Step: Build complete listing ──
     const listing = {
       ...lightListing,
       imageUrls,
     };
+
+    noop('[DIAG] Final extraction result:', JSON.stringify({
+      imageUrlsCount: listing.imageUrls.length,
+      descriptionLen: listing.description?.length || 0
+    }));
+
+    // ── Step: Ensure we have either images OR description ──
+    if (listing.imageUrls.length === 0 && !listing.description) {
+      const fallbackParts = [listing.title, listing.address].filter(Boolean);
+      listing.description = fallbackParts.join(' — ') || 'Property listing';
+    }
+
     const detection = buildPropertyDetection(propertySignals, listing);
     const result = { listing, detection };
 
@@ -223,16 +227,24 @@ async function startUserExtraction(bypassCache = false) {
  * structured object that looks like a real-estate listing.
  * Falls back to null if none are found.
  */
+/**
+ * Parse all <script type="application/ld+json"> tags and return ALL structured objects
+ * that look like a real-estate listing.
+ * Sites may have multiple JSON-LD blocks with partial data, so we collect all to merge.
+ */
 function parseJsonLd() {
   const scripts = document.querySelectorAll('script[type="application/ld+json"]');
+  const results = [];
   for (const script of scripts) {
     try {
       const raw = script.textContent || '';
       const data = JSON.parse(raw);
+
       // Handle @graph arrays (Google SDTT format)
       const candidates = Array.isArray(data)
         ? data
         : (data['@graph'] ? data['@graph'] : [data]);
+
       for (const item of candidates) {
         const type = (item['@type'] || '').toLowerCase();
         const isListing =
@@ -243,23 +255,26 @@ function parseJsonLd() {
           type.includes('accommodation') ||
           type.includes(' lodging') ||
           type.includes('offer') ||
-          (type === 'product' && item.name); // some sites use Product for listings
-        if (isListing) return item;
+          (type === 'product' && item.name);
+        if (isListing) {
+          results.push(item);
+        }
       }
-    } catch {
+    } catch (_) {
       // Malformed JSON — skip
     }
   }
-  return null;
+  return results;
 }
 
 /**
- * Extract structured property fields from a JSON-LD object.
+ * Extract structured property fields from a SINGLE JSON-LD object.
  * Returns null for each field that cannot be resolved.
  */
-function extractListingFromJsonLd(json) {
+function extractFromSingleJsonLd(json) {
   if (!json) return null;
 
+  try {
   // ---- Title ----
   let title = null;
   if (json.name) title = String(json.name).trim();
@@ -351,6 +366,92 @@ function extractListingFromJsonLd(json) {
   }
 
   return { title, address, price, rooms, description };
+  } catch (_) {
+    return { title: null, address: null, price: null, rooms: { bedrooms: null, bathrooms: null, parking: null }, description: null };
+  }
+}
+
+/**
+ * Extract and merge structured property fields from MULTIPLE JSON-LD objects.
+ * Different JSON-LD blocks may contain different fields, so we merge them
+ * to get the most complete data possible.
+ *
+ * @param {Array} jsonLdArray - Array of JSON-LD objects from parseJsonLd()
+ * @returns {Object} Merged listing data
+ */
+function extractListingFromJsonLd(jsonLdArray) {
+  if (!jsonLdArray || !Array.isArray(jsonLdArray) || jsonLdArray.length === 0) {
+    return null;
+  }
+
+  try {
+    let mergedTitle = null;
+    let mergedAddress = null;
+    let mergedPrice = null;
+    let mergedDescription = null;
+    let mergedRooms = { bedrooms: null, bathrooms: null, parking: null };
+
+    // Score each JSON-LD to find the best one for title/address (usually the Residence type)
+    let bestForTitle = null;
+    let bestForTitleScore = 0;
+    let bestForDetails = null; // The one with most complete price/description
+    let bestForDetailsScore = 0;
+
+  for (const json of jsonLdArray) {
+    const single = extractFromSingleJsonLd(json);
+    if (!single) continue;
+
+    // Score for title/address (prefer complete addresses)
+    let titleScore = 0;
+    if (single.title) titleScore += 1;
+    if (single.address) {
+      const addrLen = single.address.split(',').length;
+      titleScore += addrLen; // More parts = more complete address
+    }
+
+    if (titleScore > bestForTitleScore) {
+      bestForTitleScore = titleScore;
+      bestForTitle = single;
+    }
+
+    // Score for details (price, description, rooms)
+    let detailsScore = 0;
+    if (single.price) detailsScore += 3;
+    if (single.description) detailsScore += 3;
+    if (single.rooms.bedrooms) detailsScore += 1;
+    if (single.rooms.bathrooms) detailsScore += 1;
+    if (single.rooms.parking) detailsScore += 1;
+
+    if (detailsScore > bestForDetailsScore) {
+      bestForDetailsScore = detailsScore;
+      bestForDetails = single;
+    }
+  }
+
+  // Merge: use bestForTitle for title/address, bestForDetails for price/description/rooms
+  if (bestForTitle) {
+    mergedTitle = bestForTitle.title;
+    mergedAddress = bestForTitle.address;
+  }
+
+  if (bestForDetails) {
+    mergedPrice = bestForDetails.price;
+    mergedDescription = bestForDetails.description;
+    if (bestForDetails.rooms.bedrooms != null) mergedRooms.bedrooms = bestForDetails.rooms.bedrooms;
+    if (bestForDetails.rooms.bathrooms != null) mergedRooms.bathrooms = bestForDetails.rooms.bathrooms;
+    if (bestForDetails.rooms.parking != null) mergedRooms.parking = bestForDetails.rooms.parking;
+  }
+
+  return {
+    title: mergedTitle,
+    address: mergedAddress,
+    price: mergedPrice,
+    rooms: mergedRooms,
+    description: mergedDescription
+  };
+  } catch (_) {
+    return null;
+  }
 }
 
 /**
@@ -454,8 +555,8 @@ async function extractListingDataLight() {
   propertySignals = signals;
 
   // Priority 1: JSON-LD structured data
-  const jsonLd = parseJsonLd();
-  const fromJsonLd = extractListingFromJsonLd(jsonLd);
+  const jsonLdArray = parseJsonLd();
+  const fromJsonLd = extractListingFromJsonLd(jsonLdArray);
 
   // Priority 2: DOM-based extraction (fallback)
   const domTitle = extractTitle();
@@ -501,6 +602,7 @@ async function extractListingDataLight() {
     reportMode: detectReportMode({ priceText: price }, window.location.href),
   };
   const detection = buildPropertyDetection(signals, listing);
+
   return { listing, detection };
 }
 
@@ -610,6 +712,10 @@ function extractTitle() {
 }
 
 function extractAddress() {
+  // Priority 1: realestate.com.au 专用提取
+  const reAddress = extractAddressRealestate();
+  if (reAddress) return reAddress;
+
   const addressPatterns = [/(\d+[\s,]+[A-Z][a-z]+(?:\s+[A-Z][a-z]+){1,3},\s*[A-Z]{2,4}\s*\d{4})/, /([A-Z][a-z]+(?:\s+[A-Z][a-z]+)+,\s*[A-Z]{2,4})/];
   for (const pattern of addressPatterns) {
     const match = document.body.innerText.match(pattern);
@@ -618,13 +724,89 @@ function extractAddress() {
   return null;
 }
 
+/**
+ * realestate.com.au 专用地址提取
+ * 该网站通常使用 <h1 class="css-1hbe8uv"> 包含完整地址
+ */
+function extractAddressRealestate() {
+  // 方法1: 直接查找 h1 中的地址
+  const h1 = document.querySelector('h1');
+  if (h1) {
+    const text = h1.textContent?.trim() || '';
+    if (/^\d+\s+[A-Za-z]/.test(text) && text.length < 200) {
+      return text;
+    }
+  }
+
+  // 方法2: 查找地址相关的 DOM 结构
+  const addrSelectors = [
+    '[data-testid="address"]',
+    '[class*="address-line"]',
+    '[class*="street-address"]',
+    '[class*="property-address"]',
+    '.css-1hbe8uv',
+  ];
+  for (const sel of addrSelectors) {
+    const el = document.querySelector(sel);
+    if (el) {
+      const text = el.textContent?.trim() || '';
+      if (text.length > 5 && text.length < 200) {
+        return text;
+      }
+    }
+  }
+
+  // 方法3: 从页面文本中查找典型地址模式
+  const bodyText = document.body.innerText;
+  const addressRe = /(\d+\s+[A-Za-z\s\-]+,\s*[A-Za-z\s\-]+\s+[A-Z]{2,4}\s*\d{4})/;
+  const match = bodyText.match(addressRe);
+  if (match) {
+    return match[1] || match[0];
+  }
+
+  // 方法4: 查找包含 suburb/state/postcode 的文本行
+  const lines = bodyText.split(/\n/);
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (/\d{4}$/.test(trimmed) && /[A-Z]{2,4}/.test(trimmed) && trimmed.length < 150 && trimmed.length > 10) {
+      if (!/^\d{2}[\/\-]/.test(trimmed) && !/^\+61/.test(trimmed)) {
+        return trimmed;
+      }
+    }
+  }
+
+  return null;
+}
+
 function extractPrice() {
-  const raw = document.body.innerText;
+  // Priority 0: realestate.com.au 专用提取
+  const rePrice = extractPriceRealestate();
+  if (rePrice) return rePrice;
+
+  // Priority 1: Hero poster area (main listing) — most reliable
+  const heroPoster = document.querySelector('.hero-poster__content, [class*="hero-poster__content"]');
+  if (heroPoster) {
+    const text = heroPoster.textContent || '';
+    const heroPricePatterns = [
+      /\$\s*[\d,]+(?:\.\d+)?\s*(?:per\s+)?(?:week|weekly|pw|w\/k)/i,
+      /\$\s*[\d,]+(?:\.\d+)?\s*(?:per\s+)?(?:month|pcm|mth)/i,
+      /\$\s*[\d,]+(?:\.\d+)?\s*(?:per\s+)?(?:week|pw|pcm|month)?/i,
+    ];
+    for (const pattern of heroPricePatterns) {
+      const match = text.match(pattern);
+      if (match) return match[0].trim();
+    }
+  }
+
+  // Priority 2: Main content area (excluding sidebar/related)
+  const mainContent = document.querySelector('main, [class*="main-content"], [class*="listing-details"], [class*="property-info"]');
+  const searchArea = mainContent || document.body;
+  const raw = searchArea.textContent || '';
+
   const pricePatterns = [
-    /[\u0024\uff04]\s*[\d,]+(?:\.\d+)?\s*(?:per\s+)?(?:week|weekly|pw|w\/k)/gi,
-    /[\u0024\uff04]\s*[\d,]+(?:\.\d+)?\s*(?:per\s+)?(?:month|pcm|mth)/gi,
-    /[\u0024\uff04]\s*[\d,]+(?:\.\d+)?\s*(?:per\s+)?(?:week|pw|pcm|month)?/gi,
-    /[\d,]+(?:\.\d+)?\s*(?:per\s+)?(?:week|weekly|pw|pcm|month)/gi,
+    /\$\s*[\d,]+(?:\.\d+)?\s*(?:per\s+)?(?:week|weekly|pw|w\/k)/gi,
+    /\$\s*[\d,]+(?:\.\d+)?\s*(?:per\s+)?(?:month|pcm|mth)/gi,
+    /\$\s*[\d,]+(?:\.\d+)?\s*(?:per\s+)?(?:week|pw|pcm|month)?/gi,
   ];
   const rentHints = /rent|lease|p\.?w\.?|per\s*week/i;
   for (const pattern of pricePatterns) {
@@ -634,6 +816,78 @@ function extractPrice() {
     if (withHint) return withHint.trim();
     return matches[0].trim();
   }
+  return null;
+}
+
+/**
+ * realestate.com.au 专用价格提取
+ * 该网站的价格通常在特定的 DOM 结构中
+ */
+function extractPriceRealestate() {
+  // 方法1: data-testid 价格元素
+  const priceSelectors = [
+    '[data-testid="price"]',
+    '[data-testid="listing-price"]',
+    '[class*="price-amount"]',
+    '[class*="listing-price"]',
+    '.css-1h7v2t4',
+  ];
+  for (const sel of priceSelectors) {
+    const el = document.querySelector(sel);
+    if (el) {
+      const text = el.textContent?.trim() || '';
+      if (text.startsWith('$') && /\d/.test(text)) {
+        return text;
+      }
+    }
+  }
+
+  // 方法2: 查找包含 "price" 或 "$" 的 data-testid 元素
+  const allElements = document.querySelectorAll('[data-testid]');
+  for (const el of allElements) {
+    const testid = el.getAttribute('data-testid') || '';
+    const text = el.textContent?.trim() || '';
+    if ((testid.toLowerCase().includes('price') || text.includes('$')) && /\$[\d,]+/.test(text)) {
+      const priceMatch = text.match(/\$[\d,]+(?:\.\d+)?(?:\s*\/\s*(?:week|month))?/i);
+      if (priceMatch) {
+        return priceMatch[0].trim();
+      }
+    }
+  }
+
+  // 方法3: 从 hero-poster 区域查找
+  const heroPoster = document.querySelector('.residential-page-header, [class*="page-header"], [class*="listing-header"]');
+  if (heroPoster) {
+    const text = heroPoster.textContent || '';
+    const priceMatch = text.match(/\$[\d,]+(?:\.\d+)?\s*(?:\/\s*(?:week|month))?/);
+    if (priceMatch) {
+      return priceMatch[0].trim();
+    }
+  }
+
+  // 方法4: 从 h1 相邻区域查找价格
+  const h1 = document.querySelector('h1');
+  if (h1) {
+    let nextEl = h1.nextElementSibling;
+    for (let i = 0; i < 5 && nextEl; i++, nextEl = nextEl.nextElementSibling) {
+      const text = nextEl.textContent?.trim() || '';
+      if (text.startsWith('$') && /\d{3}/.test(text.replace(/,/g, ''))) {
+        return text;
+      }
+    }
+
+    const parent = h1.parentElement;
+    if (parent) {
+      const siblings = parent.querySelectorAll(':scope > *');
+      for (const sib of siblings) {
+        const text = sib.textContent?.trim() || '';
+        if (text.startsWith('$') && /\d{3}/.test(text.replace(/,/g, ''))) {
+          return text;
+        }
+      }
+    }
+  }
+
   return null;
 }
 
@@ -656,9 +910,11 @@ function extractDescription() {
   const descSelectors = ['[class*="description"]', '[class*="detail"]', '[class*="about"]', '[class*="content"]', 'article', 'main p'];
   for (const sel of descSelectors) {
     const el = document.querySelector(sel);
-    if (el && el.textContent.length > 80) {
+    if (el) {
       const text = el.textContent.trim();
-      if (text.length > 80 && !text.toLowerCase().includes('cookie') && !text.toLowerCase().includes('sign in') && !text.toLowerCase().includes('login')) {
+      // Lower threshold to 30 chars to ensure we have some description
+      // (Edge Function requires either images OR description)
+      if (text.length > 30 && !text.toLowerCase().includes('cookie') && !text.toLowerCase().includes('sign in') && !text.toLowerCase().includes('login')) {
         return text.slice(0, 5000);
       }
     }
@@ -739,15 +995,12 @@ function findActivePswpItem() {
     const tx = parseTranslateX(style.transform);
     const absTx = Math.abs(tx);
 
-    dbg('item[' + i + '] tx=' + tx + ' absTx=' + absTx + ' aria=' + item.getAttribute('aria-hidden') + ' hasActive=' + item.classList.contains('pswp--active'));
-
     if (absTx < bestAbsTx) {
       bestAbsTx = absTx;
       best = { item, index: i, tx };
     }
   }
 
-  dbg('WINNER: index=' + (best ? best.index : 'null') + ' tx=' + (best ? best.tx : 'N/A'));
   return best;
 }
 
@@ -764,7 +1017,6 @@ function findActivePswpItem() {
 function findBestImgInItem(item, allPswpImgs) {
 
   const imgs = Array.from(item.querySelectorAll('.pswp__img'));
-  dbg('item has ' + imgs.length + ' pswp__img nodes');
 
   // Inspect all imgs in this item
   const candidates = [];
@@ -781,15 +1033,12 @@ function findBestImgInItem(item, allPswpImgs) {
     const isLoaded = nw > 0;
     const isReastatic = /reastatic\.(net|com\.au)/i.test(effectiveSrc);
 
-    dbg('  img[' + i + '] src=\"' + (src ? src.substring(0, 60) : '(empty)') + '\" currentSrc=\"' + (currentSrc ? currentSrc.substring(0, 60) : '(empty)') + '\" nw=' + nw + ' cw=' + cw + ' ch=' + ch + ' area=' + area + ' placeholder=' + isPlaceholder + ' loaded=' + isLoaded + ' reastatic=' + isReastatic);
-
     if (!isPlaceholder) {
       candidates.push({ img, nw, area, index: i, isReastatic });
     }
   }
 
   if (candidates.length === 0) {
-    dbg('  No valid candidates in this item — falling back to global .pswp__img');
     // Global fallback: pick largest area
     let globalBest = null, globalBestArea = 0;
     for (let i = 0; i < allPswpImgs.length; i++) {
@@ -800,7 +1049,6 @@ function findBestImgInItem(item, allPswpImgs) {
       if (area > globalBestArea) { globalBestArea = area; globalBest = img; }
     }
     if (globalBest) {
-      dbg('  Global fallback WINNER: nw=' + globalBest.naturalWidth + ' area=' + globalBestArea);
       return { img: globalBest, source: 'global-best' };
     }
     return null;
@@ -810,7 +1058,6 @@ function findBestImgInItem(item, allPswpImgs) {
   const reastatic = candidates.filter(c => c.isReastatic);
   if (reastatic.length > 0) {
     reastatic.sort((a, b) => b.nw - a.nw || b.area - a.area);
-    dbg('  WINNER (reastatic, max naturalWidth): img[' + reastatic[0].index + '] nw=' + reastatic[0].nw);
     return { img: reastatic[0].img, source: 'item-best' };
   }
 
@@ -818,13 +1065,11 @@ function findBestImgInItem(item, allPswpImgs) {
   const loaded = candidates.filter(c => c.nw > 0);
   if (loaded.length > 0) {
     loaded.sort((a, b) => b.nw - a.nw);
-    dbg('  WINNER (loaded, max naturalWidth): img[' + loaded[0].index + '] nw=' + loaded[0].nw);
     return { img: loaded[0].img, source: 'item-best' };
   }
 
   // Priority 3: fallback to largest client area
   candidates.sort((a, b) => b.area - a.area);
-  dbg('  WINNER (max client area): img[' + candidates[0].index + '] area=' + candidates[0].area);
   return { img: candidates[0].img, source: 'item-best' };
 }
 
@@ -1008,20 +1253,16 @@ async function openGallery() {
 
   const existing = document.querySelector('.pswp');
   if (existing && existing.classList.contains('pswp--open')) {
-    log('PhotoSwipe already open');
     return true;
   }
 
   // Strategy 1: Click first listing image
-  log('Trying strategy 1: clickFirstListingImage');
   if (await clickFirstListingImage()) return true;
 
   // Strategy 2: Click gallery container
-  log('Trying strategy 2: clickGalleryContainer');
   if (await clickGalleryContainer()) return true;
 
-  // Strategy 3: Click button candidates (existing logic, refined)
-  log('Trying strategy 3: button-candidates');
+  // Strategy 3: Click button candidates
   const hits = collectGalleryButtonCandidates();
   for (let i = 0; i < hits.length; i++) {
     const h = hits[i];
@@ -1030,17 +1271,14 @@ async function openGallery() {
       h.el.closest('a') ||
       h.el.closest('[role="button"]') ||
       h.el;
-    log('  candidate #' + i + ' text="' + h.text + '" target=' + clickTarget.tagName + ' path=' + getElementPath(clickTarget));
     try { clickTarget.click(); } catch (_) {
       try { clickTarget.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true })); } catch (_2) {}
     }
     if (await waitForPhotoSwipe(3000)) {
-      log('✓ PhotoSwipe opened via button-candidate #' + i);
       return true;
     }
   }
 
-  log('✗ All strategies failed — PhotoSwipe not opened');
   return false;
 }
 
@@ -1331,7 +1569,6 @@ function extractLightImageUrls() {
     if (!u || isPlaceholderUrl(u) || seen.has(u)) return false;
     seen.add(u);
     out.push({ url: u, reason });
-    log('  keep: ' + (reason || '?') + ' -> ' + u.substring(0, 80));
     return true;
   };
 
@@ -1345,13 +1582,6 @@ function extractLightImageUrls() {
   // Gallery root DOM scan
   const pageAddress = extractPageAddress();
   const galleryRoot = findGalleryRoot();
-
-  if (galleryRoot) {
-    log('galleryRoot found: ' + getElementPath(galleryRoot));
-    log('pageAddress anchor: ' + (pageAddress || '(none)'));
-  } else {
-    log('galleryRoot not found, falling back to full-page scan');
-  }
 
   const rootImgs = galleryRoot
     ? Array.from(galleryRoot.querySelectorAll('picture img, img')).filter(img => !!getImgReastaticUrl(img))
@@ -1369,7 +1599,6 @@ function extractLightImageUrls() {
   scored.sort((a, b) => b.area - a.area);
   scored.filter(s => push(s.src, s.reason));
 
-  log('=== extractLightImageUrls final: ' + out.length + ' images ===');
   return out.map(o => o.url).slice(0, 20);
 }
 
@@ -1396,7 +1625,6 @@ async function tryExtractPhotoSwipeItems() {
 
   const pswpEl = document.querySelector('.pswp');
   if (!pswpEl) {
-    log('no .pswp element found');
     return null;
   }
 
@@ -1411,17 +1639,15 @@ async function tryExtractPhotoSwipeItems() {
     return { url: norm, width, id: cid };
   }
 
-  // Strategy 1: window.pswp.items  (PhotoSwipe v5 global)
+  // Strategy 1: window.pswp.items (PhotoSwipe v5 global)
   if (Array.isArray(window.pswp?.items) && window.pswp.items.length > 0) {
     const items = window.pswp.items.map(extractItem).filter(Boolean);
-    log('Strategy 1 (window.pswp.items): ' + items.length + ' images');
     return items;
   }
 
-  // Strategy 2: pswpEl.__pswp.items  (PhotoSwipe v4)
+  // Strategy 2: pswpEl.__pswp.items (PhotoSwipe v4)
   if (pswpEl.__pswp && Array.isArray(pswpEl.__pswp.items) && pswpEl.__pswp.items.length > 0) {
     const items = pswpEl.__pswp.items.map(extractItem).filter(Boolean);
-    log('Strategy 2 (__pswp.items): ' + items.length + ' images');
     return items;
   }
 
@@ -1431,16 +1657,13 @@ async function tryExtractPhotoSwipeItems() {
     const instance = window.pswp.instances.get(Number(uid));
     if (instance && Array.isArray(instance.items) && instance.items.length > 0) {
       const items = instance.items.map(extractItem).filter(Boolean);
-      log('Strategy 3 (pswp.instances.get(uid)): ' + items.length + ' images');
       return items;
     }
   }
 
-  // Strategy 4: try reading items from the UI DOM (fallback)
-  // PhotoSwipe renders .pswp__item elements; scan all of them for images
+  // Strategy 4: try reading items from the UI DOM
   const pswpItems = Array.from(pswpEl.querySelectorAll('.pswp__item'));
   if (pswpItems.length > 0) {
-    // Collect all images from all slots (each slot may have multiple imgs: placeholder + real)
     const allImgs = Array.from(pswpEl.querySelectorAll('.pswp__img'));
     const collected = [];
     for (const img of allImgs) {
@@ -1452,34 +1675,28 @@ async function tryExtractPhotoSwipeItems() {
       collected.push({ url: norm, width: extractWidthFromUrl(src), id: cid });
     }
     if (collected.length > 0) {
-      log('Strategy 4 (DOM scan all .pswp__img): ' + collected.length + ' images');
       return collected;
     }
   }
 
   // Strategy 5: Scan list-page thumbnail images for full-res URLs
-  // Many real estate sites embed the full gallery in the list view as data attributes or href links
   const galleryUrlsFromList = scanGalleryFromListView();
   if (galleryUrlsFromList && galleryUrlsFromList.length > 0) {
-    log('Strategy 5 (galleryFromList): ' + galleryUrlsFromList.length + ' images');
     return galleryUrlsFromList;
   }
 
-  // Strategy 6: Try __NEXT_DATA__, window.__INITIAL_STATE__, or similar React/SSR data
+  // Strategy 6: Try SSR data
   const galleryUrlsFromSsr = scanGalleryFromSsrData();
   if (galleryUrlsFromSsr && galleryUrlsFromSsr.length > 0) {
-    log('Strategy 6 (ssrData): ' + galleryUrlsFromSsr.length + ' images');
     return galleryUrlsFromSsr;
   }
 
-  // Strategy 7: Scan window for gallery/image arrays (common patterns)
+  // Strategy 7: Scan window for gallery/image arrays
   const galleryUrlsFromWindow = scanGalleryFromWindow();
   if (galleryUrlsFromWindow && galleryUrlsFromWindow.length > 0) {
-    log('Strategy 7 (windowScan): ' + galleryUrlsFromWindow.length + ' images');
     return galleryUrlsFromWindow;
   }
 
-  log('no PhotoSwipe items accessible via any strategy');
   return null;
 }
 
@@ -1560,9 +1777,6 @@ function scanGalleryFromListView() {
     }
   }
 
-  if (collected.length > 0) {
-    log('Found ' + collected.length + ' images from list view');
-  }
   return collected.length > 0 ? collected : null;
 }
 
@@ -1622,9 +1836,6 @@ function scanGalleryFromSsrData() {
     } catch (_) {}
   }
 
-  if (collected.length > 0) {
-    log('Found ' + collected.length + ' images from SSR data');
-  }
   return collected.length > 0 ? collected : null;
 }
 
@@ -1658,9 +1869,6 @@ function scanGalleryFromWindow() {
     } catch (_) {}
   }
 
-  if (collected.length > 0) {
-    log('Found ' + collected.length + ' images from window globals');
-  }
   return collected.length > 0 ? collected : null;
 }
 
@@ -1833,10 +2041,13 @@ function isValidReastaticUrl(src) {
  */
 function getActiveSlideSnapshot() {
   const pswp = document.querySelector('.pswp');
-  if (!pswp) return { isValid: false };
+  if (!pswp) {
+    return { isValid: false };
+  }
 
   // Strategy A: PhotoSwipe API
   const pswpInfo = getPhotoSwipeInstance();
+
   if (pswpInfo) {
     try {
       const currIndex = pswpInfo.instance.currIndex;
@@ -1877,7 +2088,6 @@ function getActiveSlideSnapshot() {
       const src = (img.currentSrc || img.src || '').trim();
       if (!src || src.startsWith('data:') || src.startsWith('blob:')) continue;
       bestImg = img;
-      // Prefer realastatic images without waiting for load
       if (/reastatic\.(net|com\.au)/i.test(src)) break;
     }
     if (!bestImg) {
@@ -2013,40 +2223,39 @@ function advanceToNextSlide() {
  * Uses user-behavior simulation (close button → ESC → DOM removal) for maximum compatibility.
  * Safe to call redundantly — does nothing if gallery is not open.
  */
-function closeGallery() {
-  try {
-    const pswpRoot = document.querySelector('.pswp.pswp--open');
-    if (!pswpRoot) return;
+  function closeGallery() {
+    try {
+      const pswpRoot = document.querySelector('.pswp.pswp--open');
+      if (!pswpRoot) return;
 
-
-    // 1️⃣ Try clicking the close button (most stable)
-    const closeBtn = pswpRoot.querySelector('.pswp__button--close');
-    if (closeBtn) {
-      closeBtn.click();
-      return;
-    }
-
-    // 2️⃣ Simulate ESC key
-    document.dispatchEvent(
-      new KeyboardEvent('keydown', {
-        key: 'Escape',
-        keyCode: 27,
-        which: 27,
-        bubbles: true,
-      })
-    );
-
-    // 3️⃣ Fallback: force-remove DOM after animation settles
-    setTimeout(() => {
-      const stillOpen = document.querySelector('.pswp.pswp--open');
-      if (stillOpen) {
-        stillOpen.remove();
+      // 1️⃣ Try clicking the close button (most stable)
+      const closeBtn = pswpRoot.querySelector('.pswp__button--close');
+      if (closeBtn) {
+        closeBtn.click();
+        return;
       }
-    }, 300);
-  } catch (err) {
-    console.warn('[gallery] closeGallery error:', err);
+
+      // 2️⃣ Simulate ESC key
+      document.dispatchEvent(
+        new KeyboardEvent('keydown', {
+          key: 'Escape',
+          keyCode: 27,
+          which: 27,
+          bubbles: true,
+        })
+      );
+
+      // 3️⃣ Fallback: force-remove DOM after animation settles
+      setTimeout(() => {
+        const stillOpen = document.querySelector('.pswp.pswp--open');
+        if (stillOpen) {
+          stillOpen.remove();
+        }
+      }, 300);
+    } catch (err) {
+      console.warn('[gallery] closeGallery error:', err);
+    }
   }
-}
 
 /**
  * NEW PhotoSwipe gallery extraction using signature-based approach.
@@ -2091,7 +2300,7 @@ async function collectByPhotoSwipePaging() {
     //   字段: { signature, url }
     // ───────────────────────────────────────────────────────────────────
 
-    // Record first image (result item)
+    // Record first image
     const firstSignature = initialSnapshot.signature;
     const firstSrc = initialSnapshot.rawSrc;
     if (firstSignature && firstSrc) {
@@ -2174,19 +2383,16 @@ async function collectByPhotoSwipePaging() {
       if (!finalSeen.has(key)) {
         finalSeen.add(key);
         finalUrls.push(item.url);
-      } else {
       }
     }
 
     finalUrls.sort((a, b) => extractWidthFromUrl(b) - extractWidthFromUrl(a));
 
-
-    // Return what we have, even if less than expected
     return finalUrls.length > 0 ? finalUrls : [];
 
   } catch (err) {
     console.error('[gallery] Error during extraction:', err);
-    // Return whatever we collected, don't lose results due to mid-flow errors
+    // Return whatever we collected
     const finalUrls = result
       .filter(item => item.signature || item.url)
       .map(item => item.url)

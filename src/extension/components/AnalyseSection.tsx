@@ -124,19 +124,19 @@ const PHASE_LABELS: Record<string, { main: string; sub?: string }> = {
 };
 
 export function AnalyseSection() {
-  const { analysisPhase, analysisProgress, listingData, propertyDetection } = useAppState();
+  const { analysisPhase, analysisProgress, listingData, propertyDetection, credits } = useAppState();
   const { retryAnalysis, startAnalysis } = useActions();
   const cooldownRemaining = useCooldownRemaining();
   const cooldownSecs = Math.ceil(cooldownRemaining / 1000);
 
   const isAnalysing = ['preparing', 'reading_page', 'opening_gallery', 'collecting_photos', 'sending_data', 'analysing', 'generating_report'].includes(analysisPhase);
   const isInCooldown = cooldownRemaining > 0;
-  const isNoCredits = analysisPhase === 'no_credits';
+  const isNoCredits = credits <= 0;
   const isError = analysisPhase === 'error';
   const isDone = analysisPhase === 'done';
 
   // Button is always enabled unless: already analysing, in cooldown, or no credits
-  const isDisabled = isAnalysing || isInCooldown || isNoCredits;
+  const isDisabled = isAnalysing || isInCooldown || credits <= 0;
 
   const getButtonLabel = () => {
     if (isInCooldown) return { main: `Please wait ${cooldownSecs}s`, sub: 'Cooldown active' };

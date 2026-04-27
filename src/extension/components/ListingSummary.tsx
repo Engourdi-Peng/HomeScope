@@ -21,7 +21,16 @@ function ListingCoverPlaceholderIcon() {
 }
 
 function isV2(data: ListingData | ListingDataV2 | null): data is ListingDataV2 {
-  return data !== null && 'source' in data;
+  // V2 使用 images 数组，V1 使用 imageUrls 数组
+  // V2 必定有 listingUrl 字段，且 address/price 是必需字段（非可选）
+  if (!data) return false;
+  if ('listingUrl' in data) return true;
+  // 如果有 images 字段，说明是 V2 格式
+  if ('images' in data) return true;
+  // V1 有 source 但没有 images，也没有 listingUrl
+  // 所以检查 isV1: 有 source 但无 images
+  if ('source' in data && !('images' in data)) return false;
+  return false;
 }
 
 export function ListingSummary() {
@@ -37,13 +46,14 @@ export function ListingSummary() {
 
   const isV2Data = isV2(listingData);
 
+  // V1: address 是字符串; V2: address 是字符串但结构不同
   const rawTitle = isV2Data
     ? (listingData as ListingDataV2).title || null
-    : (listingData as ListingData).address?.full || null;
+    : (listingData as ListingData).title || null;  // V1: title 是地址
 
   const rawAddress = isV2Data
     ? (listingData as ListingDataV2).address || null
-    : null;
+    : (listingData as ListingData).address || null;  // V1: address 是字符串
 
   // Deduplicate: address shows only if it differs meaningfully from title
   const titleToShow = rawTitle || rawAddress || 'Property';
@@ -59,15 +69,15 @@ export function ListingSummary() {
     ? (listingData as ListingDataV2).price ||
       (listingData as ListingDataV2 & { priceText?: string }).priceText ||
       'Price not available'
-    : (listingData as ListingData).price?.display || 'Price not available';
+    : (listingData as ListingData).priceText || (listingData as ListingData).price || 'Price not available';
 
-  const bedrooms = isV2Data ? (listingData as ListingDataV2).bedrooms : (listingData as ListingData).property?.bedrooms;
-  const bathrooms = isV2Data ? (listingData as ListingDataV2).bathrooms : (listingData as ListingData).property?.bathrooms;
-  const parking = isV2Data ? (listingData as ListingDataV2).parking : (listingData as ListingData).property?.parking;
+  const bedrooms = isV2Data ? (listingData as ListingDataV2).bedrooms : (listingData as ListingData).bedrooms;
+  const bathrooms = isV2Data ? (listingData as ListingDataV2).bathrooms : (listingData as ListingData).bathrooms;
+  const parking = isV2Data ? (listingData as ListingDataV2).parking : (listingData as ListingData).parking;
 
   const images = isV2Data
-    ? (listingData as ListingDataV2).imageUrls
-    : (listingData as ListingData).images;
+    ? (listingData as ListingDataV2).images
+    : (listingData as ListingData).imageUrls;
 
   const imageCount = images?.length || 0;
 

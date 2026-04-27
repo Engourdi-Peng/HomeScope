@@ -1,25 +1,6 @@
 /**
  * HomeScope Background Service Worker
- *
- * Auth architecture: background is the SINGLE SOURCE OF TRUTH for extension auth.
- *
- * Session storage:
- *   - Primary (persistent): chrome.storage.local { hs_session, hs_user }
- *   - Runtime cache: _cachedAuth (in-memory, avoids repeated storage reads)
- *
- * Auth flow:
- *   1. User clicks login in side panel → background opens website login page with flowId
- *   2. User completes Google OAuth on website
- *   3. AuthCallback.tsx injects a <script> tag that calls chrome.runtime.sendMessage
- *   4. Background receives sync_session_from_site
- *      - ALWAYS saves session (even if flow validation fails — fallback for race conditions)
- *      - ALWAYS broadcasts auth change to extension contexts
- *      - ONLY closes the callback tab if flowId is present (extension-initiated flow)
- *        → web-initiated login (no flowId): tab stays open, user sees the success page
- *
- * Tab-closing policy:
- *   - Extension flow (flowId exists): close the callback tab after session sync
- *   - Web flow (no flowId): do NOT close any tab — user should see the success message
+ * Handles auth, API communication, and analysis submission.
  */
 
 // ===== Injected config (replaced by vite at build time) =====
@@ -32,78 +13,13 @@ const MAGIC_LINK_REDIRECT = __MAGIC_LINK_REDIRECT__;
 // Policy: "严禁后台预抓图库图片" — image collection is now exclusively user-triggered.
 // All gallery image collection must go through the START_USER_EXTRACTION flow in content.js.
 
-// ===== tabId → listingUrl mapping (valid for service worker lifetime) =====
+// tabId → listingUrl mapping (valid for service worker lifetime)
 const _tabListingMap = new Map();
 
-// ===== OAuth Flow Management (双重校验) =====
-// 记录扩展发起的 OAuth 登录流程，用于回调时验证
+// OAuth flow tracking
 const _oauthFlows = new Map();
-// flow 超时时间：10 分钟
-const FLOW_TIMEOUT_MS = 10 * 60 * 1000;
-
-// 生成唯一的 flowId
-function generateFlowId() {
-  return `hs_${Date.now()}_${Math.random().toString(36).substring(2, 11)}`;
-}
-
-// 清理超时的 flow
-function cleanupExpiredFlows() {
-  const now = Date.now();
-  for (const [flowId, flow] of _oauthFlows.entries()) {
-    if (now - flow.createdAt > FLOW_TIMEOUT_MS) {
-      _oauthFlows.delete(flowId);
-    }
-  }
-}
-
-// 开始 OAuth 流程时调用
-function startOAuthFlow(loginTabId, callbackTabId) {
-  const flowId = generateFlowId();
-  _oauthFlows.set(flowId, {
-    loginTabId,
-    callbackTabId,
-    createdAt: Date.now(),
-    used: false,
-  });
-  return flowId;
-}
-
-// 验证 OAuth 流程
-function validateOAuthFlow(flowId, senderTabId) {
-  cleanupExpiredFlows();
-
-  const flow = _oauthFlows.get(flowId);
-  if (!flow) {
-    console.warn(`${LOG_PREFIX} [flow] validate FAILED: flowId=${flowId} not found or expired`);
-    return { valid: false, reason: 'FLOW_NOT_FOUND' };
-  }
-
-  if (flow.used) {
-    console.warn(`${LOG_PREFIX} [flow] validate FAILED: flowId=${flowId} already used`);
-    return { valid: false, reason: 'FLOW_ALREADY_USED' };
-  }
-
-  // 双重校验：flowId 匹配 + sender.tab.id 匹配预期 callbackTabId
-  if (flow.callbackTabId !== senderTabId) {
-    // 竞态条件处理：如果 callbackTabId 还未更新，但 senderTabId 是有效的 callback tab
-    if (flow.callbackTabId === null && senderTabId !== null) {
-      flow.callbackTabId = senderTabId;
-    } else {
-      console.warn(`${LOG_PREFIX} [flow] validate FAILED: sender.tab.id mismatch. expected=${flow.callbackTabId}, got=${senderTabId}`);
-      return { valid: false, reason: 'TAB_ID_MISMATCH' };
-    }
-  }
-
-  // 标记为已使用（防止重放攻击）
-  flow.used = true;
-  _oauthFlows.delete(flowId);
-
-  return { valid: true, flow };
-}
 
 const LOG_PREFIX = '[HomeScope BG]';
-
-// ===== Auth: single source of truth =====
 
 // Canonical storage keys (ONLY these are used for persistent session)
 const HS_SESSION_KEY = 'hs_session';
@@ -118,13 +34,6 @@ let _authListeners = [];
 let _migrationAttempted = false;
 // Refresh lock: prevents concurrent token refresh (race condition fix)
 let _refreshLock = null;
-
-// ── Token redaction helper (只打印前6后4位) ──
-function redactToken(token) {
-  if (!token || typeof token !== 'string') return 'null';
-  if (token.length <= 12) return token.substring(0, 3) + '...';
-  return token.substring(0, 6) + '...' + token.substring(token.length - 4);
-}
 
 // ── Helper: normalise Supabase user object to ExtUser ──
 function toExtUser(supabaseUser) {
@@ -542,38 +451,26 @@ async function handleMessage(message, sender, sendResponse) {
       }
       const { session } = auth;
 
-      // Step 2: Map listingData → AnalyzeRequest body
       const listingData = message.data;
       const imageUrls = listingData?.imageUrls || listingData?.images || [];
       const description = listingData?.description || listingData?.rawText || '';
-      const reportMode = listingData?.reportMode || 'sale';
+      const reportMode = listingData?.reportMode || 'rent';
 
-      // Build optionalDetails with correct field names based on reportMode
-      const optionalDetails = {
-        suburb: listingData?.address,
-        bedrooms: listingData?.bedrooms != null ? String(listingData.bedrooms) : undefined,
-        bathrooms: listingData?.bathrooms != null ? String(listingData.bathrooms) : undefined,
-        parking: listingData?.parking != null ? String(listingData.parking) : undefined,
-      };
-
-      // Add price field with correct name based on report mode
-      if (listingData?.price || listingData?.priceText) {
+      // Build optionalDetails: pass price info to AI for accurate analysis
+      const priceText = listingData?.priceText || listingData?.price || null;
+      const optionalDetails = {};
+      if (priceText) {
         if (reportMode === 'rent') {
-          optionalDetails.weeklyRent = listingData?.price || listingData?.priceText;
+          optionalDetails.weeklyRent = priceText;
         } else {
-          // 'sale' mode — use askingPrice
-          optionalDetails.askingPrice = listingData?.price || listingData?.priceText;
+          optionalDetails.askingPrice = priceText;
         }
       }
 
-      const requestBody = {
-        imageUrls,
-        description,
-        reportMode,
-        optionalDetails,
-      };
+      // Build request body for analyze function
+      const requestBody = { imageUrls, description, reportMode, optionalDetails };
 
-      // Step 3: action=submit — create analysis record and return analysisId
+      // Step 3: action=submit
       try {
         const submitRes = await fetch(`${SUPABASE_URL}/functions/v1/analyze?action=submit`, {
           method: 'POST',
@@ -812,16 +709,32 @@ async function handleMessage(message, sender, sendResponse) {
 //   await chrome.scripting.executeScript({ target: { tabId }, files: ['content.js'] });
 // }
 
-// ----- Sleep helper -----
-function sleep(ms) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
 chrome.action.onClicked.addListener(async (tab) => {
   if (tab?.id) {
     await chrome.sidePanel.open({ tabId: tab.id });
   }
 });
+
+// OAuth helpers
+function generateFlowId() {
+  return `hs_${Date.now()}_${Math.random().toString(36).slice(2, 11)}`;
+}
+
+/** Validate an OAuth flow by flowId and optional callback tabId */
+function validateOAuthFlow(flowId, callbackTabId) {
+  const flow = _oauthFlows.get(flowId);
+  if (!flow) {
+    return { valid: false, reason: 'flow_not_found' };
+  }
+  if (flow.used) {
+    return { valid: false, reason: 'flow_already_used' };
+  }
+  if (callbackTabId != null && flow.loginTabId === callbackTabId) {
+    return { valid: false, reason: 'callback_is_login_tab' };
+  }
+  flow.used = true;
+  return { valid: true };
+}
 
 // ===== OAuth Flow: 监听 callback 标签页打开/更新 =====
 // 注意：Supabase OAuth 使用"原地重定向"（在同一个标签页从 /login 重定向到 /auth/callback）
@@ -886,11 +799,8 @@ chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
   handleCallbackTab(tabId, tab.url || '');
 });
 
-// ===== Token refresh scheduler (prevents 7-day Supabase expiry) =====
-// Runs on extension startup and periodically to keep the session alive.
-// Only re-schedules on success; failure means token is expired → user must re-login.
-
-const REFRESH_INTERVAL_MS = 6 * 60 * 60 * 1000; // 6 hours — well within Supabase 7-day window
+// Token refresh scheduler (prevents 7-day Supabase expiry)
+const REFRESH_INTERVAL_MS = 6 * 60 * 60 * 1000;
 let _refreshTimer = null;
 
 async function scheduleTokenRefresh() {

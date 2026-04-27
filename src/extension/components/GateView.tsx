@@ -3,6 +3,8 @@ import { useState, useEffect, useRef } from 'react';
 import { useAppState, useActions } from '../store';
 import type { ExtUser } from '../types';
 
+const noop = (..._args: unknown[]) => {};
+
 export function GateView() {
   const { authStatus } = useAppState();
   const { sendMagicLink, initiateGoogleOAuth } = useActions();
@@ -99,7 +101,8 @@ export function GateView() {
     const result = await initiateGoogleOAuth();
 
     if (!result.success) {
-      console.error('[HomeScope Gate] handleGoogleOAuth: failed —', result.error);
+      // Login failed silently — user can retry
+      noop(result.error);
       setError(result.error || 'Failed to open login page');
       waitingRef.current = false;
       setWaitingForSync(false);
