@@ -75,7 +75,7 @@ export function AuthProvider({ children }: AuthProviderProps) {
 
           let exchangeSucceeded = false;
           let retryCount = 0;
-          const maxRetries = 2;
+          const maxRetries = 5;
 
           while (!exchangeSucceeded && retryCount <= maxRetries) {
             try {
@@ -94,8 +94,8 @@ export function AuthProvider({ children }: AuthProviderProps) {
                 // PKCE verifier 尚未就绪，等待后重试（处理 SDK 初始化竞态）
                 retryCount++;
                 if (retryCount <= maxRetries) {
-                  console.warn(`[AuthContext] initAuth: PKCE verifier not ready, retrying in 300ms... (${retryCount}/${maxRetries})`);
-                  await new Promise(resolve => setTimeout(resolve, 300));
+                  console.warn(`[AuthContext] initAuth: PKCE verifier not ready, retrying in 500ms... (${retryCount}/${maxRetries})`);
+                  await new Promise(resolve => setTimeout(resolve, 500));
                 } else {
                   console.error('[AuthContext] initAuth: PKCE verifier exchange failed after retries:', error.message);
                 }
@@ -107,8 +107,8 @@ export function AuthProvider({ children }: AuthProviderProps) {
               const errMsg = err instanceof Error ? err.message : String(err);
               if (errMsg.includes('PKCE code verifier not found') && retryCount < maxRetries) {
                 retryCount++;
-                console.warn(`[AuthContext] initAuth: PKCE verifier not ready (exception), retrying in 300ms... (${retryCount}/${maxRetries})`);
-                await new Promise(resolve => setTimeout(resolve, 300));
+                console.warn(`[AuthContext] initAuth: PKCE verifier not ready (exception), retrying in 500ms... (${retryCount}/${maxRetries})`);
+                await new Promise(resolve => setTimeout(resolve, 500));
               } else {
                 console.error('[AuthContext] initAuth: exchangeCodeForSession exception:', err);
                 exchangeSucceeded = true;
