@@ -17,6 +17,7 @@ import { AuthCallback } from './pages/AuthCallback';
 import { LoginPage } from './pages/Login';
 import { AuthCompletePage } from './pages/AuthComplete';
 import { AuthorizePage } from './pages/Authorize';
+import { RealEstateToolsPage } from './pages/RealEstateTools';
 import { useEffect, useState } from 'react';
 
 function AnimatedRoutes() {
@@ -55,6 +56,7 @@ function AnimatedRoutes() {
         <Route path="/login" element={<LoginPage />} />
         <Route path="/auth-complete" element={<AuthCompletePage />} />
         <Route path="/auth/authorize" element={<AuthorizePage />} />
+        <Route path="/tools/realestate-com-au" element={<RealEstateToolsPage />} />
       </Routes>
     </div>
   );

@@ -116,6 +116,12 @@ function formatDate(isoString: string | null | undefined): string {
 /** Static pages to include in the sitemap. */
 const STATIC_PAGES = [
   { loc: `${SITE_URL}/`, changefreq: 'weekly', priority: '1.0' },
+  { loc: `${SITE_URL}/tools/realestate-com-au`, changefreq: 'monthly', priority: '0.8' },
+  { loc: `${SITE_URL}/pricing`, changefreq: 'monthly', priority: '0.7' },
+  { loc: `${SITE_URL}/privacy`, changefreq: 'yearly', priority: '0.3' },
+  { loc: `${SITE_URL}/terms`, changefreq: 'yearly', priority: '0.3' },
+  { loc: `${SITE_URL}/support`, changefreq: 'monthly', priority: '0.5' },
+  { loc: `${SITE_URL}/contact`, changefreq: 'yearly', priority: '0.4' },
 ];
 
 function buildXml(shareRows: SitemapRow[]): string {
