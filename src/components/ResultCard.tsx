@@ -202,6 +202,15 @@ function SectionDivider() {
 }
 
 export function ResultCard({ result, onBack, onShare, hideNav, isPublicShare }: ResultProps) {
+  // Guard: if result is undefined/null, render nothing
+  if (!result) {
+    return (
+      <div className="flex items-center justify-center py-24">
+        <div className="ext-spinner" />
+      </div>
+    );
+  }
+
   const [isSharing, setIsSharing] = useState(false);
   const [shareResult, setShareResult] = useState<{ slug: string; shareUrl: string } | null>(null);
   const [copied, setCopied] = useState(false);

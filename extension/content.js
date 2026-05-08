@@ -8,8 +8,359 @@
 
   const noop = (..._args) => {};
 
-  // ===== Content script instance ID (for debugging multi-injection) =====
-  const INSTANCE_ID = Math.random().toString(36).slice(2, 9);
+// ===== Deep query function that traverses Shadow DOM =====
+function queryDeep(root, selector) {
+  let result = root.querySelector(selector);
+  if (!result) {
+    // Traverse Shadow DOM
+    const allElements = root.querySelectorAll('*');
+    for (const el of allElements) {
+      if (el.shadowRoot) {
+        result = queryDeep(el.shadowRoot, selector);
+        if (result) break;
+      }
+    }
+  }
+  return result;
+}
+
+// ===== Hidden price patterns (Price on Application) =====
+const HIDDEN_PRICE_PATTERNS = [
+  /contact\s+agent/i,
+  /price\s+on\s+application/i,
+  /\bpoa\b/i,
+  /\bPOA\b/i,
+  /enquire\s+for\s+price/i,
+  /ask\s+for\s+price/i,
+  /price\s+upon\s+request/i,
+  /tba\b/i,
+  /tbd\b/i,
+  /to\s+be\s+advised/i,
+  /to\s+be\s+announced/i,
+  /auction\s+guide/i,
+  /^$\s*contact\s+agent/i,
+];
+
+function isHiddenPrice(text) {
+  if (!text) return false;
+  const normalized = text.replace(/\$[\d,]+/g, '').trim();
+  return HIDDEN_PRICE_PATTERNS.some(p => p.test(normalized));
+}
+
+// ===== Extract data from window.__NEXT_DATA__ or window.__RE_STATE__ =====
+function extractFromWindowState() {
+  const result = { price: null, title: null, address: null };
+
+  // Method 1: window.__NEXT_DATA__ (Next.js App Router)
+  if (window.__NEXT_DATA__) {
+    try {
+      const pageProps = window.__NEXT_DATA__.props?.pageProps;
+      if (pageProps) {
+        const price = deepFindPrice(pageProps);
+        if (price) result.price = price;
+      }
+    } catch (_) {}
+  }
+
+  // Method 2: window.__RE_STATE__ (Realestate.com.au Redux-like state)
+  if (window.__RE_STATE__) {
+    try {
+      const stateStr = JSON.stringify(window.__RE_STATE__);
+      const priceMatch = stateStr.match(/\$\s*[\d,]+(?:\.\d+)?/);
+      if (priceMatch) result.price = priceMatch[0];
+    } catch (_) {}
+  }
+
+  // Method 3: window.__INITIAL_STATE__ or window.__PRELOADED_STATE__
+  const stateKeys = ['__INITIAL_STATE__', '__PRELOADED_STATE__', '__STATE__'];
+  for (const key of stateKeys) {
+    if (window[key]) {
+      try {
+        const price = deepFindPrice(window[key]);
+        if (price) result.price = price;
+      } catch (_) {}
+    }
+  }
+
+  return result;
+}
+
+// ===== Deep search for price in nested objects =====
+function deepFindPrice(obj, depth = 0) {
+  if (depth > 10 || !obj || typeof obj !== 'object') return null;
+
+  // Check if this object has price-related fields
+  if (obj.price != null || obj.askingPrice != null || obj.lowPrice != null) {
+    const price = obj.price ?? obj.askingPrice ?? obj.lowPrice;
+    if (typeof price === 'number' || (typeof price === 'string' && /^\$?[\d,]+/.test(price))) {
+      const priceStr = String(price);
+      const currency = obj.priceCurrency || obj.currency || 'AUD';
+      if (priceStr.startsWith('$')) return priceStr;
+      return currency === 'AUD' || currency === 'USD' ? `$${priceStr}` : `${currency}${priceStr}`;
+    }
+  }
+
+  // Check for currency: "AUD" with price field
+  if (obj.currency === 'AUD' && obj.price != null) {
+    return `$${obj.price}`;
+  }
+
+  // Recursively search in array items and object values
+  if (Array.isArray(obj)) {
+    for (const item of obj) {
+      const found = deepFindPrice(item, depth + 1);
+      if (found) return found;
+    }
+  } else {
+    for (const key of Object.keys(obj)) {
+      if (key === '__reactFiber' || key === '__reactFiber' || key.startsWith('__')) continue;
+      const found = deepFindPrice(obj[key], depth + 1);
+      if (found) return found;
+    }
+  }
+
+  return null;
+}
+
+// ===== Recursive JSON-LD scanner for nested @graph arrays =====
+function recursiveJsonLdScan(obj, depth = 0) {
+  if (depth > 15 || !obj || typeof obj !== 'object') return [];
+
+  const results = [];
+
+  // Check if this is a listing-like object
+  if (obj['@type'] === 'Residence' || obj['@type'] === 'House' || obj['@type'] === 'Apartment' ||
+      obj['@type'] === 'SingleFamilyResidence' || obj['@type'] === 'RealEstateListing' ||
+      obj['@type'] === 'Product') {
+    results.push(obj);
+  }
+
+  // Scan nested @graph arrays
+  if (obj['@graph'] && Array.isArray(obj['@graph'])) {
+    for (const item of obj['@graph']) {
+      results.push(...recursiveJsonLdScan(item, depth + 1));
+    }
+  }
+
+  // Scan children
+  for (const key of Object.keys(obj)) {
+    if (key === '@graph' || key === '@context') continue;
+    if (Array.isArray(obj[key])) {
+      for (const item of obj[key]) {
+        if (typeof item === 'object') {
+          results.push(...recursiveJsonLdScan(item, depth + 1));
+        }
+      }
+    } else if (typeof obj[key] === 'object' && obj[key] !== null) {
+      results.push(...recursiveJsonLdScan(obj[key], depth + 1));
+    }
+  }
+
+  return results;
+}
+
+// ===== MutationObserver-based extraction with retry =====
+async function waitForPriceExtraction(maxWaitMs = 8000, intervalMs = 300) {
+  // First, try immediately (React might have already rendered)
+  const immediatePrice = extractPriceWithNewLogic();
+  if (immediatePrice && !isHiddenPrice(immediatePrice)) {
+    return { price: immediatePrice, hidden: false };
+  }
+  if (immediatePrice && isHiddenPrice(immediatePrice)) {
+    return { price: immediatePrice, hidden: true };
+  }
+
+  // If no immediate price, use polling (MutationObserver may not catch React's rendering)
+  return new Promise((resolve) => {
+    let attempts = 0;
+    const maxAttempts = Math.floor(maxWaitMs / intervalMs);
+
+    const tryExtract = () => {
+      attempts++;
+      const price = extractPriceWithNewLogic();
+      if (price) {
+        clearInterval(interval);
+        clearTimeout(timeout);
+        resolve({ price, hidden: isHiddenPrice(price) });
+      } else if (attempts >= maxAttempts) {
+        clearInterval(interval);
+        clearTimeout(timeout);
+        resolve({ price: null, hidden: false, timedOut: true });
+      }
+    };
+
+    // Polling interval - this is more reliable than MutationObserver for React apps
+    const interval = setInterval(tryExtract, intervalMs);
+
+    // Timeout fallback
+    const timeout = setTimeout(() => {
+      clearInterval(interval);
+      resolve({ price: null, hidden: false, timedOut: true });
+    }, maxWaitMs);
+  });
+}
+
+// ===== New unified price extraction logic (P0-P4 priority stack) =====
+function extractPriceWithNewLogic() {
+  // P0: Check window state (Next.js / Redux)
+  const windowState = extractFromWindowState();
+  if (windowState.price) return windowState.price;
+
+  // P1: JSON-LD recursive scan
+  const price = extractPriceFromJsonLdDeep();
+  if (price) return price;
+
+  // P2: semantic class names + data-testid
+  const dataTestIdPrice = extractPriceFromDataTestId();
+  if (dataTestIdPrice) return dataTestIdPrice;
+
+  // P3: Shadow DOM traversal
+  const shadowPrice = extractPriceFromShadowDOM();
+  if (shadowPrice) return shadowPrice;
+
+  // P4: Last resort - text search
+  return extractPriceFromTextSearch();
+}
+
+function extractPriceFromJsonLdDeep() {
+  const scripts = document.querySelectorAll('script[type="application/ld+json"]');
+  for (const script of scripts) {
+    try {
+      const raw = script.textContent || '';
+      const data = JSON.parse(raw);
+
+      // Scan all nested objects recursively
+      const listings = recursiveJsonLdScan(data);
+      for (const listing of listings) {
+        const offer = listing.offers || listing.aggregateOffer || {};
+        if (offer.price != null || offer.lowPrice != null) {
+          const priceVal = offer.price ?? offer.lowPrice;
+          const currency = offer.priceCurrency || offer.priceCurrency || 'AUD';
+          const formatted = currency === 'AUD' || currency === 'USD' ? `$${priceVal}` : `${currency}${priceVal}`;
+          if (offer.unitText) {
+            return `${formatted} ${offer.unitText}`;
+          }
+          return formatted;
+        }
+      }
+    } catch (_) {}
+  }
+  return null;
+}
+
+function extractPriceFromDataTestId() {
+  // P2a: Realestate semantic class names (most stable for this site)
+  const semanticSelectors = [
+    '.property-info__price',           // Realestate main price container
+    '.property-price',                 // Realestate price element
+    '[class*="property-info__price"]', // Partial match fallback
+    '[class*="property-price"]',       // Partial match fallback
+  ];
+
+  for (const sel of semanticSelectors) {
+    const els = document.querySelectorAll(sel);
+    for (const el of els) {
+      const text = el.textContent?.trim() || '';
+      if (/\$[\d,]+/.test(text)) {
+        const parent = el.closest('.property-info__middle-content, .listing-details, main, article, [class*="main-listing"]');
+        if (parent || els.length === 1) {
+          return text;
+        }
+      }
+    }
+  }
+
+  // P2b: data-testid selectors
+  const selectors = [
+    '[data-testid="price"]',
+    '[data-testid="listing-price"]',
+    '[data-testid="property-price"]',
+    '[data-testid="search-result-price"]',
+  ];
+
+  for (const sel of selectors) {
+    const el = document.querySelector(sel);
+    if (el) {
+      const text = el.textContent?.trim() || '';
+      if (/\$[\d,]+/.test(text)) {
+        return text;
+      }
+    }
+  }
+
+  // P2c: Search all data-testid elements
+  const allDataTestId = document.querySelectorAll('[data-testid]');
+  for (const el of allDataTestId) {
+    const text = el.textContent?.trim() || '';
+    const match = text.match(/\$[\d,]+(?:\.\d+)?\s*(?:\/\s*(?:week|month|annum))?/i);
+    if (match) {
+      return match[0].trim();
+    }
+  }
+
+  return null;
+}
+
+function extractPriceFromShadowDOM() {
+  const selectors = [
+    // Semantic selectors first (most likely to be stable)
+    '.property-info__price',
+    '.property-price',
+    '[class*="property-info__price"]',
+    '[class*="property-price"]',
+    // data-testid as fallback
+    '[data-testid="price"]',
+    '[data-testid="listing-price"]',
+  ];
+
+  for (const sel of selectors) {
+    const result = queryDeep(document, sel);
+    if (result) {
+      const text = result.textContent?.trim() || '';
+      if (/\$[\d,]+/.test(text)) {
+        return text;
+      }
+    }
+  }
+
+  return null;
+}
+
+function extractPriceFromTextSearch() {
+  // Search page text for price patterns
+  const text = document.body.innerText;
+  const patterns = [
+    /\$\s*[\d,]+(?:\.\d+)?\s*(?:\/\s*(?:week|weekly|pw|w\/k|month|pcm|annum|year))?/gi,
+  ];
+
+  for (const pattern of patterns) {
+    const matches = text.match(pattern);
+    if (matches && matches.length > 0) {
+      const validPrices = matches.filter(m => {
+        const num = parseFloat(m.replace(/[^\d.]/g, ''));
+        return num >= 100;
+      });
+      if (validPrices.length > 0) {
+        return validPrices[0].trim();
+      }
+    }
+  }
+
+  // P5: Aggressive scan for elements with "price" in class
+  const priceElements = document.querySelectorAll('[class*="price"]');
+  for (const el of priceElements) {
+    const text = el.textContent?.trim() || '';
+    const match = text.match(/\$[\d,]+(?:\.\d+)?/);
+    if (match) {
+      return text;
+    }
+  }
+
+  return null;
+}
+
+// ===== Content script instance ID (for debugging multi-injection) =====
+const INSTANCE_ID = Math.random().toString(36).slice(2, 9);
 
   // ===== Define handlers FIRST (before any messages can arrive) =====
 
@@ -554,21 +905,25 @@ async function extractListingDataLight() {
   const signals = detectPropertySignals();
   propertySignals = signals;
 
-  // Priority 1: JSON-LD structured data
+  // Use new MutationObserver-based price extraction
+  const priceResult = await waitForPriceExtraction(5000, 200);
+  const extractedPrice = priceResult.price;
+  const priceHidden = priceResult.hidden;
+
+  // JSON-LD for other fields (title, address, description)
   const jsonLdArray = parseJsonLd();
   const fromJsonLd = extractListingFromJsonLd(jsonLdArray);
 
-  // Priority 2: DOM-based extraction (fallback)
+  // DOM fallback for other fields
   const domTitle = extractTitle();
   const domAddress = extractAddress();
-  const domPrice = extractPrice();
   const domRooms = extractRooms();
   const domDescription = extractDescription();
 
-  // Merge: prefer JSON-LD, fall back to DOM
+  // Merge: prefer new extraction > JSON-LD > DOM
   const title = fromJsonLd?.title || domTitle || null;
   const address = fromJsonLd?.address || domAddress || null;
-  const price = fromJsonLd?.price || domPrice || null;
+  const price = extractedPrice || fromJsonLd?.price || null;
   const rooms = {
     bedrooms: fromJsonLd?.rooms?.bedrooms ?? domRooms.bedrooms,
     bathrooms: fromJsonLd?.rooms?.bathrooms ?? domRooms.bathrooms,
@@ -581,7 +936,7 @@ async function extractListingDataLight() {
   let confidence = 0;
   if (title) confidence += 0.2;
   if (address) confidence += 0.2;
-  if (price) confidence += 0.2;
+  if (price && !priceHidden) confidence += 0.2;
   if (rooms.bedrooms) confidence += 0.15;
   if (description) confidence += 0.15;
   const pricePeriod = inferPricePeriod(price);
@@ -592,6 +947,7 @@ async function extractListingDataLight() {
     price: price || '',
     priceText: price,
     pricePeriod,
+    priceHidden: priceHidden || false, // Flag for "Price on Application"
     bedrooms: rooms.bedrooms,
     bathrooms: rooms.bathrooms,
     parking: rooms.parking,
@@ -726,7 +1082,7 @@ function extractAddress() {
 
 /**
  * realestate.com.au 专用地址提取
- * 该网站通常使用 <h1 class="css-1hbe8uv"> 包含完整地址
+ * 只使用稳定的 data-testid 选择器，不依赖 CSS 类名
  */
 function extractAddressRealestate() {
   // 方法1: 直接查找 h1 中的地址
@@ -738,16 +1094,14 @@ function extractAddressRealestate() {
     }
   }
 
-  // 方法2: 查找地址相关的 DOM 结构
+  // 方法2: 查找地址相关的 data-testid 元素 (最稳定)
   const addrSelectors = [
     '[data-testid="address"]',
-    '[class*="address-line"]',
-    '[class*="street-address"]',
-    '[class*="property-address"]',
-    '.css-1hbe8uv',
+    '[data-testid="listing-address"]',
+    '[data-testid="property-address"]',
   ];
   for (const sel of addrSelectors) {
-    const el = document.querySelector(sel);
+    const el = queryDeep(document, sel);
     if (el) {
       const text = el.textContent?.trim() || '';
       if (text.length > 5 && text.length < 200) {
@@ -779,64 +1133,29 @@ function extractAddressRealestate() {
 }
 
 function extractPrice() {
-  // Priority 0: realestate.com.au 专用提取
-  const rePrice = extractPriceRealestate();
-  if (rePrice) return rePrice;
-
-  // Priority 1: Hero poster area (main listing) — most reliable
-  const heroPoster = document.querySelector('.hero-poster__content, [class*="hero-poster__content"]');
-  if (heroPoster) {
-    const text = heroPoster.textContent || '';
-    const heroPricePatterns = [
-      /\$\s*[\d,]+(?:\.\d+)?\s*(?:per\s+)?(?:week|weekly|pw|w\/k)/i,
-      /\$\s*[\d,]+(?:\.\d+)?\s*(?:per\s+)?(?:month|pcm|mth)/i,
-      /\$\s*[\d,]+(?:\.\d+)?\s*(?:per\s+)?(?:week|pw|pcm|month)?/i,
-    ];
-    for (const pattern of heroPricePatterns) {
-      const match = text.match(pattern);
-      if (match) return match[0].trim();
-    }
-  }
-
-  // Priority 2: Main content area (excluding sidebar/related)
-  const mainContent = document.querySelector('main, [class*="main-content"], [class*="listing-details"], [class*="property-info"]');
-  const searchArea = mainContent || document.body;
-  const raw = searchArea.textContent || '';
-
-  const pricePatterns = [
-    /\$\s*[\d,]+(?:\.\d+)?\s*(?:per\s+)?(?:week|weekly|pw|w\/k)/gi,
-    /\$\s*[\d,]+(?:\.\d+)?\s*(?:per\s+)?(?:month|pcm|mth)/gi,
-    /\$\s*[\d,]+(?:\.\d+)?\s*(?:per\s+)?(?:week|pw|pcm|month)?/gi,
-  ];
-  const rentHints = /rent|lease|p\.?w\.?|per\s*week/i;
-  for (const pattern of pricePatterns) {
-    const matches = raw.match(pattern);
-    if (!matches || !matches.length) continue;
-    const withHint = matches.find((m) => rentHints.test(m));
-    if (withHint) return withHint.trim();
-    return matches[0].trim();
-  }
-  return null;
+  // Use the new unified price extraction logic
+  // This function is kept for backward compatibility
+  const result = extractPriceWithNewLogic();
+  return result;
 }
 
 /**
  * realestate.com.au 专用价格提取
- * 该网站的价格通常在特定的 DOM 结构中
+ * 只使用稳定的 data-testid 选择器，不依赖 CSS 类名
  */
 function extractPriceRealestate() {
-  // 方法1: data-testid 价格元素
+  // 方法1: data-testid 价格元素 (最稳定)
   const priceSelectors = [
     '[data-testid="price"]',
     '[data-testid="listing-price"]',
-    '[class*="price-amount"]',
-    '[class*="listing-price"]',
-    '.css-1h7v2t4',
+    '[data-testid="property-price"]',
+    '[data-testid="search-result-price"]',
   ];
   for (const sel of priceSelectors) {
-    const el = document.querySelector(sel);
+    const el = queryDeep(document, sel);
     if (el) {
       const text = el.textContent?.trim() || '';
-      if (text.startsWith('$') && /\d/.test(text)) {
+      if (/\$[\d,]+/.test(text)) {
         return text;
       }
     }
@@ -855,36 +1174,13 @@ function extractPriceRealestate() {
     }
   }
 
-  // 方法3: 从 hero-poster 区域查找
+  // 方法3: 从页面头部区域查找价格
   const heroPoster = document.querySelector('.residential-page-header, [class*="page-header"], [class*="listing-header"]');
   if (heroPoster) {
     const text = heroPoster.textContent || '';
     const priceMatch = text.match(/\$[\d,]+(?:\.\d+)?\s*(?:\/\s*(?:week|month))?/);
     if (priceMatch) {
       return priceMatch[0].trim();
-    }
-  }
-
-  // 方法4: 从 h1 相邻区域查找价格
-  const h1 = document.querySelector('h1');
-  if (h1) {
-    let nextEl = h1.nextElementSibling;
-    for (let i = 0; i < 5 && nextEl; i++, nextEl = nextEl.nextElementSibling) {
-      const text = nextEl.textContent?.trim() || '';
-      if (text.startsWith('$') && /\d{3}/.test(text.replace(/,/g, ''))) {
-        return text;
-      }
-    }
-
-    const parent = h1.parentElement;
-    if (parent) {
-      const siblings = parent.querySelectorAll(':scope > *');
-      for (const sib of siblings) {
-        const text = sib.textContent?.trim() || '';
-        if (text.startsWith('$') && /\d{3}/.test(text.replace(/,/g, ''))) {
-          return text;
-        }
-      }
     }
   }
 

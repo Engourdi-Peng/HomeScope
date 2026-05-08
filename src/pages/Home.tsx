@@ -399,6 +399,9 @@ export function Home() {
           <p className="text-sm text-stone-500 max-w-lg mx-auto">
             Avoid wasting inspections. Make smarter rental decisions.
           </p>
+          <p className="text-xs text-stone-500 text-center mt-4 italic max-w-lg mx-auto">
+            This is an independent third-party AI tool. Not affiliated with, endorsed by, or connected to realestate.com.au or REA Group. All analysis is for informational purposes only.
+          </p>
         </div>
 
         {/* Extension Promo */}
@@ -680,6 +683,9 @@ export function Home() {
 
         {/* Footer */}
         <div className="text-center pt-8 pb-4 border-t border-stone-200">
+          <p className="text-xs text-stone-500 mb-3 italic max-w-md mx-auto">
+            This is an independent third-party AI tool. Not affiliated with, endorsed by, or connected to realestate.com.au or REA Group. All analysis is for informational purposes only.
+          </p>
           <div className="flex justify-center gap-4 mb-3">
             <Link to="/privacy" className="text-xs text-stone-400 hover:text-stone-600 transition-colors">Privacy Policy</Link>
             <Link to="/terms" className="text-xs text-stone-400 hover:text-stone-600 transition-colors">Terms of Service</Link>

@@ -145,13 +145,35 @@ export function ExtensionResultView() {
     );
   }
 
-  // No result yet
+  // No result yet (but no error either — e.g. network failed before getting result)
   if (!hasResult) {
     return (
       <ReportShell mode="extension">
         {NavBar}
-        <div className="flex items-center justify-center py-24">
+        <div className="flex flex-col items-center justify-center py-24 gap-4">
           <div className="ext-spinner" />
+          <div className="text-sm text-stone-500 text-center">
+            {analysisError ? null : (
+              <span>Waiting for analysis result...</span>
+            )}
+          </div>
+          {analysisError && (
+            <div className="flex flex-col items-center gap-3 max-w-sm">
+              <div className="ext-analysis-error">
+                <div className="ext-analysis-error-icon">!</div>
+                <div className="ext-analysis-error-title">Analysis failed</div>
+                <div className="ext-analysis-error-msg">{analysisError}</div>
+              </div>
+              <button
+                type="button"
+                className="ext-btn-secondary-v2"
+                onClick={retryAnalysis}
+              >
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="23 4 23 10 17 10"></polyline><polyline points="1 20 1 14 7 14"></polyline><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"></path></svg>
+                Retry
+              </button>
+            </div>
+          )}
         </div>
       </ReportShell>
     );

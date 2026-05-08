@@ -202,55 +202,57 @@ function generateSEOFields(input: {
   const { suburb, bedrooms, bathrooms, weeklyRent, askingPrice, verdict, reportMode } = input;
   const isRent = reportMode !== 'sale';
 
-  // Generate SEO title
+  // Generate SEO title（包含 realestate.com.au 关键词）
   let seo_title: string;
   if (isRent) {
     if (suburb && bedrooms) {
-      seo_title = `Is this rental worth it in ${suburb}? ${bedrooms} bedroom analysis`;
+      seo_title = `${bedrooms} bed rental on realestate.com.au in ${suburb} – Worth it?`;
+    } else if (suburb) {
+      seo_title = `Rental on realestate.com.au in ${suburb} – Worth it?`;
     } else if (bedrooms) {
-      seo_title = `Is this rental worth it? ${bedrooms} bedroom analysis`;
+      seo_title = `${bedrooms} bed rental on realestate.com.au – Worth it?`;
     } else {
-      seo_title = `Rental property analysis | HomeScope`;
+      seo_title = `realestate.com.au Rental Analysis | HomeScope`;
     }
   } else {
     if (suburb && bedrooms) {
-      seo_title = `Is this property worth buying in ${suburb}? ${bedrooms} bedroom analysis`;
+      seo_title = `${bedrooms} bed property on realestate.com.au in ${suburb} – Worth buying?`;
+    } else if (suburb) {
+      seo_title = `Property on realestate.com.au in ${suburb} – Worth buying?`;
     } else if (bedrooms) {
-      seo_title = `Is this property worth buying? ${bedrooms} bedroom analysis`;
+      seo_title = `${bedrooms} bed property on realestate.com.au – Worth buying?`;
     } else {
-      seo_title = `Property purchase analysis | HomeScope`;
+      seo_title = `realestate.com.au Property Analysis | HomeScope`;
     }
   }
 
-  // Generate SEO description
+  // Generate SEO description（包含 realestate.com.au 关键词）
   let seo_description: string;
   if (isRent) {
     if (suburb && bedrooms) {
-      seo_description = `AI rental analysis of a ${bedrooms}-bedroom property in ${suburb}. `;
-      if (bathrooms) seo_description += `${bathrooms} bathroom, `;
+      seo_description = `${bedrooms}-bed, ${bathrooms || '?'}-bath on realestate.com.au in ${suburb}. `;
       if (weeklyRent) seo_description += `$${weeklyRent}/week. `;
-      seo_description += 'Review the pros, cons, risks and final verdict before applying.';
+      seo_description += 'AI analysis: pros, cons, risks and verdict. Built for Australian renters.';
     } else if (bedrooms) {
-      seo_description = `AI rental analysis of a ${bedrooms}-bedroom property. `;
+      seo_description = `${bedrooms}-bed property on realestate.com.au. `;
       if (bathrooms) seo_description += `${bathrooms} bathroom, `;
       if (weeklyRent) seo_description += `$${weeklyRent}/week. `;
-      seo_description += 'Review the pros, cons, risks and final verdict before applying.';
+      seo_description += 'AI analysis: pros, cons, risks and verdict.';
     } else {
-      seo_description = 'AI-powered rental property analysis. Review detailed pros, cons, risks and expert verdict before making your decision.';
+      seo_description = 'AI analysis of property from realestate.com.au. Pros, cons, risks and verdict. Built for Australian renters.';
     }
   } else {
     if (suburb && bedrooms) {
-      seo_description = `AI purchase analysis of a ${bedrooms}-bedroom property in ${suburb}. `;
-      if (bathrooms) seo_description += `${bathrooms} bathroom, `;
+      seo_description = `${bedrooms}-bed, ${bathrooms || '?'}-bath on realestate.com.au in ${suburb}. `;
       if (askingPrice) seo_description += `$${askingPrice.toLocaleString()}. `;
-      seo_description += 'Review the pros, cons, risks and final verdict before making an offer.';
+      seo_description += 'AI analysis: pros, cons, risks and verdict. Built for Australian property buyers.';
     } else if (bedrooms) {
-      seo_description = `AI purchase analysis of a ${bedrooms}-bedroom property. `;
+      seo_description = `${bedrooms}-bed property on realestate.com.au. `;
       if (bathrooms) seo_description += `${bathrooms} bathroom, `;
       if (askingPrice) seo_description += `$${askingPrice.toLocaleString()}. `;
-      seo_description += 'Review the pros, cons, risks and final verdict before making an offer.';
+      seo_description += 'AI analysis: pros, cons, risks and verdict.';
     } else {
-      seo_description = 'AI-powered property purchase analysis. Review detailed pros, cons, risks and expert verdict before making your decision.';
+      seo_description = 'AI analysis of property from realestate.com.au. Pros, cons, risks and verdict. Built for Australian property buyers.';
     }
   }
 

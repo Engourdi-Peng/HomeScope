@@ -88,22 +88,28 @@ export function SharePage() {
   // 获取 bedrooms 数量
   const bedrooms = result?.roomCounts?.bedrooms || result?.roomCounts?.bedroom || null;
 
-  // 动态生成 SEO title
-  // - 如果有 suburb 和 bedrooms: "Is this rental worth it in {suburb}? {bedrooms} bedroom analysis | HomeScope"
-  // - 如果只有 suburb: "Is this rental worth it in {suburb}? Rental analysis | HomeScope"
-  // - 如果都没有: "Is this rental worth it? Rental analysis | HomeScope"
-  const seoTitle = suburb && bedrooms
-    ? `Is this rental worth it in ${suburb}? ${bedrooms} bedroom analysis | HomeScope`
-    : suburb
-      ? `Is this rental worth it in ${suburb}? Rental analysis | HomeScope`
-      : 'Is this rental worth it? Rental analysis | HomeScope';
+  // 获取 reportMode 用于区分租赁/购房
+  const reportMode = result?.reportMode || 'rent';
+
+  // 动态生成 SEO title（区分租赁和购房）
+  const seoTitle = reportMode === 'sale'
+    ? (suburb && bedrooms
+        ? `${bedrooms} bed property on realestate.com.au in ${suburb} – Worth buying?`
+        : suburb
+          ? `Property on realestate.com.au in ${suburb} – Worth buying?`
+          : 'realestate.com.au Property Analysis – Worth buying?')
+    : (suburb && bedrooms
+        ? `${bedrooms} bed rental on realestate.com.au in ${suburb} – Worth it?`
+        : suburb
+          ? `Rental on realestate.com.au in ${suburb} – Worth it?`
+          : 'realestate.com.au Rental Analysis – Worth it?');
 
   // 动态生成 SEO description
   const seoDescription = suburb && bedrooms
-    ? `AI rental analysis of a ${bedrooms}-bedroom property in ${suburb}. Discover pros, cons, hidden risks and whether it's worth applying.`
+    ? `${bedrooms}-bed, ${result?.roomCounts?.bathrooms || '?'}-bath on realestate.com.au in ${suburb}. ${analysisData?.rent_price ? `$${analysisData.rent_price}/week. ` : ''}AI analysis: pros, cons, risks and verdict. Built for Australian renters.`
     : bedrooms
-      ? `AI rental analysis of a ${bedrooms}-bedroom property. Discover pros, cons, hidden risks and whether it's worth applying.`
-      : 'AI-powered rental property analysis. Discover pros, cons, hidden risks and whether it\'s worth applying.';
+      ? `${bedrooms}-bed property on realestate.com.au. AI analysis: pros, cons, risks and verdict. Built for Australian renters.`
+      : 'AI analysis of property from realestate.com.au. Pros, cons, risks and verdict. Built for Australian renters.';
 
   // 设置公开分享页 SEO（index, follow, canonical, OG）
   usePublicPageSEO(seoTitle, seoDescription, slug || '');

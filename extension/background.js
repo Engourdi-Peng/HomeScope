@@ -458,6 +458,7 @@ async function handleMessage(message, sender, sendResponse) {
 
       // Build optionalDetails: pass price info to AI for accurate analysis
       const priceText = listingData?.priceText || listingData?.price || null;
+      const priceHidden = listingData?.priceHidden || false;
       const optionalDetails = {};
       if (priceText) {
         if (reportMode === 'rent') {
@@ -465,6 +466,9 @@ async function handleMessage(message, sender, sendResponse) {
         } else {
           optionalDetails.askingPrice = priceText;
         }
+      }
+      if (priceHidden) {
+        optionalDetails.priceStatus = 'hidden'; // Mark as "Price on Application"
       }
 
       // Build request body for analyze function
