@@ -48,17 +48,28 @@ interface SitemapRow {
   updated_at: string;
 }
 
+/** Calculate date threshold for filtering old analyses */
+function getDateThreshold(days: number): string {
+  const date = new Date();
+  date.setDate(date.getDate() - days);
+  return date.toISOString();
+}
+
 /**
  * Fetch public analyses from Supabase REST API.
  * Uses SERVICE_ROLE_KEY so we bypass RLS — only SELECT is performed (read-only).
+ * Only fetches analyses from the last N days to avoid bloated sitemap.
  */
 async function fetchPublicAnalyses(): Promise<SitemapRow[]> {
+  const dateThreshold = getDateThreshold(SHARE_PAGE_AGE_DAYS);
   const query = new URL(`${SUPABASE_URL}/rest/v1/analyses`);
   query.searchParams.set('is_public', 'eq.true');
   query.searchParams.set('share_slug', 'not.is.null');
   query.searchParams.set('status', 'eq.done');
+  query.searchParams.set('shared_at', `gte.${dateThreshold}`);
   query.searchParams.set('select', 'share_slug,shared_at,updated_at');
   query.searchParams.set('order', 'shared_at.desc.nullslast');
+  query.searchParams.set('limit', String(MAX_SHARE_PAGES));
 
   const response = await fetch(query.toString(), {
     headers: {
@@ -114,14 +125,17 @@ function formatDate(isoString: string | null | undefined): string {
 }
 
 /** Static pages to include in the sitemap. */
+const MAX_SHARE_PAGES = 15; // 最多保留 15 个 Share 页面
+const SHARE_PAGE_AGE_DAYS = 30; // 只保留 30 天内的分析
+
 const STATIC_PAGES = [
   { loc: `${SITE_URL}/`, changefreq: 'weekly', priority: '1.0' },
-  { loc: `${SITE_URL}/tools/realestate-com-au`, changefreq: 'monthly', priority: '0.8' },
+  { loc: `${SITE_URL}/tools/realestate-com-au`, changefreq: 'weekly', priority: '0.9' },
   { loc: `${SITE_URL}/pricing`, changefreq: 'monthly', priority: '0.7' },
   { loc: `${SITE_URL}/privacy`, changefreq: 'yearly', priority: '0.3' },
   { loc: `${SITE_URL}/terms`, changefreq: 'yearly', priority: '0.3' },
   { loc: `${SITE_URL}/support`, changefreq: 'monthly', priority: '0.5' },
-  { loc: `${SITE_URL}/contact`, changefreq: 'yearly', priority: '0.4' },
+  { loc: `${SITE_URL}/contact`, changefreq: 'monthly', priority: '0.5' },
 ];
 
 function buildXml(shareRows: SitemapRow[]): string {
@@ -139,14 +153,14 @@ function buildXml(shareRows: SitemapRow[]): string {
     lines.push(`  </url>`);
   }
 
-  // Share pages
+  // Share pages (limited to most recent analyses)
   for (const row of shareRows) {
     const lastmod = formatDate(row.shared_at ?? row.updated_at);
     lines.push(`  <url>`);
     lines.push(`    <loc>${SITE_URL}/share/${encodeURIComponent(row.share_slug)}</loc>`);
     lines.push(`    <lastmod>${lastmod}</lastmod>`);
     lines.push(`    <changefreq>weekly</changefreq>`);
-    lines.push(`    <priority>0.8</priority>`);
+    lines.push(`    <priority>0.6</priority>`);
     lines.push(`  </url>`);
   }
 
