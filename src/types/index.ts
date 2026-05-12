@@ -22,6 +22,12 @@ export type {
   ExtractedListingData,
   PropertyDetection,
   ListingDataV2,
+  // Basic analysis types
+  BasicAnalysisResult,
+  BasicListingOverview,
+  BasicTextAnalysis,
+  BasicDecision,
+  BasicUpgradePrompt,
 } from '../../shared/types/analysis';
 
 // Legacy flat listing structure (still used by content script and store)

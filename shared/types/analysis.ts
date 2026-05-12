@@ -1,6 +1,9 @@
 // ===== HomeScope 共享类型定义 =====
 // 网站和插件共用同一套类型定义
 
+// ===== 0. 网站来源 =====
+export type ListingSource = 'realestate-au' | 'zillow' | 'future-site';
+
 // ===== 1. 分析进度阶段 =====
 export type AnalysisStage =
   | 'upload_received'
@@ -22,6 +25,7 @@ export interface Photo {
 // ===== 3. 可选详情 =====
 export interface OptionalDetails {
   reportMode?: 'rent' | 'sale';
+  source?: ListingSource;  // 网站来源
   weeklyRent?: string;
   askingPrice?: string;
   suburb?: string;
@@ -32,6 +36,12 @@ export interface OptionalDetails {
   landSize?: string;
   /** 房产类型 - 用于区分 House/Apartment */
   propertyType?: string;
+  /** 美国特有字段 - Zillow */
+  sqft?: string;
+  zestimate?: string;
+  yearBuilt?: string;
+  hoaFee?: string;
+  propertyTax?: string;
 }
 
 // ===== 6a. 售价评估 (Sale 专用) =====
@@ -259,6 +269,9 @@ export interface AnalysisResult {
   /** 报告模式：rent=租房报告, sale=买房报告 */
   reportMode?: 'rent' | 'sale';
 
+  /** 分析类型：basic=基础分析，full=深度分析（用于区分卡片显示） */
+  analysisType?: 'basic' | 'full';
+
   /** 房源简要信息（用于报告页顶部显示） */
   listingInfo?: ListingInfo | null;
 
@@ -333,6 +346,9 @@ export interface AnalysisResult {
     notIdealIf: string[];
   };
 
+  // Upgrade Prompt - For basic analysis, prompt user to upgrade
+  upgradePrompt?: BasicUpgradePrompt;
+
   // Light & Thermal Guide
   lightThermalGuide?: {
     naturalLightSummary?: string;
@@ -399,9 +415,55 @@ export interface AnalysisProgress {
 // ===== 12. 分析请求 =====
 export interface AnalyzeRequest {
   reportMode?: 'rent' | 'sale';
+  analysisType?: 'basic' | 'full';
   imageUrls: string[];
   description: string;
   optionalDetails?: OptionalDetails;
+}
+
+// ===== 12b. 基础分析结果 =====
+// Basic Analysis: 仅基于文本描述，不处理图片
+// 与深度分析(Full Analysis)的差异化：快速、简洁、免费
+
+export interface BasicTextAnalysis {
+  pros: string[];           // 房源优势 (3-5个)
+  cons: string[];           // 需要注意的问题 (3-5个)
+  riskKeywords: string[];   // 风险关键词
+  priceFairness: 'low' | 'medium' | 'high';
+  priceReasoning: string;   // 价格评估理由
+}
+
+export interface BasicDecision {
+  summary: string;                         // 一句话总结
+  recommendation: 'low' | 'medium' | 'high'; // 推荐程度
+  actions: string[];                       // 建议行动 (2-3个)
+}
+
+export interface BasicUpgradePrompt {
+  title: string;
+  features: string[];
+}
+
+export interface BasicListingOverview {
+  address: string;
+  price: string;
+  bedrooms: number;
+  bathrooms: number;
+  propertyType: string;
+}
+
+/**
+ * 基础分析结果
+ * 用于无限次免费基础分析功能
+ * 注意：基础分析不包含图片分析，仅基于文本描述
+ */
+export interface BasicAnalysisResult {
+  reportMode: 'rent' | 'sale';
+  analysisType: 'basic';
+  listingOverview: BasicListingOverview;
+  textAnalysis: BasicTextAnalysis;
+  decision: BasicDecision;
+  upgradePrompt: BasicUpgradePrompt;
 }
 
 // ===== 13.1 SEO 相关类型 =====

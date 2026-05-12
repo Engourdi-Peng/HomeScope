@@ -1,7 +1,9 @@
 import type { AnalysisStage, Photo, OptionalDetails as OptionalDetailsType } from '../types';
 import { DescriptionInput } from './DescriptionInput';
 import { OptionalDetails } from './OptionalDetails';
-import { ArrowRight, Check, Circle, Loader2, Sparkles } from 'lucide-react';
+import { ArrowRight, Check, Circle, Loader2, Sparkles, Zap } from 'lucide-react';
+
+type AnalysisType = 'basic' | 'full';
 
 interface InputCardProps {
   photos: Photo[];
@@ -10,7 +12,7 @@ interface InputCardProps {
   onDescriptionChange: (value: string) => void;
   optionalDetails: OptionalDetailsType;
   onOptionalDetailsChange: (value: OptionalDetailsType) => void;
-  onSubmit: () => void;
+  onSubmit: (analysisType: AnalysisType) => void;
   onLoginClick: () => void;
   isLoading: boolean;
   isComplete?: boolean;
@@ -95,11 +97,11 @@ export function InputCard({
   const showLoginButton = !isAuthenticated;
   const isButtonDisabled = isLoading || (isAuthenticated && isDisabled);
 
-  const handleButtonClick = () => {
+  const handleButtonClick = (analysisType: AnalysisType = 'full') => {
     if (showLoginButton) {
       onLoginClick();
     } else {
-      onSubmit();
+      onSubmit(analysisType);
     }
   };
 
@@ -119,9 +121,9 @@ export function InputCard({
       <div className="h-px w-full bg-gradient-to-r from-transparent via-stone-200 to-transparent my-8 opacity-60"></div>
 
       {/* Optional Details Toggle */}
-      <OptionalDetails 
-        value={optionalDetails} 
-        onChange={onOptionalDetailsChange} 
+      <OptionalDetails
+        value={optionalDetails}
+        onChange={onOptionalDetailsChange}
       />
 
       {/* Loading Progress (stage-based) */}
@@ -186,50 +188,79 @@ export function InputCard({
         </div>
       )}
 
-      {/* Generate Button */}
-      <div className="flex flex-col items-center mt-8">
-        <button
-          onClick={handleButtonClick}
-          disabled={isButtonDisabled}
-          className={`
-            group relative inline-flex items-center justify-center gap-3 px-10 py-4 
-            rounded-full transition-all duration-300 shadow-[0_8px_30px_rgba(28,25,23,0.15)] 
-            hover:shadow-[0_8px_30px_rgba(28,25,23,0.25)] hover:-translate-y-0.5
-            ${isButtonDisabled
-              ? 'bg-stone-200 text-stone-400 cursor-not-allowed shadow-none hover:shadow-none hover:translate-y-0'
-              : 'bg-stone-900 hover:bg-stone-800 text-white'
-            }
-          `}
-        >
-          {isLoading ? (
+      {/* Generate Button Area */}
+      <div className="flex flex-col items-center mt-8 gap-3">
+        {isLoading ? (
+          <button
+            disabled
+            className="inline-flex items-center justify-center gap-2 px-10 py-4 rounded-full bg-stone-200 text-stone-400 cursor-not-allowed shadow-none"
+          >
             <span className="flex items-center justify-center gap-2">
               <svg className="w-4 h-4 animate-spin" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
                 <path d="M21 12a9 9 0 11-6.219-8.56" />
               </svg>
               <span className="font-medium tracking-widest uppercase text-[11px]">Analyzing Property...</span>
             </span>
-          ) : (
-            <>
+          </button>
+        ) : isAuthenticated && !isButtonDisabled ? (
+          /* 已登录且已输入：显示两种分析选项 */
+          <div className="w-full max-w-md space-y-3">
+            {/* 深度分析按钮 (Full) */}
+            <button
+              onClick={() => handleButtonClick('full')}
+              className="w-full group relative inline-flex items-center justify-center gap-3 px-8 py-4 rounded-full transition-all duration-300 shadow-[0_8px_30px_rgba(28,25,23,0.15)] hover:shadow-[0_8px_30px_rgba(28,25,23,0.25)] hover:-translate-y-0.5 bg-stone-900 hover:bg-stone-800 text-white"
+            >
               <span className="font-medium tracking-widest uppercase text-[11px]">
-                {showLoginButton ? 'Get 3 Free Analyses' : 'Analyze Listing'}
+                Use Deep Analysis ({creditsRemaining} left)
               </span>
               <ArrowRight size={14} className="group-hover:translate-x-1 transition-transform" strokeWidth={2} />
-            </>
-          )}
-        </button>
-        
+            </button>
+
+            {/* 基础分析按钮 (Basic - 免费无限次) */}
+            <button
+              onClick={() => handleButtonClick('basic')}
+              className="w-full group relative inline-flex items-center justify-center gap-3 px-8 py-3.5 rounded-full transition-all duration-300 border-2 border-stone-200 hover:border-stone-300 bg-white hover:bg-stone-50 text-stone-700"
+            >
+              <Zap size={16} className="text-amber-500" />
+              <span className="font-medium tracking-widest uppercase text-[11px]">
+                Try Basic Analysis (Free, Unlimited)
+              </span>
+            </button>
+          </div>
+        ) : (
+          /* 未登录 或 已登录但未输入 */
+          <button
+            onClick={() => handleButtonClick()}
+            disabled={isButtonDisabled}
+            className={`
+              group relative inline-flex items-center justify-center gap-3 px-10 py-4
+              rounded-full transition-all duration-300 shadow-[0_8px_30px_rgba(28,25,23,0.15)]
+              hover:shadow-[0_8px_30px_rgba(28,25,23,0.25)] hover:-translate-y-0.5
+              ${isButtonDisabled
+                ? 'bg-stone-200 text-stone-400 cursor-not-allowed shadow-none hover:shadow-none hover:translate-y-0'
+                : 'bg-stone-900 hover:bg-stone-800 text-white'
+              }
+            `}
+          >
+            <span className="font-medium tracking-widest uppercase text-[11px]">
+              {showLoginButton ? 'Get 3 Free Analyses' : 'Analyze Listing'}
+            </span>
+            <ArrowRight size={14} className="group-hover:translate-x-1 transition-transform" strokeWidth={2} />
+          </button>
+        )}
+
         {/* Credits remaining display */}
         {isAuthenticated && !isLoading && (
-          <div className="mt-3 text-xs text-stone-500">
+          <div className="mt-1 text-xs text-stone-500">
             {creditsRemaining > 0 ? (
-              <>You have {creditsRemaining} analyses left</>
+              <>You have {creditsRemaining} deep analyses left</>
             ) : (
-              <span className="text-red-500 font-medium">No credits remaining</span>
+              <span className="text-amber-600 font-medium">No deep analyses remaining. Use Basic Analysis for free!</span>
             )}
           </div>
         )}
         {!isAuthenticated && !isLoading && (
-          <div className="mt-3 text-xs text-stone-500">
+          <div className="mt-1 text-xs text-stone-500">
             Sign in to analyze listings
           </div>
         )}

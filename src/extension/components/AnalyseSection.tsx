@@ -1,6 +1,42 @@
 import React from 'react';
-import { ArrowRight, Check, Camera } from 'lucide-react';
+import { ArrowRight, Check, Camera, Zap } from 'lucide-react';
 import { useAppState, useActions } from '../store';
+import type { ListingSource } from '../../../shared/types/analysis';
+
+// ========== 网站来源配置 ==========
+const SOURCE_CONFIG: Record<ListingSource, {
+  label: string;
+  flag: string;
+  color: string;
+  upgradeFeatures: string[];
+}> = {
+  'realestate-au': {
+    label: 'realestate.com.au',
+    flag: '🇦🇺',
+    color: 'bg-green-100 text-green-800',
+    upgradeFeatures: [
+      'Detailed space analysis',
+      'Hidden defect detection',
+      'Auction strategy tips',
+    ],
+  },
+  'zillow': {
+    label: 'Zillow.com',
+    flag: '🇺🇸',
+    color: 'bg-blue-100 text-blue-800',
+    upgradeFeatures: [
+      'Zestimate vs Price comparison',
+      'Tax & HOA deep dive',
+      'School district analysis',
+    ],
+  },
+  'future-site': {
+    label: 'Property Site',
+    flag: '🏠',
+    color: 'bg-gray-100 text-gray-800',
+    upgradeFeatures: [],
+  },
+};
 
 // Analysis phases in order
 const ANALYSIS_PHASES = [
@@ -23,6 +59,22 @@ const PHASE_DISPLAY: Record<AnalysisPhaseType, { label: string }> = {
   generating_report: { label: 'Generating report' },
 };
 
+// ========== SourceBadge 组件 ==========
+interface SourceBadgeProps {
+  source: ListingSource;
+}
+
+function SourceBadge({ source }: SourceBadgeProps) {
+  const config = SOURCE_CONFIG[source] ?? SOURCE_CONFIG['future-site'];
+  return (
+    <span className={`inline-flex items-center gap-1 px-2 py-1 rounded-full text-xs font-medium ${config.color}`}>
+      <span>{config.flag}</span>
+      <span>{config.label}</span>
+    </span>
+  );
+}
+
+// ========== PhaseItem 组件 ==========
 interface PhaseItemProps {
   phase: AnalysisPhaseType;
   index: number;
@@ -129,19 +181,24 @@ export function AnalyseSection() {
   const cooldownRemaining = useCooldownRemaining();
   const cooldownSecs = Math.ceil(cooldownRemaining / 1000);
 
+  // 获取网站来源
+  const source = (listingData as any)?.source as ListingSource || 'realestate-au';
+  const sourceConfig = SOURCE_CONFIG[source] ?? SOURCE_CONFIG['realestate-au'];
+
   const isAnalysing = ['preparing', 'reading_page', 'opening_gallery', 'collecting_photos', 'sending_data', 'analysing', 'generating_report'].includes(analysisPhase);
   const isInCooldown = cooldownRemaining > 0;
   const isNoCredits = credits <= 0;
   const isError = analysisPhase === 'error';
   const isDone = analysisPhase === 'done';
+  const hasCredits = credits > 0;
 
   // Button is always enabled unless: already analysing, in cooldown, or no credits
-  const isDisabled = isAnalysing || isInCooldown || credits <= 0;
+  const isDisabled = isAnalysing || isInCooldown;
 
   const getButtonLabel = () => {
     if (isInCooldown) return { main: `Please wait ${cooldownSecs}s`, sub: 'Cooldown active' };
     if (isError) return { main: 'Analysis failed · Tap to retry' };
-    if (isNoCredits) return { main: 'No credits remaining', sub: 'Get more credits' };
+    if (isNoCredits) return { main: 'No deep analyses remaining', sub: 'Try Basic Analysis for free' };
     if (isAnalysing) return { main: PHASE_LABELS[analysisPhase]?.main ?? 'Working...', sub: PHASE_LABELS[analysisPhase]?.sub };
     if (isDone) return { main: PRIMARY_CTA_MAIN, sub: 'Know before you visit' };
     const tier = propertyDetection?.tier;
@@ -155,42 +212,82 @@ export function AnalyseSection() {
     return { main: PRIMARY_CTA_MAIN, sub: 'Reads listing page first' };
   };
 
-  const handleClick = () => {
+  const handleDeepClick = () => {
     if (isDisabled) return;
     if (isError) {
       retryAnalysis();
-    } else if (isNoCredits) {
-      window.open('https://www.tryhomescope.com/pricing', '_blank');
     } else {
-      // Always go through startAnalysis — it handles the full extract + analyze flow,
-      // including the case where listingData hasn't been loaded yet.
-      startAnalysis({ bypassCache: true });
+      // Start deep analysis (requires credits)
+      startAnalysis({ bypassCache: true, analysisType: 'full' });
+    }
+  };
+
+  const handleBasicClick = () => {
+    if (isDisabled) return;
+    if (isError) {
+      retryAnalysis();
+    } else {
+      // Start basic analysis (free, no credits needed)
+      startAnalysis({ bypassCache: true, analysisType: 'basic' });
     }
   };
 
   const label = getButtonLabel();
 
   const showPrimaryArrow =
-    (isDone || !!listingData) && !isAnalysing && !isNoCredits && !isInCooldown && !isError;
+    (isDone || !!listingData) && !isAnalysing && !isInCooldown && !isError;
 
   const btnClass = [
     'ext-cta',
     isAnalysing && 'ext-cta--loading',
-    isNoCredits && 'ext-cta--disabled',
     isError && 'ext-cta--error',
-    (isDone || !!listingData) && !isAnalysing && !isNoCredits && !isInCooldown && !isError && 'ext-cta--primary',
-    !listingData && !isAnalysing && !isNoCredits && !isInCooldown && !isError && 'ext-cta--muted',
   ]
     .filter(Boolean)
     .join(' ');
 
   return (
     <div className="ext-cta-block">
-      <button type="button" className={btnClass} onClick={handleClick} disabled={isDisabled}>
-        {isAnalysing && <div className="ext-spinner ext-spinner-sm ext-spinner-on-dark" />}
-        <span className="ext-cta-label">{label.main}</span>
-        {showPrimaryArrow && <ArrowRight size={18} strokeWidth={2.25} className="ext-cta-icon" aria-hidden />}
-      </button>
+      {/* 网站来源标识 */}
+      <div className="mb-3">
+        <SourceBadge source={source} />
+      </div>
+
+      {/* Deep Analysis Button (requires credits) */}
+      {hasCredits && !isAnalysing && (
+        <button
+          type="button"
+          className={`${btnClass} ${(isDone || !!listingData) && !isInCooldown && !isError ? 'ext-cta--primary' : 'ext-cta--muted'}`}
+          onClick={handleDeepClick}
+          disabled={isDisabled}
+        >
+          <span className="ext-cta-label">
+            Use Deep Analysis ({credits} left)
+          </span>
+          {showPrimaryArrow && <ArrowRight size={18} strokeWidth={2.25} className="ext-cta-icon" aria-hidden />}
+        </button>
+      )}
+
+      {/* Basic Analysis Button (free, unlimited) */}
+      {!isAnalysing && (
+        <button
+          type="button"
+          className={`ext-cta ext-cta--basic ${isNoCredits || isAnalysing ? 'ext-cta--disabled' : ''}`}
+          onClick={handleBasicClick}
+          disabled={isDisabled}
+        >
+          <Zap size={16} className="ext-cta-icon" />
+          <span className="ext-cta-label">Try Basic Analysis</span>
+          <span className="ext-cta-sub-label">Free, Unlimited</span>
+        </button>
+      )}
+
+      {/* Single button for loading/error states */}
+      {(isAnalysing || isError) && (
+        <button type="button" className={btnClass} onClick={handleDeepClick} disabled={isDisabled}>
+          {isAnalysing && <div className="ext-spinner ext-spinner-sm ext-spinner-on-dark" />}
+          <span className="ext-cta-label">{label.main}</span>
+        </button>
+      )}
 
       {isAnalysing && (
         <p className="ext-deep-audit-hint">Deep audit in progress. Trust us, it's better than trekking to a dud inspection in the rain.</p>

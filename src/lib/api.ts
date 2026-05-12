@@ -1,6 +1,6 @@
 import { supabase } from './supabase';
 import { SUPABASE_PROJECT_REF, SUPABASE_ANON_KEY } from '../../shared/config';
-import type { AnalyzeRequest, AnalysisProgress, AnalysisResult, AnalysisSummary, AnalysisHistoryResponse, AnalysisDetailResponse } from '../types';
+import type { AnalyzeRequest, AnalysisProgress, AnalysisResult, AnalysisSummary, AnalysisHistoryResponse, AnalysisDetailResponse, BasicAnalysisResult } from '../types';
 
 // Supabase Edge Function URL
 const API_BASE_URL = import.meta.env.VITE_API_URL || `https://${SUPABASE_PROJECT_REF}.supabase.co/functions/v1/analyze`;
@@ -215,19 +215,19 @@ export async function submitAnalysis(data: AnalyzeRequest): Promise<{ id: string
 }
 
 // ========== Step 2: Run - 执行分析 ==========
-export async function runAnalysis(id: string, data: AnalyzeRequest): Promise<{ ok: boolean; id: string }> {
+export async function runAnalysis(id: string, data: AnalyzeRequest): Promise<{ ok: boolean; id: string; analysisType?: 'basic' | 'full'; result?: BasicAnalysisResult }> {
   const url = `${API_BASE_URL}?action=run`;
   console.log('runAnalysis URL:', url, 'id:', id);
 
   // Get authenticated session with user token
   const { session, user } = await getAuthenticatedSession();
-  
+
   // Must have valid user session with access token
   if (!session?.access_token) {
     console.error('runAnalysis: No access token - user not authenticated');
     throw new Error('Please sign in first to analyze listings.');
   }
-  
+
   console.log('runAnalysis: User email:', user?.email);
 
   const response = await fetch(url, {
@@ -238,6 +238,7 @@ export async function runAnalysis(id: string, data: AnalyzeRequest): Promise<{ o
       imageUrls: data.imageUrls,
       description: data.description,
       optionalDetails: data.optionalDetails,
+      analysisType: data.analysisType || 'full',
     }),
   });
 
@@ -280,6 +281,75 @@ export async function getAnalysisProgress(analysisId: string): Promise<AnalysisP
   }
 
   return response.json();
+}
+
+// ========== Lightweight Basic Analysis - 同步 API ==========
+
+export interface BasicAnalysisRequest {
+  reportMode: 'rent' | 'sale';
+  description: string;
+  optionalDetails?: {
+    weeklyRent?: string;
+    askingPrice?: string;
+    suburb?: string;
+    bedrooms?: string | number;
+    bathrooms?: string | number;
+    parking?: string | number;
+  };
+}
+
+/**
+ * Basic Analysis - 轻量同步 API
+ *
+ * 特点:
+ * - 无需登录 (匿名可用)
+ * - 无需图片上传
+ * - 无需轮询，直接返回结果
+ * - 无需 Supabase Storage 费用
+ *
+ * 用于: 快速免费的基础分析服务
+ */
+export async function analyzeBasicSync(data: BasicAnalysisRequest): Promise<BasicAnalysisResult> {
+  const url = `${API_BASE_URL}?action=basic-sync`;
+  console.log('[analyzeBasicSync] URL:', url);
+
+  // 尝试获取登录用户的 token，如果有则传递以便保存历史记录
+  let authHeaders: Record<string, string> = {
+    'Content-Type': 'application/json',
+    'apikey': SUPABASE_ANON_KEY,
+  };
+
+  try {
+    const { session } = await getAuthenticatedSession();
+    if (session?.access_token) {
+      authHeaders['Authorization'] = `Bearer ${session.access_token}`;
+      console.log('[analyzeBasicSync] User authenticated - will save to history');
+    }
+  } catch {
+    // 未登录，使用匿名方式
+    console.log('[analyzeBasicSync] Anonymous user - no history record');
+  }
+
+  const response = await fetch(url, {
+    method: 'POST',
+    headers: authHeaders,
+    body: JSON.stringify({
+      reportMode: data.reportMode,
+      description: data.description,
+      optionalDetails: data.optionalDetails,
+    }),
+  });
+
+  if (!response.ok) {
+    const errorData = await response.json().catch(() => ({ message: 'Request failed' }));
+    console.error('[analyzeBasicSync] Error:', errorData);
+    throw new Error(errorData.message || 'Basic analysis failed');
+  }
+
+  const result = await response.json();
+  console.log('[analyzeBasicSync] Success:', result);
+
+  return result.result;
 }
 
 // ========== 兼容旧版 - 不再使用 ==========

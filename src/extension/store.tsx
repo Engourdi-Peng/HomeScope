@@ -18,12 +18,14 @@ import { ExtractionErrorCode, getUserErrorMessage } from '../../shared/errors';
 
 // ===== Helper: Inject listingInfo into analysis result =====
 function isV2Data(data: ListingData | ListingDataV2 | null): data is ListingDataV2 {
-  // V2 使用 images 数组，V1 使用 imageUrls 数组
-  // V2 必定有 listingUrl 字段
+  // V2: 有 listingUrl 或同时有 images 和 source
+  // V1: 没有 listingUrl，有 source 但没有 images
   if (!data) return false;
-  if ('listingUrl' in data) return true;
-  if ('images' in data) return true;
-  // V1: 有 source 但没有 images 和 listingUrl
+  // 如果有 listingUrl，必定是 V2
+  if ('listingUrl' in data && data.listingUrl) return true;
+  // 如果有 images，必定是 V2
+  if ('images' in data && Array.isArray((data as any).images) && (data as any).images.length > 0) return true;
+  // 如果有 source 但没有 images 且没有 listingUrl，是 V1
   if ('source' in data && !('images' in data)) return false;
   return false;
 }
@@ -74,6 +76,120 @@ function injectListingInfo(result: AnalysisResult, listingData: ListingData | Li
     ...result,
     listingInfo: Object.keys(cleanListingInfo).length > 0 ? cleanListingInfo : null,
   };
+}
+
+// ===== Convert BasicAnalysisResult to AnalysisResult =====
+// Handles both backend format: { overallScore, verdict, quickSummary, ... }
+// And legacy format: { listingOverview, textAnalysis, decision, ... }
+import type { BasicAnalysisResult } from '../../shared/types/analysis';
+
+interface BasicSyncResult {
+  overallScore?: number;
+  verdict?: string;
+  quickSummary?: string;
+  whatLooksGood?: string[];
+  riskSignals?: string[];
+  reportMode?: 'rent' | 'sale';
+  optionalDetails?: Record<string, unknown>;
+}
+
+function convertBasicToFullResult(basicResult: BasicSyncResult): AnalysisResult {
+  // Check if this is the new backend format (has overallScore)
+  if (basicResult.overallScore !== undefined) {
+    // New backend format - direct mapping
+    const verdictMap: Record<string, AnalysisResult['verdict']> = {
+      'Strong Buy': 'Worth Inspecting',
+      'Consider Carefully': 'Need More Evidence',
+      'Probably Skip': 'Likely Overpriced / Risky',
+    };
+
+    const priorityMap: Record<string, 'HIGH' | 'MEDIUM' | 'LOW'> = {
+      'Worth Inspecting': 'HIGH',
+      'Need More Evidence': 'MEDIUM',
+      'Probably Skip': 'LOW',
+    };
+
+    const verdict = verdictMap[basicResult.verdict || ''] || 'Need More Evidence';
+    const overallScore = basicResult.overallScore || 50;
+
+    // Calculate priority based on score
+    let priority: 'HIGH' | 'MEDIUM' | 'LOW' = 'MEDIUM';
+    if (overallScore >= 65) priority = 'HIGH';
+    else if (overallScore < 45) priority = 'LOW';
+
+    const result: AnalysisResult = {
+      reportMode: basicResult.reportMode || 'rent',
+      analysisType: 'basic',
+      overallScore,
+      verdict,
+      quickSummary: basicResult.quickSummary || 'Basic analysis complete.',
+      whatLooksGood: basicResult.whatLooksGood || [],
+      riskSignals: basicResult.riskSignals || [],
+      realityCheck: '',
+      questionsToAsk: [],
+      decisionPriority: priority,
+      confidenceLevel: 'Low',
+    };
+
+    // Add upgrade prompt for basic analysis
+    (result as any).upgradePrompt = {
+      title: 'Upgrade to Full Analysis',
+      features: [
+        'AI-powered visual analysis of listing photos',
+        'Detailed space-by-space scoring',
+        'Competition risk assessment',
+        'Agent lingo translation',
+      ],
+    };
+
+    return result;
+  }
+
+  // Legacy BasicAnalysisResult format
+  const recommendationMap: Record<string, AnalysisResult['verdict']> = {
+    high: 'Worth Inspecting',
+    medium: 'Need More Evidence',
+    low: 'Likely Overpriced / Risky',
+  };
+  const verdict = recommendationMap[(basicResult as BasicAnalysisResult).decision?.recommendation || ''] || 'Need More Evidence';
+
+  // Calculate overall score based on recommendation
+  const scoreMap: Record<string, number> = {
+    high: 75,
+    medium: 50,
+    low: 25,
+  };
+  const overallScore = scoreMap[(basicResult as BasicAnalysisResult).decision?.recommendation || ''] || 50;
+
+  // Build decision priority
+  const priorityMap: Record<string, 'HIGH' | 'MEDIUM' | 'LOW'> = {
+    high: 'HIGH',
+    medium: 'MEDIUM',
+    low: 'LOW',
+  };
+
+  const typedResult = basicResult as BasicAnalysisResult;
+  const result: AnalysisResult = {
+    reportMode: typedResult.reportMode,
+    analysisType: 'basic',
+    overallScore,
+    verdict,
+    quickSummary: typedResult.decision?.summary || 'Basic analysis complete.',
+    whatLooksGood: typedResult.textAnalysis?.pros || [],
+    riskSignals: typedResult.textAnalysis?.cons || [],
+    realityCheck: typedResult.textAnalysis?.riskKeywords?.join('. ') || '',
+    questionsToAsk: typedResult.decision?.actions || [],
+    decisionPriority: priorityMap[typedResult.decision?.recommendation || ''] || 'MEDIUM',
+    confidenceLevel: 'Low',
+  };
+
+  // Attach basic analysis specific fields for ResultCard compatibility
+  (result as any).listingOverview = typedResult.listingOverview;
+  (result as any).textAnalysis = typedResult.textAnalysis;
+  (result as any).decision = typedResult.decision;
+  (result as any).upgradePrompt = typedResult.upgradePrompt;
+
+  return result;
 }
 
 // ===== Initial State =====
@@ -804,11 +920,14 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
    *   3. Ensure content script is loaded
    *   4. Send START_USER_EXTRACTION → content script opens gallery + collects images
    *   5. Dispatch SET_ANALYSIS_PHASE('sending_data')
-   *   6. Submit to analyze API
+   *   6. Submit to analyze API (basic: direct, full: submit+run+poll)
    *   7. On success: SET_ANALYSIS_PHASE('done'), set cooldown
    */
-  const startAnalysis = useCallback(async (options?: { bypassCache?: boolean }) => {
+  const startAnalysis = useCallback(async (options?: { bypassCache?: boolean; analysisType?: 'basic' | 'full' }) => {
     const bypassCache = options?.bypassCache ?? false;
+    const analysisType = options?.analysisType ?? 'full';
+
+    noop('[ExtApp] startAnalysis called:', { bypassCache, analysisType });
 
     // Step 1: Check cooldown
     const now = Date.now();
@@ -848,7 +967,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       if (hasImages || hasValidDesc) {
         noop('[ExtApp] Cache HIT - valid:', { images: cached.imageUrls?.length, descLen: cached.description?.length });
         dispatch({ type: 'SET_ANALYSIS_PHASE', phase: 'sending_data' });
-        await submitAnalysis(cached);
+        await submitAnalysis(cached, analysisType);
         return;
       }
 
@@ -926,8 +1045,8 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     // Mark URL as cached
     dispatch({ type: 'SET_EXTRACTION_CACHED', extractionCached: true, lastExtractedUrl: currentUrl });
 
-    // Step 5: Submit to analyze API
-    await submitAnalysis(listingData);
+    // Step 5: Submit to analyze API (passes analysisType)
+    await submitAnalysis(listingData, analysisType);
   }, [state.cooldownEndsAt, state.lastExtractedUrl, state.extractionCached, state.listingData]);
 
   /**
@@ -1043,11 +1162,101 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   }
 
   /**
-   * Shared API submission step. Separated so it can be called directly after a cache hit.
-   * Now returns analysisId immediately and polls from frontend.
+   * Shared API submission step. Supports both 'basic' (lightweight sync) and 'full' (deep) analysis.
+   * - basic: Direct API call to basic-sync endpoint, no auth required, no images, no polling
+   * - full: Full async flow (submit + run + poll), requires auth, uses images
    */
-  async function submitAnalysis(listingData: ListingData | ListingDataV2) {
-  dispatch({ type: 'SET_ANALYSIS_PHASE', phase: 'sending_data' });
+  async function submitAnalysis(listingData: ListingData | ListingDataV2, analysisType: 'basic' | 'full' = 'full') {
+    noop('[ExtApp] submitAnalysis called:', { analysisType });
+
+    // Basic analysis: lightweight direct path
+    if (analysisType === 'basic') {
+      dispatch({ type: 'SET_ANALYSIS_PHASE', phase: 'analysing', error: null });
+
+      noop('[ExtApp] submitAnalysis (basic): sending to background', {
+        hasDescription: !!listingData.description,
+        descriptionLen: listingData.description?.length || 0,
+        descriptionPreview: listingData.description?.substring(0, 100),
+        hasTitle: !!listingData.title,
+        hasPrice: !!listingData.price,
+      });
+
+      try {
+        // Send message to background to handle basic-sync API call (anonymous)
+        const response = await sendMessage<{
+          status: string;
+          result?: AnalysisResult;
+          error?: string;
+          analysisId?: string | null;
+        }>({
+          action: 'analyze_basic',
+          data: listingData,
+        });
+
+        noop('[ExtApp] submitAnalysis (basic): received response', {
+          responseStatus: response.status,
+          hasResult: !!response.result,
+          hasError: !!response.error,
+          error: response.error,
+          hasAnalysisId: !!response.analysisId,
+        });
+
+        // Basic-sync returns { status: 'done', result: ... }
+        const isSuccess = response.status === 'success' || response.status === 'done';
+        noop('[ExtApp] submitAnalysis (basic): checking success', {
+          responseStatus: response.status,
+          isSuccess,
+          hasResult: !!response.result,
+          error: response.error,
+        });
+        if (isSuccess && response.result) {
+          // Convert BasicAnalysisResult to AnalysisResult format for ResultCard compatibility
+          noop('[ExtApp] submitAnalysis (basic): converting to full result format...');
+          const fullResult = convertBasicToFullResult(response.result);
+          noop('[ExtApp] submitAnalysis (basic): fullResult.overallScore:', fullResult.overallScore);
+
+          // Store analysisId if returned (indicates user is logged in and history record was created)
+          const analysisId = response.analysisId;
+          if (analysisId) {
+            noop('[ExtApp] submitAnalysis (basic): history record created, analysisId:', analysisId);
+            fullResult.id = analysisId;
+            // Refresh history for logged-in users
+            sendMessage<{
+              status: string;
+              analyses?: AnalysisSummary[];
+            }>({ action: 'get_analysis_history', limit: 8, offset: 0 }).then((historyResponse) => {
+              if (historyResponse.status === 'success' && historyResponse.analyses) {
+                dispatch({ type: 'SET_HISTORY', history: historyResponse.analyses });
+              }
+            }).catch(() => {});
+          }
+
+          // Inject listing info into result
+          noop('[ExtApp] submitAnalysis (basic): injecting listing info...');
+          const resultWithListingInfo = injectListingInfo(fullResult, listingData);
+          noop('[ExtApp] submitAnalysis (basic): resultWithListingInfo.listingInfo:', resultWithListingInfo.listingInfo);
+          dispatch({ type: 'SET_ANALYSIS_RESULT', result: resultWithListingInfo });
+          dispatch({ type: 'SET_ANALYSIS_PHASE', phase: 'done' });
+          dispatch({ type: 'SET_CURRENT_VIEW', view: 'report' });
+          noop('[ExtApp] submitAnalysis (basic): dispatched all actions, should navigate to report');
+          return;
+        }
+
+        // Handle errors
+        dispatch({
+          type: 'SET_ANALYSIS_PHASE',
+          phase: 'error',
+          error: response.error || 'Basic analysis failed',
+        });
+      } catch (err) {
+        noop('[ExtApp] submitAnalysis (basic) error:', err);
+        dispatch({ type: 'SET_ANALYSIS_PHASE', phase: 'error', error: String(err) });
+      }
+      return;
+    }
+
+    // Full analysis: traditional async flow (requires auth, uses images)
+    dispatch({ type: 'SET_ANALYSIS_PHASE', phase: 'sending_data', error: null });
 
   // Guard: ensure listingData is valid
   if (!listingData || typeof listingData !== 'object') {

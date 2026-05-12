@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import type { AnalysisResult } from '../types';
+import type { AnalysisResult, BasicAnalysisResult } from '../types';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
 import { shareAnalysis } from '../lib/api';
@@ -9,7 +9,7 @@ import { usePrivatePageSEO } from '../hooks/useSEOMeta';
 export function ResultPage() {
   const navigate = useNavigate();
   const { isAuthenticated } = useAuth();
-  const [result, setResult] = useState<AnalysisResult | null>(null);
+  const [result, setResult] = useState<AnalysisResult | BasicAnalysisResult | null>(null);
 
   // 私密报告页：设置 noindex, nofollow
   usePrivatePageSEO();
@@ -43,6 +43,14 @@ export function ResultPage() {
     return { slug: shareResult.slug, shareUrl: shareResult.shareUrl };
   };
 
+  // For basic analysis, we don't have a direct ID from the session storage
+  const getAnalysisId = (): string | undefined => {
+    if (result && 'id' in result) {
+      return result.id;
+    }
+    return undefined;
+  };
+
   if (!result) {
     return (
       <div className="min-h-screen bg-[#FDFCF9] flex items-center justify-center">
@@ -66,6 +74,7 @@ export function ResultPage() {
       result={result}
       onBack={handleBack}
       onShare={isAuthenticated ? handleShare : undefined}
+      analysisId={getAnalysisId()}
     />
   );
 }

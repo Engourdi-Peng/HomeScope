@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { InputCard } from '../components/InputCard';
 import type { AnalysisStage, Photo, OptionalDetails } from '../types';
-import { submitAnalysis, runAnalysis, compressImageForUpload, uploadImagesToStorage, getAnalysisProgress } from '../lib/api';
+import { submitAnalysis, runAnalysis, compressImageForUpload, uploadImagesToStorage, getAnalysisProgress, analyzeBasicSync } from '../lib/api';
 import { Sparkles, Camera, FileText, LayoutGrid, AlertTriangle, TrendingUp, CheckCircle, ChevronLeft, ChevronRight } from 'lucide-react';
 import { UserMenu } from '../components/UserMenu';
 import { LoginModal } from '../components/LoginModal';
@@ -185,13 +185,92 @@ export function Home() {
     };
   }, []);
 
-  const handleSubmit = async () => {
+  // ========== 轻量化 Basic Analysis ==========
+  // 无需登录、无需图片、同步直接返回结果
+  const handleBasicAnalysis = async () => {
+    console.log('[BasicAnalysis] Starting lightweight basic analysis...');
+
+    // 1. 权限检查 - 无需登录，任何人都可以使用
+    // 注意：basic 分析不需要登录
+
+    // 2. 数据验证
+    if (!description.trim()) {
+      setError('Please enter a listing description for basic analysis.');
+      return;
+    }
+
+    setIsLoading(true);
+    setError('');
+    setProgressLabel('Analyzing listing...');
+    setProgressPct(10);
+
+    try {
+      // 3. 直接调用同步 API（无需上传图片）
+      setProgressPct(50);
+      const result = await analyzeBasicSync({
+        reportMode: optionalDetails.reportMode || 'rent',
+        description,
+        optionalDetails: Object.keys(optionalDetails).length > 0 ? optionalDetails : undefined,
+      });
+
+      setProgressPct(100);
+      console.log('[BasicAnalysis] Result received:', result);
+
+      // 4. 直接保存结果并跳转，无需轮询
+      // 构建 listingInfo
+      const isRent = (optionalDetails.reportMode || 'rent') === 'rent';
+      const listingInfo = {
+        title: optionalDetails.suburb ? `${optionalDetails.suburb}` : undefined,
+        price: isRent
+          ? optionalDetails.weeklyRent ? `$${optionalDetails.weeklyRent} per week` : undefined
+          : optionalDetails.askingPrice ? `$${parseInt(optionalDetails.askingPrice.replace(/[^0-9]/g, ''), 10).toLocaleString()}` : undefined,
+        priceAmount: isRent
+          ? optionalDetails.weeklyRent ? parseInt(optionalDetails.weeklyRent, 10) : undefined
+          : optionalDetails.askingPrice ? parseInt(optionalDetails.askingPrice.replace(/[^0-9]/g, ''), 10) : undefined,
+        bedrooms: optionalDetails.bedrooms ? parseInt(optionalDetails.bedrooms, 10) : undefined,
+        bathrooms: optionalDetails.bathrooms ? parseInt(optionalDetails.bathrooms, 10) : undefined,
+        parking: optionalDetails.parking ? parseInt(optionalDetails.parking, 10) : undefined,
+      };
+
+      const resultWithListingInfo = {
+        ...result,
+        listingInfo,
+      };
+
+      sessionStorage.setItem('analysisResult', JSON.stringify(resultWithListingInfo));
+
+      setIsLoading(false);
+      setIsComplete(true);
+
+      // 5. 跳转到结果页
+      setTimeout(() => {
+        navigate('/result');
+      }, 300);
+
+    } catch (err) {
+      console.error('[BasicAnalysis] Error:', err);
+      const errorMessage = err instanceof Error ? err.message : 'Basic analysis failed';
+      setError(errorMessage);
+      setIsLoading(false);
+      setProgressPct(0);
+      setProgressLabel('');
+    }
+  };
+
+  const handleSubmit = async (analysisType: 'basic' | 'full' = 'full') => {
+    // ========== Basic Analysis - 轻量路径 ==========
+    if (analysisType === 'basic') {
+      return handleBasicAnalysis();
+    }
+
+    // ========== Full Analysis - 完整路径 (需要积分) ==========
     // ========== 权限检查 ==========
     // 调试日志
     console.log('=== Analyze Permission Check ===');
     console.log('isAuthenticated:', isAuthenticated);
     console.log('user email:', user?.email);
     console.log('creditsRemaining (available):', creditsRemaining);
+    console.log('Analysis Type:', analysisType);
 
     // 1. 未登录用户不能 Analyze
     if (!isAuthenticated) {
@@ -201,10 +280,10 @@ export function Home() {
       return;
     }
 
-    // 2. 已登录但无可用积分 - 提前拦截，避免浪费用户时间
-    if (creditsRemaining <= 0) {
+    // 2. 已登录但无可用积分 - 深度分析需要积分，基础分析不需要
+    if (analysisType === 'full' && creditsRemaining <= 0) {
       console.log('analyze blocked reason: NO_CREDITS');
-      setError('You\'ve used all credits. Purchase more to continue.');
+      setError('You\'ve used all credits. Use Basic Analysis for free!');
       return;
     }
 
@@ -217,13 +296,15 @@ export function Home() {
 
     setIsLoading(true);
     setError('');
-    setAnalyzingCount(Math.min(photos.length, 10));
+    setAnalyzingCount(Math.min(photos.length, analysisType === 'basic' ? 4 : 10));
     setIsComplete(false);
     setActiveStage(null);
     setProgressPct(0);
 
     try {
-      const photosToAnalyze = photos.slice(0, 10);
+      const photosToAnalyze = analysisType === 'basic'
+        ? photos.slice(0, 4)
+        : photos.slice(0, 10);
 
       // ========== Step 1: Compress images ==========
       setProgressLabel('Preparing photos...');
@@ -249,6 +330,7 @@ export function Home() {
       // ========== Step 3: Build request with imageUrls ==========
       const requestData = {
         reportMode: optionalDetails.reportMode || 'rent',
+        analysisType,
         imageUrls,
         description,
         optionalDetails: Object.keys(optionalDetails).length > 0 ? optionalDetails : undefined,
@@ -266,7 +348,7 @@ export function Home() {
       console.log('Analysis submitted, ID:', analysisId);
 
       // ========== Step 5: Trigger the analysis runner ==========
-      setProgressLabel('Analyzing property...');
+      setProgressLabel(analysisType === 'basic' ? 'Running basic analysis...' : 'Analyzing property...');
       setActiveStage('upload_received');
       setProgressPct(Math.max(65, stageToPct('upload_received')));
 
@@ -312,7 +394,9 @@ export function Home() {
             setProgressLabel('Analysis complete');
             clearPollTimer();
             // Refresh user profile to update credits display
-            refreshProfile();
+            if (analysisType === 'full') {
+              refreshProfile();
+            }
             setTimeout(() => {
               navigate('/result');
             }, 500);
@@ -346,7 +430,7 @@ export function Home() {
       console.error('Error object:', err);
       console.error('Error message:', err instanceof Error ? err.message : String(err));
       console.error('Error stack:', err instanceof Error ? err.stack : 'N/A');
-      
+
       const errorMessage = err instanceof Error ? err.message : 'Failed to analyze listing';
       setError(errorMessage);
       setIsLoading(false);

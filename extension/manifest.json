@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "HomeScope",
-  "version": "1.0.1",
-  "description": "AI-powered property analysis in your browser",
+  "version": "1.0.2",
+  "description": "AI-powered property analysis in your browser - Supports realestate.com.au and Zillow",
   "icons": {
     "16": "icon.png",
     "48": "icon.png",
@@ -20,6 +20,7 @@
   ],
   "host_permissions": [
     "https://www.realestate.com.au/*",
+    "https://*.zillow.com/*",
     "https://*.tryhomescope.com/*",
     "https://trteewgplkqiedonomzg.supabase.co/*"
   ],
@@ -35,6 +36,7 @@
     {
       "matches": [
         "https://www.realestate.com.au/*",
+        "https://*.zillow.com/*",
         "https://*.tryhomescope.com/*",
         "https://trteewgplkqiedonomzg.supabase.co/*"
       ],

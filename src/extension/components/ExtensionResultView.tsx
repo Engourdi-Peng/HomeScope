@@ -16,8 +16,8 @@ import { ArrowLeft, Share2, Copy, CheckCircle } from 'lucide-react';
 
 const noop = (..._args: unknown[]) => {};
 import { useAppState, useActions } from '../store';
+import { ReportScreen } from '../../shared/report/ReportScreen';
 import { ReportShell } from '../../shared/report/ReportShell';
-import { ResultCard } from '../../components/ResultCard';
 
 export function ExtensionResultView() {
   const { analysisPhase, analysisProgress, analysisError, analysisResult, listingData, authStatus } = useAppState();
@@ -179,16 +179,17 @@ export function ExtensionResultView() {
     );
   }
 
-  // Has result: use ReportShell + ResultCard directly (avoids double-shell nesting)
-  // ResultCard receives hideNav=true because nav is provided by this component
+  // Has result: use ReportScreen (handles both basic and full analysis)
   return (
     <ReportShell mode="extension">
       {NavBar}
-      <ResultCard
+      <ReportScreen
+        mode="extension"
         result={analysisResult}
         onBack={navigateToHome}
         onShare={authStatus === 'logged_in' ? handleShare : undefined}
-        hideNav
+        analysisId={analysisResult?.id}
+        noShell
       />
     </ReportShell>
   );

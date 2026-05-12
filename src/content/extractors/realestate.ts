@@ -1,10 +1,11 @@
 /**
  * realestate.com.au 专用解析器
  * 基于原有 content.js 的 realestateExtractor 重构
+ * 输出标准化数据格式
  */
 
-import type { ExtractedListingData } from '../../../shared/types/analysis';
-import { ListingExtractor, ExtractContext } from './base';
+import type { ListingExtractor, ExtractContext } from './base';
+import type { StandardizedListingData } from './types';
 import { extractPrice, extractPriceAmount, normalizePricePeriod } from '../utils/price';
 import { extractRooms } from '../utils/price';
 import { extractFromPictureSources, extractOgImage, deduplicateImages } from '../utils/image';
@@ -17,13 +18,13 @@ const PROPERTY_TYPE_KEYWORDS = [
 ];
 
 export class RealEstateExtractor implements ListingExtractor {
-  id = 'realestate.com.au';
+  readonly source = 'realestate-au' as const;
 
   canHandle(url: URL): boolean {
     return url.hostname.includes(REALESTATE_HOSTNAME);
   }
 
-  async extract(ctx: ExtractContext): Promise<Partial<ExtractedListingData>> {
+  async extract(ctx: ExtractContext): Promise<StandardizedListingData> {
     const { document, url } = ctx;
     const bodyText = getBodyText(document);
 
@@ -138,26 +139,31 @@ export class RealEstateExtractor implements ListingExtractor {
     if (rooms.bedrooms != null) confidence += 0.1;
     if (propertyType) confidence += 0.1;
 
+    // 返回标准化格式
     return {
-      source: {
-        url: url.href,
-        domain: REALESTATE_HOSTNAME,
-        parserType: 'site_specific',
-        siteName: 'realestate.com.au',
+      source: 'realestate-au',
+      url: url.href,
+      address: addressFull || '',
+      price: priceText || '',
+      priceAmount,
+      pricePeriod: pricePeriod as StandardizedListingData['pricePeriod'],
+      bedrooms: rooms.bedrooms ?? null,
+      bathrooms: rooms.bathrooms ?? null,
+      carSpaces: rooms.parking ?? null,
+      propertyType: propertyType || '',
+      description: description || '',
+      images: finalImages.slice(0, 40),
+      // 澳洲特有
+      facts: {
+        suburb,
+        state,
+        postcode,
+        features: features.length ? [...new Set(features)].slice(0, 20) : undefined,
+        title,
       },
-      title,
-      address: addressFull || undefined,
-      price: priceText || undefined,
-      priceAmount: priceAmount || undefined,
-      pricePeriod,
-      bedrooms: rooms.bedrooms,
-      bathrooms: rooms.bathrooms,
-      parking: rooms.parking,
-      propertyType: propertyType || null,
-      description: description || undefined,
-      imageUrls: finalImages.slice(0, 40),
-      features: features.length ? [...new Set(features)].slice(0, 20) : undefined,
+      // 提取元数据
       extractionConfidence: Math.min(1, confidence),
+      extractedAt: new Date().toISOString(),
     };
   }
 }

@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import type { AnalysisResult } from '../types';
 import { ListingHeader } from './ListingHeader';
-import { Check, AlertCircle, ArrowRight, ArrowLeft, TrendingUp, AlertTriangle, MessageCircle, Eye, DollarSign, Share2, Copy, CheckCircle, Sun, MessageSquare, Send, SquareCheck } from 'lucide-react';
+import { Check, AlertCircle, ArrowRight, ArrowLeft, TrendingUp, AlertTriangle, MessageCircle, Eye, DollarSign, Share2, Copy, CheckCircle, Sun, MessageSquare, Send, SquareCheck, Zap } from 'lucide-react';
 
 function AnimatedNumber({ target, duration = 1500 }: { target: number; duration?: number }) {
   const [count, setCount] = useState(0);
@@ -37,6 +37,13 @@ interface ResultProps {
   hideNav?: boolean;
   /** 是否为公开分享页，用于显示不同的分享文案 */
   isPublicShare?: boolean;
+  /** 升级到深度分析的回调 */
+  onUpgrade?: () => void;
+  /** 是否为 extension 模式 */
+  isExtension?: boolean;
+  analysisId?: string;
+  /** 是否为基础分析模式（用于区分卡片显示） */
+  isBasicAnalysis?: boolean;
 }
 
 const verdictConfig = {
@@ -201,7 +208,7 @@ function SectionDivider() {
   return <div className="h-px bg-stone-200 my-14"></div>;
 }
 
-export function ResultCard({ result, onBack, onShare, hideNav, isPublicShare }: ResultProps) {
+export function ResultCard({ result, onBack, onShare, hideNav, isPublicShare, onUpgrade, isExtension, analysisId, isBasicAnalysis }: ResultProps) {
   // Guard: if result is undefined/null, render nothing
   if (!result) {
     return (
@@ -214,6 +221,9 @@ export function ResultCard({ result, onBack, onShare, hideNav, isPublicShare }: 
   const [isSharing, setIsSharing] = useState(false);
   const [shareResult, setShareResult] = useState<{ slug: string; shareUrl: string } | null>(null);
   const [copied, setCopied] = useState(false);
+
+  // Check if this is a basic analysis (new format)
+  const isBasic = isBasicAnalysis || result.analysisType === 'basic';
 
   const config = verdictConfig[result.verdict] || verdictConfig['Need More Evidence'];
   const competitionRisk = result.competitionRisk;
@@ -228,6 +238,17 @@ export function ResultCard({ result, onBack, onShare, hideNav, isPublicShare }: 
     [];
   const detectedRoomsText = detectedRooms.length > 0 ? formatDetectedRooms(detectedRooms) : '';
   const detectedRoomsCount = detectedRooms.length;
+
+  // Provide default values for basic analysis mode
+  const decisionPriority = result.decisionPriority ?? (isBasic ? 'MEDIUM' : undefined);
+  const confidenceLevel = result.confidenceLevel ?? (isBasic ? 'Medium' : undefined);
+  const realityCheck = result.realityCheck ?? (isBasic ? '' : undefined);
+  const questionsToAsk = result.questionsToAsk ?? [];
+  const risks = result.risks ?? (isBasic ? result.riskSignals : []) ?? [];
+  const hiddenRisks = result.hiddenRisks ?? (isBasic ? [] : undefined);
+  const whatLooksGood = result.whatLooksGood ?? [];
+  const riskSignals = result.riskSignals ?? [];
+  const reality_check = result.reality_check;
 
   // Clipboard helper compatible with extension side panel
   const copyToClipboardFallback = (text: string) => {
@@ -272,7 +293,7 @@ export function ResultCard({ result, onBack, onShare, hideNav, isPublicShare }: 
   };
 
   return (
-    <div className="w-full container-type-inline-size animate-in fade-in slide-in-from-bottom-12 duration-700 ease-out pb-24 relative z-10">
+    <div className={`w-full container-type-inline-size animate-in fade-in slide-in-from-bottom-12 duration-700 ease-out pb-24 relative z-10 ${isExtension ? 'bg-[#FDFCF9]' : ''}`}>
 
       {/* Header / Navigation */}
       {/* 在 extension 模式下由 ExtensionResultView 提供导航，此处隐藏 */}
@@ -341,11 +362,11 @@ export function ResultCard({ result, onBack, onShare, hideNav, isPublicShare }: 
               </div>
               {/* Decision Priority Tag */}
               <div className={`mt-4 px-4 py-2 rounded-full text-[11px] font-semibold uppercase tracking-wider ${
-                result.decisionPriority === 'HIGH' ? 'bg-green-500/20 text-green-400 border border-green-500/40' :
-                result.decisionPriority === 'MEDIUM' ? 'bg-amber-500/20 text-amber-400 border border-amber-500/40' :
+                decisionPriority === 'HIGH' ? 'bg-green-500/20 text-green-400 border border-green-500/40' :
+                decisionPriority === 'MEDIUM' ? 'bg-amber-500/20 text-amber-400 border border-amber-500/40' :
                 'bg-red-500/20 text-red-400 border border-red-500/40'
               }`}>
-                {result.decisionPriority} PRIORITY
+                {decisionPriority || 'MEDIUM'} PRIORITY
               </div>
 
               {/* Would I Buy? - Sale mode only */}
@@ -386,11 +407,11 @@ export function ResultCard({ result, onBack, onShare, hideNav, isPublicShare }: 
                   </div>
                   <div className="h-4 w-px bg-white/10"></div>
                   <div className={`text-xs font-semibold ${
-                    result.confidenceLevel === 'High' ? 'text-green-400' :
-                    result.confidenceLevel === 'Medium' ? 'text-amber-400' :
+                    confidenceLevel === 'High' ? 'text-green-400' :
+                    confidenceLevel === 'Medium' ? 'text-amber-400' :
                     'text-red-400'
                   }`}>
-                    {result.confidenceLevel}
+                    {confidenceLevel || 'Medium'}
                   </div>
                 </div>
 
@@ -443,20 +464,20 @@ export function ResultCard({ result, onBack, onShare, hideNav, isPublicShare }: 
               <div className="grid grid-cols-1 @container:text-sm @container[size>=480px]:grid-cols-2 @container[size>=700px]:grid-cols-2 gap-8">
                 <div>
                   <div className="text-[10px] font-medium uppercase tracking-widest text-[#AAAAAA] mb-3">Pros</div>
-                  <BulletList items={result.whatLooksGood.slice(0, 4)} darkCard />
+                  <BulletList items={whatLooksGood.slice(0, 4)} darkCard />
                 </div>
                 <div>
                   <div className="text-[10px] font-medium uppercase tracking-widest text-[#AAAAAA] mb-3">Cons</div>
-                  <BulletList items={result.riskSignals.slice(0, 4)} darkCard />
+                  <BulletList items={riskSignals.slice(0, 4)} darkCard />
                 </div>
               </div>
 
               {/* Hidden Risk Signals */}
-              {result.hiddenRisks && result.hiddenRisks.length > 0 && (
+              {hiddenRisks && hiddenRisks.length > 0 && (
                 <div className="mt-7">
                   <div className="h-px bg-white/10 mb-6"></div>
                   <div className="text-[10px] font-medium uppercase tracking-widest text-red-400 mb-3">Hidden Risk Signals</div>
-                  <BulletList items={result.hiddenRisks.slice(0, 3)} darkCard />
+                  <BulletList items={hiddenRisks.slice(0, 3)} darkCard />
                 </div>
               )}
             </div>
@@ -1149,7 +1170,7 @@ export function ResultCard({ result, onBack, onShare, hideNav, isPublicShare }: 
                     Key observations
                   </div>
                   <ul className="space-y-1.5">
-                    {space.observations.slice(0, 3).map((obs, i) => (
+                    {(space.observations || []).slice(0, 3).map((obs, i) => (
                       <li key={i} className="text-sm text-stone-600 leading-relaxed">
                         • {obs}
                       </li>
@@ -1197,7 +1218,7 @@ export function ResultCard({ result, onBack, onShare, hideNav, isPublicShare }: 
                 <h3 className="text-base font-semibold text-stone-900">Potential Risks</h3>
               </div>
               <div className="space-y-3">
-                {result.risks.slice(0, 3).map((risk, index) => (
+                {risks.slice(0, 3).map((risk, index) => (
                   <div key={index} className="flex items-start gap-3 p-3 bg-amber-50 rounded-xl">
                     <span className="text-amber-600 text-sm font-medium shrink-0">!</span>
                     <span className="text-sm text-stone-700 leading-relaxed">{risk}</span>
@@ -1221,9 +1242,9 @@ export function ResultCard({ result, onBack, onShare, hideNav, isPublicShare }: 
                 <h3 className="text-base font-semibold text-stone-900">Competition Risk</h3>
               </div>
               <div className="flex flex-col @container[size>=480px]:flex-row @container[size>=480px]:items-start gap-6">
-                <div className={`inline-flex items-center gap-2 px-4 py-2 rounded-full text-sm font-semibold ${competitionConfig[competitionRisk.level].bgColor} ${competitionConfig[competitionRisk.level].color} border ${competitionConfig[competitionRisk.level].borderColor}`}>
+                <div className={`inline-flex items-center gap-2 px-4 py-2 rounded-full text-sm font-semibold ${competitionConfig[competitionRisk.level]?.bgColor || competitionConfig.MEDIUM.bgColor} ${competitionConfig[competitionRisk.level]?.color || competitionConfig.MEDIUM.color} border ${competitionConfig[competitionRisk.level]?.borderColor || competitionConfig.MEDIUM.borderColor}`}>
                   <span className="w-2 h-2 rounded-full bg-current"></span>
-                  {competitionConfig[competitionRisk.level].label}
+                  {competitionConfig[competitionRisk.level]?.label || 'Unknown'}
                 </div>
                 <div className="flex-1">
                   <div className="text-[10px] font-medium uppercase tracking-widest text-stone-500 mb-3">Reasons</div>
@@ -1380,7 +1401,7 @@ export function ResultCard({ result, onBack, onShare, hideNav, isPublicShare }: 
             <h3 className="text-base font-semibold text-stone-900">Questions to Ask</h3>
           </div>
           <div className="grid grid-cols-1 gap-3">
-            {(result.agentQuestions || result.questionsToAsk).slice(0, 3).map((question, index) => (
+            {questionsToAsk.slice(0, 3).map((question, index) => (
               <div key={index} className="flex items-start gap-3 p-3 bg-stone-50 rounded-xl">
                 <span className="text-stone-400 text-sm font-medium shrink-0">Q{index + 1}.</span>
                 <span className="text-sm text-stone-700 leading-relaxed">{question}</span>
@@ -1421,7 +1442,7 @@ export function ResultCard({ result, onBack, onShare, hideNav, isPublicShare }: 
                 </div>
               )}
 
-              {result.reality_check.marketing_phrases && result.reality_check.marketing_phrases.length > 0 && (
+              {result.reality_check && result.reality_check.marketing_phrases && result.reality_check.marketing_phrases.length > 0 && (
                 <div className="mb-6">
                   <div className="text-[10px] font-medium uppercase tracking-widest text-stone-500 mb-3">Promotional Language Found</div>
                   <div className="flex flex-wrap gap-2">
@@ -1434,14 +1455,14 @@ export function ResultCard({ result, onBack, onShare, hideNav, isPublicShare }: 
                 </div>
               )}
 
-              {result.reality_check.missing_specifics && result.reality_check.missing_specifics.length > 0 && (
+              {result.reality_check && result.reality_check.missing_specifics && result.reality_check.missing_specifics.length > 0 && (
                 <div className="mb-6">
                   <div className="text-[10px] font-medium uppercase tracking-widest text-stone-500 mb-3">Missing Details</div>
                   <SimpleBulletList items={result.reality_check.missing_specifics.slice(0, 5)} />
                 </div>
               )}
 
-              {result.reality_check.support_gaps && result.reality_check.support_gaps.length > 0 && (
+              {result.reality_check && result.reality_check.support_gaps && result.reality_check.support_gaps.length > 0 && (
                 <div>
                   <div className="text-[10px] font-medium uppercase tracking-widest text-stone-500 mb-3">Claims Without Visual Support</div>
                   <SimpleBulletList items={result.reality_check.support_gaps.slice(0, 3)} />
@@ -1449,6 +1470,36 @@ export function ResultCard({ result, onBack, onShare, hideNav, isPublicShare }: 
               )}
             </div>
           </>
+        )}
+
+        {/* Upgrade Prompt - For basic analysis only */}
+        {result.upgradePrompt && onUpgrade && (
+          <div className="mt-12 mb-8 animate-in fade-in slide-in-from-bottom-8 duration-700 ease-out">
+            <div className="bg-gradient-to-br from-stone-900 to-stone-800 rounded-3xl p-6 text-white">
+              <div className="flex items-start gap-4">
+                <div className="w-12 h-12 bg-white/10 rounded-xl flex items-center justify-center flex-shrink-0">
+                  <Zap className="w-6 h-6 text-yellow-400" />
+                </div>
+                <div className="flex-1">
+                  <h3 className="font-semibold text-lg mb-2">{result.upgradePrompt.title}</h3>
+                  <ul className="text-sm text-stone-300 space-y-1.5 mb-5">
+                    {result.upgradePrompt.features.map((feature, i) => (
+                      <li key={i} className="flex items-start gap-2">
+                        <Check className="w-4 h-4 text-green-400 mt-0.5 flex-shrink-0" />
+                        {feature}
+                      </li>
+                    ))}
+                  </ul>
+                  <button
+                    onClick={onUpgrade}
+                    className="w-full bg-white text-stone-900 font-semibold py-3 px-5 rounded-xl hover:bg-stone-100 transition-colors"
+                  >
+                    Try Deep Analysis (uses 1 credit)
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
         )}
 
         {/* Action Bottom */}

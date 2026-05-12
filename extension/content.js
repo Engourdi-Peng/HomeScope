@@ -843,19 +843,47 @@ function detectReportMode(listing, url) {
   const bodyText = document.body.innerText || '';
   
   // ========== 第一优先级：URL ==========
-  // 租房 URL
+  // 租房 URL (通用)
   if (urlLower.includes('/rent/') || 
       urlLower.includes('/rental/') ||
       urlLower.includes('/to-rent/')) {
     return 'rent';
   }
   
-  // 买房 URL
+  // 买房 URL (通用)
   if (urlLower.includes('/buy/') || 
       urlLower.includes('/for-sale/') ||
       urlLower.includes('/sale/') ||
       urlLower.includes('/sold/')) {
     return 'sale';
+  }
+  
+  // ========== Zillow 特定检测 ==========
+  if (isZillowPage()) {
+    // Zillow rent URL
+    if (urlLower.includes('zillow.com/rent') || urlLower.includes('for-rent')) {
+      return 'rent';
+    }
+    
+    // Zillow for sale URL patterns
+    if (urlLower.includes('homedetails') || 
+        urlLower.includes('/condo/') || 
+        urlLower.includes('/townhouse/') ||
+        urlLower.includes('/lot/') ||
+        urlLower.includes('for-sale')) {
+      return 'sale';
+    }
+    
+    // Zillow 特有特征
+    // 租房：Rent Zestimate 显示
+    if (/\bRent\s*Zestimate\b/i.test(bodyText)) {
+      return 'rent';
+    }
+    
+    // 买房：Zestimate 显示
+    if (/\bZestimate\b/i.test(bodyText)) {
+      return 'sale';
+    }
   }
   
   // ========== 第二优先级：价格格式 ==========
@@ -901,6 +929,318 @@ function detectReportMode(listing, url) {
   return 'sale';
 }
 
+// ─────────────────────────────────────────────────────────────
+// Zillow-specific extraction functions
+// ─────────────────────────────────────────────────────────────
+
+/**
+ * Check if current page is a Zillow listing page
+ */
+function isZillowPage() {
+  const hostname = window.location.hostname || '';
+  return hostname.includes('zillow.com');
+}
+
+/**
+ * Extract Zillow-specific data from __NEXT_DATA__ or page scripts
+ * Returns standardized data with source: 'zillow'
+ */
+function extractZillowData() {
+  const data = {
+    source: 'zillow',
+    zestimate: null,
+    rentZestimate: null,
+    yearBuilt: null,
+    lotSize: null,
+    hoaFee: null,
+    propertyTax: null,
+    sqft: null,
+    daysOnZillow: null,
+    schoolRatings: [],
+  };
+
+  try {
+    // Method 1: __NEXT_DATA__ (most reliable)
+    const nextDataScript = document.querySelector('script#__NEXT_DATA__');
+    if (nextDataScript) {
+      const nextData = JSON.parse(nextDataScript.textContent);
+      const props = nextData?.props?.pageProps ?? nextData?.props ?? nextData;
+      
+      // Deep search for property data
+      const propertyData = findPropertyDataInObject(props);
+      if (propertyData) {
+        Object.assign(data, extractFieldsFromPropertyData(propertyData));
+      }
+    }
+
+    // Method 2: Look for JSON in script tags
+    if (!data.zestimate) {
+      const scripts = document.querySelectorAll('script[type="application/json"]');
+      for (const script of scripts) {
+        const id = script.id?.toLowerCase() || '';
+        if (id.includes('hdp') || id.includes('apollo') || id.includes('data')) {
+          try {
+            const scriptData = JSON.parse(script.textContent);
+            const propertyData = findPropertyDataInObject(scriptData);
+            if (propertyData) {
+              Object.assign(data, extractFieldsFromPropertyData(propertyData));
+              if (data.zestimate) break;
+            }
+          } catch (e) {
+            // Skip invalid JSON
+          }
+        }
+      }
+    }
+
+    // Method 3: DOM-based extraction (fallback)
+    if (!data.zestimate) {
+      const bodyText = document.body.innerText || '';
+      
+      // Extract Zestimate
+      const zestimateMatch = bodyText.match(/Zestimate[\s:]*\$?([\d,]+)/i);
+      if (zestimateMatch) {
+        data.zestimate = '$' + zestimateMatch[1].replace(/,/g, '');
+      }
+      
+      // Extract Rent Zestimate
+      const rentZestimateMatch = bodyText.match(/Rent Zestimate[\s:]*\$?([\d,]+)/i);
+      if (rentZestimateMatch) {
+        data.rentZestimate = '$' + rentZestimateMatch[1].replace(/,/g, '');
+      }
+      
+      // Extract Year Built
+      const yearMatch = bodyText.match(/Year Built[\s:]*(\d{4})/i);
+      if (yearMatch) {
+        data.yearBuilt = parseInt(yearMatch[1]);
+      }
+      
+      // Extract Lot Size
+      const lotMatch = bodyText.match(/Lot Size[\s:]*([\d,\.]+\s*(?:sqft|acres?|sq\.?\s*ft))/i);
+      if (lotMatch) {
+        data.lotSize = lotMatch[1].trim();
+      }
+      
+      // Extract HOA Fee
+      const hoaMatch = bodyText.match(/HOA[\s:]*\$?([\d,]+(?:\/mo|\/month)?)/i);
+      if (hoaMatch) {
+        data.hoaFee = '$' + hoaMatch[1];
+      }
+      
+      // Extract Property Tax
+      const taxMatch = bodyText.match(/Property Tax[\s:]*\$?([\d,]+(?:\/yr|\/year)?)/i);
+      if (taxMatch) {
+        data.propertyTax = '$' + taxMatch[1];
+      }
+      
+      // Extract Days on Zillow
+      const daysMatch = bodyText.match(/(\d+)\s*days?\s*on\s*Zillow/i);
+      if (daysMatch) {
+        data.daysOnZillow = parseInt(daysMatch[1]);
+      }
+    }
+  } catch (e) {
+    // Silently handle errors
+  }
+
+  return data;
+}
+
+/**
+ * Recursively search for property data in nested objects
+ */
+function findPropertyDataInObject(obj, depth = 0) {
+  if (depth > 15 || !obj || typeof obj !== 'object') return null;
+  
+  // Check if this looks like property data
+  if (obj && typeof obj === 'object') {
+    if (obj.zpid || obj.zestimate || obj.price) {
+      return obj;
+    }
+    if (obj.homeStatus || obj.home_type || obj.propertyType) {
+      return obj;
+    }
+  }
+  
+  // Search in arrays
+  if (Array.isArray(obj)) {
+    for (const item of obj) {
+      const found = findPropertyDataInObject(item, depth + 1);
+      if (found) return found;
+    }
+  }
+  
+  // Search in object values
+  if (obj && typeof obj === 'object') {
+    for (const key of Object.keys(obj)) {
+      if (key.startsWith('__') || key.startsWith('$')) continue;
+      const found = findPropertyDataInObject(obj[key], depth + 1);
+      if (found) return found;
+    }
+  }
+  
+  return null;
+}
+
+/**
+ * Extract relevant fields from Zillow property data object
+ */
+function extractFieldsFromPropertyData(data) {
+  const result = {};
+  
+  if (!data) return result;
+  
+  // Zestimate
+  if (data.zestimate) {
+    result.zestimate = typeof data.zestimate === 'number' 
+      ? '$' + data.zestimate.toLocaleString()
+      : String(data.zestimate);
+  }
+  
+  // Rent Zestimate
+  if (data.rentZestimate) {
+    result.rentZestimate = typeof data.rentZestimate === 'number'
+      ? '$' + data.rentZestimate.toLocaleString()
+      : String(data.rentZestimate);
+  }
+  
+  // Year Built
+  if (data.yearBuilt || data.year_built) {
+    result.yearBuilt = data.yearBuilt || data.year_built;
+  }
+  
+  // Lot Size
+  if (data.lotSize || data.lot_size || data.lotSizeValue) {
+    result.lotSize = String(data.lotSize || data.lot_size || data.lotSizeValue);
+  }
+  
+  // HOA Fee
+  if (data.hoaFee || data.hoa_fee) {
+    const hoaVal = data.hoaFee || data.hoa_fee;
+    result.hoaFee = typeof hoaVal === 'number'
+      ? '$' + hoaVal.toLocaleString() + '/mo'
+      : String(hoaVal);
+  }
+  
+  // Property Tax
+  if (data.annualTax || data.propertyTax || data.taxAssessment) {
+    const taxVal = data.annualTax || data.propertyTax || data.taxAssessment;
+    result.propertyTax = typeof taxVal === 'number'
+      ? '$' + taxVal.toLocaleString() + '/yr'
+      : String(taxVal);
+  }
+  
+  // Living Area (sqft)
+  if (data.livingArea || data.sqft || data.area) {
+    result.sqft = data.livingArea || data.sqft || data.area;
+  }
+  
+  // Days on Zillow
+  if (data.daysOnZillow || data.listingAge || data.daysOnMarket) {
+    result.daysOnZillow = data.daysOnZillow || data.listingAge || data.daysOnMarket;
+  }
+  
+  return result;
+}
+
+/**
+ * Extract address from Zillow page
+ */
+function extractAddressZillow() {
+  // Method 1: data-testid selectors
+  const selectors = [
+    '[data-testid="address"]',
+    'h1[data-testid="address"]',
+    'address[data-testid="street-address"]',
+    '[class*="address"]',
+  ];
+  
+  for (const sel of selectors) {
+    const el = document.querySelector(sel);
+    if (el) {
+      const text = el.textContent?.trim() || '';
+      if (text.length > 5 && text.length < 300) {
+        return text;
+      }
+    }
+  }
+  
+  // Method 2: h1 fallback
+  const h1 = document.querySelector('h1');
+  if (h1) {
+    const text = h1.textContent?.trim() || '';
+    // Zillow addresses typically start with numbers
+    if (/^\d+\s+/.test(text)) {
+      return text;
+    }
+  }
+  
+  return null;
+}
+
+/**
+ * Extract rooms info from Zillow page (beds, baths, sqft)
+ */
+function extractRoomsZillow() {
+  const result = { bedrooms: null, bathrooms: null, sqft: null };
+  
+  // Method 1: data-testid bed-bath-sqft container
+  const bedBathEl = document.querySelector('[data-testid="bed-bath-beyond"]') || 
+                    document.querySelector('[data-testid="bed-bath-sqft"]') ||
+                    document.querySelector('[data-testid="hdp-property-details"]');
+  
+  if (bedBathEl) {
+    const text = bedBathEl.textContent || '';
+    
+    const bedMatch = text.match(/(\d+)\s*bed/);
+    const bathMatch = text.match(/(\d+(?:\.\d+)?)\s*bath/);
+    const sqftMatch = text.match(/([\d,]+)\s*sq\s*ft|([\d,]+)\s*sqft/);
+    
+    if (bedMatch) result.bedrooms = parseInt(bedMatch[1]);
+    if (bathMatch) result.bathrooms = parseFloat(bathMatch[1]);
+    if (sqftMatch) result.sqft = parseInt((sqftMatch[1] || sqftMatch[2]).replace(/,/g, ''));
+  }
+  
+  // Method 2: Individual data-testid elements
+  if (!result.bedrooms) {
+    const bedEl = document.querySelector('[data-testid="bedrooms"]');
+    if (bedEl) {
+      const match = bedEl.textContent?.match(/(\d+)/);
+      if (match) result.bedrooms = parseInt(match[1]);
+    }
+  }
+  
+  if (!result.bathrooms) {
+    const bathEl = document.querySelector('[data-testid="bathrooms"]');
+    if (bathEl) {
+      const match = bathEl.textContent?.match(/(\d+(?:\.\d+)?)/);
+      if (match) result.bathrooms = parseFloat(match[1]);
+    }
+  }
+  
+  // Method 3: Body text regex fallback
+  if (!result.bedrooms || !result.bathrooms) {
+    const bodyText = document.body.innerText || '';
+    
+    if (!result.bedrooms) {
+      const bedMatch = bodyText.match(/(\d+)\s*(?:bed(?:s|room)?|bd)/i);
+      if (bedMatch) result.bedrooms = parseInt(bedMatch[1]);
+    }
+    
+    if (!result.bathrooms) {
+      const bathMatch = bodyText.match(/(\d+(?:\.\d+)?)\s*(?:bath(?:s|room)?|ba)/i);
+      if (bathMatch) result.bathrooms = parseFloat(bathMatch[1]);
+    }
+    
+    if (!result.sqft) {
+      const sqftMatch = bodyText.match(/([\d,]+)\s*(?:sq\s*ft|sqft|square\s*feet)/i);
+      if (sqftMatch) result.sqft = parseInt(sqftMatch[1].replace(/,/g, ''));
+    }
+  }
+  
+  return result;
+}
+
 async function extractListingDataLight() {
   const signals = detectPropertySignals();
   propertySignals = signals;
@@ -930,6 +1270,18 @@ async function extractListingDataLight() {
     parking: fromJsonLd?.rooms?.parking ?? domRooms.parking,
   };
   const description = fromJsonLd?.description || domDescription || null;
+  
+  // Zillow-specific data
+  let zillowData = { source: 'zillow' };
+  if (isZillowPage()) {
+    // Use Zillow-specific rooms extraction
+    const zillowRooms = extractRoomsZillow();
+    if (zillowRooms.bedrooms) rooms.bedrooms = zillowRooms.bedrooms;
+    if (zillowRooms.bathrooms) rooms.bathrooms = zillowRooms.bathrooms;
+    
+    // Get Zillow-specific fields
+    zillowData = extractZillowData();
+  }
 
   // NOTE: imageUrls is intentionally empty here — gallery collection is
   // only done via startUserExtraction() triggered by the user.
@@ -942,7 +1294,7 @@ async function extractListingDataLight() {
   const pricePeriod = inferPricePeriod(price);
 
   const listing = {
-    source: { url: window.location.href, domain: window.location.hostname, parserType: 'generic' },
+    source: isZillowPage() ? 'zillow' : { url: window.location.href, domain: window.location.hostname, parserType: 'generic' },
     title, address,
     price: price || '',
     priceText: price,
@@ -956,6 +1308,17 @@ async function extractListingDataLight() {
     extractionConfidence: confidence,
     // 自动检测房源类型：买房(sale)还是租房(rent)
     reportMode: detectReportMode({ priceText: price }, window.location.href),
+    // Include Zillow-specific fields if on Zillow
+    ...(isZillowPage() ? {
+      sqft: zillowData.sqft || null,
+      zestimate: zillowData.zestimate || null,
+      rentZestimate: zillowData.rentZestimate || null,
+      yearBuilt: zillowData.yearBuilt || null,
+      lotSize: zillowData.lotSize || null,
+      hoaFee: zillowData.hoaFee || null,
+      propertyTax: zillowData.propertyTax || null,
+      daysOnZillow: zillowData.daysOnZillow || null,
+    } : {}),
   };
   const detection = buildPropertyDetection(signals, listing);
 
@@ -1068,6 +1431,12 @@ function extractTitle() {
 }
 
 function extractAddress() {
+  // Check if this is a Zillow page
+  if (isZillowPage()) {
+    const zillowAddress = extractAddressZillow();
+    if (zillowAddress) return zillowAddress;
+  }
+  
   // Priority 1: realestate.com.au 专用提取
   const reAddress = extractAddressRealestate();
   if (reAddress) return reAddress;

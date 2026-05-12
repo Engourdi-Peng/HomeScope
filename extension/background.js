@@ -442,6 +442,86 @@ async function handleMessage(message, sender, sendResponse) {
       break;
     }
 
+    // ===== Lightweight Basic Analysis (Anonymous, no images, sync) =====
+    case 'analyze_basic': {
+      // Basic analysis: 无需登录、无需图片、同步返回结果
+      // 如果用户已登录，会录入历史记录
+      const listingData = message.data;
+      console.log(`${LOG_PREFIX} analyze_basic: received message`, {
+        hasDescription: !!listingData?.description,
+        descriptionLen: listingData?.description?.length || 0,
+        hasTitle: !!listingData?.title,
+        hasPrice: !!listingData?.price,
+      });
+
+      const description = listingData?.description || listingData?.rawText || listingData?.title || 'Property listing information';
+      const reportMode = listingData?.reportMode || 'rent';
+      const source = listingData?.source || null;  // Zillow uses 'zillow', realestate uses object
+
+      // Build optionalDetails
+      const priceText = listingData?.priceText || listingData?.price || null;
+      const optionalDetails = {};
+      if (priceText) {
+        if (reportMode === 'rent') {
+          optionalDetails.weeklyRent = priceText;
+        } else {
+          optionalDetails.askingPrice = priceText;
+        }
+      }
+
+      // Add property details if available
+      if (listingData?.bedrooms) optionalDetails.bedrooms = listingData.bedrooms;
+      if (listingData?.bathrooms) optionalDetails.bathrooms = listingData.bathrooms;
+      if (listingData?.address || listingData?.suburb) optionalDetails.suburb = listingData.address || listingData.suburb;
+
+      // 获取用户 session token（如果有的话，用于录入历史）
+      let authHeaders = {
+        'Content-Type': 'application/json',
+        apikey: SUPABASE_ANON_KEY,
+      };
+
+      try {
+        const auth = await getAuth();
+        if (auth?.session?.access_token) {
+          authHeaders['Authorization'] = `Bearer ${auth.session.access_token}`;
+          console.log(`${LOG_PREFIX} analyze_basic: User logged in, will create history record`);
+        } else {
+          console.log(`${LOG_PREFIX} analyze_basic: Anonymous user, no history record`);
+        }
+      } catch (err) {
+        console.warn(`${LOG_PREFIX} analyze_basic: Failed to get session:`, err.message);
+      }
+
+      try {
+        const response = await fetch(`${SUPABASE_URL}/functions/v1/analyze?action=basic-sync`, {
+          method: 'POST',
+          headers: authHeaders,
+          body: JSON.stringify({
+            description,
+            reportMode,
+            optionalDetails,
+            source,
+          }),
+        });
+
+        if (!response.ok) {
+          const err = await response.json().catch(() => ({ message: 'Basic analysis failed' }));
+          console.error(`${LOG_PREFIX} analyze_basic: API error —`, err);
+          sendResponse({ status: 'error', error: err.message || 'Basic analysis failed' });
+          return;
+        }
+
+        const data = await response.json();
+        console.log(`${LOG_PREFIX} analyze_basic: success, result keys:`, Object.keys(data.result || {}));
+        console.log(`${LOG_PREFIX} analyze_basic: analysisId:`, data.analysisId || 'none');
+        sendResponse({ status: 'success', result: data.result, analysisId: data.analysisId || null });
+      } catch (err) {
+        console.error(`${LOG_PREFIX} analyze_basic: error —`, err.message);
+        sendResponse({ status: 'error', error: err.message || 'Basic analysis failed' });
+      }
+      break;
+    }
+
     case 'analyze': {
       // Step 1: Get fresh session (auto-refresh if needed)
       const auth = await getAuth();
@@ -455,6 +535,7 @@ async function handleMessage(message, sender, sendResponse) {
       const imageUrls = listingData?.imageUrls || listingData?.images || [];
       const description = listingData?.description || listingData?.rawText || '';
       const reportMode = listingData?.reportMode || 'rent';
+      const source = listingData?.source || null;  // Zillow uses 'zillow', realestate uses object
 
       // Build optionalDetails: pass price info to AI for accurate analysis
       const priceText = listingData?.priceText || listingData?.price || null;
@@ -472,7 +553,7 @@ async function handleMessage(message, sender, sendResponse) {
       }
 
       // Build request body for analyze function
-      const requestBody = { imageUrls, description, reportMode, optionalDetails };
+      const requestBody = { imageUrls, description, reportMode, optionalDetails, source };
 
       // Step 3: action=submit
       try {

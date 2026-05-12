@@ -3294,6 +3294,7 @@ Deno.serve(async (req) => {
     imageUrls?: string[];
     description?: string;
     reportMode?: ReportMode;
+    source?: string | null;
     optionalDetails?: {
       weeklyRent?: string;
       askingPrice?: string;
@@ -3308,6 +3309,173 @@ Deno.serve(async (req) => {
     body = await req.json();
   } catch {
     return jsonResponse({ message: "Invalid JSON in request body" }, 400);
+  }
+
+  // ========== Basic Sync Action (Anonymous by default, creates history if logged in) ==========
+  if (action === "basic-sync") {
+    console.log("=== BASIC SYNC START ===");
+
+    const description = typeof body.description === "string" ? body.description : "Property listing information";
+    const reportMode: ReportMode = body.reportMode === 'sale' ? 'sale' : 'rent';
+    const optionalDetails = body.optionalDetails ?? {};
+    const source = body.source || null;
+
+    console.log("Description length:", description.length);
+    console.log("Report mode:", reportMode);
+    console.log("Source:", source);
+
+    const openRouterApiKey = Deno.env.get("OPENROUTER_API_KEY");
+    if (!openRouterApiKey) {
+      return jsonResponse({ message: "Server configuration error" }, 500);
+    }
+
+    // Try to get current user (optional - basic analysis works without auth)
+    const { user, error: authError } = await getCurrentUser(req);
+    let analysisId: string | null = null;
+
+    if (user) {
+      console.log("Basic sync: User logged in, will create history record for:", user.email);
+      // Create analysis record for logged-in users
+      const newAnalysisId = crypto.randomUUID();
+      const createResult = await createAnalysisRecord(
+        newAnalysisId,
+        user.id,
+        [], // No images for basic analysis
+        description,
+        optionalDetails,
+        reportMode
+      );
+
+      if (createResult.success) {
+        analysisId = newAnalysisId;
+        console.log("Basic sync: History record created with ID:", analysisId);
+      } else {
+        console.error("Basic sync: Failed to create history record:", createResult.error);
+        // Continue anyway - analysis should still work without history
+      }
+    } else {
+      console.log("Basic sync: Anonymous user, no history record will be created");
+    }
+
+    // Determine market based on source
+    const isUSMarket = source === 'zillow' || source === 'us';
+    const systemPrompt = isUSMarket
+      ? `You are a US real estate analyst. Analyze the property listing and provide a basic assessment.`
+      : `You are an Australian property analyst. Analyze the listing and provide a basic assessment.`;
+
+    const userPrompt = reportMode === 'rent'
+      ? (isUSMarket
+          ? `Analyze this rental property listing. Provide a basic score (0-100) and key insights.\n\nListing:\n${description}\n\n${optionalDetails.weeklyRent ? `Weekly Rent: ${optionalDetails.weeklyRent}\n` : ''}${optionalDetails.suburb ? `Location: ${optionalDetails.suburb}\n` : ''}${optionalDetails.bedrooms ? `Bedrooms: ${optionalDetails.bedrooms}\n` : ''}${optionalDetails.bathrooms ? `Bathrooms: ${optionalDetails.bathrooms}\n` : ''}\n\nReturn JSON with: { score: number (0-100), verdict: "Strong Buy" | "Consider Carefully" | "Probably Skip", quickSummary: string, whatLooksGood: string[], riskSignals: string[] }`
+          : `Analyze this rental property listing. Provide a basic score (0-100) and key insights in Australian English.\n\nListing:\n${description}\n\n${optionalDetails.weeklyRent ? `Weekly Rent: ${optionalDetails.weeklyRent}\n` : ''}${optionalDetails.suburb ? `Location: ${optionalDetails.suburb}\n` : ''}${optionalDetails.bedrooms ? `Bedrooms: ${optionalDetails.bedrooms}\n` : ''}${optionalDetails.bathrooms ? `Bathrooms: ${optionalDetails.bathrooms}\n` : ''}\n\nReturn JSON with: { score: number (0-100), verdict: "Strong Buy" | "Consider Carefully" | "Probably Skip", quickSummary: string, whatLooksGood: string[], riskSignals: string[] }`)
+      : (isUSMarket
+          ? `Analyze this property for sale. Provide a basic score (0-100) and key insights.\n\nListing:\n${description}\n\n${optionalDetails.askingPrice ? `Asking Price: ${optionalDetails.askingPrice}\n` : ''}${optionalDetails.suburb ? `Location: ${optionalDetails.suburb}\n` : ''}${optionalDetails.bedrooms ? `Bedrooms: ${optionalDetails.bedrooms}\n` : ''}${optionalDetails.bathrooms ? `Bathrooms: ${optionalDetails.bathrooms}\n` : ''}\n\nReturn JSON with: { score: number (0-100), verdict: "Strong Buy" | "Consider Carefully" | "Probably Skip", quickSummary: string, whatLooksGood: string[], riskSignals: string[] }`
+          : `Analyze this property for sale. Provide a basic score (0-100) and key insights in Australian English.\n\nListing:\n${description}\n\n${optionalDetails.askingPrice ? `Asking Price: ${optionalDetails.askingPrice}\n` : ''}${optionalDetails.suburb ? `Location: ${optionalDetails.suburb}\n` : ''}${optionalDetails.bedrooms ? `Bedrooms: ${optionalDetails.bedrooms}\n` : ''}${optionalDetails.bathrooms ? `Bathrooms: ${optionalDetails.bathrooms}\n` : ''}\n\nReturn JSON with: { score: number (0-100), verdict: "Strong Buy" | "Consider Carefully" | "Probably Skip", quickSummary: string, whatLooksGood: string[], riskSignals: string[] }`);
+
+    try {
+      const response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${openRouterApiKey}`,
+          "Content-Type": "application/json",
+          "HTTP-Referer": "https://trteewgplkqiedonomzg.supabase.co",
+          "X-Title": "HomeScope Basic Analysis",
+        },
+        body: JSON.stringify({
+          model: "openai/gpt-4.1-mini",
+          messages: [
+            { role: "system", content: systemPrompt },
+            { role: "user", content: userPrompt }
+          ],
+          temperature: 0.3,
+          max_tokens: 1500,
+        }),
+      });
+
+      if (!response.ok) {
+        const errorText = await response.text();
+        console.error("Basic sync AI error:", errorText);
+        return jsonResponse({ message: "Analysis service error" }, 500);
+      }
+
+      const aiResult = await response.json();
+      const content = aiResult.choices?.[0]?.message?.content || "{}";
+
+      // Parse AI response
+      let result;
+      try {
+        // Try to extract JSON from response (handle potential markdown code blocks)
+        const jsonMatch = content.match(/```(?:json)?\s*([\s\S]*?)```/) || content.match(/(\{[\s\S]*\})/);
+        const jsonStr = jsonMatch ? jsonMatch[1] : content;
+        result = JSON.parse(jsonStr);
+      } catch (parseErr) {
+        console.error("Failed to parse AI response:", parseErr);
+        // Return a default result structure
+        result = {
+          score: 50,
+          verdict: "Consider Carefully",
+          quickSummary: "Unable to fully analyze listing.",
+          whatLooksGood: [],
+          riskSignals: ["Analysis could not be completed"]
+        };
+      }
+
+      console.log("=== BASIC SYNC SUCCESS ===");
+      console.log("Score:", result.score);
+      console.log("Verdict:", result.verdict);
+      console.log("Analysis ID:", analysisId);
+
+      // If we have an analysisId, update the record with the result
+      if (analysisId) {
+        const verdictMap: Record<string, string> = {
+          'Strong Buy': 'Worth Inspecting',
+          'Consider Carefully': 'Need More Evidence',
+          'Probably Skip': 'Likely Overpriced / Risky',
+        };
+        const mappedVerdict = verdictMap[result.verdict] || result.verdict;
+
+        await updateAnalysisRecord(
+          analysisId,
+          result.score,
+          mappedVerdict,
+          {
+            quickSummary: result.quickSummary,
+            whatLooksGood: result.whatLooksGood || [],
+            riskSignals: result.riskSignals || [],
+          },
+          {
+            analysisType: 'basic',
+            overallScore: result.score,
+            verdict: mappedVerdict,
+            quickSummary: result.quickSummary,
+            whatLooksGood: result.whatLooksGood || [],
+            riskSignals: result.riskSignals || [],
+            reportMode,
+            optionalDetails,
+          },
+          reportMode
+        );
+        console.log("Basic sync: History record updated with result");
+
+        // Also map verdict for the frontend response
+        result.verdict = mappedVerdict;
+      }
+
+      return jsonResponse({
+        result: {
+          overallScore: result.score,
+          verdict: result.verdict,
+          quickSummary: result.quickSummary,
+          whatLooksGood: result.whatLooksGood || [],
+          riskSignals: result.riskSignals || [],
+          reportMode,
+          optionalDetails,
+        },
+        analysisId, // Will be null for anonymous users, actual ID for logged-in users
+      });
+    } catch (err) {
+      console.error("Basic sync error:", err);
+      return jsonResponse({ message: "Analysis failed: " + (err instanceof Error ? err.message : "Unknown error") }, 500);
+    }
   }
 
   // ========== 权限检查 ==========
