@@ -1,4 +1,5 @@
 import type { AnalysisResult } from '../../shared/types/analysis';
+import { DollarSign, TrendingUp, AlertTriangle, AlertCircle, Check, MessageSquare, Eye, SquareCheck } from 'lucide-react';
 
 // ── Shared UI primitives ────────────────────────────────────────────────────
 function SectionDivider() {
