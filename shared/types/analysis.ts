@@ -399,6 +399,81 @@ export interface AnalysisResult {
       insight: string;
     };
   };
+
+  // ── US Sale 专属报告模块 ────────────────────────────────────────────────
+  /** 来源域名，用于判断是否渲染 US 专属报告 */
+  sourceDomain?: string | null;
+
+  property_snapshot?: {
+    beds?: string | number | null;
+    baths?: string | number | null;
+    sqft?: string | number | null;
+    yearBuilt?: string | number | null;
+    homeType?: string | null;
+    roof?: string | null;
+    lotSize?: string | number | null;
+    taxAssessedValue?: string | number | null;
+    annualTax?: string | number | null;
+    hoa?: string | null;
+    pricePerSqft?: string | number | null;
+    region?: string | null;
+  } | null;
+
+  carrying_costs?: {
+    annual_tax?: number | null;
+    monthly_tax_equivalent?: number | null;
+    hoa?: 'Yes' | 'No' | 'Unknown';
+    cost_pressure?: 'Low' | 'Medium' | 'High' | 'Unknown';
+    summary?: string;
+    missing_costs?: string[];
+  } | null;
+
+  maintenance_risk?: {
+    rating?: 'Low' | 'Medium' | 'High' | 'Unknown';
+    summary?: string;
+    risk_factors?: string[];
+    inspection_priorities?: string[];
+  } | null;
+
+  layout_fit?: {
+    summary?: string;
+    best_for?: string[];
+    not_ideal_for?: string[];
+    layout_strengths?: string[];
+    layout_limitations?: string[];
+  } | null;
+
+  listing_language_reality_check?: Array<{
+    phrase?: string;
+    what_it_may_mean?: string;
+    what_to_verify?: string;
+  }>;
+
+  neighborhood_lifestyle?: {
+    summary?: string;
+    page_signals?: string[];
+    external_data_needed?: string[];
+  } | null;
+
+  legal_compliance?: {
+    risk_level?: 'Low' | 'Medium' | 'High' | 'Unknown';
+    summary?: string;
+    items_to_verify?: string[];
+    external_sources_needed?: string[];
+  } | null;
+
+  environmental_risk?: {
+    risk_level?: 'Low' | 'Medium' | 'High' | 'Unknown';
+    summary?: string;
+    items_to_check?: string[];
+    external_sources_needed?: string[];
+  } | null;
+
+  data_gaps?: Array<{
+    missing_item?: string;
+    why_it_matters?: string;
+    suggested_source?: string;
+  }>;
 }
 
 // ===== 11. 分析进度 =====

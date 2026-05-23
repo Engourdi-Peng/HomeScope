@@ -1,4 +1,4 @@
-// Supabase Edge Function - Rental & Sale Property Analyzer
+﻿// Supabase Edge Function - Rental & Sale Property Analyzer
 // Deploy with: supabase functions deploy analyze
 
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
@@ -36,16 +36,43 @@ declare const Deno: {
   };
 };
 
-const SUPABASE_URL = Deno.env.get("SUPABASE_URL") || "https://trteewgplkqiedonomzg.supabase.co";
-const SUPABASE_SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") || "";
-const SUPABASE_ANON_KEY = Deno.env.get("SUPABASE_ANON_KEY") || "";
+// ── Primary (AU) Database ─────────────────────────────────────────────────
+// All user data, credits, history, and analysis records are stored HERE.
+// US server is a pure worker — it does NOT own any user data.
+const PRIMARY_SUPABASE_URL = "https://trteewgplkqiedonomzg.supabase.co";
+const PRIMARY_ANON_KEY = Deno.env.get("AU_ANON_KEY") || "";
+const PRIMARY_SERVICE_ROLE_KEY = Deno.env.get("AU_SERVICE_ROLE_KEY") || "";
+
+// ── US Worker Config ─────────────────────────────────────────────────────
+// US server has no auth, no user data, no history.
+// It only runs analysis. All results are written to PRIMARY.
+const US_SUPABASE_URL = Deno.env.get("US_SUPABASE_URL") || "";
+const US_ANON_KEY = Deno.env.get("US_ANON_KEY") || "";
+const IS_US_WORKER = !!US_SUPABASE_URL; // true when deployed on US Supabase
+
+// ── Server-role constants ─────────────────────────────────────────────────
+const AUTH_URL = PRIMARY_SUPABASE_URL;
+const AUTH_ANON_KEY = PRIMARY_ANON_KEY;
+const ACCOUNT_SERVICE_KEY = PRIMARY_SERVICE_ROLE_KEY;
+
+// All data writes ALWAYS go to PRIMARY (AU) — even when this code runs on US
+const LOCAL_URL = PRIMARY_SUPABASE_URL;
+const LOCAL_SERVICE_KEY = PRIMARY_SERVICE_ROLE_KEY;
+const LOCAL_ANON_KEY = PRIMARY_ANON_KEY;
+
 const SITE_URL = Deno.env.get("SITE_URL") || "https://www.tryhomescope.com";
+
+console.log("=== Server Configuration ===");
+console.log("IS_US_WORKER:", IS_US_WORKER);
+console.log("PRIMARY_URL (all data):", LOCAL_URL ? "***" : "NOT SET");
+console.log("AUTH_URL (account system):", AUTH_URL ? "***" : "NOT SET");
+console.log("ACCOUNT_SERVICE_KEY set:", !!ACCOUNT_SERVICE_KEY);
 
 const corsHeaders: Record<string, string> = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Methods": "POST, GET, OPTIONS",
   "Access-Control-Allow-Headers":
-    "authorization, x-client-info, apikey, content-type",
+    "authorization, x-client-info, apikey, content-type, x-auth-token",
   "Access-Control-Max-Age": "86400",
 };
 
@@ -60,75 +87,139 @@ interface UserProfile {
 }
 
 /**
- * Get current user from Authorization header
+ * Get current user from Authorization header, X-Auth-Token header, or request body.
+ * Token is ALWAYS verified against AU auth endpoint (PRIMARY_SUPABASE_URL).
+ * Both AU server and US worker use the same AU auth — there's one HomeScope account.
+ * Note: Kong may filter custom headers (x-auth-token), so body.authToken is a fallback.
  */
-async function getCurrentUser(req: Request): Promise<{ user: UserProfile | null; error: string | null }> {
+async function getCurrentUser(req: Request): Promise<{ user: UserProfile | null; error: string | null; code: string }> {
   const authHeader = req.headers.get("Authorization");
   const apikey = req.headers.get("apikey");
-  
-  console.log("=== getCurrentUser Debug ===");
-  console.log("Authorization header exists:", !!authHeader);
-  console.log("Authorization header preview:", authHeader ? authHeader.substring(0, 20) + "..." : "NONE");
-  console.log("apikey header exists:", !!apikey);
-  console.log("apikey matches anon key:", apikey === SUPABASE_ANON_KEY);
-  
-  if (!authHeader || !authHeader.startsWith("Bearer ")) {
-    console.log("getCurrentUser error: Missing or invalid Authorization header");
-    return { user: null, error: "Missing or invalid Authorization header" };
+  const xAuthToken = req.headers.get("x-auth-token");
+
+  // Try to get token from body as fallback (for Kong-filtered headers)
+  let tokenFromBody: string | null = null;
+  try {
+    const clonedReq = req.clone();
+    const body = await clonedReq.json().catch(() => ({}));
+    tokenFromBody = body.authToken || body.userToken || null;
+  } catch {
+    // Ignore body parse errors
   }
 
-  const token = authHeader.replace("Bearer ", "");
-  console.log("Token preview:", token.substring(0, 15) + "...");
+  console.log("=== getCurrentUser Debug ===", {
+    IS_US_WORKER,
+    AUTH_URL: AUTH_URL ? "***" : "NOT SET",
+    ACCOUNT_SERVICE_KEY_set: !!ACCOUNT_SERVICE_KEY,
+    AU_ANON_KEY_set: !!PRIMARY_ANON_KEY,
+    authHeader_exists: !!authHeader,
+    authHeader_prefix: authHeader?.slice(0, 20),
+    apikey_exists: !!apikey,
+    apikey_prefix: apikey?.slice(0, 16),
+    xAuthToken_exists: !!xAuthToken,
+    tokenFromBody_exists: !!tokenFromBody,
+  });
+
+  // Determine which token to use for authentication
+  // Priority: authToken (body) > X-Auth-Token (header) > Authorization (header)
+  // authToken from body has highest priority (used by browser extension)
+  let token = authHeader ? authHeader.replace("Bearer ", "") : null;
+  let actualToken = tokenFromBody || xAuthToken || token;
+
+  if (!actualToken) {
+    console.log("getCurrentUser error: No valid token found (authToken, X-Auth-Token, or Authorization)");
+    return { user: null, error: "Missing authentication token", code: "NO_TOKEN" };
+  }
+
+  console.log("getCurrentUser: token_source=%s token_preview=%s...", tokenFromBody ? "authToken(body)" : xAuthToken ? "X-Auth-Token(header)" : "Authorization(header)", actualToken.substring(0, 15));
+
+  // Token always comes from AU auth (whether sent via Authorization header or body)
+  // Auth endpoint is ALWAYS AU — US server has no auth.users, only analysis data
+  const authBaseUrl = AUTH_URL;
+  const effectiveAnonKey = AUTH_ANON_KEY || "";
+
+  if (!effectiveAnonKey) {
+    console.error("CRITICAL: AUTH_ANON_KEY (AU_ANON_KEY) is not set!");
+    return { user: null, error: "Server configuration error: missing AU_ANON_KEY", code: "MISSING_AU_ANON_KEY"};
+  }
+
+  console.log("getCurrentUser: authBaseUrl=%s effectiveAnonKey_set=%s", authBaseUrl, !!effectiveAnonKey);
 
   try {
     // Verify token and get user from Supabase Auth
-    // MUST use SUPABASE_ANON_KEY (not service role key) to validate user tokens
-    const userResponse = await fetch(`${SUPABASE_URL}/auth/v1/user`, {
+    const userResponse = await fetch(`${authBaseUrl}/auth/v1/user`, {
       headers: {
-        "Authorization": `Bearer ${token}`,
-        "apikey": SUPABASE_ANON_KEY,
+        "Authorization": `Bearer ${actualToken}`,
+        "apikey": effectiveAnonKey,
       },
     });
 
-    console.log("Auth API response status:", userResponse.status);
-    
+    console.log("getCurrentUser: /auth/v1/user status=%d effectiveAnonKey_prefix=%s", userResponse.status, effectiveAnonKey.slice(0, 16));
+
     if (!userResponse.ok) {
       const errorText = await userResponse.text();
-      console.log("Auth API error:", errorText);
-      return { user: null, error: "Invalid or expired token" };
+      console.error("getCurrentUser: /auth/v1/user FAILED", {
+        status: userResponse.status,
+        body_preview: errorText.slice(0, 200),
+      });
+      return { user: null, error: `Auth API failed: ${userResponse.status} - ${errorText.slice(0, 100)}`, code: "AUTH_API_FAILED" };
     }
 
     const userData = await userResponse.json();
-    console.log("Auth user ID:", userData.id);
-    console.log("Auth user email:", userData.email);
+    console.log("getCurrentUser: auth success, user_id=%s email=%s", userData.id, userData.email);
 
     // Get user profile with credits (including reserved)
-    // For profile queries, we use service role key (or anon key with RLS policies)
+    // Always use AU Supabase — profiles are stored in the AU project
+    // Use service role key to bypass RLS (profiles table RLS blocks anon key reads)
+    if (!ACCOUNT_SERVICE_KEY) {
+      console.error(
+        "[getCurrentUser] Missing ACCOUNT_SERVICE_KEY (AU_SERVICE_ROLE_KEY). " +
+        "hasACCOUNT_SERVICE_KEY=%s hasAU_SERVICE_ROLE_KEY=%s",
+        !!ACCOUNT_SERVICE_KEY,
+        !!PRIMARY_SERVICE_ROLE_KEY
+      );
+      return {
+        user: null,
+        error: "Server configuration error: missing service role key",
+        code: "SERVER_MISSING_SERVICE_ROLE_KEY",
+      };
+    }
+
     const profileResponse = await fetch(
-      `${SUPABASE_URL}/rest/v1/profiles?id=eq.${userData.id}&select=id,email,credits_remaining,credits_reserved,credits_used`,
+      `${AUTH_URL}/rest/v1/profiles?id=eq.${userData.id}&select=id,email,credits_remaining,credits_reserved,credits_used`,
       {
         headers: {
-          "apikey": SUPABASE_SERVICE_ROLE_KEY || SUPABASE_ANON_KEY,
-          "Authorization": `Bearer ${SUPABASE_SERVICE_ROLE_KEY || SUPABASE_ANON_KEY}`,
+          "apikey": ACCOUNT_SERVICE_KEY,
+          "Authorization": `Bearer ${ACCOUNT_SERVICE_KEY}`,
         },
       }
     );
 
     if (!profileResponse.ok) {
-      console.log("Profile fetch error:", profileResponse.status);
-      return { user: null, error: "Failed to fetch user profile" };
+      const errorText = await profileResponse.text().catch(() => "");
+      console.error("[getCurrentUser] Profile fetch failed", {
+        status: profileResponse.status,
+        statusText: profileResponse.statusText,
+        body: errorText,
+        hasServiceRoleKey: !!ACCOUNT_SERVICE_KEY,
+      });
+      return {
+        user: null,
+        error: `Failed to fetch user profile: ${profileResponse.status}`,
+        code: `PROFILE_FETCH_FAILED_${profileResponse.status}`,
+      };
     }
 
     const profiles = await profileResponse.json();
     if (!Array.isArray(profiles) || profiles.length === 0) {
-      console.log("Profile not found for user:", userData.id);
-      return { user: null, error: "User profile not found" };
+      console.error("[getCurrentUser] Profile not found for user:", userData.id);
+      return { user: null, error: "Profile not found", code: "PROFILE_NOT_FOUND" };
     }
 
-    return { user: profiles[0] as UserProfile, error: null };
+    return { user: profiles[0] as UserProfile, error: null, code: "OK" };
   } catch (err) {
     console.error("Auth error:", err);
-    return { user: null, error: "Authentication failed" };
+    return { user: null, error: "Authentication failed", code: "AUTH_EXCEPTION" };
   }
 }
 
@@ -308,32 +399,33 @@ async function addDevCredits(userId: string, amount: number = 10): Promise<boole
     console.log("[DEV] addDevCredits skipped - DEV_BYPASS_CREDITS not enabled");
     return false;
   }
-  
+
   try {
+    // Operates on profiles table — always AU
     const check = await fetchJson(
-      `${SUPABASE_URL}/rest/v1/profiles?id=eq.${userId}&select=credits_remaining`,
-      { headers: { "apikey": SUPABASE_SERVICE_ROLE_KEY, "Authorization": `Bearer ${SUPABASE_SERVICE_ROLE_KEY}` } }
+      `${AUTH_URL}/rest/v1/profiles?id=eq.${userId}&select=credits_remaining`,
+      { headers: { "apikey": ACCOUNT_SERVICE_KEY, "Authorization": `Bearer ${ACCOUNT_SERVICE_KEY}` } }
     );
-    
+
     if (!check.ok || !Array.isArray(check.payload) || check.payload.length === 0) {
       return false;
     }
-    
+
     const current = check.payload[0].credits_remaining || 0;
-    
+
     const update = await fetchJson(
-      `${SUPABASE_URL}/rest/v1/profiles?id=eq.${userId}`,
+      `${AUTH_URL}/rest/v1/profiles?id=eq.${userId}`,
       {
         method: "PATCH",
         headers: {
           "Content-Type": "application/json",
-          "apikey": SUPABASE_SERVICE_ROLE_KEY,
-          "Authorization": `Bearer ${SUPABASE_SERVICE_ROLE_KEY}`,
+          "apikey": ACCOUNT_SERVICE_KEY,
+          "Authorization": `Bearer ${ACCOUNT_SERVICE_KEY}`,
         },
         body: JSON.stringify({ credits_remaining: current + amount }),
       }
     );
-    
+
     return update.ok;
   } catch (err) {
     console.error("[DEV] addDevCredits error:", err);
@@ -364,7 +456,7 @@ async function fetchJson(url: string, options?: RequestInit): Promise<{ ok: bool
 
   if (!res.ok) {
     console.error("upstream error", {
-      url: url.replace(SUPABASE_URL, "***"),
+      url: url.replace(AUTH_URL, "***").replace(LOCAL_URL, "***"),
       status: res.status,
       payload,
     });
@@ -377,10 +469,10 @@ async function reserveCredits(userId: string, analysisId: string): Promise<{ suc
   console.log(`[reserveCredits] userId=${userId}, analysisId=${analysisId}`);
 
   try {
-    // Step 1: Check current credits
+    // Step 1: Check current credits — ALWAYS query AU profiles
     const check = await fetchJson(
-      `${SUPABASE_URL}/rest/v1/profiles?id=eq.${userId}&select=credits_remaining,credits_reserved`,
-      { headers: { "apikey": SUPABASE_SERVICE_ROLE_KEY, "Authorization": `Bearer ${SUPABASE_SERVICE_ROLE_KEY}` } }
+      `${AUTH_URL}/rest/v1/profiles?id=eq.${userId}&select=credits_remaining,credits_reserved`,
+      { headers: { "apikey": ACCOUNT_SERVICE_KEY, "Authorization": `Bearer ${ACCOUNT_SERVICE_KEY}` } }
     );
 
     if (!check.ok) {
@@ -401,15 +493,15 @@ async function reserveCredits(userId: string, analysisId: string): Promise<{ suc
       return { success: false, error: "No credits available" };
     }
 
-    // Step 2: Reserve a credit
+    // Step 2: Reserve a credit — write to AU profiles
     const update = await fetchJson(
-      `${SUPABASE_URL}/rest/v1/profiles?id=eq.${userId}`,
+      `${AUTH_URL}/rest/v1/profiles?id=eq.${userId}`,
       {
         method: "PATCH",
         headers: {
           "Content-Type": "application/json",
-          "apikey": SUPABASE_SERVICE_ROLE_KEY,
-          "Authorization": `Bearer ${SUPABASE_SERVICE_ROLE_KEY}`,
+          "apikey": ACCOUNT_SERVICE_KEY,
+          "Authorization": `Bearer ${ACCOUNT_SERVICE_KEY}`,
           "Prefer": "return=representation",
         },
         body: JSON.stringify({ credits_reserved: profile.credits_reserved + 1 }),
@@ -426,15 +518,15 @@ async function reserveCredits(userId: string, analysisId: string): Promise<{ suc
       return { success: false, error: "No credits available" };
     }
 
-    // Step 3: Create usage record
+    // Step 3: Create usage record in AU
     const usage = await fetchJson(
-      `${SUPABASE_URL}/rest/v1/usage_records`,
+      `${AUTH_URL}/rest/v1/usage_records`,
       {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          "apikey": SUPABASE_SERVICE_ROLE_KEY,
-          "Authorization": `Bearer ${SUPABASE_SERVICE_ROLE_KEY}`,
+          "apikey": ACCOUNT_SERVICE_KEY,
+          "Authorization": `Bearer ${ACCOUNT_SERVICE_KEY}`,
           "Prefer": "return=representation",
         },
         body: JSON.stringify({
@@ -467,10 +559,10 @@ async function releaseCredits(userId: string, usageId?: string): Promise<boolean
   console.log(`[releaseCredits] userId=${userId}, usageId=${usageId}`);
 
   try {
-    // Step 1: Check current reserved credits
+    // Step 1: Check current reserved credits — ALWAYS query AU profiles
     const check = await fetchJson(
-      `${SUPABASE_URL}/rest/v1/profiles?id=eq.${userId}&select=credits_reserved`,
-      { headers: { "apikey": SUPABASE_SERVICE_ROLE_KEY, "Authorization": `Bearer ${SUPABASE_SERVICE_ROLE_KEY}` } }
+      `${AUTH_URL}/rest/v1/profiles?id=eq.${userId}&select=credits_reserved`,
+      { headers: { "apikey": ACCOUNT_SERVICE_KEY, "Authorization": `Bearer ${ACCOUNT_SERVICE_KEY}` } }
     );
 
     if (!check.ok) {
@@ -489,15 +581,15 @@ async function releaseCredits(userId: string, usageId?: string): Promise<boolean
       return true;
     }
 
-    // Step 2: Decrement reserved credits
+    // Step 2: Decrement reserved credits — write to AU profiles
     const update = await fetchJson(
-      `${SUPABASE_URL}/rest/v1/profiles?id=eq.${userId}`,
+      `${AUTH_URL}/rest/v1/profiles?id=eq.${userId}`,
       {
         method: "PATCH",
         headers: {
           "Content-Type": "application/json",
-          "apikey": SUPABASE_SERVICE_ROLE_KEY,
-          "Authorization": `Bearer ${SUPABASE_SERVICE_ROLE_KEY}`,
+          "apikey": ACCOUNT_SERVICE_KEY,
+          "Authorization": `Bearer ${ACCOUNT_SERVICE_KEY}`,
         },
         body: JSON.stringify({ credits_reserved: reserved - 1 }),
       }
@@ -508,16 +600,16 @@ async function releaseCredits(userId: string, usageId?: string): Promise<boolean
       return false;
     }
 
-    // Step 3: Update usage record status
+    // Step 3: Update usage record status in AU
     if (usageId) {
       await fetchJson(
-        `${SUPABASE_URL}/rest/v1/usage_records?id=eq.${usageId}`,
+        `${AUTH_URL}/rest/v1/usage_records?id=eq.${usageId}`,
         {
           method: "PATCH",
           headers: {
             "Content-Type": "application/json",
-            "apikey": SUPABASE_SERVICE_ROLE_KEY,
-            "Authorization": `Bearer ${SUPABASE_SERVICE_ROLE_KEY}`,
+            "apikey": ACCOUNT_SERVICE_KEY,
+            "Authorization": `Bearer ${ACCOUNT_SERVICE_KEY}`,
           },
           body: JSON.stringify({ status: "released" }),
         }
@@ -540,10 +632,10 @@ async function completeCredits(userId: string, usageId?: string): Promise<boolea
   console.log(`[completeCredits] userId=${userId}, usageId=${usageId}`);
 
   try {
-    // Step 1: Check current credits
+    // Step 1: Check current credits — ALWAYS query AU profiles
     const check = await fetchJson(
-      `${SUPABASE_URL}/rest/v1/profiles?id=eq.${userId}&select=credits_remaining,credits_reserved,credits_used`,
-      { headers: { "apikey": SUPABASE_SERVICE_ROLE_KEY, "Authorization": `Bearer ${SUPABASE_SERVICE_ROLE_KEY}` } }
+      `${AUTH_URL}/rest/v1/profiles?id=eq.${userId}&select=credits_remaining,credits_reserved,credits_used`,
+      { headers: { "apikey": ACCOUNT_SERVICE_KEY, "Authorization": `Bearer ${ACCOUNT_SERVICE_KEY}` } }
     );
 
     if (!check.ok) {
@@ -563,15 +655,15 @@ async function completeCredits(userId: string, usageId?: string): Promise<boolea
       return true;
     }
 
-    // Step 2: Finalize: remaining - 1, reserved - 1, used + 1
+    // Step 2: Finalize: remaining - 1, reserved - 1, used + 1 — write to AU profiles
     const update = await fetchJson(
-      `${SUPABASE_URL}/rest/v1/profiles?id=eq.${userId}`,
+      `${AUTH_URL}/rest/v1/profiles?id=eq.${userId}`,
       {
         method: "PATCH",
         headers: {
           "Content-Type": "application/json",
-          "apikey": SUPABASE_SERVICE_ROLE_KEY,
-          "Authorization": `Bearer ${SUPABASE_SERVICE_ROLE_KEY}`,
+          "apikey": ACCOUNT_SERVICE_KEY,
+          "Authorization": `Bearer ${ACCOUNT_SERVICE_KEY}`,
         },
         body: JSON.stringify({
           credits_remaining: profile.credits_remaining - 1,
@@ -586,16 +678,16 @@ async function completeCredits(userId: string, usageId?: string): Promise<boolea
       return false;
     }
 
-    // Step 3: Update usage record
+    // Step 3: Update usage record in AU
     if (usageId) {
       await fetchJson(
-        `${SUPABASE_URL}/rest/v1/usage_records?id=eq.${usageId}`,
+        `${AUTH_URL}/rest/v1/usage_records?id=eq.${usageId}`,
         {
           method: "PATCH",
           headers: {
             "Content-Type": "application/json",
-            "apikey": SUPABASE_SERVICE_ROLE_KEY,
-            "Authorization": `Bearer ${SUPABASE_SERVICE_ROLE_KEY}`,
+            "apikey": ACCOUNT_SERVICE_KEY,
+            "Authorization": `Bearer ${ACCOUNT_SERVICE_KEY}`,
           },
           body: JSON.stringify({ status: "completed", credits_change: 1 }),
         }
@@ -613,12 +705,13 @@ async function completeCredits(userId: string, usageId?: string): Promise<boolea
 // ========== Analysis States Table Helpers ==========
 
 async function createAnalysisState(id: string): Promise<void> {
-  const response = await fetch(`${SUPABASE_URL}/rest/v1/analysis_states`, {
+  // Write to LOCAL — US server writes to US DB, AU server writes to AU DB
+  const response = await fetch(`${LOCAL_URL}/rest/v1/analysis_states`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
-      "apikey": SUPABASE_SERVICE_ROLE_KEY,
-      "Authorization": `Bearer ${SUPABASE_SERVICE_ROLE_KEY}`,
+      "apikey": LOCAL_SERVICE_KEY,
+      "Authorization": `Bearer ${LOCAL_SERVICE_KEY}`,
       "Prefer": "return=minimal",
     },
     body: JSON.stringify({
@@ -635,10 +728,10 @@ async function createAnalysisState(id: string): Promise<void> {
 }
 
 async function getAnalysisState(id: string): Promise<AnalysisState & { reportMode?: string } | null> {
-  const response = await fetch(`${SUPABASE_URL}/rest/v1/analysis_states?id=eq.${id}&select=*`, {
+  const response = await fetch(`${LOCAL_URL}/rest/v1/analysis_states?id=eq.${id}&select=*`, {
     headers: {
-      "apikey": SUPABASE_SERVICE_ROLE_KEY,
-      "Authorization": `Bearer ${SUPABASE_SERVICE_ROLE_KEY}`,
+      "apikey": LOCAL_SERVICE_KEY,
+      "Authorization": `Bearer ${LOCAL_SERVICE_KEY}`,
     },
   });
   if (!response.ok) return null;
@@ -657,12 +750,12 @@ async function getAnalysisState(id: string): Promise<AnalysisState & { reportMod
 }
 
 async function updateAnalysisState(id: string, patch: Partial<AnalysisState>): Promise<void> {
-  const response = await fetch(`${SUPABASE_URL}/rest/v1/analysis_states?id=eq.${id}`, {
+  const response = await fetch(`${LOCAL_URL}/rest/v1/analysis_states?id=eq.${id}`, {
     method: "PATCH",
     headers: {
       "Content-Type": "application/json",
-      "apikey": SUPABASE_SERVICE_ROLE_KEY,
-      "Authorization": `Bearer ${SUPABASE_SERVICE_ROLE_KEY}`,
+      "apikey": LOCAL_SERVICE_KEY,
+      "Authorization": `Bearer ${LOCAL_SERVICE_KEY}`,
       "Prefer": "return=minimal",
     },
     body: JSON.stringify({
@@ -718,7 +811,9 @@ async function createAnalysisRecord(
   imageUrls: string[],
   description: string,
   optionalDetails?: Record<string, unknown>,
-  reportMode?: ReportMode
+  reportMode?: ReportMode,
+  source?: string | null,
+  sourceDomain?: string | null,
 ): Promise<{ success: boolean; error?: string }> {
   // Extract title/address from description if available
   const title = extractTitleFromDescription(description);
@@ -732,15 +827,18 @@ async function createAnalysisRecord(
   console.log("Address:", address);
   console.log("Cover image:", coverImage);
   console.log("Report mode:", reportMode);
+  console.log("Source:", source);
+  console.log("Source domain:", sourceDomain);
   console.log("Image URLs count:", imageUrls.length);
 
   try {
-    const response = await fetch(`${SUPABASE_URL}/rest/v1/analyses`, {
+    // Write to LOCAL — US server writes to US DB, AU server writes to AU DB
+    const response = await fetch(`${LOCAL_URL}/rest/v1/analyses`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        "apikey": SUPABASE_SERVICE_ROLE_KEY,
-        "Authorization": `Bearer ${SUPABASE_SERVICE_ROLE_KEY}`,
+        "apikey": LOCAL_SERVICE_KEY,
+        "Authorization": `Bearer ${LOCAL_SERVICE_KEY}`,
         "Prefer": "return=representation",
       },
       body: JSON.stringify({
@@ -753,6 +851,8 @@ async function createAnalysisRecord(
         summary: null,
         full_result: null,
         report_mode: reportMode || 'rent',
+        source: source || null,
+        source_domain: sourceDomain || null,
       }),
     });
 
@@ -800,12 +900,13 @@ async function updateAnalysisRecord(
   console.log("Report mode:", reportMode);
 
   try {
-    const response = await fetch(`${SUPABASE_URL}/rest/v1/analyses?id=eq.${id}`, {
+    // Write to LOCAL — US server writes to US DB, AU server writes to AU DB
+    const response = await fetch(`${LOCAL_URL}/rest/v1/analyses?id=eq.${id}`, {
       method: "PATCH",
       headers: {
         "Content-Type": "application/json",
-        "apikey": SUPABASE_SERVICE_ROLE_KEY,
-        "Authorization": `Bearer ${SUPABASE_SERVICE_ROLE_KEY}`,
+        "apikey": LOCAL_SERVICE_KEY,
+        "Authorization": `Bearer ${LOCAL_SERVICE_KEY}`,
         "Prefer": "return=minimal",
       },
       body: JSON.stringify({
@@ -818,7 +919,7 @@ async function updateAnalysisRecord(
           riskSignals: summary.riskSignals,
         },
         full_result: fullResult,
-        report_mode: reportMode, // 同步更新 report_mode 字段
+        report_mode: reportMode,
         updated_at: new Date().toISOString(),
       }),
     });
@@ -848,12 +949,12 @@ async function failAnalysisRecord(id: string, error: string): Promise<{ success:
   console.log("Error:", error);
 
   try {
-    const response = await fetch(`${SUPABASE_URL}/rest/v1/analyses?id=eq.${id}`, {
+    const response = await fetch(`${LOCAL_URL}/rest/v1/analyses?id=eq.${id}`, {
       method: "PATCH",
       headers: {
         "Content-Type": "application/json",
-        "apikey": SUPABASE_SERVICE_ROLE_KEY,
-        "Authorization": `Bearer ${SUPABASE_SERVICE_ROLE_KEY}`,
+        "apikey": LOCAL_SERVICE_KEY,
+        "Authorization": `Bearer ${LOCAL_SERVICE_KEY}`,
         "Prefer": "return=minimal",
       },
       body: JSON.stringify({
@@ -1039,6 +1140,773 @@ RULES:
 - Be decisive — avoid defaulting to mid-range scores
 - Strong positives → score above 75
 - Strong negatives → score below 60`;
+
+// ── US Visual Prompt (for Zillow / US market) ────────────────────────────────
+
+const STEP1_US_SYSTEM_PROMPT = `You are a visual property analyst for US property listings.
+
+Your job is to extract SHORT structured visual signals from the provided photos.
+
+Classify each photo into one of:
+- "bedroom"
+- "bathroom"
+- "kitchen"
+- "living_room"
+- "garage"
+- "laundry"
+- "exterior"
+- "hallway"
+- "storage"
+- "dining"
+- "unknown"
+
+================================
+SCORE DISTRIBUTION — USE FULL RANGE
+================================
+
+Give scores that actually reflect what you see. Not everyone scores 65.
+
+Score ranges:
+- 90-100: Exceptional. Rare. Looks genuinely outstanding.
+- 80-89: Strong. Well-presented, clearly above average.
+- 70-79: Good. Solid, functional, worthwhile.
+- 60-69: Average. Acceptable but nothing special.
+- 50-59: Below average. Some concerns worth noting.
+- 40-49: Poor. Significant issues visible.
+- Below 40: Very poor. Major problems.
+
+================================
+PHOTO ANALYSIS
+================================
+
+For each photo:
+- Identify the room/space type
+- Note key observations (max 3 per photo)
+- Rate quality 1-10 within the category
+- Flag safety/condition issues
+
+Room quality benchmarks (1-10 scale):
+
+Bedroom:
+- Natural light, clean, well-presented → 8-10
+- Functional but plain → 5-7
+- Dark, cluttered, worn → 1-4
+
+Bathroom:
+- Modern, clean, well-lit → 8-10
+- Functional but dated → 5-7
+- Mould, damage, poor condition → 1-4
+
+Kitchen:
+- Modern, clean, well-equipped → 8-10
+- Functional but dated → 5-7
+- Dirty, broken, unsafe → 1-4
+
+Exterior:
+- Well-maintained, good curb appeal → 8-10
+- Functional but worn → 5-7
+- Damaged, neglected → 1-4
+
+================================
+OUTPUT FORMAT
+================================
+
+Return concise JSON only:
+{
+  "roomCounts": { "bedroom": number, "bathroom": number, ... },
+  "overallScores": { "bedroom": 1-10, "bathroom": 1-10, ... },
+  "observations": { "bedroom": ["obs1", "obs2"], ... },
+  "summary": "one short sentence",
+  "spatialMetrics": {
+    "total_sqft_estimate": "rough estimate or null",
+    "natural_light": "good|moderate|poor",
+    "overall_condition": "excellent|good|average|fair|poor"
+  },
+  "spaceAnalysis": [
+    {
+      "spaceType": "bedroom",
+      "score": 1-10,
+      "observations": ["obs1", "obs2"],
+      "recommendations": ["rec1"]
+    }
+  ]
+}
+
+KEY RULES:
+- Use only visible evidence - do not assume
+- Do not add markdown
+- Do not wrap output in code fences
+- If uncertain, use "Unknown"
+- photoObservations: max 2 items
+- summary: one short sentence only
+- spatialMetrics: evaluate based on overall evidence across all photos
+- spaceAnalysis: only include spaces that have photos, max 3 observations per space
+- Be decisive — avoid defaulting to mid-range scores
+- Strong positives → score above 75
+- Strong negatives → score below 60`;
+
+// ── US Step 2 Prompts (for Zillow / US market) ──────────────────────────────
+
+const STEP2_US_RENT_PROMPT = `You are a US rental analyst helping a renter evaluate a Zillow rental property.
+
+Think of it like getting advice from a friend who's rented across US markets and knows what to look for. Be practical, direct, and honest. You're not trying to sell the place — you're trying to help someone avoid a bad decision.
+
+CRITICAL CONSTRAINT - DO NOT MODIFY OUTPUT STRUCTURE:
+Do not modify any existing output keys, JSON structure, or field names. Only change wording inside string values.
+
+CRITICAL RULES:
+1. Only analyze based on provided visual data and listing text. Do not assume details not provided.
+2. When listing claims conflict with visual evidence, prioritize what you can SEE
+3. Flag anything that seems off or worth verifying on inspection
+
+================================
+TONE & LANGUAGE (UNITED STATES)
+================================
+Write in natural American English, as if advising a US renter.
+
+CRITICAL STYLE RULES:
+- Sound like a person, not a report
+- Use short sentences for impact
+- Avoid hedging phrases like "it seems that" or "appears to be"
+- Be specific and direct
+- Use US rental context: landlord, lease, security deposit, utilities, HOA rules, Rent Zestimate, days on market
+- Avoid Australian English: don't use "suburb" (say "neighborhood" or "area"), don't use "open home" (say "showing" or "open house"), don't mention "realestate.com.au", don't mention Australian auction/underquoting culture
+- Avoid generic AI phrases like "overall", "in conclusion", "this property appears to"
+- Prefer practical, lived-experience language from a US tenant's perspective
+
+================================
+PRICING CONTEXT (US RENTALS)
+================================
+If a monthly rent is provided, assess it relative to:
+- Local Rent Zestimate on Zillow
+- Comparable listings in the same neighborhood/area
+- School district and commute factors
+- HOA fees (if any — these add to effective rent cost)
+- Utility costs (are utilities included?)
+
+In the US context:
+- Monthly rent in USD
+- Security deposit (typically 1 month's rent, can be negotiable)
+- First + last month sometimes required
+- Application fees ($30-$60 per application is common)
+- Landlord/PM company — corporate landlord vs. private landlord dynamics
+- Lease terms: 12-month standard, month-to-month available
+- HOA rules: pets, noise, parking restrictions
+
+================================
+OUTPUT FORMAT
+================================
+
+Return a single JSON object with these exact top-level keys.
+
+CRITICAL: You MUST include all fields listed below. Empty arrays are allowed but fields must NOT be omitted.
+
+{
+  "overall_score": number (1-100),
+  "overall_verdict": "one short sentence takeaway (e.g. 'Solid rental in a decent area — worth applying')",
+  "recommendation": {
+    "verdict": "Strong Apply" | "Worth Considering" | "Probably Skip" | "Deeply Concerning",
+    "reasoning": "2-3 sentences explaining the verdict in US rental context"
+  },
+  "quick_summary": "2-3 sentence summary in American English, ≤ 300 chars",
+
+  // PROS — use this exact field name (also accepts "what_looks_good" as alias)
+  "pros": [
+    "specific positive observation 1",
+    "specific positive observation 2"
+  ],
+  // CONS — use this exact field name (also accepts "risk_signals" as alias)
+  "cons": [
+    "specific concern 1",
+    "specific concern 2"
+  ],
+
+  "room_by_room": {
+    "bedroom": { "score": 1-10, "notes": "string" },
+    "bathroom": { "score": 1-10, "notes": "string" },
+    "kitchen": { "score": 1-10, "notes": "string" },
+    "living_room": { "score": 1-10, "notes": "string" },
+    "exterior": { "score": 1-10, "notes": "string" }
+  },
+
+  // rent_fairness: use "verdict" (not "assessment") and "explanation" (not just "reasoning")
+  "rent_fairness": {
+    "estimated_min": number (weekly rent in USD, or null if cannot assess),
+    "estimated_max": number (weekly rent in USD, or null if cannot assess),
+    "listing_price": number (weekly rent from the listing, or null),
+    "verdict": "Underpriced" | "Fair" | "Slightly Overpriced" | "Overpriced" | "Cannot Assess",
+    "explanation": "short sentence explaining the assessment",
+    "market_context": "brief context about comparable rents in this US market"
+  },
+
+  "hidden_risks": [
+    "concern that isn't obvious from photos 1",
+    "concern 2"
+  ],
+
+  "red_flags": [
+    "specific red flag 1",
+    "specific red flag 2"
+  ],
+  "inspection_checklist": [
+    "thing to verify on showing 1",
+    "thing to verify on showing 2"
+  ],
+  "photo_observations": [
+    "notable observation 1",
+    "notable observation 2"
+  ],
+  "questions_to_ask": [
+    "practical question 1",
+    "practical question 2",
+    "practical question 3"
+  ],
+  "application_strategy": {
+    "urgency": "Low" | "Medium" | "High",
+    "apply_speed": "short casual sentence (e.g. 'This one will move fast in this market')",
+    "checklist": ["item 1", "item 2", "item 3"],
+    "reasoning": ["reason 1", "reason 2"]
+  }
+}`;
+
+const STEP2_US_SALE_PROMPT = `You are a US real estate analyst helping a buyer decide whether a Zillow listing is worth pursuing.
+
+Think of it like getting advice from a knowledgeable friend who's bought and sold property in the US and knows the market traps. Be practical, direct, and honest. You're not trying to sell the place — you're helping someone avoid a costly mistake.
+
+CRITICAL CONSTRAINT - DO NOT MODIFY OUTPUT STRUCTURE:
+Do not modify any existing output keys, JSON structure, or field names. Only change wording inside string values.
+
+CRITICAL RULES:
+1. Only analyze based on provided visual data and listing text. Do not assume details not provided.
+2. Be skeptical of marketing language: "move-in ready", "motivated seller", "priced to sell", "plenty of possibilities", "A Must see!!", "cozy mother and daughter", "2 or 3 possible bedroom", "separate street entrance", "huge backyard"
+3. When listing claims conflict with visual evidence, prioritize what you can SEE
+4. Never claim to know exact market values — use "estimated" language and be conservative
+5. Never fabricate external data: if you don't have school ratings, flood zone, Walk Score, crime data, or comparable sales, say so in data_gaps or external_data_needed
+
+================================
+CRITICAL DATA USAGE RULE
+================================
+You will receive a section called "ZILLOW FACTS & FEATURES FROM THE LISTING".
+You MUST use those facts when generating all report modules. Do not say a fact is missing if it appears in the ZILLOW FACTS section.
+
+For example:
+- If Annual Property Tax is provided, calculate monthly tax equivalent and include in carrying_costs.
+- If Home Type is MultiFamily or description mentions 2-family / legal 2 family, analyze rental potential and legal verification thoroughly.
+- If Year Built is provided, use it in maintenance_risk and property_snapshot.
+- If Roof is Flat, include roof inspection and drainage/leak risk in maintenance_risk and inspection_priorities.
+- If HOA Fee is No or $0, mention reduced recurring association fees in carrying_costs.
+- If Price per Sqft is provided, include it in price_assessment.price_per_sqft_context.
+- If Parcel Number is provided, suggest external verification through local records.
+- If What's Special / highlights mentions "separate street entrance", "walk-in apartment", "mother-daughter", "backyard entrance", analyze multi-family / rental potential deeply.
+- If Tax Assessed Value is provided, use it in price_assessment and tax_context.
+- If Zestimate is provided, compare asking price against it in price_assessment.
+
+================================
+TONE & LANGUAGE (UNITED STATES)
+================================
+Write in natural American English, as if advising a local home buyer.
+
+CRITICAL STYLE RULES:
+- Sound like a person, not a report
+- Keep sentences short (ideally under 15 words)
+- Use practical, straightforward wording
+- Slightly conversational, but still clear
+- Avoid formal or corporate tone
+
+DO:
+- "The asking price seems a bit high for what they're offering"
+- "Worth getting a home inspection"
+- "Location is the main selling point here"
+- "Check the HOA rules before you sign anything"
+
+DO NOT:
+- "This property appears to"
+- "Overall, this indicates"
+- "It is recommended that"
+- "In conclusion"
+
+AVOID:
+- Overly long explanations
+- Balanced essay-style sentences
+- Repetitive phrasing
+- Generic AI phrases like "overall", "in conclusion", "this property appears to"
+
+Make it feel like advice from someone who has bought property in the US.
+
+================================
+REPORT TARGET AUDIENCE
+================================
+This report serves:
+- Primary home buyers
+- Small investors
+- Owner-occupiers who may rent out part of the property
+- Multi-family / 2-family buyers
+- Mother-daughter / separate-entrance setup seekers
+- Overseas or first-time buyers
+
+Match your analysis depth to the property type:
+- Single-family: standard assessment
+- MultiFamily / 2-family / legal 2 family: INVEST heavily in rental potential + legal compliance
+- Mother-daughter / separate entrance: must flag Certificate of Occupancy verification
+- Flat roof / older building: must flag maintenance inspection priorities
+
+================================
+MULTI-FAMILY & 2-FAMILY SPECIAL ASSESSMENT
+================================
+If the listing shows signals of multi-family potential (MultiFamily, 2 family, legal 2 family, walk-in apartment, mother and daughter, separate street entrance, backyard entrance, near transportation), analyze:
+
+1. Owner-occupy + rental offset potential:
+   - Can the buyer live in one unit and rent the other?
+   - What are the structural signs that support rental income?
+   - What must be verified before assuming rental income?
+
+2. Multi-generational living fit:
+   - Separate entrance / private floors / backyard access
+   - Privacy and independence between units
+
+3. Legal compliance flags (NYC/Brooklyn specific):
+   - Is it legally registered as a 2-family?
+   - What does the Certificate of Occupancy (CO) allow?
+   - Is the walk-in apartment legal to rent?
+   - Any open permits or HPD violations?
+   - Rent stabilization possibility?
+   - Airbnb / short-term rental restrictions?
+
+4. Investment metrics (only if credible data exists):
+   - Cap rate, NOI, cash flow, GRM — set to null if no reliable rent/expense data
+
+================================
+PROPERTY SNAPSHOT GUIDANCE
+================================
+Transform Zillow Facts & Features into a structured summary. For each field:
+- If the field is empty, use null or "unknown" — do NOT fabricate
+- Add one interpretive note for key fields:
+
+Examples:
+- Year built 1955 → "older building, inspection important"
+- Flat roof → "inspect drainage/leaks/remaining life"
+- No HOA → "lower recurring shared fees"
+- MultiFamily → "rental or multi-generational living potential"
+- Brick / masonry exterior → "facade and moisture intrusion inspection"
+- Electric amps reported as 0 or unclear → "verify panel amperage"
+- No basement → "verify drainage and storage situation"
+
+================================
+PRICE ASSESSMENT RULES
+================================
+CRITICAL: You MUST populate price_assessment.asking_price with the asking price from the listing.
+
+Available valuation signals (use only what you have):
+- Listing price / asking price
+- Price per sqft
+- Tax assessed value
+- Annual tax amount
+- Date on market
+- Price history if available
+- Zestimate / Redfin Estimate if extracted
+
+RULES:
+- If you don't have comps, do NOT pretend to know comps
+- If you don't have Zestimate, do NOT fabricate one
+- If you don't have asking price, set asking_price to null
+- Can use price per sqft / tax assessed value / property type for limited analysis — state the confidence level
+- estimated_min / estimated_max: ONLY fill if you have Zestimate / Redfin Estimate / comps / reliable valuation signal; otherwise set to null
+
+Price per sqft context: compare to typical ranges if evidence supports it, otherwise say "insufficient data for comparison"
+
+Verdict options: "Underpriced" | "Fair" | "Overpriced" | "Unknown"
+
+================================
+TAX & CARRYING COST ANALYSIS
+================================
+Use:
+- Annual property tax amount
+- Tax assessed value
+- HOA fees (yes/no/monthly amount)
+- Utilities info if available
+- Heating type (affects utility costs)
+
+Convert annual tax to monthly equivalent. Flag what costs are UNKNOWN:
+- Homeowner's insurance (get a quote)
+- Utilities (ask current owner)
+- Maintenance reserves (age-dependent estimate)
+- Mortgage payment (get pre-approval)
+
+Cost pressure assessment:
+- Low: tax < $5k/year AND no HOA
+- Medium: tax $5k-$10k/year OR moderate HOA
+- High: tax > $10k/year OR high HOA
+
+================================
+AGE, SYSTEMS & MAINTENANCE RISK ANALYSIS
+================================
+Use:
+- Year built
+- Roof type and material
+- Heating system
+- Exterior materials
+- Basement presence/absence
+- Fireplace presence
+- Electrical info
+- Plumbing info
+- Photos of condition
+
+Key risk patterns to flag:
+- Built before 1960: older systems, inspect electrical panel, plumbing, heating
+- Flat roof: roof drainage, leak history, remaining life — HIGH priority
+- Brick/masonry exterior: facade cracks, moisture intrusion, tuck-pointing needed
+- No basement: verify drainage, storage, laundry situation
+- Gas or hot water heating: inspect boiler age and efficiency
+- Fireplace: inspect chimney and flue condition
+
+Convert age + condition signals into specific inspection priorities.
+
+================================
+LAYOUT & USE FLEXIBILITY ANALYSIS
+================================
+Use:
+- Bedrooms and bathrooms count
+- Stories
+- Separate entrance mentions
+- Walk-in apartment or mother-daughter setup
+- Backyard
+- Parking
+- Balcony or outdoor space
+- No basement flag
+
+IMPORTANT: "2 or 3 possible bedroom" is NOT a confirmed bedroom.
+Always flag: verify legal bedroom status, confirm window/egress/closet/local code requirements, confirm Certificate of Occupancy.
+
+Assess:
+- Layout strengths
+- Functional limitations
+- Best-fit buyer profile
+- Not-ideal buyer profile
+
+================================
+LISTING LANGUAGE REALITY CHECK
+================================
+Analyze the listing description for marketing language. Do NOT copy the language verbatim — translate it.
+
+Examples to watch for:
+- "plenty of possibilities" → may mean flexible use, but requires due diligence on legal layout and renovation scope
+- "cozy mother and daughter" → verify legal occupancy and Certificate of Occupancy
+- "2 or 3 possible bedroom" → one room may not be a standard/legal bedroom
+- "separate street entrance" → verify legality of rental use
+- "huge backyard" → assess maintenance burden and privacy
+- "A Must see!!" → may indicate desperation or a feature that photographs well but lacks substance
+
+================================
+NEIGHBORHOOD & LIFESTYLE
+================================
+Use only page-provided signals:
+- "near hospital"
+- "near shopping"
+- "near transportation"
+- "neighborhood" mentions
+- "region" mentions
+
+DO NOT fabricate:
+- School ratings (say "external data needed: GreatSchools / Niche ratings")
+- Crime rates
+- Walk Score / Transit Score
+- Demographic data
+- Appreciation rates
+
+If no neighborhood info is on the page, say "Neighborhood signals not found on page — external data needed."
+
+================================
+ENVIRONMENTAL & INSURANCE RISK (NYC/Brooklyn focus)
+================================
+If the property is in Brooklyn, NYC, or coastal areas, flag:
+- Flood zone should be checked (FEMA flood map)
+- Hurricane evacuation zone should be checked
+- Flat roof + coastal borough may affect insurance and maintenance costs
+- Water intrusion history (ask seller disclosures)
+
+DO NOT assert the property is in a flood zone unless explicitly stated. Use: "Verify — do not assume."
+
+================================
+LEGAL, ZONING & COMPLIANCE (NYC/Brooklyn critical)
+================================
+For NYC / Brooklyn multi-family listings, generate specific compliance checklist items:
+- Certificate of Occupancy (CO): what does it allow?
+- Legal 2-family registration: is it registered with HPD?
+- Zoning: does the current use comply?
+- Open permits or violations: check NYC DOB
+- Rent stabilization possibility: are any units rent-stabilized?
+- Airbnb / short-term rental restrictions: confirm HOA or building rules
+- Insurance implications of multi-family use
+
+Use "verify" language — do not assert illegal or legal status without evidence.
+
+================================
+QUESTIONS TO ASK BEFORE OFFER
+================================
+Generate at least 8 specific, practical questions. Base them on the ACTUAL property signals, not generic questions.
+
+For Brooklyn multi-family examples:
+- Is it legally registered as a 2-family property?
+- What does the Certificate of Occupancy allow?
+- Is the walk-in apartment legal to rent?
+- Are there any open permits or violations?
+- What is the roof age and condition?
+- What is the electrical panel amperage?
+- Any history of water intrusion?
+- What is the realistic market rent for the secondary unit?
+- What are annual insurance costs?
+- Is the property in a flood zone or hurricane evacuation zone?
+- Are any units subject to rent stabilization?
+- Has there been any recent price reduction?
+- What are nearby comparable sales?
+
+================================
+DATA GAPS
+================================
+List every significant piece of information that is MISSING and would materially affect the decision. Each gap entry must include:
+- missing_item: what data is not available
+- why_it_matters: how it affects the buying decision
+- suggested_source: where to find it
+
+Common data gaps for US properties:
+- School ratings → GreatSchools.net or Niche.com
+- Flood zone → FEMA Flood Map Service Center
+- Walk Score → walkscore.com
+- Comparable sales → Redfin, Zillow, or county assessor
+- Insurance cost → get a quote from an insurance agent
+- Flood / hurricane evacuation zone → NYC flood maps or FEMA
+- Certificate of Occupancy → NYC DOB or ACRIS
+- Open permits/violations → NYC DOB HPD violations search
+
+================================
+SCORING GUIDANCE
+================================
+Score distribution (use full range, not everyone scores 65):
+- 90-100: Exceptional — rare, genuinely outstanding
+- 80-89: Strong — well-presented, clearly above average
+- 70-79: Good — solid, functional, worthwhile
+- 60-69: Average — acceptable but nothing special
+- 50-59: Below average — noticeable weaknesses
+- 40-49: Poor — significant issues visible
+- Below 40: Very poor — serious problems
+
+For multi-family with rental potential, factor in income offset potential when scoring.
+
+================================
+FINAL RECOMMENDATION
+================================
+Map your overall score to the verdict:
+- 75+: "Strong Buy" — genuinely worth considering
+- 55-74: "Worth Considering" — could work but watch for issues
+- Below 55: "Probably Skip" — significant concerns
+- Multi-family with strong rental signals + legal compliance: "Worth Considering" or higher
+- Brooklyn multi-family with unverified CO: "Probably Skip" until verified
+
+Your reason should be 2-3 sentences in plain American voice. Focus on the key reason to buy or pass.
+
+================================
+OUTPUT FORMAT
+================================
+
+Return a single JSON object with these exact top-level keys.
+
+CRITICAL: You MUST include ALL fields listed below. Empty arrays are allowed but fields must NOT be omitted.
+
+{
+  "overall_score": number (1-100),
+  "overall_verdict": "one short sentence takeaway ≤ 100 chars (e.g. 'Multi-family in Brooklyn with rental upside — worth verifying CO before committing')",
+  "recommendation": {
+    "verdict": "Strong Buy" | "Worth Considering" | "Probably Skip" | "Deeply Concerning",
+    "reasoning": "2-3 sentences in US real estate context, ≤ 250 chars"
+  },
+  "quick_summary": "2-3 sentence summary in American English, ≤ 300 chars",
+
+  // PROS — must be non-empty
+  "pros": [
+    "specific positive observation 1",
+    "specific positive observation 2",
+    "specific positive observation 3",
+    "specific positive observation 4"
+  ],
+
+  // CONS — must be non-empty
+  "cons": [
+    "specific concern 1",
+    "specific concern 2",
+    "specific concern 3",
+    "specific concern 4"
+  ],
+
+  // Room-by-room scores — keep notes brief, max 80 chars (Zillow listings often lack interior photos)
+  "room_by_room": {
+    "bedroom": { "score": 1-10, "notes": "string ≤ 80 chars" },
+    "bathroom": { "score": 1-10, "notes": "string ≤ 80 chars" },
+    "kitchen": { "score": 1-10, "notes": "string ≤ 80 chars" },
+    "living_room": { "score": 1-10, "notes": "string ≤ 80 chars" },
+    "exterior": { "score": 1-10, "notes": "string ≤ 80 chars" }
+  },
+
+  // PRICE ASSESSMENT — extended for US sale
+  "price_assessment": {
+    "estimated_min": number (or null if no reliable valuation signal),
+    "estimated_max": number (or null if no reliable valuation signal),
+    "asking_price": number (listing price, or null),
+    "verdict": "Underpriced" | "Fair" | "Overpriced" | "Unknown",
+    "explanation": "short sentence explaining the assessment",
+    "tax_context": "brief context, ≤ 100 chars",
+    "price_per_sqft_context": "brief, ≤ 100 chars",
+    "valuation_confidence": "High" | "Medium" | "Low",
+    "missing_data": ["item 1", "item 2"]
+  },
+
+  // INVESTMENT POTENTIAL — expanded for multi-family
+  "investment_potential": {
+    "rating": "Strong" | "Moderate" | "Weak" | "Unknown",
+    "summary": "brief assessment ≤ 200 chars",
+    "supporting_signals": ["structural signal that supports rental income 1", "signal 2"],
+    "risks": ["investment risk 1", "risk 2"],
+    "things_to_verify": ["must-verify item 1", "item 2"],
+    "rent_estimate_available": boolean,
+    "estimated_monthly_rent": number (or null),
+    "investment_metrics": {
+      "cap_rate": number (or null),
+      "noi": number (or null),
+      "cash_flow": number (or null),
+      "grm": number (or null),
+      "cash_on_cash_return": number (or null)
+    }
+  },
+
+  // CARRYING COSTS
+  "carrying_costs": {
+    "annual_tax": number (or null),
+    "monthly_tax_equivalent": number (or null),
+    "hoa": "Yes" | "No" | "Unknown",
+    "cost_pressure": "Low" | "Medium" | "High" | "Unknown",
+    "summary": "carrying cost summary ≤ 120 chars",
+    "missing_costs": ["insurance", "utilities", "maintenance", "mortgage", "repairs"]
+  },
+
+  // MAINTENANCE RISK
+  "maintenance_risk": {
+    "rating": "Low" | "Medium" | "High" | "Unknown",
+    "summary": "brief maintenance risk summary",
+    "risk_factors": ["specific risk factor 1", "risk 2"],
+    "inspection_priorities": ["specific inspection priority 1", "priority 2", "priority 3"]
+  },
+
+  // LAYOUT FIT
+  "layout_fit": {
+    "summary": "brief layout assessment",
+    "best_for": ["buyer scenario 1", "scenario 2"],
+    "not_ideal_for": ["buyer scenario 1", "scenario 2"],
+    "layout_strengths": ["strength 1", "strength 2"],
+    "layout_limitations": ["limitation 1", "limitation 2"]
+  },
+
+  // LISTING LANGUAGE REALITY CHECK
+  "listing_language_reality_check": [
+    {
+      "phrase": "the actual phrase from listing",
+      "what_it_may_mean": "honest translation",
+      "what_to_verify": "what to check"
+    }
+  ],
+
+  // NEIGHBORHOOD & LIFESTYLE
+  "neighborhood_lifestyle": {
+    "summary": "brief neighborhood summary based on page signals",
+    "page_signals": ["neighborhood signal 1", "signal 2"],
+    "external_data_needed": ["school ratings", "walk score", "transit score", "crime/safety", "flood zone", "zoning"]
+  },
+
+  // LEGAL & COMPLIANCE
+  "legal_compliance": {
+    "risk_level": "Low" | "Medium" | "High" | "Unknown",
+    "summary": "brief compliance risk summary",
+    "items_to_verify": ["specific compliance item 1", "item 2", "item 3"],
+    "external_sources_needed": ["NYC DOB", "ACRIS", "NYC zoning", "HPD", "Certificate of Occupancy"]
+  },
+
+  // ENVIRONMENTAL & INSURANCE RISK
+  "environmental_risk": {
+    "risk_level": "Low" | "Medium" | "High" | "Unknown",
+    "summary": "brief environmental risk summary",
+    "items_to_check": ["flood zone", "hurricane evacuation zone", "insurance cost", "water intrusion history"],
+    "external_sources_needed": ["FEMA flood map", "NYC flood maps", "insurance quote"]
+  },
+
+  // QUESTIONS TO ASK — at least 8
+  "questions_to_ask": [
+    "specific question 1",
+    "specific question 2",
+    "specific question 3",
+    "specific question 4",
+    "specific question 5",
+    "specific question 6",
+    "specific question 7",
+    "specific question 8"
+  ],
+
+  // DATA GAPS
+  "data_gaps": [
+    {
+      "missing_item": "what is missing",
+      "why_it_matters": "how it affects the decision",
+      "suggested_source": "where to find it"
+    }
+  ],
+
+  // Additional fields preserved for existing UI
+  "hidden_risks": [
+    "concern that isn't obvious from photos 1",
+    "concern 2"
+  ],
+
+  "red_flags": [
+    "specific red flag 1",
+    "specific red flag 2"
+  ],
+
+  "inspection_checklist": [
+    "thing to verify on showing 1",
+    "thing to verify on showing 2"
+  ],
+
+  "photo_observations": [
+    "notable observation 1",
+    "notable observation 2"
+  ],
+
+  "disclosure_notes": [
+    "key disclosure consideration 1",
+    "key disclosure consideration 2"
+  ],
+
+  // =============================================
+  // CRITICAL OUTPUT RULES — follow strictly
+  // =============================================
+  // - pros: max 4 items, each ≤ 120 characters
+  // - cons: max 5 items, each ≤ 120 characters
+  // - questions_to_ask: max 8 items, each ≤ 120 characters
+  // - data_gaps: max 5 items
+  // - listing_language_reality_check: max 4 items
+  // - maintenance_risk.risk_factors: max 4 items
+  // - maintenance_risk.inspection_priorities: max 5 items
+  // - investment_potential.supporting_signals: max 4 items
+  // - investment_potential.risks: max 4 items
+  // - investment_potential.things_to_verify: max 5 items
+  // - legal_compliance.items_to_verify: max 5 items
+  // - environmental_risk.items_to_check: max 4 items
+  // - hidden_risks: max 4 items
+  // - red_flags: max 4 items
+  // - inspection_checklist: max 5 items
+  // - photo_observations: max 3 items
+  // - disclosure_notes: max 3 items
+  // Return valid JSON only. No markdown fences. No text before or after.
+  // Keep every string concise. Use null or [] instead of empty strings/arrays.
+}
+`;
 
 // STEP2_RENT_PROMPT — the original RENT-specific prompt
 const STEP2_RENT_PROMPT = `You are an Australian renter helping another renter decide whether a listing is worth their time.
@@ -2167,6 +3035,181 @@ RULES:
 
 Based on the visual analysis provided, generate the purchase decision report.`;
 
+// ========== Step2 Decision Normalizer ==========
+// Normalizes Step2 model output to a unified schema regardless of market (US/AU).
+// Handles field name differences between US and AU prompts so downstream
+// result-building code doesn't need per-market conditionals.
+
+function parsePriceToNumber(value: unknown): number | null {
+  if (typeof value === 'number' && Number.isFinite(value)) return value;
+  if (typeof value === 'string' && value.trim() !== '') {
+    const cleaned = value.replace(/[^0-9.]/g, '');
+    if (cleaned === '') return null;
+    const parsed = Number(cleaned);
+    return Number.isFinite(parsed) ? parsed : null;
+  }
+  return null;
+}
+
+// Market type is defined in the Market Detection section below
+
+interface NormalizedPriceAssessment {
+  estimated_min: number | null;
+  estimated_max: number | null;
+  asking_price: number | null;
+  verdict: string;
+  explanation: string;
+}
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+type AnyRecord = Record<string, any>;
+
+function normalizeStep2Decision(
+  decision: AnyRecord | null | undefined,
+  market: Market,
+  optionalDetails?: { askingPrice?: unknown; price?: unknown }
+): AnyRecord {
+  const fallback = '';
+  const fallbackArr: string[] = [];
+
+  const priceRaw = (decision?.price_assessment ?? {}) as Record<string, unknown>;
+
+  // Determine asking_price: priority is decision field > optionalDetails > null
+  const decisionAskingPrice = parsePriceToNumber(priceRaw.asking_price);
+  const optionalAskingPrice = optionalDetails?.askingPrice !== undefined
+    ? parsePriceToNumber(optionalDetails.askingPrice)
+    : parsePriceToNumber(optionalDetails?.price);
+  const asking_price = decisionAskingPrice ?? optionalAskingPrice ?? null;
+
+  // Determine estimated_min / estimated_max (AU has these; US may not)
+  const estimated_min = parsePriceToNumber(priceRaw.estimated_min)
+    ?? parsePriceToNumber(priceRaw.estimatedValueMin)
+    ?? parsePriceToNumber(priceRaw.estimated_value_min)
+    ?? null;
+  const estimated_max = parsePriceToNumber(priceRaw.estimated_max)
+    ?? parsePriceToNumber(priceRaw.estimatedValueMax)
+    ?? parsePriceToNumber(priceRaw.estimated_value_max)
+    ?? null;
+
+  // verdict: US uses "assessment", AU uses "verdict"
+  const verdict = String(
+    priceRaw.verdict
+    ?? priceRaw.assessment
+    ?? priceRaw.price_position
+    ?? fallback
+  ) || 'Fair';
+
+  // explanation: US uses "reasoning"/"market_context", AU uses "explanation"
+  const explanation = String(
+    priceRaw.explanation
+    ?? priceRaw.reasoning
+    ?? priceRaw.market_context
+    ?? priceRaw.zestimate_context
+    ?? fallback
+  );
+
+  // pros: US uses "what_looks_good", AU uses "pros"
+  const prosRaw = decision?.pros ?? decision?.what_looks_good ?? decision?.strengths ?? [];
+  const pros = Array.isArray(prosRaw) ? prosRaw.filter((p): p is string => typeof p === 'string') : fallbackArr;
+
+  // cons: US uses "risk_signals", AU uses "cons"
+  const consRaw = decision?.cons ?? decision?.risk_signals ?? decision?.risks ?? [];
+  const cons = Array.isArray(consRaw) ? consRaw.filter((c): c is string => typeof c === 'string') : fallbackArr;
+
+  // overall_verdict: US uses "quick_summary" + "recommendation.verdict"
+  const overall_verdict = String(
+    decision?.overall_verdict
+    ?? (decision?.recommendation as Record<string, unknown>)?.verdict
+    ?? decision?.verdict
+    ?? fallback
+  );
+
+  // quick_summary: US uses "quick_summary", AU may use "summary"
+  const quick_summary = String(
+    decision?.quick_summary
+    ?? decision?.summary
+    ?? (decision?.recommendation as Record<string, unknown>)?.reasoning
+    ?? fallback
+  );
+
+  // ── New US Sale decision support fields (passthrough with type safety) ──
+  const property_snapshot = (decision as any).property_snapshot ?? null;
+
+  const carryingCostsRaw = (decision as any).carrying_costs;
+  const carrying_costs = carryingCostsRaw ? {
+    annual_tax: typeof carryingCostsRaw.annual_tax === 'number' ? carryingCostsRaw.annual_tax
+      : carryingCostsRaw.annual_tax != null ? parseFloat(String(carryingCostsRaw.annual_tax)) || null
+      : null,
+    monthly_tax_equivalent: typeof carryingCostsRaw.monthly_tax_equivalent === 'number' ? carryingCostsRaw.monthly_tax_equivalent
+      : carryingCostsRaw.monthly_tax_equivalent != null ? parseFloat(String(carryingCostsRaw.monthly_tax_equivalent)) || null
+      : null,
+    hoa: carryingCostsRaw.hoa ?? 'Unknown',
+    cost_pressure: carryingCostsRaw.cost_pressure ?? 'Unknown',
+    summary: carryingCostsRaw.summary ?? '',
+    missing_costs: Array.isArray(carryingCostsRaw.missing_costs) ? carryingCostsRaw.missing_costs : [],
+  } : null;
+
+  const maintenance_risk = (decision as any).maintenance_risk ?? null;
+
+  const layout_fit = (decision as any).layout_fit ?? null;
+
+  const listing_language_reality_check = Array.isArray((decision as any).listing_language_reality_check)
+    ? (decision as any).listing_language_reality_check
+    : [];
+
+  const neighborhood_lifestyle = (decision as any).neighborhood_lifestyle ?? null;
+
+  const legal_compliance = (decision as any).legal_compliance ?? null;
+
+  const environmental_risk = (decision as any).environmental_risk ?? null;
+
+  const data_gaps = Array.isArray((decision as any).data_gaps)
+    ? (decision as any).data_gaps
+    : [];
+
+  // investment_potential: extend with new nested metrics fields
+  const rawInvestment = (decision as any).investment_potential ?? {};
+  const investment_potential = {
+    ...rawInvestment,
+    rating: rawInvestment.rating ?? 'Unknown',
+    summary: rawInvestment.summary ?? '',
+    supporting_signals: Array.isArray(rawInvestment.supporting_signals) ? rawInvestment.supporting_signals : [],
+    risks: Array.isArray(rawInvestment.risks) ? rawInvestment.risks
+      : Array.isArray(rawInvestment.key_concerns) ? rawInvestment.key_concerns : [],
+    things_to_verify: Array.isArray(rawInvestment.things_to_verify) ? rawInvestment.things_to_verify : [],
+    rent_estimate_available: rawInvestment.rent_estimate_available === true,
+    estimated_monthly_rent: typeof rawInvestment.estimated_monthly_rent === 'number' ? rawInvestment.estimated_monthly_rent
+      : rawInvestment.estimated_monthly_rent != null ? parseFloat(String(rawInvestment.estimated_monthly_rent)) || null
+      : null,
+    investment_metrics: rawInvestment.investment_metrics ?? null,
+  };
+
+  return {
+    ...(decision ?? {}),
+    overall_verdict,
+    quick_summary,
+    pros,
+    cons,
+    price_assessment: {
+      estimated_min,
+      estimated_max,
+      asking_price,
+      verdict,
+      explanation,
+    },
+    property_snapshot,
+    carrying_costs,
+    maintenance_risk,
+    layout_fit,
+    listing_language_reality_check,
+    neighborhood_lifestyle,
+    legal_compliance,
+    environmental_risk,
+    data_gaps,
+    investment_potential,
+  };
+}
+
 // ========== Reality Check Types & Functions ==========
 
 type RealityCheckVerdict = "Mostly factual" | "Some promotional wording" | "Marketing-heavy";
@@ -2504,6 +3547,20 @@ interface Step2DecisionSale {
     capital_growth_5yr?: string;
     key_positives?: string[];
     key_concerns?: string[];
+    rating?: 'Strong' | 'Moderate' | 'Weak' | 'Unknown';
+    summary?: string;
+    supporting_signals?: string[];
+    risks?: string[];
+    things_to_verify?: string[];
+    rent_estimate_available?: boolean;
+    estimated_monthly_rent?: number | null;
+    investment_metrics?: {
+      cap_rate?: number | null;
+      noi?: number | null;
+      cash_flow?: number | null;
+      grm?: number | null;
+      cash_on_cash_return?: number | null;
+    };
   };
   affordability_check?: {
     estimated_deposit_20pct?: number;
@@ -2562,6 +3619,78 @@ interface Step2DecisionSale {
     state?: 'VIC' | 'NSW' | 'QLD' | 'SA' | 'WA' | 'TAS' | 'ACT' | 'NT' | 'Unknown';
     recommendations?: string[];
   };
+  // === US Sale 新增决策支持报告字段 ===
+  property_snapshot?: {
+    beds?: string | number | null;
+    baths?: string | number | null;
+    sqft?: string | number | null;
+    lot_size?: string | number | null;
+    year_built?: string | number | null;
+    home_type?: string;
+    property_subtype?: string;
+    architectural_style?: string;
+    stories?: string | number | null;
+    parking?: string;
+    hoa?: string;
+    annual_tax?: string | number | null;
+    tax_assessed_value?: string | number | null;
+    price_per_sqft?: string | number | null;
+    roof?: string;
+    materials?: string;
+    heating?: string;
+    basement?: string;
+    fireplace?: string;
+    region?: string;
+  };
+  carrying_costs?: {
+    annual_tax?: number | null;
+    monthly_tax_equivalent?: number | null;
+    hoa?: 'Yes' | 'No' | 'Unknown';
+    cost_pressure?: 'Low' | 'Medium' | 'High' | 'Unknown';
+    summary?: string;
+    missing_costs?: string[];
+  };
+  maintenance_risk?: {
+    rating?: 'Low' | 'Medium' | 'High' | 'Unknown';
+    summary?: string;
+    risk_factors?: string[];
+    inspection_priorities?: string[];
+  };
+  layout_fit?: {
+    summary?: string;
+    best_for?: string[];
+    not_ideal_for?: string[];
+    layout_strengths?: string[];
+    layout_limitations?: string[];
+  };
+  listing_language_reality_check?: {
+    phrase: string;
+    what_it_may_mean: string;
+    what_to_verify: string;
+  }[];
+  neighborhood_lifestyle?: {
+    summary?: string;
+    page_signals?: string[];
+    external_data_needed?: string[];
+  };
+  legal_compliance?: {
+    risk_level?: 'Low' | 'Medium' | 'High' | 'Unknown';
+    summary?: string;
+    items_to_verify?: string[];
+    external_sources_needed?: string[];
+  };
+  environmental_risk?: {
+    risk_level?: 'Low' | 'Medium' | 'High' | 'Unknown';
+    summary?: string;
+    items_to_check?: string[];
+    external_sources_needed?: string[];
+  };
+  data_gaps?: {
+    missing_item: string;
+    why_it_matters: string;
+    suggested_source: string;
+  }[];
+  // === US Sale 新增决策支持报告字段 END ===
   // === Sale 模式新增字段 END ===
 }
 
@@ -2736,7 +3865,7 @@ async function callStep2Model(
     model: "anthropic/claude-haiku-4.5",
     messages: step2Messages,
     temperature: 0.1,
-    max_tokens: 5000,
+    max_tokens: 9000, // bumped from 5000 to handle expanded US sale schema
   };
 
   async function attempt(attemptNumber: number): Promise<{ rawText: string; parsed: Step2Decision }> {
@@ -2768,9 +3897,23 @@ async function callStep2Model(
     const data = await response.json();
 
     console.log("[Step 2] raw response preview:", JSON.stringify(data).slice(0, 2000));
-    console.log("[Step 2] finish_reason:", data?.choices?.[0]?.finish_reason ?? null);
+    const finishReason = data?.choices?.[0]?.finish_reason ?? null;
+    const nativeFinishReason = data?.choices?.[0]?.native_finish_reason ?? null;
+    console.log("[Step 2] finish_reason:", finishReason);
+    console.log("[Step 2] native_finish_reason:", nativeFinishReason);
     console.log("[Step 2] provider:", data?.provider ?? null);
     console.log("[Step 2] usage:", JSON.stringify(data?.usage ?? null));
+
+    if (finishReason === 'length' || nativeFinishReason === 'max_tokens') {
+      console.error("[Step 2] ⚠ OUTPUT TRUNCATED by max_tokens", {
+        finish_reason: finishReason,
+        native_finish_reason: nativeFinishReason,
+        max_tokens: step2RequestBody.max_tokens,
+        prompt_tokens: data?.usage?.prompt_tokens,
+        completion_tokens: data?.usage?.completion_tokens,
+        total_tokens: data?.usage?.total_tokens,
+      });
+    }
 
     const rawText = extractModelText(data);
 
@@ -2786,7 +3929,12 @@ async function callStep2Model(
       return { rawText, parsed };
     } catch (parseErr) {
       console.error("[Step 2] JSON parse failed. Raw text preview:", rawText.slice(0, 2000));
-      throw new Error("Step 2 returned invalid JSON");
+      const isTruncated = rawText.length > 0 && !rawText.trim().endsWith("}");
+      throw new Error(
+        isTruncated
+          ? "Step 2 output was truncated by max_tokens. Increase max_tokens or reduce schema size."
+          : "Step 2 returned invalid JSON"
+      );
     }
   }
 
@@ -2893,20 +4041,210 @@ function mergeVisualAnalysis(
   };
 }
 
+// ── Unified Market Detection ───────────────────────────────────────────────────────────────────────────
+type Market = 'US' | 'AU' | 'UNKNOWN';
+
+/**
+ * Unified market detection — single source of truth for all actions (submit, run, basic-sync).
+ *
+ * Checks ALL available fields (not just source) in priority order:
+ * 1. Explicit body.market field (set by plugin)
+ * 2. body.source / body.sourceDomain / body.listingUrl
+ * 3. optionalDetails.source / .sourceDomain / .market / .listingUrl
+ * 4. description and address text (US/AU geolocation keywords)
+ *
+ * IMPORTANT: Never default to 'AU' — use 'UNKNOWN' as the fallback to prevent
+ * silently routing US listings to Australian prompts.
+ */
+function detectMarket(input: {
+  source?: string | null;
+  sourceDomain?: string | null;
+  market?: string | null;
+  listingUrl?: string | null;
+  description?: string;
+  address?: string;
+  optionalDetails?: {
+    source?: string | null;
+    sourceDomain?: string | null;
+    market?: string | null;
+    listingUrl?: string | null;
+  };
+}): Market {
+  // ── Step 1: Explicit market field (highest priority, set by plugin) ───────────────────
+  if (input.market === 'US' || input.market === 'AU') {
+    console.log(`[detectMarket] Explicit market=${input.market} from field`);
+    return input.market;
+  }
+  if (input.optionalDetails?.market === 'US' || input.optionalDetails?.market === 'AU') {
+    console.log(`[detectMarket] Explicit market=${input.optionalDetails.market} from optionalDetails`);
+    return input.optionalDetails.market;
+  }
+
+  // ── Step 2: Collect all candidate strings ───────────────────────────────────────────
+  const candidates = [
+    input.source,
+    input.sourceDomain,
+    input.listingUrl,
+    input.optionalDetails?.source,
+    input.optionalDetails?.sourceDomain,
+    input.optionalDetails?.listingUrl,
+    input.description,
+    input.address,
+  ]
+    .filter((v): v is string => typeof v === 'string' && v.length > 0)
+    .join(' ')
+    .toLowerCase();
+
+  console.log(`[detectMarket] candidates (${candidates.length} chars): ${candidates.slice(0, 200)}`);
+
+  // ── Step 3: US signals ───────────────────────────────────────────────────────────────
+  const usSignals = [
+    'zillow',
+    'realtor.com',
+    'redfin',
+    'trulia',
+    'apartments.com',
+    'hotpads',
+    'brooklyn',
+    'new york',
+    'manhattan',
+    'los angeles',
+    'san francisco',
+    'chicago il',
+    'seattle wa',
+    'boston ma',
+    'miami fl',
+    'austin tx',
+    'denver co',
+    'portland or',
+    'phoenix az',
+    'atlanta ga',
+    'ny 1', 'ny 2', 'ny 3', 'ny 4', 'ny 5', // e.g., "apt 4b, ny 11201"
+    'nyc',
+    'usa',
+    'united states',
+  ];
+
+  for (const signal of usSignals) {
+    if (candidates.includes(signal)) {
+      console.log(`[detectMarket] US match: "${signal}"`);
+      return 'US';
+    }
+  }
+
+  // ── Step 4: AU signals ───────────────────────────────────────────────────────────────
+  const auSignals = [
+    'realestate.com.au',
+    'domain.com.au',
+    'australia',
+    'australian',
+    'nsw',
+    'vic ',
+    'qld',
+    'wa ',
+    'sa ',
+    'tas ',
+    'act ',
+    'nt ',
+    'melbourne',
+    'sydney',
+    'brisbane',
+    'perth',
+    'adelaide',
+    'hobart',
+    'darwin',
+    'canberra',
+  ];
+
+  for (const signal of auSignals) {
+    if (candidates.includes(signal)) {
+      console.log(`[detectMarket] AU match: "${signal}"`);
+      return 'AU';
+    }
+  }
+
+  // ── Step 5: No match → UNKNOWN (NOT AU!) ───────────────────────────────────────────
+  console.warn(`[detectMarket] No market signal found, defaulting to UNKNOWN (safe fallback — prevents US listings going to AU prompts)`);
+  return 'UNKNOWN';
+}
+
+// ── Extended optionalDetails type for Step2 prompt ──────────────────────
+type AnalyzeOptionalDetails = {
+  weeklyRent?: string | number;
+  askingPrice?: string | number;
+  suburb?: string;
+  bedrooms?: string | number;
+  bathrooms?: string | number;
+  parking?: string | number;
+  sqft?: string | number;
+  yearBuilt?: string | number;
+  propertyType?: string;
+  propertySubtype?: string;
+  architecturalStyle?: string;
+  stories?: string | number;
+  lotSize?: string | number;
+  hoaFee?: string | number;
+  propertyTax?: string | number;
+  annualTax?: string | number;
+  taxAssessedValue?: string | number;
+  pricePerSqft?: string | number;
+  zestimate?: string | number;
+  rentZestimate?: string | number;
+  daysOnZillow?: string | number;
+  dateOnMarket?: string;
+  dateAvailable?: string;
+  region?: string;
+  heating?: string;
+  cooling?: string;
+  basement?: string;
+  fireplace?: string;
+  roof?: string;
+  constructionMaterial?: string;
+  parcelNumber?: string;
+  gasMeters?: string | number;
+  garageSpaces?: string | number;
+  carportSpaces?: string | number;
+  highlights?: string[];
+  schoolRatings?: unknown;
+  facts?: unknown;
+  listingDescription?: string;
+  whatSpecial?: string;
+  source?: string | null;
+  sourceDomain?: string | null;
+  market?: string | null;
+  listingUrl?: string | null;
+  [key: string]: unknown;
+};
+
 function buildStep2Messages(
   reportMode: ReportMode,
+  market: Market,
   visualAnalysis: Record<string, unknown> | null,
   description?: string,
-  optionalDetails?: {
-    weeklyRent?: string;
-    askingPrice?: string;
-    suburb?: string;
-    bedrooms?: string | number;
-    bathrooms?: string | number;
-    parking?: string | number;
-  },
+  optionalDetails?: AnalyzeOptionalDetails,
 ) {
-  const systemPrompt = reportMode === 'sale' ? STEP2_SALE_PROMPT : STEP2_RENT_PROMPT;
+  // ── Prompt selection ───────────────────────────────────────────────────────
+  let systemPrompt: string;
+  let selectedPromptName: string;
+
+  if (market === 'US') {
+    systemPrompt = reportMode === 'sale' ? STEP2_US_SALE_PROMPT : STEP2_US_RENT_PROMPT;
+    selectedPromptName = reportMode === 'sale' ? 'STEP2_US_SALE_PROMPT' : 'STEP2_US_RENT_PROMPT';
+  } else if (market === 'AU') {
+    systemPrompt = reportMode === 'sale' ? STEP2_SALE_PROMPT : STEP2_RENT_PROMPT;
+    selectedPromptName = reportMode === 'sale' ? 'STEP2_SALE_PROMPT' : 'STEP2_RENT_PROMPT';
+  } else {
+    // UNKNOWN → safe fallback: use US prompts (safer than accidentally routing US listings to AU)
+    systemPrompt = reportMode === 'sale' ? STEP2_US_SALE_PROMPT : STEP2_US_RENT_PROMPT;
+    selectedPromptName = reportMode === 'sale' ? 'STEP2_US_SALE_PROMPT (UNKNOWN→US fallback)' : 'STEP2_US_RENT_PROMPT (UNKNOWN→US fallback)';
+    console.warn(`[MARKET_ROUTING] Unknown market detected, using US fallback prompt`);
+  }
+
+  console.log("[DIAG] market routing — buildStep2Messages:", {
+    reportMode,
+    market,
+    selectedPrompt: selectedPromptName,
+  });
 
   let textContent = visualAnalysis
     ? `VISUAL ANALYSIS RESULTS:\n${JSON.stringify(visualAnalysis, null, 2)}\n\n`
@@ -2918,26 +4256,101 @@ function buildStep2Messages(
 
   if (optionalDetails) {
     const details: string[] = [];
-    if (reportMode === 'rent' && optionalDetails.weeklyRent) {
-      details.push(`Weekly Rent: ${optionalDetails.weeklyRent}`);
-    } else if (reportMode === 'sale' && optionalDetails.askingPrice) {
-      details.push(`Asking Price: ${optionalDetails.askingPrice}`);
-    }
-    if (optionalDetails.suburb) {
-      details.push(`Location: ${optionalDetails.suburb}`);
-    }
-    if (optionalDetails.bedrooms !== undefined && optionalDetails.bedrooms !== null) {
-      details.push(`Bedrooms: ${optionalDetails.bedrooms}`);
-    }
-    if (optionalDetails.bathrooms !== undefined && optionalDetails.bathrooms !== null) {
-      details.push(`Bathrooms: ${optionalDetails.bathrooms}`);
-    }
-    if (optionalDetails.parking !== undefined && optionalDetails.parking !== null) {
-      details.push(`Parking: ${optionalDetails.parking}`);
+
+    // Generic helper: safely add any key-value pair to details
+    function addDetail(label: string, value: unknown) {
+      if (value === undefined || value === null || value === '') return;
+      if (Array.isArray(value) && value.length === 0) return;
+      if (typeof value === 'object') {
+        try {
+          const json = JSON.stringify(value);
+          if (json && json !== '{}') {
+            details.push(`${label}: ${json.slice(0, 2500)}`);
+          }
+        } catch {
+          details.push(`${label}: [object]`);
+        }
+        return;
+      }
+      details.push(`${label}: ${String(value)}`);
     }
 
+    // ── Core price ──
+    if (reportMode === 'rent') {
+      const rentLabel = market === 'US' || market === 'UNKNOWN' ? 'Monthly Rent' : 'Weekly Rent';
+      addDetail(rentLabel, optionalDetails.weeklyRent);
+    } else {
+      addDetail('Asking Price', optionalDetails.askingPrice);
+    }
+
+    // ── Location ──
+    addDetail('Location / Region', optionalDetails.region || optionalDetails.suburb);
+
+    // ── Room counts ──
+    addDetail('Bedrooms', optionalDetails.bedrooms);
+    addDetail('Bathrooms', optionalDetails.bathrooms);
+    addDetail('Parking', optionalDetails.parking);
+
+    // ── Size & structure ──
+    addDetail('Interior Living Area (sqft)', optionalDetails.sqft);
+    addDetail('Lot Size', optionalDetails.lotSize);
+    addDetail('Year Built', optionalDetails.yearBuilt);
+    addDetail('Home Type', optionalDetails.propertyType);
+    addDetail('Property Subtype', optionalDetails.propertySubtype);
+    addDetail('Architectural Style', optionalDetails.architecturalStyle);
+    addDetail('Stories', optionalDetails.stories);
+    addDetail('Price per Sqft', optionalDetails.pricePerSqft);
+
+    // ── Tax & HOA ──
+    addDetail('Annual Property Tax', optionalDetails.annualTax || optionalDetails.propertyTax);
+    addDetail('Tax Assessed Value', optionalDetails.taxAssessedValue);
+    addDetail('HOA Fee', optionalDetails.hoaFee);
+
+    // ── Valuation estimates ──
+    addDetail('Zestimate', optionalDetails.zestimate);
+    addDetail('Rent Zestimate', optionalDetails.rentZestimate);
+
+    // ── Market timing ──
+    addDetail('Days on Zillow', optionalDetails.daysOnZillow);
+    addDetail('Date on Market', optionalDetails.dateOnMarket);
+    addDetail('Date Available', optionalDetails.dateAvailable);
+
+    // ── Property features ──
+    addDetail('Heating', optionalDetails.heating);
+    addDetail('Cooling', optionalDetails.cooling);
+    addDetail('Basement', optionalDetails.basement);
+    addDetail('Fireplace', optionalDetails.fireplace);
+    addDetail('Roof', optionalDetails.roof);
+    addDetail('Construction Material', optionalDetails.constructionMaterial);
+    addDetail('Parcel Number', optionalDetails.parcelNumber);
+    addDetail('Gas Meters', optionalDetails.gasMeters);
+    addDetail('Garage Spaces', optionalDetails.garageSpaces);
+    addDetail('Carport Spaces', optionalDetails.carportSpaces);
+
+    // ── Listing content ──
+    addDetail("Listing Highlights / What's Special", optionalDetails.highlights);
+    addDetail('Listing Description', optionalDetails.listingDescription || optionalDetails.whatSpecial);
+    addDetail('School Ratings', optionalDetails.schoolRatings);
+    addDetail('Raw Facts & Features', optionalDetails.facts);
+
+    // Debug log: verify facts are included
+    console.log('[DIAG] Step2 optionalDetails included', {
+      market,
+      reportMode,
+      detailCount: details.length,
+      optionalDetailKeys: optionalDetails ? Object.keys(optionalDetails) : [],
+      includedDetailsPreview: details.slice(0, 20),
+    });
+
     if (details.length > 0) {
-      textContent += `ADDITIONAL DETAILS:\n${details.join("\n")}\n\n`;
+      textContent += `
+ZILLOW FACTS & FEATURES FROM THE LISTING:
+${details.map(item => `- ${item}`).join('\n')}
+
+IMPORTANT:
+Use these listing facts heavily in your analysis. Do not say tax, year built, home type, roof, HOA, price per sqft, or multi-family status are unknown if they appear above.
+If a field is not listed above, then treat it as unknown and add it to data_gaps or external_data_needed.
+`;
     }
   }
 
@@ -2954,6 +4367,19 @@ function buildStep2Messages(
 // ========== Main Handler ==========
 
 Deno.serve(async (req) => {
+  console.log("=== Edge Function Entry ===", {
+    DEPLOY_MARKER: "analyze-us-2026-05-21-debug-json-v1",
+    method: req.method,
+    url: req.url,
+    hasAuthorization: !!req.headers.get("Authorization"),
+    authPrefix: req.headers.get("Authorization")?.slice(0, 20),
+    hasApikey: !!req.headers.get("apikey"),
+    hasAuAnonKey: !!PRIMARY_ANON_KEY,
+    hasAccountServiceKey: !!ACCOUNT_SERVICE_KEY,
+    hasLocalServiceKey: !!LOCAL_SERVICE_KEY,
+    hasAuServiceRoleKey: !!PRIMARY_SERVICE_ROLE_KEY,
+  });
+
   // Handle CORS preflight
   if (req.method === "OPTIONS") {
     return new Response(null, { status: 204, headers: corsHeaders });
@@ -2962,6 +4388,7 @@ Deno.serve(async (req) => {
   const url = new URL(req.url);
   const action = url.searchParams.get("action");
   const queryId = url.searchParams.get("id");
+  console.log("Action:", action, "QueryId:", queryId);
 
   // GET: Query status
   if (req.method === "GET" && queryId) {
@@ -2973,11 +4400,11 @@ Deno.serve(async (req) => {
     let reportMode: string = 'rent';
     try {
       const analysisRes = await fetch(
-        `${SUPABASE_URL}/rest/v1/analyses?id=eq.${queryId}&select=report_mode`,
+        `${LOCAL_URL}/rest/v1/analyses?id=eq.${queryId}&select=report_mode`,
         {
           headers: {
-            "apikey": SUPABASE_SERVICE_ROLE_KEY,
-            "Authorization": `Bearer ${SUPABASE_SERVICE_ROLE_KEY}`,
+            "apikey": LOCAL_SERVICE_KEY,
+            "Authorization": `Bearer ${LOCAL_SERVICE_KEY}`,
           },
         }
       );
@@ -2995,9 +4422,9 @@ Deno.serve(async (req) => {
 
   // GET: List user analyses history
   if (req.method === "GET" && action === "list") {
-    const { user, error: authError } = await getCurrentUser(req);
+    const { user, error: authError, code: authCode } = await getCurrentUser(req);
     if (authError || !user) {
-      return jsonResponse({ message: "Authentication required", code: "NOT_AUTHENTICATED" }, 401);
+      return jsonResponse({ message: "Authentication required", code: "LIST_AUTH_FAILED_GET", reason: authError, authCode }, 401);
     }
 
     const limit = Number.parseInt(url.searchParams.get("limit") || "20", 10);
@@ -3005,11 +4432,11 @@ Deno.serve(async (req) => {
 
     try {
       const response = await fetch(
-        `${SUPABASE_URL}/rest/v1/analyses?user_id=eq.${user.id}&select=*&order=created_at.desc&limit=${limit}&offset=${offset}`,
+        `${LOCAL_URL}/rest/v1/analyses?user_id=eq.${user.id}&select=*&order=created_at.desc&limit=${limit}&offset=${offset}`,
         {
           headers: {
-            "apikey": SUPABASE_SERVICE_ROLE_KEY,
-            "Authorization": `Bearer ${SUPABASE_SERVICE_ROLE_KEY}`,
+            "apikey": LOCAL_SERVICE_KEY,
+            "Authorization": `Bearer ${LOCAL_SERVICE_KEY}`,
           },
         }
       );
@@ -3027,119 +4454,124 @@ Deno.serve(async (req) => {
     }
   }
 
-  // GET: Get single analysis by ID
-  if (req.method === "GET" && action === "get") {
-    const analysisId = url.searchParams.get("id");
-    if (!analysisId) {
-      return jsonResponse({ message: "Missing analysis ID" }, 400);
-    }
-
-    const { user, error: authError } = await getCurrentUser(req);
-    if (authError || !user) {
-      return jsonResponse({ message: "Authentication required", code: "NOT_AUTHENTICATED" }, 401);
-    }
-
+  // POST: List user analyses history (preferred method - avoids Kong header filtering issues)
+  if (req.method === "POST") {
+    // Use clone so main handler's req.json() still works for action=submit/run
+    const reqClone = req.clone();
+    let body: Record<string, unknown> = {};
     try {
-      const response = await fetch(
-        `${SUPABASE_URL}/rest/v1/analyses?id=eq.${analysisId}&user_id=eq.${user.id}&select=*`,
-        {
-          headers: {
-            "apikey": SUPABASE_SERVICE_ROLE_KEY,
-            "Authorization": `Bearer ${SUPABASE_SERVICE_ROLE_KEY}`,
-          },
+      body = await reqClone.json();
+    } catch {
+      return jsonResponse({ message: "Invalid JSON body" }, 400);
+    }
+
+    if (body.action === "list") {
+      const { user, error: authError, code: authCode } = await getCurrentUser(req);
+      if (authError || !user) {
+        return jsonResponse({ message: "Authentication required", code: "LIST_AUTH_FAILED_POST", reason: authError, authCode }, 401);
+      }
+
+      const limit = Number.parseInt(String(body.limit || "20"), 10);
+      const offset = Number.parseInt(String(body.offset || "0"), 10);
+
+      try {
+        const response = await fetch(
+          `${LOCAL_URL}/rest/v1/analyses?user_id=eq.${user.id}&select=*&order=created_at.desc&limit=${limit}&offset=${offset}`,
+          {
+            headers: {
+              "apikey": LOCAL_SERVICE_KEY,
+              "Authorization": `Bearer ${LOCAL_SERVICE_KEY}`,
+            },
+          }
+        );
+
+        if (!response.ok) {
+          console.error("Failed to fetch analyses:", await response.text());
+          return jsonResponse({ message: "Failed to fetch analyses" }, 500);
         }
-      );
 
-      if (!response.ok) {
-        return jsonResponse({ message: "Analysis not found" }, 404);
+        const analyses = await response.json();
+        return jsonResponse({ analyses });
+      } catch (err) {
+        console.error("Error fetching analyses:", err);
+        return jsonResponse({ message: "Failed to fetch analyses" }, 500);
+      }
+    }
+
+    // POST: Make analysis public (share)
+    if (body.action === "share") {
+      const { analysisId } = body as { analysisId?: string };
+      if (!analysisId) {
+        return jsonResponse({ message: "Missing analysis ID" }, 400);
       }
 
-      const analyses = await response.json();
-      if (!analyses || analyses.length === 0) {
-        return jsonResponse({ message: "Analysis not found" }, 404);
+      const { user, error: authError, code: authCode } = await getCurrentUser(req);
+      if (authError || !user) {
+        return jsonResponse({ message: "Authentication required", code: "SHARE_AUTH_FAILED", reason: authError, authCode }, 401);
       }
 
-      return jsonResponse({ analysis: analyses[0] });
-    } catch (err) {
-      console.error("Error fetching analysis:", err);
-      return jsonResponse({ message: "Failed to fetch analysis" }, 500);
-    }
-  }
+      try {
+        // First get the analysis to check ownership — LOCAL
+        const getResponse = await fetch(
+          `${LOCAL_URL}/rest/v1/analyses?id=eq.${analysisId}&user_id=eq.${user.id}&select=*`,
+          {
+            headers: {
+              "apikey": LOCAL_SERVICE_KEY,
+              "Authorization": `Bearer ${LOCAL_SERVICE_KEY}`,
+            },
+          }
+        );
 
-  // POST: Make analysis public (share)
-  if (req.method === "POST" && action === "share") {
-    const { analysisId } = await req.json();
-    if (!analysisId) {
-      return jsonResponse({ message: "Missing analysis ID" }, 400);
-    }
-
-    const { user, error: authError } = await getCurrentUser(req);
-    if (authError || !user) {
-      return jsonResponse({ message: "Authentication required", code: "NOT_AUTHENTICATED" }, 401);
-    }
-
-    try {
-      // First get the analysis to check ownership
-      const getResponse = await fetch(
-        `${SUPABASE_URL}/rest/v1/analyses?id=eq.${analysisId}&user_id=eq.${user.id}&select=*`,
-        {
-          headers: {
-            "apikey": SUPABASE_SERVICE_ROLE_KEY,
-            "Authorization": `Bearer ${SUPABASE_SERVICE_ROLE_KEY}`,
-          },
+        if (!getResponse.ok) {
+          return jsonResponse({ message: "Analysis not found" }, 404);
         }
-      );
 
-      if (!getResponse.ok) {
-        return jsonResponse({ message: "Analysis not found" }, 404);
-      }
+        const analyses = await getResponse.json();
+        if (!analyses || analyses.length === 0) {
+          return jsonResponse({ message: "Analysis not found" }, 404);
+        }
 
-      const analyses = await getResponse.json();
-      if (!analyses || analyses.length === 0) {
-        return jsonResponse({ message: "Analysis not found" }, 404);
-      }
+        const analysis = analyses[0];
 
-      const analysis = analyses[0];
+        // If already public, return existing share info (don't regenerate)
+        if (analysis.is_public && analysis.share_slug) {
+          return jsonResponse({
+            success: true,
+            slug: analysis.share_slug,
+            shareUrl: `${SITE_URL}/share/${analysis.share_slug}`,
+            alreadyShared: true
+          });
+        }
 
-      // If already public, return existing share info (don't regenerate)
-      if (analysis.is_public && analysis.share_slug) {
-        return jsonResponse({
-          success: true,
-          slug: analysis.share_slug,
-          shareUrl: `${SITE_URL}/share/${analysis.share_slug}`,
-          alreadyShared: true
-        });
-      }
+        // Generate semantic share slug
+        const suburb = analysis.address || null;
+        const summary = analysis.summary || {};
+        const fullResult = analysis.full_result || {};
 
-      // Generate semantic share slug
-      const suburb = analysis.address || null;
-      const summary = analysis.summary || {};
-      const fullResult = analysis.full_result || {};
+        // Extract bedrooms/bathrooms from summary or full_result
+        let bedrooms: number | null = null;
+        let bathrooms: number | null = null;
+        let propertyType: string | null = null;
+        let reportMode: ReportMode = 'rent';
+        let askingPrice: number | null = null;
 
-      // Extract bedrooms/bathrooms from summary or full_result
-      let bedrooms: number | null = null;
-      let bathrooms: number | null = null;
-      let propertyType: string | null = null;
-      let reportMode: ReportMode = 'rent';
-      let askingPrice: number | null = null;
+        if (summary.bedrooms) {
+          const bedroomsMatch = String(summary.bedrooms).match(/(\d+)/);
+          if (bedroomsMatch) bedrooms = parseInt(bedroomsMatch[1], 10);
+        }
+        if (summary.bathrooms) {
+          const bathroomsMatch = String(summary.bathrooms).match(/(\d+)/);
+          if (bathroomsMatch) bathrooms = parseInt(bathroomsMatch[1], 10);
+        }
+        if (summary.propertyType) {
+          propertyType = String(summary.propertyType);
+        }
 
-      if (summary.bedrooms) {
-        const bedroomsMatch = String(summary.bedrooms).match(/(\d+)/);
-        if (bedroomsMatch) bedrooms = parseInt(bedroomsMatch[1], 10);
-      }
-      if (summary.bathrooms) {
-        const bathroomsMatch = String(summary.bathrooms).match(/(\d+)/);
-        if (bathroomsMatch) bathrooms = parseInt(bathroomsMatch[1], 10);
-      }
-      if (summary.propertyType) {
-        propertyType = String(summary.propertyType);
-      }
-
-      // Extract from full_result if not in summary
-      if (!bedrooms && fullResult.roomCounts) {
-        const bedroomCount = fullResult.roomCounts['bedroom'] || fullResult.roomCounts['bedrooms'];
-        if (bedroomCount) bedrooms = bedroomCount;
-      }
+        // Extract from full_result if not in summary
+        if (!bedrooms && fullResult.roomCounts) {
+          const bedroomCount = fullResult.roomCounts['bedroom'] || fullResult.roomCounts['bedrooms'];
+          if (bedroomCount) bedrooms = bedroomCount;
+        }
       if (!propertyType && fullResult.inspectionFit) {
         // Could extract from inspectionFit if needed
       }
@@ -3189,12 +4621,12 @@ Deno.serve(async (req) => {
       };
 
       const updateResponse = await fetch(
-        `${SUPABASE_URL}/rest/v1/analyses?id=eq.${analysisId}`,
+        `${LOCAL_URL}/rest/v1/analyses?id=eq.${analysisId}`,
         {
           method: "PATCH",
           headers: {
-            "apikey": SUPABASE_SERVICE_ROLE_KEY,
-            "Authorization": `Bearer ${SUPABASE_SERVICE_ROLE_KEY}`,
+            "apikey": LOCAL_SERVICE_KEY,
+            "Authorization": `Bearer ${LOCAL_SERVICE_KEY}`,
             "Content-Type": "application/json",
             "Prefer": "return=representation",
           },
@@ -3220,6 +4652,8 @@ Deno.serve(async (req) => {
     }
   }
 
+  } // End of POST handler
+
   // GET: Public access to shared analysis (no auth required)
   if (req.method === "GET" && action === "public") {
     const slug = url.searchParams.get("slug");
@@ -3229,11 +4663,11 @@ Deno.serve(async (req) => {
 
     try {
       const response = await fetch(
-        `${SUPABASE_URL}/rest/v1/analyses?share_slug=eq.${slug}&is_public=eq.true&select=*`,
+        `${LOCAL_URL}/rest/v1/analyses?share_slug=eq.${slug}&is_public=eq.true&select=*`,
         {
           headers: {
-            "apikey": SUPABASE_ANON_KEY,
-            "Authorization": `Bearer ${SUPABASE_ANON_KEY}`,
+            "apikey": LOCAL_ANON_KEY,
+            "Authorization": `Bearer ${LOCAL_ANON_KEY}`,
           },
         }
       );
@@ -3295,6 +4729,7 @@ Deno.serve(async (req) => {
     description?: string;
     reportMode?: ReportMode;
     source?: string | null;
+    sourceDomain?: string | null;
     optionalDetails?: {
       weeklyRent?: string;
       askingPrice?: string;
@@ -3302,13 +4737,19 @@ Deno.serve(async (req) => {
       bedrooms?: string | number;
       bathrooms?: string | number;
       parking?: string | number;
+      source?: string | null;
+      sourceDomain?: string | null;
     };
   };
 
   try {
     body = await req.json();
-  } catch {
-    return jsonResponse({ message: "Invalid JSON in request body" }, 400);
+  } catch (e) {
+    console.error("=== req.json() FAILED ===");
+    console.error("Error type:", e?.constructor?.name);
+    console.error("Error message:", String(e));
+    console.error("Error cause:", e?.cause);
+    return jsonResponse({ message: "Invalid JSON in request body", debugError: String(e), errorType: e?.constructor?.name }, 400);
   }
 
   // ========== Basic Sync Action (Anonymous by default, creates history if logged in) ==========
@@ -3318,16 +4759,73 @@ Deno.serve(async (req) => {
     const description = typeof body.description === "string" ? body.description : "Property listing information";
     const reportMode: ReportMode = body.reportMode === 'sale' ? 'sale' : 'rent';
     const optionalDetails = body.optionalDetails ?? {};
-    const source = body.source || null;
 
     console.log("Description length:", description.length);
     console.log("Report mode:", reportMode);
-    console.log("Source:", source);
+    console.log("Source:", body.source ?? null);
 
     const openRouterApiKey = Deno.env.get("OPENROUTER_API_KEY");
     if (!openRouterApiKey) {
       return jsonResponse({ message: "Server configuration error" }, 500);
     }
+
+    // ── Unified market detection ─────────────────────────────────────────────────────────
+    // Extract from body with explicit null — avoids redeclaring 'source' from line 3911
+    const bodySource = body.source ?? null;
+    const bodySourceDomain = (body as Record<string, unknown>).sourceDomain as string | null ?? null;
+    const bodyMarket = (body as Record<string, unknown>).market as string | null ?? null;
+    const bodyListingUrl = (body as Record<string, unknown>).listingUrl as string | null ?? null;
+
+    const detectedMarket = detectMarket({
+      source: bodySource,
+      sourceDomain: bodySourceDomain,
+      market: bodyMarket,
+      listingUrl: bodyListingUrl,
+      description,
+      optionalDetails,
+    });
+
+    console.log("[DIAG] backend market routing — basic-sync:", {
+      body_source: bodySource,
+      body_sourceDomain: bodySourceDomain,
+      body_market: bodyMarket,
+      body_listingUrl: bodyListingUrl,
+      optional_source: (optionalDetails as Record<string, unknown>).source ?? null,
+      optional_sourceDomain: (optionalDetails as Record<string, unknown>).sourceDomain ?? null,
+      optional_market: (optionalDetails as Record<string, unknown>).market ?? null,
+      optional_listingUrl: (optionalDetails as Record<string, unknown>).listingUrl ?? null,
+      final_market: detectedMarket,
+      reportMode,
+    });
+
+    const basicPromptName = detectedMarket === 'US'
+      ? (reportMode === 'sale' ? 'basic-us-sale' : 'basic-us-rent')
+      : detectedMarket === 'AU'
+      ? (reportMode === 'sale' ? 'basic-au-sale' : 'basic-au-rent')
+      : (reportMode === 'sale' ? 'basic-us-sale (UNKNOWN→US fallback)' : 'basic-us-rent (UNKNOWN→US fallback)');
+
+    const systemPrompt = detectedMarket === 'US' || detectedMarket === 'UNKNOWN'
+      ? `You are a US real estate analyst. Analyze the property listing and provide a basic assessment.`
+      : `You are an Australian property analyst. Analyze the listing and provide a basic assessment.`;
+
+    const userPrompt = reportMode === 'rent'
+      ? (detectedMarket === 'US' || detectedMarket === 'UNKNOWN'
+          ? `Analyze this rental property listing. Provide a basic score (0-100) and key insights.\n\nListing:\n${description}\n\n${optionalDetails.weeklyRent ? `Weekly Rent: ${optionalDetails.weeklyRent}\n` : ''}${optionalDetails.suburb ? `Location: ${optionalDetails.suburb}\n` : ''}${optionalDetails.bedrooms ? `Bedrooms: ${optionalDetails.bedrooms}\n` : ''}${optionalDetails.bathrooms ? `Bathrooms: ${optionalDetails.bathrooms}\n` : ''}\n\nReturn JSON with: { score: number (0-100), verdict: "Strong Buy" | "Consider Carefully" | "Probably Skip", quickSummary: string, whatLooksGood: string[], riskSignals: string[] }`
+          : `Analyze this rental property listing. Provide a basic score (0-100) and key insights in Australian English.\n\nListing:\n${description}\n\n${optionalDetails.weeklyRent ? `Weekly Rent: ${optionalDetails.weeklyRent}\n` : ''}${optionalDetails.suburb ? `Location: ${optionalDetails.suburb}\n` : ''}${optionalDetails.bedrooms ? `Bedrooms: ${optionalDetails.bedrooms}\n` : ''}${optionalDetails.bathrooms ? `Bathrooms: ${optionalDetails.bathrooms}\n` : ''}\n\nReturn JSON with: { score: number (0-100), verdict: "Strong Buy" | "Consider Carefully" | "Probably Skip", quickSummary: string, whatLooksGood: string[], riskSignals: string[] }`)
+      : (detectedMarket === 'US' || detectedMarket === 'UNKNOWN'
+          ? `Analyze this property for sale. Provide a basic score (0-100) and key insights.\n\nListing:\n${description}\n\n${optionalDetails.askingPrice ? `Asking Price: ${optionalDetails.askingPrice}\n` : ''}${optionalDetails.suburb ? `Location: ${optionalDetails.suburb}\n` : ''}${optionalDetails.bedrooms ? `Bedrooms: ${optionalDetails.bedrooms}\n` : ''}${optionalDetails.bathrooms ? `Bathrooms: ${optionalDetails.bathrooms}\n` : ''}\n\nReturn JSON with: { score: number (0-100), verdict: "Strong Buy" | "Consider Carefully" | "Probably Skip", quickSummary: string, whatLooksGood: string[], riskSignals: string[] }`
+          : `Analyze this property for sale. Provide a basic score (0-100) and key insights in Australian English.\n\nListing:\n${description}\n\n${optionalDetails.askingPrice ? `Asking Price: ${optionalDetails.askingPrice}\n` : ''}${optionalDetails.suburb ? `Location: ${optionalDetails.suburb}\n` : ''}${optionalDetails.bedrooms ? `Bedrooms: ${optionalDetails.bedrooms}\n` : ''}${optionalDetails.bathrooms ? `Bathrooms: ${optionalDetails.bathrooms}\n` : ''}\n\nReturn JSON with: { score: number (0-100), verdict: "Strong Buy" | "Consider Carefully" | "Probably Skip", quickSummary: string, whatLooksGood: string[], riskSignals: string[] }`);
+
+    console.log("[DIAG] market routing — basic-sync:", {
+      action: "basic-sync",
+      source: bodySource,
+      sourceDomain: bodySourceDomain,
+      market: bodyMarket,
+      listingUrl: bodyListingUrl,
+      reportMode,
+      detectedMarket,
+      selectedPromptName: basicPromptName,
+    });
 
     // Try to get current user (optional - basic analysis works without auth)
     const { user, error: authError } = await getCurrentUser(req);
@@ -3335,7 +4833,6 @@ Deno.serve(async (req) => {
 
     if (user) {
       console.log("Basic sync: User logged in, will create history record for:", user.email);
-      // Create analysis record for logged-in users
       const newAnalysisId = crypto.randomUUID();
       const createResult = await createAnalysisRecord(
         newAnalysisId,
@@ -3343,7 +4840,9 @@ Deno.serve(async (req) => {
         [], // No images for basic analysis
         description,
         optionalDetails,
-        reportMode
+        reportMode,
+        bodySource,
+        bodySourceDomain,
       );
 
       if (createResult.success) {
@@ -3351,25 +4850,10 @@ Deno.serve(async (req) => {
         console.log("Basic sync: History record created with ID:", analysisId);
       } else {
         console.error("Basic sync: Failed to create history record:", createResult.error);
-        // Continue anyway - analysis should still work without history
       }
     } else {
       console.log("Basic sync: Anonymous user, no history record will be created");
     }
-
-    // Determine market based on source
-    const isUSMarket = source === 'zillow' || source === 'us';
-    const systemPrompt = isUSMarket
-      ? `You are a US real estate analyst. Analyze the property listing and provide a basic assessment.`
-      : `You are an Australian property analyst. Analyze the listing and provide a basic assessment.`;
-
-    const userPrompt = reportMode === 'rent'
-      ? (isUSMarket
-          ? `Analyze this rental property listing. Provide a basic score (0-100) and key insights.\n\nListing:\n${description}\n\n${optionalDetails.weeklyRent ? `Weekly Rent: ${optionalDetails.weeklyRent}\n` : ''}${optionalDetails.suburb ? `Location: ${optionalDetails.suburb}\n` : ''}${optionalDetails.bedrooms ? `Bedrooms: ${optionalDetails.bedrooms}\n` : ''}${optionalDetails.bathrooms ? `Bathrooms: ${optionalDetails.bathrooms}\n` : ''}\n\nReturn JSON with: { score: number (0-100), verdict: "Strong Buy" | "Consider Carefully" | "Probably Skip", quickSummary: string, whatLooksGood: string[], riskSignals: string[] }`
-          : `Analyze this rental property listing. Provide a basic score (0-100) and key insights in Australian English.\n\nListing:\n${description}\n\n${optionalDetails.weeklyRent ? `Weekly Rent: ${optionalDetails.weeklyRent}\n` : ''}${optionalDetails.suburb ? `Location: ${optionalDetails.suburb}\n` : ''}${optionalDetails.bedrooms ? `Bedrooms: ${optionalDetails.bedrooms}\n` : ''}${optionalDetails.bathrooms ? `Bathrooms: ${optionalDetails.bathrooms}\n` : ''}\n\nReturn JSON with: { score: number (0-100), verdict: "Strong Buy" | "Consider Carefully" | "Probably Skip", quickSummary: string, whatLooksGood: string[], riskSignals: string[] }`)
-      : (isUSMarket
-          ? `Analyze this property for sale. Provide a basic score (0-100) and key insights.\n\nListing:\n${description}\n\n${optionalDetails.askingPrice ? `Asking Price: ${optionalDetails.askingPrice}\n` : ''}${optionalDetails.suburb ? `Location: ${optionalDetails.suburb}\n` : ''}${optionalDetails.bedrooms ? `Bedrooms: ${optionalDetails.bedrooms}\n` : ''}${optionalDetails.bathrooms ? `Bathrooms: ${optionalDetails.bathrooms}\n` : ''}\n\nReturn JSON with: { score: number (0-100), verdict: "Strong Buy" | "Consider Carefully" | "Probably Skip", quickSummary: string, whatLooksGood: string[], riskSignals: string[] }`
-          : `Analyze this property for sale. Provide a basic score (0-100) and key insights in Australian English.\n\nListing:\n${description}\n\n${optionalDetails.askingPrice ? `Asking Price: ${optionalDetails.askingPrice}\n` : ''}${optionalDetails.suburb ? `Location: ${optionalDetails.suburb}\n` : ''}${optionalDetails.bedrooms ? `Bedrooms: ${optionalDetails.bedrooms}\n` : ''}${optionalDetails.bathrooms ? `Bathrooms: ${optionalDetails.bathrooms}\n` : ''}\n\nReturn JSON with: { score: number (0-100), verdict: "Strong Buy" | "Consider Carefully" | "Probably Skip", quickSummary: string, whatLooksGood: string[], riskSignals: string[] }`);
 
     try {
       const response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
@@ -3469,6 +4953,7 @@ Deno.serve(async (req) => {
           riskSignals: result.riskSignals || [],
           reportMode,
           optionalDetails,
+          sourceDomain: bodySourceDomain || null,
         },
         analysisId, // Will be null for anonymous users, actual ID for logged-in users
       });
@@ -3485,16 +4970,18 @@ Deno.serve(async (req) => {
     const result = await getCurrentUser(req);
     user = result.user;
     const authError = result.error;
+    const authCode = result.code;
 
     console.log("=== Backend Permission Check ===");
     console.log("User:", user ? `${user.email} (${user.id})` : "NOT_AUTHENTICATED");
     console.log("Credits remaining:", user?.credits_remaining ?? "N/A");
     console.log("Credits reserved:", user?.credits_reserved ?? "N/A");
     console.log("Available credits:", (user ? user.credits_remaining - user.credits_reserved : 0));
+    console.log("authCode:", authCode);
 
     if (authError || !user) {
       console.log("analyze blocked reason: NOT_AUTHENTICATED");
-      return jsonResponse({ message: "Please sign in first to analyze listings.", code: "NOT_AUTHENTICATED" }, 401);
+      return jsonResponse({ message: "Please sign in first to analyze listings.", code: "SUBMIT_AUTH_FAILED", reason: authError, authCode }, 401);
     }
 
     if (!hasAvailableCredits(user)) {
@@ -3510,6 +4997,40 @@ Deno.serve(async (req) => {
     const imageUrls = Array.isArray(body.imageUrls) ? body.imageUrls.filter(isValidHttpUrl) : [];
     const description = typeof body.description === "string" ? body.description : "";
     const reportMode: ReportMode = body.reportMode === 'sale' ? 'sale' : 'rent';
+
+    // ── Market / Source resolution ───────────────────────────────────────────
+    const rawSource = body.source ?? body.sourceDomain ??
+      (body.optionalDetails?.source as string | undefined) ?? null;
+    const resolvedSourceDomain = body.sourceDomain ??
+      (typeof body.source === 'string' && body.source.includes('.') ? body.source : null) ??
+      (body.optionalDetails?.sourceDomain as string | undefined) ?? null;
+    const rawMarket = (body as Record<string, unknown>).market as string | null ?? null;
+    const rawListingUrl = (body as Record<string, unknown>).listingUrl as string | null ?? null;
+
+    const detectedMarket = detectMarket({
+      source: rawSource,
+      sourceDomain: resolvedSourceDomain,
+      market: rawMarket,
+      listingUrl: rawListingUrl,
+      description,
+      optionalDetails: body.optionalDetails,
+    });
+
+    console.log("[DIAG] backend market routing — submit:", {
+      action: "submit",
+      body_source: body.source,
+      body_sourceDomain: body.sourceDomain,
+      body_market: rawMarket,
+      body_listingUrl: rawListingUrl,
+      optional_source: (body.optionalDetails as Record<string, unknown>)?.source as string | null,
+      optional_sourceDomain: (body.optionalDetails as Record<string, unknown>)?.sourceDomain as string | null,
+      optional_market: (body.optionalDetails as Record<string, unknown>)?.market as string | null,
+      optional_listingUrl: (body.optionalDetails as Record<string, unknown>)?.listingUrl as string | null,
+      resolvedSource: rawSource,
+      resolvedSourceDomain,
+      final_market: detectedMarket,
+      reportMode,
+    });
 
     if (imageUrls.length === 0 && !description.trim()) {
       return jsonResponse({ message: "Please provide images or description" }, 400);
@@ -3527,7 +5048,9 @@ Deno.serve(async (req) => {
         imageUrls,
         description,
         body.optionalDetails,
-        reportMode
+        reportMode,
+        rawSource,
+        resolvedSourceDomain,
       );
       
       if (!createResult.success) {
@@ -3568,9 +5091,9 @@ Deno.serve(async (req) => {
     console.log("Analysis ID for run:", id);
 
     // Get user for credits operation (user was already validated in permission check)
-    const { user: currentUser, error: userError } = await getCurrentUser(req);
+    const { user: currentUser, error: userError, code: runAuthCode } = await getCurrentUser(req);
     if (userError || !currentUser) {
-      return jsonResponse({ message: "Authentication required", code: "NOT_AUTHENTICATED" }, 401);
+      return jsonResponse({ message: "Authentication required", code: "RUN_AUTH_FAILED", reason: userError, authCode: runAuthCode }, 401);
     }
 
     // Pre-reserve credit before starting analysis (atomic operation)
@@ -3613,6 +5136,81 @@ Deno.serve(async (req) => {
     const description = typeof body.description === "string" ? body.description : "";
     const optionalDetails = body.optionalDetails ?? {};
     const reportMode: ReportMode = body.reportMode === 'sale' ? 'sale' : 'rent';
+
+    // ── Market / Source resolution ─────────────────────────────────────────
+    // Priority: body > analysis record (DB) > optionalDetails > URL fallback
+    let source = body.source || body.sourceDomain ||
+      (optionalDetails?.source as string | undefined) || null;
+    let sourceDomain = body.sourceDomain || null;
+
+    // Fetch source from analysis record if not provided in body
+    if (!source || !sourceDomain) {
+      try {
+        const recordRes = await fetch(
+          `${LOCAL_URL}/rest/v1/analyses?id=eq.${id}&select=source,source_domain`,
+          {
+            headers: {
+              "apikey": LOCAL_SERVICE_KEY,
+              "Authorization": `Bearer ${LOCAL_SERVICE_KEY}`,
+            },
+          },
+        );
+        if (recordRes.ok) {
+          const records = await recordRes.json();
+          if (records && records.length > 0) {
+            source = source || records[0].source || null;
+            sourceDomain = sourceDomain || records[0].source_domain || null;
+          }
+        }
+      } catch (e) {
+        console.error("[DIAG] run: failed to fetch analysis record for source:", e);
+      }
+    }
+
+    // ── Unified market detection (shared by all actions) ──────────────────────────────────
+    const detectedMarket = detectMarket({
+      source,
+      sourceDomain,
+      market: null,
+      listingUrl: (body as Record<string, unknown>).listingUrl as string | null
+        ?? (optionalDetails as Record<string, unknown>).listingUrl as string | null
+        ?? null,
+      description,
+      optionalDetails,
+    });
+
+    console.log("[DIAG] backend market routing — run:", {
+      body_source: body.source,
+      body_sourceDomain: body.sourceDomain,
+      body_market: (body as Record<string, unknown>).market as string | null,
+      body_listingUrl: (body as Record<string, unknown>).listingUrl as string | null,
+      optional_source: (optionalDetails as Record<string, unknown>).source as string | null,
+      optional_sourceDomain: (optionalDetails as Record<string, unknown>).sourceDomain as string | null,
+      optional_market: (optionalDetails as Record<string, unknown>).market as string | null,
+      optional_listingUrl: (optionalDetails as Record<string, unknown>).listingUrl as string | null,
+      final_market: detectedMarket,
+      reportMode,
+    });
+
+    const selectedPromptName = detectedMarket === 'US'
+      ? (reportMode === 'sale' ? 'STEP2_US_SALE_PROMPT' : 'STEP2_US_RENT_PROMPT')
+      : detectedMarket === 'AU'
+      ? (reportMode === 'sale' ? 'STEP2_SALE_PROMPT' : 'STEP2_RENT_PROMPT')
+      : (reportMode === 'sale' ? 'STEP2_US_SALE_PROMPT (UNKNOWN→US)' : 'STEP2_US_RENT_PROMPT (UNKNOWN→US)');
+
+    console.log("[DIAG] market routing — run action:", {
+      action: "run",
+      body_source: body.source,
+      body_sourceDomain: body.sourceDomain,
+      body_market: (body as Record<string, unknown>).market as string | null,
+      body_listingUrl: (body as Record<string, unknown>).listingUrl as string | null,
+      optionalSource: (optionalDetails as Record<string, unknown>).source as string | null,
+      resolvedSource: source,
+      resolvedSourceDomain: sourceDomain,
+      reportMode,
+      final_market: detectedMarket,
+      selectedPromptName,
+    });
 
     const openRouterApiKey = Deno.env.get("OPENROUTER_API_KEY");
     if (!openRouterApiKey) {
@@ -3769,6 +5367,7 @@ Deno.serve(async (req) => {
 
       const step2Messages = buildStep2Messages(
         reportMode,
+        detectedMarket,
         visualAnalysis,
         description,
         optionalDetails,
@@ -3782,7 +5381,21 @@ Deno.serve(async (req) => {
       console.log("[Step 2] parsed successfully. overall_verdict:", decision.overall_verdict ?? null);
       console.log("[Step 2] raw text preview:", step2RawText.slice(0, 1000));
 
-      console.log("[Step 2] Decision complete:", decision.overall_verdict);
+      // Normalize Step2 decision to unified schema (handles US/AU field name differences)
+      const normalizedDecision = normalizeStep2Decision(decision, detectedMarket, optionalDetails);
+
+      console.log("[DIAG] normalized Step2 decision", {
+        market: detectedMarket,
+        raw_has_pros: Array.isArray((decision as any)?.pros),
+        raw_has_what_looks_good: Array.isArray((decision as any)?.what_looks_good),
+        raw_has_cons: Array.isArray((decision as any)?.cons),
+        raw_has_risk_signals: Array.isArray((decision as any)?.risk_signals),
+        normalized_pros_count: normalizedDecision.pros?.length ?? 0,
+        normalized_cons_count: normalizedDecision.cons?.length ?? 0,
+        normalized_price_assessment: normalizedDecision.price_assessment,
+      });
+
+      console.log("[Step 2] Decision complete:", normalizedDecision.overall_verdict);
 
       // Update state before competition estimation
       await updateAnalysisState(id, {
@@ -3801,8 +5414,8 @@ Deno.serve(async (req) => {
         reasons: ['Unable to assess competition risk']
       };
       
-      const recommendation: Step2Recommendation = (decision.recommendation as Step2Recommendation | null | undefined) ?? {
-        verdict: (decision.overall_verdict as string) || 'Need More Evidence',
+      const recommendation: Step2Recommendation = (normalizedDecision.recommendation as Step2Recommendation | null | undefined) ?? {
+        verdict: normalizedDecision.overall_verdict || 'Need More Evidence',
         good_fit_for: [],
         not_ideal_for: []
       };
@@ -3863,25 +5476,20 @@ Deno.serve(async (req) => {
           : null,
       } : { rent_fairness: null, applicationStrategy: null };
 
+      // Use normalized price_assessment (covers US/AU field name differences)
+      const normPrice = normalizedDecision.price_assessment;
+
       const saleFields = reportMode === 'sale' ? {
-        price_assessment: (decision as any).price_assessment ? {
-          estimated_min: typeof (decision as any).price_assessment.estimated_min === 'number'
-            ? (decision as any).price_assessment.estimated_min
-            : typeof (decision as any).price_assessment.estimated_min === 'string'
-            ? parseInt(String((decision as any).price_assessment.estimated_min).replace(/[^0-9]/g, ''), 10)
-            : null,
-          estimated_max: typeof (decision as any).price_assessment.estimated_max === 'number'
-            ? (decision as any).price_assessment.estimated_max
-            : typeof (decision as any).price_assessment.estimated_max === 'string'
-            ? parseInt(String((decision as any).price_assessment.estimated_max).replace(/[^0-9]/g, ''), 10)
-            : null,
-          asking_price: typeof (decision as any).price_assessment.asking_price === 'number'
-            ? (decision as any).price_assessment.asking_price
-            : typeof (decision as any).price_assessment.asking_price === 'string'
-            ? parseInt(String((decision as any).price_assessment.asking_price).replace(/[^0-9]/g, ''), 10)
-            : null,
-          verdict: (decision as any).price_assessment.verdict || 'fair',
-          explanation: (decision as any).price_assessment.explanation || ''
+        price_assessment: normPrice ? {
+          estimated_min: normPrice.estimated_min ?? null,
+          estimated_max: normPrice.estimated_max ?? null,
+          asking_price: normPrice.asking_price ?? null,
+          verdict: normPrice.verdict || 'Fair',
+          explanation: normPrice.explanation || '',
+          tax_context: normPrice.tax_context || '',
+          price_per_sqft_context: normPrice.price_per_sqft_context || '',
+          valuation_confidence: normPrice.valuation_confidence || 'Low',
+          missing_data: Array.isArray(normPrice.missing_data) ? normPrice.missing_data : [],
         } : null,
         investment_potential: (decision as any).investment_potential ? {
           growth_outlook: (decision as any).investment_potential.growth_outlook || 'Unknown',
@@ -3890,7 +5498,20 @@ Deno.serve(async (req) => {
           key_positives: Array.isArray((decision as any).investment_potential.key_positives)
             ? (decision as any).investment_potential.key_positives : [],
           key_concerns: Array.isArray((decision as any).investment_potential.key_concerns)
-            ? (decision as any).investment_potential.key_concerns : []
+            ? (decision as any).investment_potential.key_concerns : [],
+          // extended US sale fields
+          rating: (decision as any).investment_potential.rating || 'Unknown',
+          summary: (decision as any).investment_potential.summary || '',
+          supporting_signals: Array.isArray((decision as any).investment_potential.supporting_signals)
+            ? (decision as any).investment_potential.supporting_signals : [],
+          risks: Array.isArray((decision as any).investment_potential.risks)
+            ? (decision as any).investment_potential.risks : [],
+          things_to_verify: Array.isArray((decision as any).investment_potential.things_to_verify)
+            ? (decision as any).investment_potential.things_to_verify : [],
+          rent_estimate_available: (decision as any).investment_potential.rent_estimate_available === true,
+          estimated_monthly_rent: typeof (decision as any).investment_potential.estimated_monthly_rent === 'number'
+            ? (decision as any).investment_potential.estimated_monthly_rent : null,
+          investment_metrics: (decision as any).investment_potential.investment_metrics ?? null,
         } : null,
         affordability_check: (decision as any).affordability_check ? {
           estimated_deposit_20pct: typeof (decision as any).affordability_check.estimated_deposit_20pct === 'number'
@@ -4019,73 +5640,90 @@ Deno.serve(async (req) => {
           confidence: (decision as any).would_i_buy.confidence || 'MEDIUM',
           reason: (decision as any).would_i_buy.reason || ''
         } : null,
+        // === US Sale 决策支持报告字段映射 ===
+        property_snapshot: (decision as any).property_snapshot ?? null,
+        carrying_costs: (decision as any).carrying_costs ?? null,
+        maintenance_risk: (decision as any).maintenance_risk ?? null,
+        layout_fit: (decision as any).layout_fit ?? null,
+        listing_language_reality_check: Array.isArray((decision as any).listing_language_reality_check)
+          ? (decision as any).listing_language_reality_check : [],
+        neighborhood_lifestyle: (decision as any).neighborhood_lifestyle ?? null,
+        legal_compliance: (decision as any).legal_compliance ?? null,
+        environmental_risk: (decision as any).environmental_risk ?? null,
+        data_gaps: Array.isArray((decision as any).data_gaps)
+          ? (decision as any).data_gaps : [],
+        // === US Sale 决策支持报告字段映射 END ===
         // === Sale 模式新增字段映射 END ===
       } : { price_assessment: null, investment_potential: null, affordability_check: null };
 
       const result = {
         id, // Analysis ID for sharing functionality
         reportMode, // NEW: report mode indicator
+        source,     // market source for debugging
+        market: detectedMarket, // market routing flag (replaces isUSMarket boolean)
         overallScore: overallScoreNum,
-        finalRecommendation: decision.final_recommendation ? {
-          verdict: decision.final_recommendation.verdict || 'Apply With Caution',
-          reason: decision.final_recommendation.reason || ''
+        finalRecommendation: normalizedDecision.final_recommendation
+          ? {
+              verdict: normalizedDecision.final_recommendation.verdict || 'Apply With Caution',
+              reason: normalizedDecision.final_recommendation.reason || ''
+            }
+          : null,
+        scoreContext: normalizedDecision.score_context ? {
+          marketPosition: normalizedDecision.score_context.market_position || 'Average',
+          explanation: normalizedDecision.score_context.explanation || ''
         } : null,
-        scoreContext: decision.score_context ? {
-          marketPosition: decision.score_context.market_position || 'Average',
-          explanation: decision.score_context.explanation || ''
-        } : null,
-        decisionPriority: decision.decision_priority || (overallScoreNum > 75 ? 'HIGH' : overallScoreNum >= 55 ? 'MEDIUM' : 'LOW'),
-        confidenceLevel: decision.confidence_level || 'Medium',
-        overallVerdict: decision.overall_verdict || '',
-        quickSummary: decision.overall_verdict || '',
-        whatLooksGood: decision.pros || [],
-        riskSignals: decision.cons || [],
-        hiddenRisks: decision.hidden_risks || [],
-        risks: decision.risks || [],
+        decisionPriority: normalizedDecision.decision_priority || (overallScoreNum > 75 ? 'HIGH' : overallScoreNum >= 55 ? 'MEDIUM' : 'LOW'),
+        confidenceLevel: normalizedDecision.confidence_level || 'Medium',
+        overallVerdict: normalizedDecision.overall_verdict || '',
+        quickSummary: normalizedDecision.quick_summary || normalizedDecision.overall_verdict || '',
+        whatLooksGood: normalizedDecision.pros || [],
+        riskSignals: normalizedDecision.cons || [],
+        hiddenRisks: normalizedDecision.hidden_risks || [],
+        risks: normalizedDecision.risks || [],
         verdict: mappedVerdict,
-        realityCheck: decision.overall_verdict || '',
+        realityCheck: normalizedDecision.overall_verdict || '',
         reality_check: realityCheckResult,
-        spaceAnalysis: (decision.space_analysis as { area_type: string; score: number; explanation?: string; insights?: string[]; photo_count?: number }[] || aggregatedSpaceAnalysis).map((s: any) => ({
+        spaceAnalysis: (normalizedDecision.space_analysis as { area_type: string; score: number; explanation?: string; insights?: string[]; photo_count?: number }[] || aggregatedSpaceAnalysis).map((s: any) => ({
           spaceType: s.area_type || s.spaceType,
           score: s.score,
           explanation: s.explanation || '',
           photoCount: s.photo_count || s.photoCount || 0,
           observations: s.insights || s.observations || []
         })),
-        propertyStrengths: decision.property_strengths || [],
-        potentialIssues: decision.potential_issues || [],
+        propertyStrengths: normalizedDecision.property_strengths || normalizedDecision.pros || [],
+        potentialIssues: normalizedDecision.potential_issues || normalizedDecision.cons || [],
         competitionRisk: competitionRisk,
         inspectionFit: {
-          good_for: decision.inspection_fit?.good_for || recommendation.good_fit_for || [],
-          not_ideal_for: decision.inspection_fit?.not_ideal_for || recommendation.not_ideal_for || []
+          good_for: normalizedDecision.inspection_fit?.good_for || recommendation.good_fit_for || [],
+          not_ideal_for: normalizedDecision.inspection_fit?.not_ideal_for || recommendation.not_ideal_for || []
         },
         recommendation: {
           verdict: mappedVerdict,
           goodFitIf: recommendation.good_fit_for || [],
           notIdealIf: recommendation.not_ideal_for || []
         },
-        questionsToAsk: decision.questions_to_ask || decision.agent_questions || [],
-        agentQuestions: decision.agent_questions || decision.questions_to_ask || [],
+        questionsToAsk: normalizedDecision.questions_to_ask || normalizedDecision.agent_questions || [],
+        agentQuestions: normalizedDecision.agent_questions || normalizedDecision.questions_to_ask || [],
         ...rentFields,
         ...saleFields,
-        lightThermalGuide: decision.light_thermal_guide
+        lightThermalGuide: normalizedDecision.light_thermal_guide
           ? {
-              naturalLightSummary: decision.light_thermal_guide.natural_light_summary || '',
-              sunExposure: decision.light_thermal_guide.sun_exposure || 'Unknown',
-              thermalRisk: decision.light_thermal_guide.thermal_risk || 'Unknown',
-              summerComfort: decision.light_thermal_guide.summer_comfort || '',
-              winterComfort: decision.light_thermal_guide.winter_comfort || '',
-              confidence: decision.light_thermal_guide.confidence || 'Low',
-              evidence: Array.isArray(decision.light_thermal_guide.evidence)
-                ? decision.light_thermal_guide.evidence
+              naturalLightSummary: normalizedDecision.light_thermal_guide.natural_light_summary || '',
+              sunExposure: normalizedDecision.light_thermal_guide.sun_exposure || 'Unknown',
+              thermalRisk: normalizedDecision.light_thermal_guide.thermal_risk || 'Unknown',
+              summerComfort: normalizedDecision.light_thermal_guide.summer_comfort || '',
+              winterComfort: normalizedDecision.light_thermal_guide.winter_comfort || '',
+              confidence: normalizedDecision.light_thermal_guide.confidence || 'Low',
+              evidence: Array.isArray(normalizedDecision.light_thermal_guide.evidence)
+                ? normalizedDecision.light_thermal_guide.evidence
                 : []
             }
           : null,
-        agentLingoTranslation: decision.agent_lingo_translation
+        agentLingoTranslation: normalizedDecision.agent_lingo_translation
           ? {
-              shouldDisplay: decision.agent_lingo_translation.should_display === true,
-              phrases: Array.isArray(decision.agent_lingo_translation.phrases)
-                ? decision.agent_lingo_translation.phrases.map((item: any) => ({
+              shouldDisplay: normalizedDecision.agent_lingo_translation.should_display === true,
+              phrases: Array.isArray(normalizedDecision.agent_lingo_translation.phrases)
+                ? normalizedDecision.agent_lingo_translation.phrases.map((item: any) => ({
                     phrase: item?.phrase || '',
                     plainEnglish: item?.plain_english || '',
                     confidence: item?.confidence || 'Low'

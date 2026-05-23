@@ -1,9 +1,30 @@
 import { supabase } from './supabase';
-import { SUPABASE_PROJECT_REF, SUPABASE_ANON_KEY } from '../../shared/config';
+import { SUPABASE_PROJECT_REF, SUPABASE_ANON_KEY, SUPABASE_US_PROJECT_REF, SUPABASE_US_ANON_KEY } from '../../shared/config';
 import type { AnalyzeRequest, AnalysisProgress, AnalysisResult, AnalysisSummary, AnalysisHistoryResponse, AnalysisDetailResponse, BasicAnalysisResult } from '../types';
 
-// Supabase Edge Function URL
-const API_BASE_URL = import.meta.env.VITE_API_URL || `https://${SUPABASE_PROJECT_REF}.supabase.co/functions/v1/analyze`;
+// Supabase Edge Function URLs - AU and US servers
+const AU_API_URL = `https://${SUPABASE_PROJECT_REF}.supabase.co/functions/v1/analyze`;
+const US_API_URL = SUPABASE_US_PROJECT_REF
+  ? `https://${SUPABASE_US_PROJECT_REF}.supabase.co/functions/v1/analyze`
+  : '';
+
+// Determine API URL based on source domain
+// US sources (zillow.com) -> US server, AU sources (realestate.com.au, etc.) -> AU server
+export function getAnalyzeApiUrl(sourceDomain?: string): string {
+  if (sourceDomain && (sourceDomain.includes('zillow') || sourceDomain.includes('realtor'))) {
+    if (!US_API_URL) {
+      console.warn('[getAnalyzeApiUrl] US server not configured, falling back to AU server');
+      return AU_API_URL;
+    }
+    console.log('[getAnalyzeApiUrl] Routing to US server:', US_API_URL);
+    return US_API_URL;
+  }
+  console.log('[getAnalyzeApiUrl] Routing to AU server:', AU_API_URL);
+  return AU_API_URL;
+}
+
+// Legacy API_BASE_URL - kept for backward compatibility
+const API_BASE_URL = AU_API_URL;
 
 // ========== Utility Helpers ==========
 
@@ -39,19 +60,25 @@ async function getAuthenticatedSession(): Promise<{ session: any; user: any }> {
 /**
  * Build headers for authenticated API calls
  * Must include both apikey (anon key) and Authorization (user token)
+ * @param session - The authenticated session
+ * @param sourceDomain - Optional source domain to determine which anon key to use
  */
-function buildAuthHeaders(session: any): HeadersInit {
+function buildAuthHeaders(session: any, sourceDomain?: string): HeadersInit {
   const token = session?.access_token;
   const tokenPreview = token ? token.substring(0, 10) : 'NONE';
-  
+
   console.log('=== Building Auth Headers ===');
   console.log('Authorization token preview:', tokenPreview);
   console.log('Token is anon key?', token === SUPABASE_ANON_KEY);
   console.log('Token starts with eyJ?', token?.startsWith('eyJ'));
-  
+
+  // Use the correct anon key based on server
+  const isUSServer = sourceDomain && (sourceDomain.includes('zillow') || sourceDomain.includes('realtor'));
+  const anonKey = isUSServer ? SUPABASE_US_ANON_KEY : SUPABASE_ANON_KEY;
+
   return {
     'Content-Type': 'application/json',
-    'apikey': SUPABASE_ANON_KEY,
+    'apikey': anonKey,
     'Authorization': `Bearer ${token}`,
   };
 }
@@ -120,8 +147,10 @@ export async function uploadImagesToStorage(files: File[]): Promise<string[]> {
 }
 
 // ========== Step 1: Submit - 创建分析任务 ==========
-export async function submitAnalysis(data: AnalyzeRequest): Promise<{ id: string; status: string }> {
-  const url = `${API_BASE_URL}?action=submit`;
+// sourceDomain: optional domain to determine which server to use (e.g., 'zillow.com' -> US server)
+export async function submitAnalysis(data: AnalyzeRequest, sourceDomain?: string): Promise<{ id: string; status: string }> {
+  const apiUrl = getAnalyzeApiUrl(sourceDomain);
+  const url = `${apiUrl}?action=submit`;
   console.log('submitAnalysis URL:', url);
 
   // Get authenticated session with user token
@@ -149,7 +178,7 @@ export async function submitAnalysis(data: AnalyzeRequest): Promise<{ id: string
 
   const response = await fetch(url, {
     method: 'POST',
-    headers: buildAuthHeaders(session),
+    headers: buildAuthHeaders(session, sourceDomain),
     body: JSON.stringify(data),
   });
 
@@ -215,8 +244,9 @@ export async function submitAnalysis(data: AnalyzeRequest): Promise<{ id: string
 }
 
 // ========== Step 2: Run - 执行分析 ==========
-export async function runAnalysis(id: string, data: AnalyzeRequest): Promise<{ ok: boolean; id: string; analysisType?: 'basic' | 'full'; result?: BasicAnalysisResult }> {
-  const url = `${API_BASE_URL}?action=run`;
+export async function runAnalysis(id: string, data: AnalyzeRequest, sourceDomain?: string): Promise<{ ok: boolean; id: string; analysisType?: 'basic' | 'full'; result?: BasicAnalysisResult }> {
+  const apiUrl = getAnalyzeApiUrl(sourceDomain);
+  const url = `${apiUrl}?action=run`;
   console.log('runAnalysis URL:', url, 'id:', id);
 
   // Get authenticated session with user token
@@ -232,7 +262,7 @@ export async function runAnalysis(id: string, data: AnalyzeRequest): Promise<{ o
 
   const response = await fetch(url, {
     method: 'POST',
-    headers: buildAuthHeaders(session),
+    headers: buildAuthHeaders(session, sourceDomain),
     body: JSON.stringify({
       id,
       imageUrls: data.imageUrls,
@@ -258,13 +288,14 @@ export async function runAnalysis(id: string, data: AnalyzeRequest): Promise<{ o
 }
 
 // ========== Step 3: Poll - 轮询状态 ==========
-export async function getAnalysisProgress(analysisId: string): Promise<AnalysisProgress> {
-  const url = `${API_BASE_URL}?id=${analysisId}`;
+export async function getAnalysisProgress(analysisId: string, sourceDomain?: string): Promise<AnalysisProgress> {
+  const apiUrl = getAnalyzeApiUrl(sourceDomain);
+  const url = `${apiUrl}?id=${analysisId}`;
   console.log('getAnalysisProgress URL:', url);
-  
+
   // Get authenticated session with user token
   const { session } = await getAuthenticatedSession();
-  
+
   // Must have valid user session with access token
   if (!session?.access_token) {
     console.error('getAnalysisProgress: No access token - user not authenticated');
@@ -273,7 +304,7 @@ export async function getAnalysisProgress(analysisId: string): Promise<AnalysisP
 
   const response = await fetch(url, {
     method: 'GET',
-    headers: buildAuthHeaders(session),
+    headers: buildAuthHeaders(session, sourceDomain),
   });
 
   if (!response.ok) {
@@ -309,14 +340,18 @@ export interface BasicAnalysisRequest {
  *
  * 用于: 快速免费的基础分析服务
  */
-export async function analyzeBasicSync(data: BasicAnalysisRequest): Promise<BasicAnalysisResult> {
-  const url = `${API_BASE_URL}?action=basic-sync`;
+export async function analyzeBasicSync(data: BasicAnalysisRequest, sourceDomain?: string): Promise<BasicAnalysisResult> {
+  const apiUrl = getAnalyzeApiUrl(sourceDomain);
+  const url = `${apiUrl}?action=basic-sync`;
   console.log('[analyzeBasicSync] URL:', url);
 
   // 尝试获取登录用户的 token，如果有则传递以便保存历史记录
+  // Use the correct anon key based on server
+  const isUSServer = apiUrl === US_API_URL;
+  const anonKey = isUSServer ? SUPABASE_US_ANON_KEY : SUPABASE_ANON_KEY;
   let authHeaders: Record<string, string> = {
     'Content-Type': 'application/json',
-    'apikey': SUPABASE_ANON_KEY,
+    'apikey': anonKey,
   };
 
   try {
@@ -324,10 +359,14 @@ export async function analyzeBasicSync(data: BasicAnalysisRequest): Promise<Basi
     if (session?.access_token) {
       authHeaders['Authorization'] = `Bearer ${session.access_token}`;
       console.log('[analyzeBasicSync] User authenticated - will save to history');
+    } else {
+      // Anonymous: Supabase still requires Authorization header with anon key
+      authHeaders['Authorization'] = `Bearer ${anonKey}`;
+      console.log('[analyzeBasicSync] Anonymous user - using anon key for Authorization');
     }
   } catch {
-    // 未登录，使用匿名方式
-    console.log('[analyzeBasicSync] Anonymous user - no history record');
+    authHeaders['Authorization'] = `Bearer ${anonKey}`;
+    console.warn('[analyzeBasicSync] Failed to get session, using anon key');
   }
 
   const response = await fetch(url, {

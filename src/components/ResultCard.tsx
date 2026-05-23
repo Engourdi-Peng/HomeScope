@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import type { AnalysisResult } from '../types';
 import { ListingHeader } from './ListingHeader';
+import { USSaleReport } from './us/USSaleReport';
 import { Check, AlertCircle, ArrowRight, ArrowLeft, TrendingUp, AlertTriangle, MessageCircle, Eye, DollarSign, Share2, Copy, CheckCircle, Sun, MessageSquare, Send, SquareCheck, Zap } from 'lucide-react';
 
 function AnimatedNumber({ target, duration = 1500 }: { target: number; duration?: number }) {
@@ -224,6 +225,15 @@ export function ResultCard({ result, onBack, onShare, hideNav, isPublicShare, on
 
   // Check if this is a basic analysis (new format)
   const isBasic = isBasicAnalysis || result.analysisType === 'basic';
+
+  // ── US Zillow / Realtor sale: delegate to USSaleReport ───────────────────────
+  const sourceDomain = (result as any).sourceDomain ?? null;
+  const isUSZillow = result.reportMode === 'sale' && (
+    (typeof sourceDomain === 'string' && (sourceDomain.includes('zillow') || sourceDomain.includes('realtor')))
+  );
+  if (isUSZillow) {
+    return <USSaleReport result={result} />;
+  }
 
   const config = verdictConfig[result.verdict] || verdictConfig['Need More Evidence'];
   const competitionRisk = result.competitionRisk;

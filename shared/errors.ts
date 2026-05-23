@@ -13,6 +13,10 @@ export enum ExtractionErrorCode {
   DOM_NOT_READY = 'DOM_NOT_READY',
   PAGE_CHANGED_DURING_EXTRACTION = 'PAGE_CHANGED_DURING_EXTRACTION',
 
+  // 接入层错误（浏览器页面/supported site）
+  UNSUPPORTED_BROWSER_PAGE = 'UNSUPPORTED_BROWSER_PAGE',
+  UNSUPPORTED_SITE = 'UNSUPPORTED_SITE',
+
   // 提取层错误
   NO_IMAGES_FOUND = 'NO_IMAGES_FOUND',
   NO_DESCRIPTION_FOUND = 'NO_DESCRIPTION_FOUND',
@@ -49,6 +53,14 @@ export const ERROR_MESSAGES: Record<ExtractionErrorCode, { user: string; dev: st
   [ExtractionErrorCode.PAGE_CHANGED_DURING_EXTRACTION]: {
     user: 'Page changed during extraction, please retry',
     dev: 'URL changed mid-extraction',
+  },
+  [ExtractionErrorCode.UNSUPPORTED_BROWSER_PAGE]: {
+    user: "This extension can't run on browser internal pages (chrome://, new tab, etc.)",
+    dev: 'Content script cannot be injected into chrome:// or about: pages',
+  },
+  [ExtractionErrorCode.UNSUPPORTED_SITE]: {
+    user: 'Navigate to a property listing page (realestate.com.au or zillow.com)',
+    dev: 'URL is not a supported property site',
   },
   [ExtractionErrorCode.NO_IMAGES_FOUND]: {
     user: "Couldn't find any property images on this page",

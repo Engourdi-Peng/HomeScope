@@ -61,7 +61,14 @@ export function HistorySection() {
   }
 
   if (!history || history.length === 0) {
-    return null;
+    return (
+      <section className="ext-reports-section">
+        <div className="ext-section-label">Recent analyses</div>
+        <div className="ext-empty-state">
+          <span>No analyses yet. Analyze a property to get started.</span>
+        </div>
+      </section>
+    );
   }
 
   const displayHistory = history.slice(0, 8);

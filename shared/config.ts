@@ -5,6 +5,11 @@
 export const SUPABASE_PROJECT_REF = import.meta.env.VITE_SUPABASE_PROJECT_REF || 'trteewgplkqiedonomzg'
 export const SUPABASE_ANON_KEY = import.meta.env.VITE_SUPABASE_ANON_KEY || ''
 export const SUPABASE_URL = `https://${SUPABASE_PROJECT_REF}.supabase.co`
+
+// US Server configuration (for zillow.com analysis)
+export const SUPABASE_US_PROJECT_REF = import.meta.env.VITE_SUPABASE_US_PROJECT_REF || ''
+export const SUPABASE_US_ANON_KEY = import.meta.env.VITE_SUPABASE_US_ANON_KEY || ''
+export const SUPABASE_US_URL = SUPABASE_US_PROJECT_REF ? `https://${SUPABASE_US_PROJECT_REF}.supabase.co` : ''
 export const SITE_BASE_URL = import.meta.env.VITE_SITE_BASE_URL || 'https://www.tryhomescope.com'
 
 // Magic Link redirect URL for extension flows (must match Supabase Auth redirect URLs)

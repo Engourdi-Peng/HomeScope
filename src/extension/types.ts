@@ -85,6 +85,7 @@ export interface AppState {
   cooldownEndsAt: number | null;      // timestamp (ms) when cooldown ends; null if not cooling down
   extractionCached: boolean;           // true if current URL has a cached extraction result
   lastExtractedUrl: string | null;     // URL of the most recently cached extraction
+  sourceTabId: number | null;          // tab ID of the source page (Zillow/realestate) — preserved across sidepanel focus
 }
 
 // ── Actions ──
@@ -93,6 +94,8 @@ export type PageReadErrorCode =
   | 'CS_NOT_INJECTED'
   | 'NO_HOST_PERMISSION'
   | 'EXTRACTION_FAILED'
+  | 'UNSUPPORTED_BROWSER_PAGE'
+  | 'UNSUPPORTED_SITE'
   | 'UNKNOWN';
 
 export type AppAction =
@@ -110,4 +113,5 @@ export type AppAction =
   | { type: 'SET_READ_ERROR'; errorCode: PageReadErrorCode; errorMessage: string }
   | { type: 'SET_COOLDOWN'; cooldownEndsAt: number | null }
   | { type: 'SET_EXTRACTION_CACHED'; extractionCached: boolean; lastExtractedUrl: string | null }
+  | { type: 'SET_SOURCE_TAB_ID'; sourceTabId: number | null }
   | { type: 'RESET_ANALYSIS' };

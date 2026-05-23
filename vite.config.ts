@@ -12,21 +12,27 @@ const aliases = {
   '~shared/*': resolve(__dirname, 'shared/*'),
 };
 
-// 直接读取 .env 文件
+// 直接读取 .env 文件（按 Vite 规范：.env.local 优先级高于 .env）
 function readEnvFile() {
-  const envPath = resolve(process.cwd(), '.env');
   const result: Record<string, string> = {};
 
-  if (existsSync(envPath)) {
-    const content = readFileSync(envPath, 'utf8');
-    for (const line of content.split('\n')) {
-      const trimmed = line.trim();
-      if (!trimmed || trimmed.startsWith('#')) continue;
-      const idx = trimmed.indexOf('=');
-      if (idx < 0) continue;
-      const key = trimmed.slice(0, idx).trim();
-      const val = trimmed.slice(idx + 1).trim();
-      result[key] = val;
+  for (const file of ['.env', '.env.local']) {
+    const envPath = resolve(process.cwd(), file);
+    if (existsSync(envPath)) {
+      const content = readFileSync(envPath, 'utf8');
+      for (const line of content.split('\n')) {
+        const trimmed = line.trim();
+        if (!trimmed || trimmed.startsWith('#')) continue;
+        const idx = trimmed.indexOf('=');
+        if (idx < 0) continue;
+        const key = trimmed.slice(0, idx).trim();
+        let val = trimmed.slice(idx + 1).trim();
+        // Strip surrounding quotes (both " and ')
+        if ((val.startsWith('"') && val.endsWith('"')) || (val.startsWith("'") && val.endsWith("'"))) {
+          val = val.slice(1, -1);
+        }
+        result[key] = val;
+      }
     }
   }
 
@@ -39,6 +45,11 @@ const projectRef = envVars['VITE_SUPABASE_PROJECT_REF'] || 'trteewgplkqiedonomzg
 const supabaseUrl = `https://${projectRef}.supabase.co`;
 const siteBase = (envVars['VITE_SITE_BASE_URL'] || 'https://www.tryhomescope.com').replace(/\/$/, '');
 
+// US Server configuration
+const usProjectRef = envVars['VITE_SUPABASE_US_PROJECT_REF'] || '';
+const supabaseUsUrl = usProjectRef ? `https://${usProjectRef}.supabase.co` : '';
+const supabaseUsAnonKey = envVars['VITE_SUPABASE_US_ANON_KEY'] || '';
+
 if (!anonKey) {
   console.warn('[vite.config.ts] VITE_SUPABASE_ANON_KEY is empty or not found in .env!');
 }
@@ -46,6 +57,8 @@ if (!anonKey) {
 const sharedDefine = {
   __SUPABASE_ANON_KEY__: JSON.stringify(anonKey),
   __SITE_BASE_URL__: JSON.stringify(siteBase),
+  __SUPABASE_US_PROJECT_REF__: JSON.stringify(usProjectRef),
+  __SUPABASE_US_ANON_KEY__: JSON.stringify(supabaseUsAnonKey),
 };
 
 // ===== 构建后复制文件到 extension/dist =====
@@ -152,6 +165,8 @@ function injectAuthConfig(extDir) {
   const replacements = [
     ['__SUPABASE_URL__', JSON.stringify(supabaseUrl)],
     ['__SUPABASE_ANON_KEY__', JSON.stringify(anonKey)],
+    ['__SUPABASE_US_URL__', JSON.stringify(supabaseUsUrl)],
+    ['__SUPABASE_US_ANON_KEY__', JSON.stringify(supabaseUsAnonKey)],
     ['__MAGIC_LINK_REDIRECT__', JSON.stringify(`${siteBase}/auth/callback?from_extension=1`)],
     ['__AUTH_BRIDGE_SOURCE__', JSON.stringify('homescope-auth-bridge')],
     // __INJECTED_AT__ intentionally removed — it was unused and JSON.stringify(Date.now())

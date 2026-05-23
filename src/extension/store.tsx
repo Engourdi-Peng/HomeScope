@@ -78,6 +78,53 @@ function injectListingInfo(result: AnalysisResult, listingData: ListingData | Li
   };
 }
 
+// ===== URL Guard Helpers =====
+
+/** 检查 URL 是否可以注入 content script（排除浏览器内部页面） */
+function isInjectableUrl(url: string | undefined): boolean {
+  if (!url) return false;
+  return !(
+    url.startsWith('chrome://') ||
+    url.startsWith('chrome-extension://') ||
+    url.startsWith('about:') ||
+    url.startsWith('edge://') ||
+    url.startsWith('brave://') ||
+    url.startsWith('devtools://') ||
+    url.startsWith('file://') ||
+    url.startsWith('resource://')
+  );
+}
+
+/** 检查 URL 是否是支持的房产网站 */
+function isSupportedPropertyUrl(url: string | undefined): boolean {
+  if (!url) return false;
+  try {
+    const parsed = new URL(url);
+    const host = parsed.hostname.toLowerCase();
+    // 支持 realestate.com.au（含子域名）和 zillow.com（含子域名）
+    return (
+      host === 'realestate.com.au' ||
+      host.endsWith('.realestate.com.au') ||
+      host === 'zillow.com' ||
+      host.endsWith('.zillow.com')
+    );
+  } catch {
+    return false;
+  }
+}
+
+/** 返回 URL 友好错误信息的统一函数 */
+function getUrlErrorInfo(url: string | undefined): { code: 'UNSUPPORTED_BROWSER_PAGE' | 'UNSUPPORTED_SITE'; message: string } | null {
+  if (!url) return null;
+  if (!isInjectableUrl(url)) {
+    return { code: 'UNSUPPORTED_BROWSER_PAGE', message: getUserErrorMessage(ExtractionErrorCode.UNSUPPORTED_BROWSER_PAGE) };
+  }
+  if (!isSupportedPropertyUrl(url)) {
+    return { code: 'UNSUPPORTED_SITE', message: getUserErrorMessage(ExtractionErrorCode.UNSUPPORTED_SITE) };
+  }
+  return null;
+}
+
 // ===== Convert BasicAnalysisResult to AnalysisResult =====
 // Handles both backend format: { overallScore, verdict, quickSummary, ... }
 // And legacy format: { listingOverview, textAnalysis, decision, ... }
@@ -91,6 +138,9 @@ interface BasicSyncResult {
   riskSignals?: string[];
   reportMode?: 'rent' | 'sale';
   optionalDetails?: Record<string, unknown>;
+  sourceDomain?: string | null;
+  // Allow any additional fields from Step2 full_result to pass through
+  [key: string]: unknown;
 }
 
 function convertBasicToFullResult(basicResult: BasicSyncResult): AnalysisResult {
@@ -141,6 +191,21 @@ function convertBasicToFullResult(basicResult: BasicSyncResult): AnalysisResult 
         'Agent lingo translation',
       ],
     };
+
+    // Pass through ALL additional fields from the Step2 result (including sourceDomain, pros, cons, etc.)
+    // This ensures US Sale fields reach the ResultCard without explicit per-field mapping
+    const passthroughFields = [
+      'sourceDomain', 'pros', 'cons', 'price_assessment', 'investment_potential',
+      'carrying_costs', 'maintenance_risk', 'layout_fit', 'listing_language_reality_check',
+      'neighborhood_lifestyle', 'legal_compliance', 'environmental_risk',
+      'data_gaps', 'questions_to_ask', 'recommendation', 'property_snapshot',
+      'room_by_room',
+    ];
+    for (const field of passthroughFields) {
+      if (field in basicResult) {
+        (result as any)[field] = (basicResult as any)[field] ?? null;
+      }
+    }
 
     return result;
   }
@@ -216,6 +281,7 @@ const initialState: AppState = {
   cooldownEndsAt: null,
   extractionCached: false,
   lastExtractedUrl: null,
+  sourceTabId: null,
 };
 
 // ===== Reducer =====
@@ -289,6 +355,9 @@ function appReducer(state: AppState, action: AppAction): AppState {
         lastExtractedUrl: action.lastExtractedUrl,
       };
 
+    case 'SET_SOURCE_TAB_ID':
+      return { ...state, sourceTabId: action.sourceTabId };
+
     case 'RESET_ANALYSIS':
       return {
         ...state,
@@ -332,7 +401,7 @@ const AppContext = createContext<AppContextValue | null>(null);
 
 // ===== Message helper =====
 
-const noop = (..._args: unknown[]) => {};
+const noop = (..._args: unknown[]) => { if (_args.length) console.warn('[ExtApp]', ..._args); };
 
 function sendMessage<T = unknown>(message: Record<string, unknown>): Promise<T> {
   return new Promise((resolve, reject) => {
@@ -389,6 +458,28 @@ interface ExtractionResult {
 async function ensureContentScriptThenExtractListing(
   tabId: number
 ): Promise<ExtractionResult> {
+  // Step 0: 获取 tab URL 并做 URL guard
+  let tabUrl: string | undefined;
+  try {
+    const tab = await chrome.tabs.get(tabId);
+    tabUrl = tab.url;
+  } catch {
+    return {
+      data: null,
+      error: getUserErrorMessage(ExtractionErrorCode.TAB_UNAVAILABLE),
+      detection: null,
+    };
+  }
+
+  const urlError = getUrlErrorInfo(tabUrl);
+  if (urlError) {
+    return {
+      data: null,
+      error: urlError.message,
+      detection: null,
+    };
+  }
+
   // Step 1: PING — check if content script is already loaded
   let pingOk = false;
   try {
@@ -438,7 +529,10 @@ async function ensureContentScriptThenExtractListing(
         noop('[ExtApp] Content script may not be fully loaded after injection');
       }
     } catch (err: any) {
-      noop('[ExtApp] executeScript failed:', err.message, err);
+      // 仅对可注入页面打印严重错误；chrome:// 等页面预期失败，不打印
+      if (isInjectableUrl(tabUrl)) {
+        noop('[ExtApp] executeScript failed:', err.message, err);
+      }
       // 注入失败，返回明确错误
       return {
         data: null,
@@ -535,6 +629,19 @@ async function ensureContentScriptLoaded(tabId: number): Promise<boolean> {
   const PING_TIMEOUT_MS = 3000;  // 3 秒超时，给繁忙页面足够时间
   const MAX_RETRIES = 3;
 
+  // 获取 tab URL 用于错误分类
+  let tabUrl: string | undefined;
+  try {
+    const tab = await chrome.tabs.get(tabId);
+    tabUrl = tab.url;
+  } catch {
+    return false;
+  }
+
+  // URL guard — 不可注入页面直接返回 false（不报错）
+  if (!isInjectableUrl(tabUrl)) return false;
+  if (!isSupportedPropertyUrl(tabUrl)) return false;
+
   for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
     let pingOk = false;
     let lastError = '';
@@ -584,7 +691,10 @@ async function ensureContentScriptLoaded(tabId: number): Promise<boolean> {
         noop('[ExtApp] Content script injected but not ready');
         return false;
       } catch (err: any) {
-        noop('[ExtApp] executeScript failed:', err?.message || String(err));
+        // 非可注入页面的 executeScript 失败预期，不需要警告
+        if (isInjectableUrl(tabUrl)) {
+          noop('[ExtApp] executeScript failed:', err?.message || String(err));
+        }
         return false;
       }
     }
@@ -642,27 +752,48 @@ async function initializePageData(dispatch: React.Dispatch<AppAction>) {
   dispatch({ type: 'SET_PAGE_STATUS', pageStatus: 'loading' });
 
   let tabId: number | undefined;
+  let tabUrl: string | undefined;
+  let tabTitle: string | undefined;
+  let tabStatus: string | undefined;
   let pingResult: { ready: boolean; url?: string; title?: string; readyState?: string } | null = null;
 
   // Step 1: 获取当前激活 tab
   try {
-    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-    if (!tab?.id) {
+    const [activeTab] = await chrome.tabs.query({ active: true, currentWindow: true });
+    if (!activeTab?.id) {
       dispatch({ type: 'SET_READ_ERROR', errorCode: 'TAB_UNAVAILABLE', errorMessage: getUserErrorMessage(ExtractionErrorCode.TAB_UNAVAILABLE) });
       return;
     }
-    tabId = tab.id;
-    pingResult = { ready: true, url: tab.url, title: tab.title, readyState: tab.status };
+    tabId = activeTab.id;
+    tabUrl = activeTab.url;
+    tabTitle = activeTab.title;
+    tabStatus = activeTab.status;
+    pingResult = { ready: true, url: tabUrl, title: tabTitle, readyState: tabStatus };
+
+    // Step 2: URL guard — 排除不可注入页面和非支持网站
+    // 必须放在 try block 内，因为 activeTab 在这里才有效
+    const urlError = getUrlErrorInfo(tabUrl);
+    if (urlError) {
+      dispatch({ type: 'SET_READ_ERROR', errorCode: urlError.code, errorMessage: urlError.message });
+      return;
+    }
   } catch {
     dispatch({ type: 'SET_READ_ERROR', errorCode: 'TAB_UNAVAILABLE', errorMessage: getUserErrorMessage(ExtractionErrorCode.TAB_UNAVAILABLE) });
     return;
   }
 
-  // Step 2: Ping + inject + EXTRACT_LISTING (shared path)
-  const result = await ensureContentScriptThenExtractListing(tabId);
+  // Step 3: Ping + inject + EXTRACT_LISTING (shared path)
+  const result = await ensureContentScriptThenExtractListing(tabId!);
 
   // Step 3: Dispatch unified result
   dispatchExtractionResult(dispatch, result, pingResult);
+
+  // Step 4: Save the source tab ID so subsequent analysis calls use the correct tab
+  // even after the user focuses the sidepanel
+  if (result.data && tabId != null) {
+    dispatch({ type: 'SET_SOURCE_TAB_ID', sourceTabId: tabId });
+  }
+
   dispatch({ type: 'SET_PAGE_STATUS', pageStatus: 'ready' });
 }
 
@@ -828,10 +959,19 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         try {
           const [activeTab] = await chrome.tabs.query({ active: true, currentWindow: true });
           if (!activeTab?.id) return;
+
+          // URL guard — 非支持页面静默跳过
+          const urlError = getUrlErrorInfo(activeTab.url);
+          if (urlError) return;
+
           const pingResult = { url: activeTab.url, title: activeTab.title, readyState: activeTab.status };
           const result = await ensureContentScriptThenExtractListing(activeTab.id);
           // 静默更新：保持当前 analysisPhase 不变，仅更新卡片数据
           dispatchExtractionResult(dispatch, result, pingResult);
+          // 更新 sourceTabId：用户切换到了新的房产页面
+          if (result.data && activeTab.id != null) {
+            dispatch({ type: 'SET_SOURCE_TAB_ID', sourceTabId: activeTab.id });
+          }
         } catch {
           // 自动刷新失败不提示，避免干扰用户
         }
@@ -869,13 +1009,23 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
 
     let [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
     if (!tab?.id) {
-      dispatch({ type: 'SET_READ_ERROR', errorCode: 'TAB_UNAVAILABLE', errorMessage: 'Tab unavailable' });
+      dispatch({ type: 'SET_READ_ERROR', errorCode: 'TAB_UNAVAILABLE', errorMessage: getUserErrorMessage(ExtractionErrorCode.TAB_UNAVAILABLE) });
+      return;
+    }
+
+    // URL guard
+    const urlError = getUrlErrorInfo(tab.url);
+    if (urlError) {
+      dispatch({ type: 'SET_READ_ERROR', errorCode: urlError.code, errorMessage: urlError.message });
       return;
     }
 
     const pingResult = { url: tab.url, title: tab.title, readyState: tab.status };
     const result = await ensureContentScriptThenExtractListing(tab.id);
     dispatchExtractionResult(dispatch, result, pingResult);
+    if (result.data && tab.id != null) {
+      dispatch({ type: 'SET_SOURCE_TAB_ID', sourceTabId: tab.id });
+    }
     dispatch({ type: 'SET_PAGE_STATUS', pageStatus: 'ready' });
   }, []);
 
@@ -939,21 +1089,46 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     dispatch({ type: 'SET_ANALYSIS_RESULT', result: null });
     dispatch({ type: 'SET_VIEWING_HISTORY', id: null });
 
-    let [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-    if (!tab?.id) {
-      dispatch({ type: 'SET_ANALYSIS_PHASE', phase: 'error', error: 'Tab unavailable' });
-      return;
+    // Step 1: Determine which tab to use for analysis
+    // Prefer the stored source tab ID (captured when sidepanel first loaded),
+    // so analysis still works after the user focuses the sidepanel.
+    // Fall back to querying the active tab if no source tab is stored.
+    let tabId: number;
+    let currentUrl: string = '';
+
+    if (state.sourceTabId != null) {
+      tabId = state.sourceTabId;
+      // Verify the tab still exists and get its URL
+      try {
+        const tab = await chrome.tabs.get(tabId);
+        currentUrl = tab.url || '';
+      } catch {
+        // Tab no longer exists — fall back to active tab
+        const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+        if (!tab?.id) {
+          dispatch({ type: 'SET_ANALYSIS_PHASE', phase: 'error', error: 'Tab unavailable' });
+          return;
+        }
+        tabId = tab.id;
+        currentUrl = tab.url || '';
+      }
+    } else {
+      const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+      if (!tab?.id) {
+        dispatch({ type: 'SET_ANALYSIS_PHASE', phase: 'error', error: 'Tab unavailable' });
+        return;
+      }
+      tabId = tab.id;
+      currentUrl = tab.url || '';
     }
 
-    const currentUrl = tab.url || '';
-
-    // Step 2: Prevent Chrome internal pages (chrome://, about:, etc.)
-    // Chrome extensions cannot inject content scripts into these pages
-    if (currentUrl.startsWith('chrome://') || currentUrl.startsWith('chrome-extension://') || currentUrl.startsWith('about:') || currentUrl.startsWith('edge://') || currentUrl.startsWith('brave://')) {
+    // Step 2: URL guard — prevent injection into chrome:// pages or unsupported sites
+    const urlError = getUrlErrorInfo(currentUrl);
+    if (urlError) {
       dispatch({
         type: 'SET_ANALYSIS_PHASE',
         phase: 'error',
-        error: 'Please navigate to a property listing page (e.g., realestate.com.au). This extension cannot run on browser settings or new tab pages.',
+        error: urlError.message,
       });
       return;
     }
@@ -976,7 +1151,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     }
 
     // Step 3: Ensure content script is loaded (reuse shared helper)
-    await ensureContentScriptLoaded(tab.id);
+    await ensureContentScriptLoaded(tabId);
 
     // Step 4: Send START_USER_EXTRACTION
     dispatch({ type: 'SET_ANALYSIS_PHASE', phase: 'reading_page' });
@@ -994,7 +1169,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     try {
       extractResult = await sendMessageWithTimeout<ContentScriptResponse>(
         { action: 'START_USER_EXTRACTION', bypassCache },
-        tab.id,
+        tabId,
         60000  // 60秒，给图片多的页面足够时间
       );
     } catch (err) {
@@ -1020,10 +1195,21 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     // 处理 content script 的业务错误
     if (!response.success) {
       const errorMsg = response.error || 'Extraction failed';
+      const errorCode = response.code;
+
+      // Handle rate limit error - set cooldown and show countdown
+      if (errorCode === 'RATE_LIMIT') {
+        noop('[ExtApp] startAnalysis: rate limited');
+        // Set cooldown to 1 minute (matches content.js RATE_CONFIG.cooldownMs)
+        dispatch({ type: 'SET_COOLDOWN', cooldownEndsAt: Date.now() + 60 * 1000 });
+        dispatch({ type: 'SET_ANALYSIS_PHASE', phase: 'error', error: errorMsg });
+        return;
+      }
+
       if (response.detection && !response.detection.canAnalyze) {
         dispatch({ type: 'SET_ANALYSIS_PHASE', phase: 'error', error: "This doesn't look like a property listing page" });
       } else {
-        noop('[ExtApp] startAnalysis: extraction failed:', errorMsg, 'code:', response.code);
+        noop('[ExtApp] startAnalysis: extraction failed:', errorMsg, 'code:', errorCode);
         dispatch({ type: 'SET_ANALYSIS_PHASE', phase: 'error', error: errorMsg });
       }
       return;
@@ -1047,7 +1233,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
 
     // Step 5: Submit to analyze API (passes analysisType)
     await submitAnalysis(listingData, analysisType);
-  }, [state.cooldownEndsAt, state.lastExtractedUrl, state.extractionCached, state.listingData]);
+  }, [state.cooldownEndsAt, state.lastExtractedUrl, state.extractionCached, state.listingData, state.sourceTabId]);
 
   /**
    * Poll for analysis status from frontend.

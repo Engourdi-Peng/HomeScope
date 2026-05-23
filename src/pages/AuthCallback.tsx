@@ -88,7 +88,7 @@ export function AuthCallback() {
       if (isFromExtension) {
         pushSessionToExtension(session, { flowId });
         setStatus('success');
-        setMessage('登录成功！HomeScope 扩展已同步会话。此标签页将自动关闭。');
+        setMessage('Login successful! The HomeScope extension is now synced. This tab will close automatically.');
       } else {
         setStatus('success');
         setMessage('Login successful! Redirecting...');
@@ -122,10 +122,10 @@ export function AuthCallback() {
       setStatus('error');
       setMessage(
         isFromExtension
-          ? '登录流程异常：未检测到有效会话。请在扩展中重试。'
+          ? 'Login timed out: no active session detected. Please try signing in again from the extension.'
           : 'No active session found. Please sign in.'
       );
-    }, 20000);
+    }, 30000);
 
     return () => {
       finished = true;

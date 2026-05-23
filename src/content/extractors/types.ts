@@ -39,6 +39,21 @@ export interface StandardizedListingData {
   schoolRatings?: SchoolRating[];
   daysOnZillow?: number | null;
 
+  // === DOM 提取扩展字段 ===
+  highlights?: string[];
+  heating?: string;
+  cooling?: string;
+  basement?: string;
+  garageSpaces?: number | null;
+  carportSpaces?: number | null;
+  constructionMaterial?: string;
+  parcelNumber?: string;
+  taxAssessedValue?: number | null;
+  annualTax?: number | null;
+  dateOnMarket?: string;
+  region?: string;
+  gasMeters?: number | null;
+
   // === 通用扩展 ===
   facts?: Record<string, unknown>;
   rawJson?: unknown;
