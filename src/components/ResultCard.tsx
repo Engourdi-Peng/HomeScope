@@ -227,10 +227,43 @@ export function ResultCard({ result, onBack, onShare, hideNav, isPublicShare, on
   const isBasic = isBasicAnalysis || result.analysisType === 'basic';
 
   // ── US Zillow / Realtor sale: delegate to USSaleReport ───────────────────────
-  const sourceDomain = (result as any).sourceDomain ?? null;
-  const isUSZillow = result.reportMode === 'sale' && (
-    (typeof sourceDomain === 'string' && (sourceDomain.includes('zillow') || sourceDomain.includes('realtor')))
-  );
+  const sourceDomain = String((result as any).sourceDomain ?? '').toLowerCase();
+  const source = String((result as any).source ?? '').toLowerCase();
+  const listingUrl = String((result as any).listingUrl ?? '').toLowerCase();
+  const market = String((result as any).market ?? '').toUpperCase();
+
+  const hasUSModules =
+    !!(result as any).property_snapshot ||
+    !!(result as any).carrying_costs ||
+    !!(result as any).maintenance_risk ||
+    !!(result as any).legal_compliance ||
+    !!(result as any).investment_potential ||
+    !!(result as any).environmental_risk ||
+    !!(result as any).data_gaps;
+
+  const isUSZillow =
+    result.reportMode === 'sale' &&
+    (
+      market === 'US' ||
+      sourceDomain.includes('zillow') ||
+      source.includes('zillow') ||
+      listingUrl.includes('zillow') ||
+      sourceDomain.includes('realtor') ||
+      source.includes('realtor') ||
+      listingUrl.includes('realtor') ||
+      hasUSModules
+    );
+
+  console.log('[DIAG] ResultCard US route check', {
+    reportMode: result.reportMode,
+    sourceDomain,
+    source,
+    market,
+    listingUrl,
+    hasUSModules,
+    isUSZillow,
+  });
+
   if (isUSZillow) {
     return <USSaleReport result={result} />;
   }

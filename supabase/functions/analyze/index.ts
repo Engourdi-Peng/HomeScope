@@ -5660,7 +5660,11 @@ Deno.serve(async (req) => {
         id, // Analysis ID for sharing functionality
         reportMode, // NEW: report mode indicator
         source,     // market source for debugging
+        sourceDomain, // domain extracted from URL or source for frontend routing
         market: detectedMarket, // market routing flag (replaces isUSMarket boolean)
+        listingUrl: (body as Record<string, unknown>).listingUrl as string | null
+          ?? (optionalDetails as Record<string, unknown>).listingUrl as string | null
+          ?? null, // listing URL for frontend source detection
         overallScore: overallScoreNum,
         finalRecommendation: normalizedDecision.final_recommendation
           ? {
