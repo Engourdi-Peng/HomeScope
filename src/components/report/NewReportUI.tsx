@@ -6,6 +6,7 @@
  * Phase 2: Property Snapshot, Carrying Costs, Investment Potential, Detailed Risk Analysis,
  *          Data Gaps, Neighborhood, Remaining Sections.
  */
+import React from 'react';
 import {
   Check,
   CheckCircle2,
@@ -31,6 +32,24 @@ import {
   Activity,
 } from 'lucide-react';
 import type { NormalizedReport, ReportSection } from '../lib/reportAdapters/types';
+
+// ── Section dedup context ──────────────────────────────────────────────────────
+// Tracks which section IDs have been consumed by earlier components.
+
+const UsedSectionsCtx = React.createContext<Set<string>>(new Set());
+const RegisterSectionsCtx = React.createContext<(ids: string[]) => void>(() => {});
+
+function SectionRegistrar({ ids }: { ids: string[] }) {
+  const register = React.useContext(RegisterSectionsCtx);
+  React.useEffect(() => {
+    register(ids);
+  }, [ids.join(','), register]);
+  return null;
+}
+
+function useIsSectionUsed(id: string): boolean {
+  return React.useContext(UsedSectionsCtx).has(id);
+}
 
 // ── Safe Text Utilities ────────────────────────────────────────────────────────
 
@@ -280,6 +299,7 @@ function TopRisksSection({ report }: { report: NormalizedReport }) {
     action: string;
     icon: React.ReactNode;
     iconColor: string;
+    sectionId: string;
   }
 
   const riskCards: RiskCard[] = [];
@@ -303,6 +323,7 @@ function TopRisksSection({ report }: { report: NormalizedReport }) {
       action: renderValue(actionItem?.description ?? actionItem?.title ?? 'Verify this before making a decision.'),
       icon: iconFor(s.id, 'w-5 h-5'),
       iconColor: iconColorFor(s.id),
+      sectionId: s.id,
     });
   }
 
@@ -318,6 +339,7 @@ function TopRisksSection({ report }: { report: NormalizedReport }) {
         action: 'Verify this before making a decision.',
         icon: <AlertTriangle className="w-5 h-5" />,
         iconColor: 'text-amber-600/70',
+        sectionId: '__highlights__',
       });
     }
   }
@@ -325,15 +347,20 @@ function TopRisksSection({ report }: { report: NormalizedReport }) {
   if (riskCards.length === 0) return null;
 
   const filteredCards = riskCards.filter((c) => c.title || c.description);
+  const consumedIds = filteredCards
+    .map((c) => c.sectionId)
+    .filter((id): id is string => id !== '__highlights__');
 
   return (
-    <div className="bg-white rounded-2xl p-6 sm:p-8 md:p-10 mb-6 border border-slate-200">
-      <div className="flex items-center gap-3 mb-6 sm:mb-8">
-        <div className="w-10 h-10 rounded-xl bg-rose-500/10 flex items-center justify-center">
-          <AlertTriangle className="w-5 h-5 text-rose-600/70" />
+    <>
+      <SectionRegistrar ids={consumedIds} />
+      <div className="bg-white rounded-2xl p-6 sm:p-8 md:p-10 mb-6 border border-slate-200">
+        <div className="flex items-center gap-3 mb-6 sm:mb-8">
+          <div className="w-10 h-10 rounded-xl bg-rose-500/10 flex items-center justify-center">
+            <AlertTriangle className="w-5 h-5 text-rose-600/70" />
+          </div>
+          <h2 className="text-xl sm:text-2xl font-bold text-slate-900">Top Risks</h2>
         </div>
-        <h2 className="text-xl sm:text-2xl font-bold text-slate-900">Top Risks</h2>
-      </div>
 
       <div className="space-y-4 sm:space-y-6">
         {filteredCards.map((card, i) => {
@@ -378,7 +405,8 @@ function TopRisksSection({ report }: { report: NormalizedReport }) {
           );
         })}
       </div>
-    </div>
+      </div>
+    </>
   );
 }
 
@@ -923,11 +951,10 @@ function InvestmentPotentialSection({ report }: { report: NormalizedReport }) {
 function DetailedRiskAnalysisSection({ report }: { report: NormalizedReport }) {
   const { sections } = report;
 
-  // Collect all remaining risk sections not yet shown in Top Risks
   const riskSections = sections.filter((s) => {
     if (!isRiskSection(s)) return false;
-    // Skip if already shown in Top Risks (first 3)
-    return true; // TopRisksSection already takes first 3, but for Detailed we show ALL
+    if (useIsSectionUsed(s.id)) return false; // already shown in Top Risks
+    return true;
   });
 
   if (riskSections.length === 0) return null;
@@ -1292,7 +1319,8 @@ function RemainingSections({ report }: { report: NormalizedReport }) {
   const remaining = sections.filter(
     (s) =>
       !matchesPhase2Section(s) &&
-      !isRiskSection(s)
+      !isRiskSection(s) &&
+      !useIsSectionUsed(s.id)
   );
 
   if (remaining.length === 0) return null;
@@ -1342,7 +1370,29 @@ export function NewReportUI({ report }: NewReportUIProps) {
     return <EmptyState />;
   }
 
+  const [usedIds, setUsedIds] = React.useState<Set<string>>(new Set());
+  const registerSections = React.useCallback((ids: string[]) => {
+    setUsedIds(prev => {
+      const next = new Set(prev);
+      for (const id of ids) next.add(id);
+      return next;
+    });
+  }, []);
+
+  console.log('[NEW_REPORT_UI_RENDER]', {
+    market: report.meta.market,
+    reportMode: report.meta.reportMode,
+    sectionCount: report.sections.length,
+    quickFactsCount: report.quickFacts.length,
+    prosCount: report.highlights.pros.length,
+    consCount: report.highlights.cons.length,
+    risksCount: report.highlights.risks.length,
+  });
+  console.log('[NEW_REPORT_SECTION_IDS]', report.sections.map(s => s.id || s.title));
+
   return (
+    <UsedSectionsCtx.Provider value={usedIds}>
+    <RegisterSectionsCtx.Provider value={registerSections}>
     <div className="w-full max-w-[1056px] mx-auto px-4 sm:px-6 lg:px-8 py-4">
       {/* Phase 1 */}
       <HeroSection report={report} />
@@ -1360,5 +1410,7 @@ export function NewReportUI({ report }: NewReportUIProps) {
       {/* Everything else */}
       <RemainingSections report={report} />
     </div>
+    </RegisterSectionsCtx.Provider>
+    </UsedSectionsCtx.Provider>
   );
 }

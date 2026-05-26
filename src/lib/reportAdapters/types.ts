@@ -12,6 +12,8 @@ export interface ReportMeta {
   source?: string;
   sourceDomain?: string;
   isBasic: boolean;
+  /** Section IDs consumed by TopRisksSection — others skip them */
+  usedSectionIds?: string[];
 }
 
 // ---- hero ----
