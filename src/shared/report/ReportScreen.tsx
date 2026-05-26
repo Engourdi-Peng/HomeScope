@@ -32,13 +32,6 @@ export function ReportScreen({ mode, result, onBack, onShare, onUpgrade, analysi
   try {
     const normalizedReport = normalizeReportResult(result);
 
-    console.log('[REPORT_SCREEN_NEW_UI]', {
-      market: normalizedReport.meta.market,
-      reportMode: normalizedReport.meta.reportMode,
-      isBasic: normalizedReport.meta.isBasic,
-      sectionIds: normalizedReport.sections.map((s) => s.id),
-    });
-
     const newContent = (
       <NewReportUI report={normalizedReport} />
     );

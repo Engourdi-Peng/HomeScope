@@ -1379,17 +1379,6 @@ export function NewReportUI({ report }: NewReportUIProps) {
     });
   }, []);
 
-  console.log('[NEW_REPORT_UI_RENDER]', {
-    market: report.meta.market,
-    reportMode: report.meta.reportMode,
-    sectionCount: report.sections.length,
-    quickFactsCount: report.quickFacts.length,
-    prosCount: report.highlights.pros.length,
-    consCount: report.highlights.cons.length,
-    risksCount: report.highlights.risks.length,
-  });
-  console.log('[NEW_REPORT_SECTION_IDS]', report.sections.map(s => s.id || s.title));
-
   return (
     <UsedSectionsCtx.Provider value={usedIds}>
     <RegisterSectionsCtx.Provider value={registerSections}>

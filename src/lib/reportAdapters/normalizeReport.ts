@@ -85,13 +85,5 @@ export function normalizeReportResult(result: AnyResult): NormalizedReport {
     normalized = normalizeGenericReport(result);
   }
 
-  console.log('[RAW_RESULT_FOR_NORMALIZE]', result);
-  console.log('[NORMALIZED_REPORT_OUTPUT]', normalized);
-  console.log('[NORMALIZED_SECTIONS]', normalized.sections.map(s => ({
-    id: s.id,
-    title: s.title,
-    items: s.items,
-  })));
-
   return normalized;
 }
