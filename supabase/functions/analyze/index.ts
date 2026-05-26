@@ -5412,7 +5412,7 @@ Deno.serve(async (req) => {
       console.log("[Step 2] raw text preview:", step2RawText.slice(0, 1000));
 
       // Normalize Step2 decision to unified schema (handles US/AU field name differences)
-      const normalizedDecision = normalizeStep2Decision(decision, detectedMarket, optionalDetails);
+      const normalizedDecision = normalizeStep2Decision(decision, detectedMarket, body);
 
       console.log("[DIAG] normalized Step2 decision", {
         market: detectedMarket,
