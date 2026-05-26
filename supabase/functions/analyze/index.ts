@@ -3067,7 +3067,7 @@ type AnyRecord = Record<string, any>;
 function normalizeStep2Decision(
   decision: AnyRecord | null | undefined,
   market: Market,
-  optionalDetails?: { askingPrice?: unknown; price?: unknown }
+  optionalDetails?: Record<string, unknown>
 ): AnyRecord {
   const fallback = '';
   const fallbackArr: string[] = [];
@@ -3132,8 +3132,31 @@ function normalizeStep2Decision(
     ?? fallback
   );
 
-  // ── New US Sale decision support fields (passthrough with type safety) ──
-  const property_snapshot = (decision as any).property_snapshot ?? null;
+  // ── New US Sale decision support fields ──
+  // Build property_snapshot from optionalDetails (listing data) so UI always has data
+  const rawSnapshot = (decision as any).property_snapshot;
+  const property_snapshot = rawSnapshot ?? {
+    beds: optionalDetails?.bedrooms ?? null,
+    baths: optionalDetails?.bathrooms ?? null,
+    sqft: optionalDetails?.sqft ?? null,
+    lot_size: optionalDetails?.lotSize ?? null,
+    year_built: optionalDetails?.yearBuilt ?? null,
+    home_type: String(optionalDetails?.propertyType ?? ''),
+    property_subtype: String(optionalDetails?.propertySubtype ?? ''),
+    architectural_style: String(optionalDetails?.architecturalStyle ?? ''),
+    stories: optionalDetails?.stories ?? null,
+    parking: String(optionalDetails?.parking ?? ''),
+    hoa: String(optionalDetails?.hoaFee ?? ''),
+    annual_tax: optionalDetails?.annualTax ?? optionalDetails?.propertyTax ?? null,
+    tax_assessed_value: optionalDetails?.taxAssessedValue ?? null,
+    price_per_sqft: optionalDetails?.pricePerSqft ?? null,
+    roof: String(optionalDetails?.roof ?? ''),
+    materials: String(optionalDetails?.constructionMaterial ?? ''),
+    heating: String(optionalDetails?.heating ?? ''),
+    basement: String(optionalDetails?.basement ?? ''),
+    fireplace: String(optionalDetails?.fireplace ?? ''),
+    region: String(optionalDetails?.region ?? optionalDetails?.suburb ?? ''),
+  };
 
   const carryingCostsRaw = (decision as any).carrying_costs;
   const carrying_costs = carryingCostsRaw ? {
@@ -3147,9 +3170,16 @@ function normalizeStep2Decision(
     cost_pressure: carryingCostsRaw.cost_pressure ?? 'Unknown',
     summary: carryingCostsRaw.summary ?? '',
     missing_costs: Array.isArray(carryingCostsRaw.missing_costs) ? carryingCostsRaw.missing_costs : [],
-  } : null;
+  } : (optionalDetails?.annualTax || optionalDetails?.propertyTax || optionalDetails?.hoaFee) ? {
+    annual_tax: parsePriceToNumber(optionalDetails?.annualTax ?? optionalDetails?.propertyTax) ?? null,
+    monthly_tax_equivalent: null,
+    hoa: optionalDetails?.hoaFee ? 'Yes' : 'No',
+    cost_pressure: 'Unknown',
+    summary: '',
+    missing_costs: ['insurance', 'utilities', 'maintenance', 'mortgage'],
+  } : {};
 
-  const maintenance_risk = (decision as any).maintenance_risk ?? null;
+  const maintenance_risk = (decision as any).maintenance_risk ?? {};
 
   const layout_fit = (decision as any).layout_fit ?? null;
 
@@ -3157,11 +3187,11 @@ function normalizeStep2Decision(
     ? (decision as any).listing_language_reality_check
     : [];
 
-  const neighborhood_lifestyle = (decision as any).neighborhood_lifestyle ?? null;
+  const neighborhood_lifestyle = (decision as any).neighborhood_lifestyle ?? {};
 
-  const legal_compliance = (decision as any).legal_compliance ?? null;
+  const legal_compliance = (decision as any).legal_compliance ?? {};
 
-  const environmental_risk = (decision as any).environmental_risk ?? null;
+  const environmental_risk = (decision as any).environmental_risk ?? {};
 
   const data_gaps = Array.isArray((decision as any).data_gaps)
     ? (decision as any).data_gaps
@@ -5491,28 +5521,7 @@ Deno.serve(async (req) => {
           valuation_confidence: normPrice.valuation_confidence || 'Low',
           missing_data: Array.isArray(normPrice.missing_data) ? normPrice.missing_data : [],
         } : null,
-        investment_potential: (decision as any).investment_potential ? {
-          growth_outlook: (decision as any).investment_potential.growth_outlook || 'Unknown',
-          rental_yield_estimate: (decision as any).investment_potential.rental_yield_estimate || '',
-          capital_growth_5yr: (decision as any).investment_potential.capital_growth_5yr || '',
-          key_positives: Array.isArray((decision as any).investment_potential.key_positives)
-            ? (decision as any).investment_potential.key_positives : [],
-          key_concerns: Array.isArray((decision as any).investment_potential.key_concerns)
-            ? (decision as any).investment_potential.key_concerns : [],
-          // extended US sale fields
-          rating: (decision as any).investment_potential.rating || 'Unknown',
-          summary: (decision as any).investment_potential.summary || '',
-          supporting_signals: Array.isArray((decision as any).investment_potential.supporting_signals)
-            ? (decision as any).investment_potential.supporting_signals : [],
-          risks: Array.isArray((decision as any).investment_potential.risks)
-            ? (decision as any).investment_potential.risks : [],
-          things_to_verify: Array.isArray((decision as any).investment_potential.things_to_verify)
-            ? (decision as any).investment_potential.things_to_verify : [],
-          rent_estimate_available: (decision as any).investment_potential.rent_estimate_available === true,
-          estimated_monthly_rent: typeof (decision as any).investment_potential.estimated_monthly_rent === 'number'
-            ? (decision as any).investment_potential.estimated_monthly_rent : null,
-          investment_metrics: (decision as any).investment_potential.investment_metrics ?? null,
-        } : null,
+        investment_potential: normalizedDecision.investment_potential ?? null,
         affordability_check: (decision as any).affordability_check ? {
           estimated_deposit_20pct: typeof (decision as any).affordability_check.estimated_deposit_20pct === 'number'
             ? (decision as any).affordability_check.estimated_deposit_20pct
@@ -5529,6 +5538,7 @@ Deno.serve(async (req) => {
           note: (decision as any).affordability_check.note || ''
         } : null,
         // === Sale 模式新增字段映射 ===
+        property_snapshot: normalizedDecision.property_snapshot,
         land_value_analysis: (decision as any).land_value_analysis ? {
           landSize: typeof (decision as any).land_value_analysis.land_size === 'number'
             ? (decision as any).land_value_analysis.land_size
@@ -5642,16 +5652,16 @@ Deno.serve(async (req) => {
         } : null,
         // === US Sale 决策支持报告字段映射 ===
         property_snapshot: (decision as any).property_snapshot ?? null,
-        carrying_costs: (decision as any).carrying_costs ?? null,
-        maintenance_risk: (decision as any).maintenance_risk ?? null,
-        layout_fit: (decision as any).layout_fit ?? null,
-        listing_language_reality_check: Array.isArray((decision as any).listing_language_reality_check)
-          ? (decision as any).listing_language_reality_check : [],
-        neighborhood_lifestyle: (decision as any).neighborhood_lifestyle ?? null,
-        legal_compliance: (decision as any).legal_compliance ?? null,
-        environmental_risk: (decision as any).environmental_risk ?? null,
-        data_gaps: Array.isArray((decision as any).data_gaps)
-          ? (decision as any).data_gaps : [],
+        carrying_costs: normalizedDecision.carrying_costs,
+        maintenance_risk: normalizedDecision.maintenance_risk,
+        layout_fit: normalizedDecision.layout_fit,
+        listing_language_reality_check: Array.isArray(normalizedDecision.listing_language_reality_check)
+          ? normalizedDecision.listing_language_reality_check : [],
+        neighborhood_lifestyle: normalizedDecision.neighborhood_lifestyle,
+        legal_compliance: normalizedDecision.legal_compliance,
+        environmental_risk: normalizedDecision.environmental_risk,
+        data_gaps: Array.isArray(normalizedDecision.data_gaps)
+          ? normalizedDecision.data_gaps : [],
         // === US Sale 决策支持报告字段映射 END ===
         // === Sale 模式新增字段映射 END ===
       } : { price_assessment: null, investment_potential: null, affordability_check: null };
