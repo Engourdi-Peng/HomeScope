@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "HomeScope",
   "version": "1.0.2",
-  "description": "AI-powered property analysis in your browser - Supports realestate.com.au and Zillow",
+  "description": "AI-powered property analysis in your browser - Supports realestate.com.au and Zillow. For personal use only. Please respect each website's Terms of Service. Do not use for commercial bulk scraping.",
   "icons": {
     "16": "icon.png",
     "48": "icon.png",
@@ -22,7 +22,8 @@
     "https://www.realestate.com.au/*",
     "https://*.zillow.com/*",
     "https://*.tryhomescope.com/*",
-    "https://trteewgplkqiedonomzg.supabase.co/*"
+    "https://trteewgplkqiedonomzg.supabase.co/*",
+    "https://wkactamkheskblkdqvza.supabase.co/*"
   ],
   "background": {
     "service_worker": "background.js",
