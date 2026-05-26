@@ -3133,29 +3133,29 @@ function normalizeStep2Decision(
   );
 
   // ── New US Sale decision support fields ──
-  // Build property_snapshot from optionalDetails (listing data) so UI always has data
+  // Build property_snapshot from body (extension sends listing data at body top-level)
   const rawSnapshot = (decision as any).property_snapshot;
   const property_snapshot = rawSnapshot ?? {
-    beds: optionalDetails?.bedrooms ?? null,
-    baths: optionalDetails?.bathrooms ?? null,
-    sqft: optionalDetails?.sqft ?? null,
-    lot_size: optionalDetails?.lotSize ?? null,
-    year_built: optionalDetails?.yearBuilt ?? null,
-    home_type: String(optionalDetails?.propertyType ?? ''),
-    property_subtype: String(optionalDetails?.propertySubtype ?? ''),
-    architectural_style: String(optionalDetails?.architecturalStyle ?? ''),
-    stories: optionalDetails?.stories ?? null,
-    parking: String(optionalDetails?.parking ?? ''),
-    hoa: String(optionalDetails?.hoaFee ?? ''),
-    annual_tax: optionalDetails?.annualTax ?? optionalDetails?.propertyTax ?? null,
-    tax_assessed_value: optionalDetails?.taxAssessedValue ?? null,
-    price_per_sqft: optionalDetails?.pricePerSqft ?? null,
-    roof: String(optionalDetails?.roof ?? ''),
-    materials: String(optionalDetails?.constructionMaterial ?? ''),
-    heating: String(optionalDetails?.heating ?? ''),
-    basement: String(optionalDetails?.basement ?? ''),
-    fireplace: String(optionalDetails?.fireplace ?? ''),
-    region: String(optionalDetails?.region ?? optionalDetails?.suburb ?? ''),
+    beds: (optionalDetails as any)?.bedrooms ?? (body as any)?.bedrooms ?? null,
+    baths: (optionalDetails as any)?.bathrooms ?? (body as any)?.bathrooms ?? null,
+    sqft: (optionalDetails as any)?.sqft ?? (body as any)?.sqft ?? null,
+    lot_size: (optionalDetails as any)?.lotSize ?? (body as any)?.lotSize ?? null,
+    year_built: (optionalDetails as any)?.yearBuilt ?? (body as any)?.yearBuilt ?? null,
+    home_type: String((optionalDetails as any)?.propertyType ?? (body as any)?.propertyType ?? ''),
+    property_subtype: String((optionalDetails as any)?.propertySubtype ?? (body as any)?.propertySubtype ?? ''),
+    architectural_style: String((optionalDetails as any)?.architecturalStyle ?? (body as any)?.architecturalStyle ?? ''),
+    stories: (optionalDetails as any)?.stories ?? (body as any)?.stories ?? null,
+    parking: String((optionalDetails as any)?.parking ?? (body as any)?.parking ?? ''),
+    hoa: String((optionalDetails as any)?.hoaFee ?? (body as any)?.hoaFee ?? ''),
+    annual_tax: (optionalDetails as any)?.annualTax ?? (optionalDetails as any)?.propertyTax ?? (body as any)?.propertyTax ?? null,
+    tax_assessed_value: (optionalDetails as any)?.taxAssessedValue ?? (body as any)?.taxAssessedValue ?? null,
+    price_per_sqft: (optionalDetails as any)?.pricePerSqft ?? (body as any)?.pricePerSqft ?? null,
+    roof: String((optionalDetails as any)?.roof ?? (body as any)?.roof ?? ''),
+    materials: String((optionalDetails as any)?.constructionMaterial ?? (body as any)?.constructionMaterial ?? ''),
+    heating: String((optionalDetails as any)?.heating ?? (body as any)?.heating ?? ''),
+    basement: String((optionalDetails as any)?.basement ?? (body as any)?.basement ?? ''),
+    fireplace: String((optionalDetails as any)?.fireplace ?? (body as any)?.fireplace ?? ''),
+    region: String((optionalDetails as any)?.region ?? (optionalDetails as any)?.suburb ?? (body as any)?.region ?? (body as any)?.suburb ?? ''),
   };
 
   const carryingCostsRaw = (decision as any).carrying_costs;
@@ -3170,10 +3170,10 @@ function normalizeStep2Decision(
     cost_pressure: carryingCostsRaw.cost_pressure ?? 'Unknown',
     summary: carryingCostsRaw.summary ?? '',
     missing_costs: Array.isArray(carryingCostsRaw.missing_costs) ? carryingCostsRaw.missing_costs : [],
-  } : (optionalDetails?.annualTax || optionalDetails?.propertyTax || optionalDetails?.hoaFee) ? {
-    annual_tax: parsePriceToNumber(optionalDetails?.annualTax ?? optionalDetails?.propertyTax) ?? null,
+  } : ((optionalDetails as any)?.annualTax || (optionalDetails as any)?.propertyTax || (optionalDetails as any)?.hoaFee || (body as any)?.propertyTax || (body as any)?.hoaFee) ? {
+    annual_tax: parsePriceToNumber((optionalDetails as any)?.annualTax ?? (optionalDetails as any)?.propertyTax ?? (body as any)?.propertyTax) ?? null,
     monthly_tax_equivalent: null,
-    hoa: optionalDetails?.hoaFee ? 'Yes' : 'No',
+    hoa: ((optionalDetails as any)?.hoaFee ?? (body as any)?.hoaFee) ? 'Yes' : 'No',
     cost_pressure: 'Unknown',
     summary: '',
     missing_costs: ['insurance', 'utilities', 'maintenance', 'mortgage'],
