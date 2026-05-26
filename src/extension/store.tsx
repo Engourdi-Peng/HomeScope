@@ -195,7 +195,8 @@ function convertBasicToFullResult(basicResult: BasicSyncResult): AnalysisResult 
     // Pass through ALL additional fields from the Step2 result (including sourceDomain, pros, cons, etc.)
     // This ensures US Sale fields reach the ResultCard without explicit per-field mapping
     const passthroughFields = [
-      'sourceDomain', 'pros', 'cons', 'price_assessment', 'investment_potential',
+      'market', 'source', 'listingUrl', 'sourceDomain', 'pros', 'cons',
+      'price_assessment', 'investment_potential',
       'carrying_costs', 'maintenance_risk', 'layout_fit', 'listing_language_reality_check',
       'neighborhood_lifestyle', 'legal_compliance', 'environmental_risk',
       'data_gaps', 'questions_to_ask', 'recommendation', 'property_snapshot',

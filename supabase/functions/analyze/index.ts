@@ -4974,6 +4974,30 @@ Deno.serve(async (req) => {
         result.verdict = mappedVerdict;
       }
 
+      // Build property_snapshot from optionalDetails for US market display
+      const property_snapshot = {
+        beds: (optionalDetails as Record<string, unknown>)?.bedrooms ?? null,
+        baths: (optionalDetails as Record<string, unknown>)?.bathrooms ?? null,
+        sqft: (optionalDetails as Record<string, unknown>)?.sqft ?? null,
+        lot_size: (optionalDetails as Record<string, unknown>)?.lotSize ?? null,
+        year_built: (optionalDetails as Record<string, unknown>)?.yearBuilt ?? null,
+        home_type: String((optionalDetails as Record<string, unknown>)?.propertyType ?? ''),
+        property_subtype: String((optionalDetails as Record<string, unknown>)?.propertySubtype ?? ''),
+        architectural_style: String((optionalDetails as Record<string, unknown>)?.architecturalStyle ?? ''),
+        stories: (optionalDetails as Record<string, unknown>)?.stories ?? null,
+        parking: String((optionalDetails as Record<string, unknown>)?.parking ?? ''),
+        hoa: String((optionalDetails as Record<string, unknown>)?.hoaFee ?? ''),
+        annual_tax: (optionalDetails as Record<string, unknown>)?.annualTax ?? (optionalDetails as Record<string, unknown>)?.propertyTax ?? null,
+        tax_assessed_value: (optionalDetails as Record<string, unknown>)?.taxAssessedValue ?? null,
+        price_per_sqft: (optionalDetails as Record<string, unknown>)?.pricePerSqft ?? null,
+        roof: String((optionalDetails as Record<string, unknown>)?.roof ?? ''),
+        materials: String((optionalDetails as Record<string, unknown>)?.constructionMaterial ?? ''),
+        heating: String((optionalDetails as Record<string, unknown>)?.heating ?? ''),
+        basement: String((optionalDetails as Record<string, unknown>)?.basement ?? ''),
+        fireplace: String((optionalDetails as Record<string, unknown>)?.fireplace ?? ''),
+        region: String((optionalDetails as Record<string, unknown>)?.region ?? (optionalDetails as Record<string, unknown>)?.suburb ?? ''),
+      };
+
       return jsonResponse({
         result: {
           overallScore: result.score,
@@ -4982,8 +5006,12 @@ Deno.serve(async (req) => {
           whatLooksGood: result.whatLooksGood || [],
           riskSignals: result.riskSignals || [],
           reportMode,
-          optionalDetails,
+          market: detectedMarket,
+          source: bodySource || null,
           sourceDomain: bodySourceDomain || null,
+          listingUrl: bodyListingUrl || null,
+          optionalDetails,
+          property_snapshot,
         },
         analysisId, // Will be null for anonymous users, actual ID for logged-in users
       });
