@@ -12,6 +12,16 @@ function str(val: any): string {
   return String(val);
 }
 
+function safeText(val: any): string {
+  if (val == null) return '';
+  if (typeof val === 'string') return val.trim();
+  if (typeof val === 'number' || typeof val === 'boolean') return String(val);
+  if (typeof val === 'function') return '';
+  if (Array.isArray(val)) return val.map(safeText).filter(Boolean).join(', ');
+  if (typeof val === 'object') return str(val);
+  return '';
+}
+
 function num(val: any): number | null {
   if (val === null || val === undefined || val === '') return null;
   const n = Number(val);
@@ -62,25 +72,25 @@ function buildQuickFacts(result: AnyResult): QuickFact[] {
   const info = result.listingInfo ?? result.listingOverview ?? {};
 
   const beds = info.bedrooms ?? result.bedrooms ?? null;
-  if (beds !== null && beds !== undefined) facts.push({ label: 'Beds', value: str(beds) });
+  if (beds !== null && beds !== undefined) facts.push({ label: 'Beds', value: safeText(beds) });
 
   const baths = info.bathrooms ?? result.bathrooms ?? null;
-  if (baths !== null && baths !== undefined) facts.push({ label: 'Baths', value: str(baths) });
+  if (baths !== null && baths !== undefined) facts.push({ label: 'Baths', value: safeText(baths) });
 
   const parking = info.parking ?? result.parking ?? null;
-  if (parking !== null && parking !== undefined) facts.push({ label: 'Parking', value: str(parking) });
+  if (parking !== null && parking !== undefined) facts.push({ label: 'Parking', value: safeText(parking) });
 
   const price = info.price ?? result.price ?? null;
-  if (price) facts.push({ label: 'Price', value: str(price) });
+  if (price) facts.push({ label: 'Price', value: safeText(price) });
 
   const weeklyRent = info.weeklyRent ?? result.weeklyRent ?? null;
-  if (weeklyRent) facts.push({ label: 'Rent/wk', value: str(weeklyRent) });
+  if (weeklyRent) facts.push({ label: 'Rent/wk', value: safeText(weeklyRent) });
 
   const propType = info.propertyType ?? result.propertyType ?? null;
-  if (propType) facts.push({ label: 'Type', value: str(propType) });
+  if (propType) facts.push({ label: 'Type', value: safeText(propType) });
 
   const sqft = info.sqft ?? result.sqft ?? null;
-  if (sqft) facts.push({ label: 'Sqft', value: str(sqft) });
+  if (sqft) facts.push({ label: 'Sqft', value: safeText(sqft) });
 
   return facts;
 }

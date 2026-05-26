@@ -28,21 +28,17 @@ export function ReportShell({ mode, children }: ReportShellProps) {
           />
           <div className="absolute inset-0 bg-gradient-to-r from-[#FDFCF9] via-[#FDFCF9]/80 to-transparent" />
         </div>
-        <div className="relative z-10 w-full max-w-[56rem]">
+        <div className="relative z-10 w-full max-w-[1200px]">
           {children}
         </div>
       </div>
     );
   }
 
-  // extension: panel container — no fixed decoration background (600-720px sidepanel
-  // cannot accommodate a full-bleed Unsplash photo; use clean solid background).
-  // NOTE: intentionally no overflow: hidden here — .ext-app--report (App.tsx) is the
-  // scroll container; ReportShell's children (NavBar sticky, ResultCard) must be
-  // descendants of that scroll container, not of an intermediate overflow clip.
+  // extension: panel container — no fixed decoration background
   return (
-    <div className="min-h-screen bg-[#FDFCF9] text-stone-800 font-sans relative flex flex-col items-center py-12 px-4 sm:px-6 lg:px-8 selection:bg-stone-200 selection:text-stone-900">
-      <div className="relative z-10 w-full max-w-[56rem]">
+    <div className="min-h-screen bg-[#FDFCF9] text-stone-800 font-sans relative flex flex-col items-center py-4 px-4 sm:px-6 lg:px-8 selection:bg-stone-200 selection:text-stone-900">
+      <div className="relative z-10 w-full max-w-[1200px]">
         {children}
       </div>
     </div>
