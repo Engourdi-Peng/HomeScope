@@ -28,12 +28,25 @@ type ReportScreenProps = {
 export function ReportScreen({ mode, result, onBack, onShare, onUpgrade, analysisId, noShell }: ReportScreenProps) {
   const isExtension = mode === 'extension';
 
+  // Detect share page to suppress back button
+  const isSharePage =
+    typeof window !== 'undefined' &&
+    !!window.location.pathname.includes('/share/');
+
+  const showBackButton = mode !== 'extension' && !isSharePage;
+
   // ── New unified path: normalize → NewReportUI ─────────────────────────────
   try {
     const normalizedReport = normalizeReportResult(result);
 
     const newContent = (
-      <NewReportUI report={normalizedReport} />
+      <NewReportUI
+        report={normalizedReport}
+        mode={mode}
+        showBackButton={showBackButton}
+        onShare={onShare}
+        analysisId={analysisId}
+      />
     );
 
     if (noShell) return newContent;

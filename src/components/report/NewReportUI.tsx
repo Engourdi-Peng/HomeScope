@@ -169,6 +169,8 @@ function isRiskSection(section: ReportSection): boolean {
 function HeroSection({ report }: { report: NormalizedReport }) {
   const { hero, highlights, sections } = report;
 
+  const identityText = hero.address || hero.title || '';
+
   const mainReasons: string[] = [];
   for (const r of highlights.risks) {
     if (mainReasons.length >= 3) break;
@@ -215,6 +217,25 @@ function HeroSection({ report }: { report: NormalizedReport }) {
           </div>
           <span className="text-slate-300 uppercase tracking-wider text-sm font-semibold">Final Verdict</span>
         </div>
+
+        {/* Property identity strip */}
+        {(identityText || hero.imageUrl) && (
+          <div className="flex items-center gap-3 mb-5 sm:mb-6 p-3 sm:p-4 bg-white/5 border border-white/10 rounded-xl w-full min-w-0">
+            {hero.imageUrl && (
+              <img
+                src={hero.imageUrl}
+                alt={identityText || 'Property'}
+                className="w-16 h-12 sm:w-20 sm:h-14 rounded-lg object-cover flex-shrink-0 min-w-0"
+                onError={(e) => { (e.target as HTMLImageElement).style.display = 'none'; }}
+              />
+            )}
+            {identityText && (
+              <span className="text-slate-200 text-sm sm:text-base font-medium min-w-0 break-words leading-snug">
+                {renderValue(identityText)}
+              </span>
+            )}
+          </div>
+        )}
 
         <div className="flex items-baseline gap-3 mb-6">
           {scoreText !== null ? (
@@ -1334,6 +1355,196 @@ function RemainingSections({ report }: { report: NormalizedReport }) {
   );
 }
 
+// ── Report Closing CTA ───────────────────────────────────────────────────────
+
+function ReportClosingCTA({
+  report,
+  onShare,
+  analysisId,
+  mode,
+}: {
+  report: NormalizedReport;
+  onShare?: (analysisId: string) => Promise<{ slug: string; shareUrl: string }>;
+  analysisId?: string;
+  mode?: 'web' | 'extension';
+}) {
+  const { hero, meta } = report;
+  const [shareLabel, setShareLabel] = React.useState('Get a second opinion');
+  const shareTimerRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const score = hero.score;
+  const market = meta.market;
+  const nextStepVerb = market === 'AU' ? 'inspection' : market === 'US' ? 'viewing' : 'next step';
+
+  // Score-based next move
+  let nextMove = 'Use the questions above to verify the biggest unknowns before moving forward.';
+  if (score !== null && score !== undefined) {
+    if (score < 60) {
+      nextMove = 'Ask about the biggest red flags first. If the answers are vague, this may not be worth your time.';
+    } else if (score <= 75) {
+      nextMove = 'Keep it on your shortlist, but verify the key risks before committing time to a viewing or inspection.';
+    } else {
+      nextMove = 'This one looks promising. Book the inspection or viewing, but bring the key questions with you.';
+    }
+  }
+
+  function resetShareLabel() {
+    if (shareTimerRef.current) clearTimeout(shareTimerRef.current);
+    shareTimerRef.current = setTimeout(() => setShareLabel('Get a second opinion'), 2000);
+  }
+
+  async function handleShare() {
+    const raw = report.raw ?? {};
+
+    // 1. Explicit share URL fields
+    const explicitUrl =
+      raw.shareUrl ?? raw.share_url ?? raw.publicUrl ?? raw.public_url;
+    if (typeof explicitUrl === 'string' && explicitUrl.startsWith('http')) {
+      try {
+        await navigator.clipboard.writeText(explicitUrl);
+        setShareLabel('Link copied');
+        resetShareLabel();
+      } catch {
+        setShareLabel('Copy failed');
+        resetShareLabel();
+      }
+      return;
+    }
+
+    // 2. Share slug
+    const slug =
+      raw.shareSlug ?? raw.share_slug;
+    if (typeof slug === 'string' && slug) {
+      const url = `${window.location.origin}/share/${slug}`;
+      try {
+        await navigator.clipboard.writeText(url);
+        setShareLabel('Link copied');
+        resetShareLabel();
+      } catch {
+        setShareLabel('Copy failed');
+        resetShareLabel();
+      }
+      return;
+    }
+
+    // 3. Already on share page
+    if (window.location.pathname.includes('/share/')) {
+      try {
+        await navigator.clipboard.writeText(window.location.href);
+        setShareLabel('Link copied');
+        resetShareLabel();
+      } catch {
+        setShareLabel('Copy failed');
+        resetShareLabel();
+      }
+      return;
+    }
+
+    // 4. Call onShare API
+    if (onShare && analysisId) {
+      try {
+        const result = await onShare(analysisId);
+        const url = result.shareUrl ?? `${window.location.origin}/share/${result.slug}`;
+        await navigator.clipboard.writeText(url);
+        setShareLabel('Link copied');
+        resetShareLabel();
+      } catch {
+        setShareLabel('Copy failed');
+        resetShareLabel();
+      }
+      return;
+    }
+
+    // 5. Fallback
+    try {
+      await navigator.clipboard.writeText(window.location.href);
+      setShareLabel('Link copied');
+      resetShareLabel();
+    } catch {
+      setShareLabel('Copy failed');
+      resetShareLabel();
+    }
+  }
+
+  function handleAnalyseAnother() {
+    if (mode === 'extension') return;
+    if (window.history.length > 1) {
+      window.history.back();
+    } else {
+      window.location.href = '/';
+    }
+  }
+
+  return (
+    <div className="bg-white rounded-2xl p-6 sm:p-8 md:p-10 mb-6 border border-slate-200">
+      {/* Header */}
+      <div className="flex items-center gap-3 mb-6">
+        <div className="w-10 h-10 rounded-xl bg-amber-500/10 flex items-center justify-center shrink-0">
+          <Target className="w-5 h-5 text-amber-600/70" />
+        </div>
+        <h2 className="text-xl sm:text-2xl font-bold text-slate-900">One Last Check Before You Decide</h2>
+      </div>
+
+      {/* Core message */}
+      <p className="text-slate-600 text-sm sm:text-base leading-relaxed mb-6">
+        You now know what to ask, what to verify, and whether this place deserves your time.
+      </p>
+
+      <p className="text-slate-600 text-sm sm:text-base leading-relaxed mb-6">
+        HomeScope has turned the listing photos, price signals and hidden risks into a decision-ready report — so you can move forward with more confidence, or skip the ones that aren&apos;t worth the trip.
+      </p>
+
+      {/* What you just avoided guessing */}
+      <div className="bg-amber-50 border border-amber-200 rounded-xl p-5 sm:p-6 mb-6">
+        <div className="font-semibold text-slate-800 mb-3">What you just avoided guessing</div>
+        <ul className="space-y-2">
+          {[
+            "What the listing doesn't clearly say",
+            'What the photos might be hiding',
+            `What you should ask before booking an ${nextStepVerb}`,
+          ].map((item, i) => (
+            <li key={i} className="flex items-start gap-2 text-sm text-slate-700">
+              <CheckCircle2 className="w-4 h-4 text-amber-600/80 mt-0.5 shrink-0" />
+              {item}
+            </li>
+          ))}
+        </ul>
+      </div>
+
+      {/* Your next best move */}
+      <div className="bg-slate-50 border border-slate-200 rounded-xl p-5 sm:p-6 mb-6">
+        <div className="font-semibold text-slate-800 mb-2">Your next best move</div>
+        <p className="text-slate-700 text-sm leading-relaxed">{nextMove}</p>
+      </div>
+
+      {/* Share section */}
+      <div className="border-t border-slate-200 pt-6">
+        <div className="font-semibold text-slate-800 mb-1">Not sure yet? Get a second opinion.</div>
+        <p className="text-slate-600 text-sm mb-4">Share this report with someone you trust before you make a call.</p>
+        <div className="flex flex-col sm:flex-row gap-3">
+          <button
+            type="button"
+            onClick={handleShare}
+            disabled={shareLabel !== 'Get a second opinion'}
+            className="px-6 py-3 bg-slate-900 hover:bg-slate-700 disabled:bg-slate-400 text-white font-semibold text-sm rounded-xl transition-colors cursor-pointer w-full sm:w-auto"
+          >
+            {shareLabel}
+          </button>
+          {mode !== 'extension' && (
+            <button
+              type="button"
+              onClick={handleAnalyseAnother}
+              className="px-6 py-3 bg-white hover:bg-slate-50 border border-slate-300 text-slate-700 font-semibold text-sm rounded-xl transition-colors cursor-pointer w-full sm:w-auto"
+            >
+              Analyse another property
+            </button>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ── Empty State ────────────────────────────────────────────────────────────────
 
 function EmptyState() {
@@ -1354,9 +1565,13 @@ function EmptyState() {
 
 interface NewReportUIProps {
   report: NormalizedReport;
+  mode?: 'web' | 'extension';
+  showBackButton?: boolean;
+  onShare?: (analysisId: string) => Promise<{ slug: string; shareUrl: string }>;
+  analysisId?: string;
 }
 
-export function NewReportUI({ report }: NewReportUIProps) {
+export function NewReportUI({ report, mode, showBackButton, onShare, analysisId }: NewReportUIProps) {
   const { sections, highlights, quickFacts, hero } = report;
 
   const hasSections = sections && sections.length > 0;
@@ -1383,6 +1598,23 @@ export function NewReportUI({ report }: NewReportUIProps) {
     <UsedSectionsCtx.Provider value={usedIds}>
     <RegisterSectionsCtx.Provider value={registerSections}>
     <div className="w-full max-w-[1056px] mx-auto px-4 sm:px-6 lg:px-8 py-4">
+      {/* Back button — only on web result pages */}
+      {showBackButton && (
+        <button
+          type="button"
+          onClick={() => {
+            if (window.history.length > 1) {
+              window.history.back();
+            } else {
+              window.location.href = '/';
+            }
+          }}
+          className="mb-4 text-sm text-stone-500 hover:text-stone-900 flex items-center gap-1.5 transition-colors cursor-pointer"
+        >
+          ← Back to reports
+        </button>
+      )}
+
       {/* Phase 1 */}
       <HeroSection report={report} />
       <TopRisksSection report={report} />
@@ -1398,6 +1630,14 @@ export function NewReportUI({ report }: NewReportUIProps) {
 
       {/* Everything else */}
       <RemainingSections report={report} />
+
+      {/* Closing CTA */}
+      <ReportClosingCTA
+        report={report}
+        onShare={onShare}
+        analysisId={analysisId}
+        mode={mode}
+      />
     </div>
     </RegisterSectionsCtx.Provider>
     </UsedSectionsCtx.Provider>

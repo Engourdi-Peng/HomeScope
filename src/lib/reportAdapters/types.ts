@@ -20,6 +20,7 @@ export interface ReportMeta {
 export interface HeroData {
   title?: string;
   address?: string;
+  imageUrl?: string;
   score: number | null;
   verdict: string;
   confidence?: string;
