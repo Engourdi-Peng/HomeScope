@@ -356,7 +356,9 @@ function TopRisksSection({ report }: { report: NormalizedReport }) {
 
       {/* Risk cards */}
       <div className="space-y-3">
-        {riskItems.map((risk, i) => {
+        {riskItems
+        .filter(risk => risk.title || risk.description)
+        .map((risk, i) => {
           const sevClass = (risk.severity?.toLowerCase() ?? '') === 'high' || risk.severity?.toLowerCase() === 'critical'
             ? 'bg-red-50 border-red-100'
             : (risk.severity?.toLowerCase() ?? '') === 'medium'
@@ -376,7 +378,7 @@ function TopRisksSection({ report }: { report: NormalizedReport }) {
                 </div>
               </div>
               {risk.description && (
-                <p className="text-xs text-stone-500 leading-relaxed mb-2 ml-13">{risk.description}</p>
+                <p className="text-xs text-stone-500 leading-relaxed mt-1">{risk.description}</p>
               )}
               {risk.action && (
                 <div className="flex items-center gap-2 mt-2 pt-2 border-t border-stone-200/50">
@@ -536,12 +538,18 @@ function PropertySnapshotSection({ report }: { report: NormalizedReport }) {
 function SectionCard({ section }: { section: ReportSection }) {
   if (!section.items || section.items.length === 0) return null;
 
-  const items = section.items.map((item) => ({
-    ...item,
-    title: renderValue(item.title),
-    value: renderValue(item.value),
-    description: renderValue(item.description),
-  })).filter((item) => item.title);
+  const items = section.items
+    .map((item) => ({
+      ...item,
+      title: renderValue(item.title),
+      value: renderValue(item.value),
+      description: renderValue(item.description),
+    }))
+    // Skip items that have no useful content
+    .filter((item) => {
+      const hasContent = item.value || item.description;
+      return item.title || hasContent;
+    });
 
   if (items.length === 0) return null;
 

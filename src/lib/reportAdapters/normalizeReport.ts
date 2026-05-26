@@ -65,8 +65,6 @@ function detectBasicResult(result: AnyResult): boolean {
 
 // ---- main export ----
 export function normalizeReportResult(result: AnyResult): NormalizedReport {
-  console.log('[NORMALIZE_INPUT]', result);
-
   const market = detectMarket(result);
   const reportMode = detectReportMode(result);
   const isBasic = detectBasicResult(result);
@@ -82,13 +80,18 @@ export function normalizeReportResult(result: AnyResult): NormalizedReport {
   } else if (market === 'AU' && reportMode === 'rent') {
     normalized = normalizeAURentReport(result);
   } else if (market === 'US' && reportMode === 'rent') {
-    // No US rent adapter yet; treat as generic
     normalized = normalizeGenericReport(result);
   } else {
     normalized = normalizeGenericReport(result);
   }
 
-  console.log('[NORMALIZE_OUTPUT]', normalized);
+  console.log('[RAW_RESULT_FOR_NORMALIZE]', result);
+  console.log('[NORMALIZED_REPORT_OUTPUT]', normalized);
+  console.log('[NORMALIZED_SECTIONS]', normalized.sections.map(s => ({
+    id: s.id,
+    title: s.title,
+    items: s.items,
+  })));
 
   return normalized;
 }
