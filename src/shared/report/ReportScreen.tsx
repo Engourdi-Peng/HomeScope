@@ -11,6 +11,8 @@ import type { AnalysisResult, BasicAnalysisResult } from '../../types';
 import { ResultCard } from '../../components/ResultCard';
 import { BasicResultCard } from '../../components/BasicResultCard';
 import { ReportShell } from './ReportShell';
+import { normalizeReportResult } from '../../lib/reportAdapters';
+import { NewReportUI } from '../../components/report/NewReportUI';
 
 type ReportScreenProps = {
   mode: 'web' | 'extension';
@@ -23,21 +25,39 @@ type ReportScreenProps = {
   noShell?: boolean;
 };
 
-// Helper to check if result is the legacy BasicAnalysisResult format (has 'decision' property)
-function isLegacyBasicResult(result: AnalysisResult | BasicAnalysisResult): result is BasicAnalysisResult {
-  return 'decision' in result && result.decision !== undefined;
-}
-
-// Helper to check if result is a basic analysis (new format, has analysisType: 'basic')
-function isNewBasicResult(result: AnalysisResult | BasicAnalysisResult): result is AnalysisResult {
-  return 'analysisType' in result && (result as AnalysisResult).analysisType === 'basic';
-}
-
 export function ReportScreen({ mode, result, onBack, onShare, onUpgrade, analysisId, noShell }: ReportScreenProps) {
-  // Check if this is a legacy basic analysis result (has 'decision' property)
-  const isLegacyBasic = isLegacyBasicResult(result);
-  const isNewBasic = isNewBasicResult(result);
   const isExtension = mode === 'extension';
+
+  // ── New unified path: normalize → NewReportUI ─────────────────────────────
+  try {
+    const normalizedReport = normalizeReportResult(result);
+
+    console.log('[REPORT_SCREEN_NEW_UI]', {
+      market: normalizedReport.meta.market,
+      reportMode: normalizedReport.meta.reportMode,
+      isBasic: normalizedReport.meta.isBasic,
+      sectionIds: normalizedReport.sections.map((s) => s.id),
+    });
+
+    const newContent = (
+      <NewReportUI report={normalizedReport} />
+    );
+
+    if (noShell) return newContent;
+
+    return (
+      <ReportShell mode={mode}>
+        {newContent}
+      </ReportShell>
+    );
+  } catch (err) {
+    console.error('[REPORT_SCREEN_NEW_UI_ERROR]', err);
+  }
+
+  // ── Fallback: legacy routing (preserved) ──────────────────────────────────
+  // Check if this is a legacy basic analysis result (has 'decision' property)
+  const isLegacyBasic = 'decision' in result && result.decision !== undefined;
+  const isNewBasic = 'analysisType' in result && (result as AnalysisResult).analysisType === 'basic';
 
   // Use BasicResultCard ONLY for legacy BasicAnalysisResult format (has 'decision')
   if (isLegacyBasic) {
