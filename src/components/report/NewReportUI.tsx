@@ -168,9 +168,6 @@ function isRiskSection(section: ReportSection): boolean {
 
 function HeroSection({ report }: { report: NormalizedReport }) {
   const { hero, highlights, sections } = report;
-  // @ts-ignore debug
-  window.__dbg = { hero, raw: report.raw };
-  console.log('[HeroSection] hero.imageUrl:', hero.imageUrl, 'raw.listingInfo:', JSON.stringify(report.raw?.listingInfo), 'raw.cover_image_url:', report.raw?.cover_image_url, 'raw.images:', report.raw?.images, 'result.listingInfo:', JSON.stringify((report.raw as any)?.listingInfo));
 
   const identityText = hero.address || hero.title || '';
 
@@ -213,42 +210,16 @@ function HeroSection({ report }: { report: NormalizedReport }) {
   return (
     <div className="relative rounded-2xl p-6 sm:p-8 md:p-10 mb-8 overflow-hidden" style={{ backgroundColor: '#282828' }}>
       <div className="relative z-10">
-        <div className="flex items-center justify-center gap-2 mb-4">
-          <div className="text-slate-300 uppercase tracking-wider text-sm font-semibold">Decision Score</div>
-        </div>
-
-        {/* Property identity strip */}
-        {(identityText || hero.imageUrl) && (
-          <div className="flex items-center gap-3 mb-5 sm:mb-6 p-3 sm:p-4 bg-white/5 border border-white/10 rounded-xl w-full min-w-0">
-            {hero.imageUrl && (
-              <img
-                src={hero.imageUrl}
-                alt={identityText || 'Property'}
-                className="w-16 h-12 sm:w-20 sm:h-14 rounded-lg object-cover flex-shrink-0 min-w-0"
-                onError={(e) => { (e.target as HTMLImageElement).style.display = 'none'; }}
-              />
-            )}
-            {identityText && (
-              <span className="text-slate-200 text-sm sm:text-base font-medium min-w-0 break-words leading-snug">
-                {renderValue(identityText)}
-              </span>
-            )}
+        {/* Address as page title */}
+        {identityText && (
+          <div className="text-slate-200 text-lg sm:text-xl md:text-2xl font-semibold mb-5 sm:mb-6 leading-snug">
+            {renderValue(identityText)}
           </div>
         )}
 
-        <div className="flex items-baseline gap-3 mb-6">
-          {scoreText !== null ? (
-            <div className="text-7xl sm:text-8xl font-bold bg-gradient-to-br from-white via-slate-200 to-slate-300 bg-clip-text text-transparent">
-              {scoreText}
-            </div>
-          ) : (
-            <div className="text-7xl sm:text-8xl font-bold text-slate-500">—</div>
-          )}
-          <div className="text-3xl text-slate-400">/100</div>
-        </div>
-
+        {/* Hero image */}
         {hero.imageUrl && (
-          <div className="mt-6 overflow-hidden rounded-xl border border-white/10 bg-white/5">
+          <div className="overflow-hidden rounded-xl border border-white/10 bg-white/5 mb-6">
             <img
               src={hero.imageUrl}
               alt={hero.address || hero.title || 'Property photo'}
@@ -261,6 +232,19 @@ function HeroSection({ report }: { report: NormalizedReport }) {
           </div>
         )}
 
+        {/* Score */}
+        <div className="flex items-baseline gap-3 mb-6">
+          {scoreText !== null ? (
+            <div className="text-7xl sm:text-8xl font-bold bg-gradient-to-br from-white via-slate-200 to-slate-300 bg-clip-text text-transparent">
+              {scoreText}
+            </div>
+          ) : (
+            <div className="text-7xl sm:text-8xl font-bold text-slate-500">—</div>
+          )}
+          <div className="text-3xl text-slate-400">/100</div>
+        </div>
+
+        {/* Verdict badge */}
         {hero.verdict && (
           <div className="inline-flex items-center gap-2 backdrop-blur border px-6 py-3 rounded-xl mb-4" style={{ borderColor: '#DAA520', backgroundColor: 'rgba(218, 165, 32, 0.15)' }}>
             <Activity className="w-4 h-4" style={{ color: '#DAA520' }} />

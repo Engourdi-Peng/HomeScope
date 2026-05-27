@@ -120,7 +120,6 @@ function pickFirstImage(result: AnyResult): string | undefined {
   for (const value of stringCandidates) {
     if (value == null) continue;
     if (typeof value === 'string' && value.startsWith('http') && !isLikelyPlaceholder(value)) {
-      console.log('[pickFirstImage] FOUND via string field:', value);
       return value;
     }
   }
@@ -148,13 +147,11 @@ function pickFirstImage(result: AnyResult): string | undefined {
     for (const item of arr) {
       const url = extractUrl(item);
       if (url && url.startsWith('http') && !isLikelyPlaceholder(url)) {
-        console.log('[pickFirstImage] FOUND via array field:', url);
         return url;
       }
     }
   }
 
-  console.log('[pickFirstImage] NO IMAGE FOUND');
   return undefined;
 }
 
@@ -199,13 +196,6 @@ export function normalizeReportResult(result: AnyResult): NormalizedReport {
   const market = detectMarket(result);
   const reportMode = detectReportMode(result);
   const isBasic = detectBasicResult(result);
-
-  console.log('[NORMALIZE_FIELD_CHECK]', {
-    market: getField(result, 'market', 'Market'),
-    sourceDomain: getField(result, 'sourceDomain', 'source_domain'),
-    reportMode: getField(result, 'reportMode', 'report_mode', 'analysisType', 'mode'),
-    listingImage: getField(result, 'listingInfo.coverImageUrl', 'coverImageUrl', 'cover_image_url'),
-  });
 
   let normalized: NormalizedReport;
 
