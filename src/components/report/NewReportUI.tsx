@@ -168,6 +168,9 @@ function isRiskSection(section: ReportSection): boolean {
 
 function HeroSection({ report }: { report: NormalizedReport }) {
   const { hero, highlights, sections } = report;
+  // @ts-ignore debug
+  window.__dbg = { hero, raw: report.raw };
+  console.log('[HeroSection] hero.imageUrl:', hero.imageUrl, 'raw.listingInfo:', JSON.stringify(report.raw?.listingInfo), 'raw.cover_image_url:', report.raw?.cover_image_url, 'raw.images:', report.raw?.images, 'result.listingInfo:', JSON.stringify((report.raw as any)?.listingInfo));
 
   const identityText = hero.address || hero.title || '';
 
@@ -243,6 +246,20 @@ function HeroSection({ report }: { report: NormalizedReport }) {
           )}
           <div className="text-3xl text-slate-400">/100</div>
         </div>
+
+        {hero.imageUrl && (
+          <div className="mt-6 overflow-hidden rounded-xl border border-white/10 bg-white/5">
+            <img
+              src={hero.imageUrl}
+              alt={hero.address || hero.title || 'Property photo'}
+              className="w-full aspect-[16/10] object-cover"
+              loading="lazy"
+              onError={(event) => {
+                event.currentTarget.style.display = 'none';
+              }}
+            />
+          </div>
+        )}
 
         {hero.verdict && (
           <div className="inline-flex items-center gap-2 backdrop-blur border px-6 py-3 rounded-xl mb-4" style={{ borderColor: '#DAA520', backgroundColor: 'rgba(218, 165, 32, 0.15)' }}>

@@ -573,6 +573,11 @@ export interface AnalysisSummary {
   title?: string;
   address?: string;
   cover_image_url?: string;
+  // 房源基本信息（从数据库 analysis 表直接读取）
+  weekly_rent?: number | null;
+  bedrooms?: number | null;
+  bathrooms?: number | null;
+  car_spaces?: number | null;
   summary?: {
     quickSummary?: string;
     whatLooksGood?: string[];

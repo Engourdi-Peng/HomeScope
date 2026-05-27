@@ -84,7 +84,7 @@ export function AccountPage() {
           priceAmount: analysis.weekly_rent || undefined,
           bedrooms: analysis.bedrooms || undefined,
           bathrooms: analysis.bathrooms || undefined,
-          carSpaces: analysis.car_spaces || undefined,
+          parking: analysis.car_spaces || undefined,
         };
         (result as AnalysisResult & { listingInfo: ListingInfo }).listingInfo = listingInfo;
 

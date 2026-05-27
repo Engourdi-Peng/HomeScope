@@ -11,9 +11,22 @@ type AnyResult = any;
 
 // ---- field name normalizers ----
 
+function getPath(obj: any, path: string): any {
+  if (!obj || !path) return undefined;
+  return path.split('.').reduce((current, key) => {
+    if (current == null) return undefined;
+    return current[key];
+  }, obj);
+}
+
 function getField(result: AnyResult, ...paths: string[]): any {
-  for (const p of paths) {
-    if (result?.[p] !== undefined) return result[p];
+  for (const path of paths) {
+    const value = path.includes('.')
+      ? getPath(result, path)
+      : result?.[path];
+    if (value !== undefined && value !== null && value !== '') {
+      return value;
+    }
   }
   return undefined;
 }
@@ -86,54 +99,71 @@ function extractUrl(item: unknown): string {
 }
 
 function pickFirstImage(result: AnyResult): string | undefined {
-  const candidates: Array<[string, unknown]> = [
-    ['listingInfo.coverImageUrl', getField(result, 'listingInfo', 'coverImageUrl')],
-    ['listingInfo.image', getField(result, 'listingInfo', 'image')],
-    ['listingInfo.imageUrl', getField(result, 'listingInfo', 'imageUrl')],
-    ['listingInfo.thumbnail', getField(result, 'listingInfo', 'thumbnail')],
-    ['coverImageUrl', result.coverImageUrl],
-    ['cover_image_url', result.cover_image_url],
-    ['imageUrl', result.imageUrl],
-    ['image_url', result.image_url],
-    ['heroImage', result.heroImage],
-    ['hero_image', result.hero_image],
-    ['thumbnailUrl', result.thumbnailUrl],
-    ['thumbnail_url', result.thumbnail_url],
-    ['images', result.images],
-    ['photos', result.photos],
-    ['photoUrls', result.photoUrls],
-    ['photo_urls', result.photo_urls],
-    ['imageUrls', result.imageUrls],
-    ['image_urls', result.image_urls],
-    ['listingImages', result.listingImages],
-    ['listing_images', result.listing_images],
-    ['raw.images', getField(result, 'raw', 'images')],
-    ['raw.photos', getField(result, 'raw', 'photos')],
+  // String field candidates — dot-path for nested, plain key for top-level
+  const stringCandidates = [
+    getField(result, 'listingInfo.coverImageUrl'),
+    getField(result, 'listingInfo.image'),
+    getField(result, 'listingInfo.imageUrl'),
+    getField(result, 'listingInfo.thumbnail'),
+    getField(result, 'coverImageUrl'),
+    getField(result, 'cover_image_url'),
+    getField(result, 'imageUrl'),
+    getField(result, 'image_url'),
+    getField(result, 'heroImage'),
+    getField(result, 'hero_image'),
+    getField(result, 'thumbnailUrl'),
+    getField(result, 'thumbnail_url'),
+    getField(result, 'mainImage'),
+    getField(result, 'main_image'),
   ];
 
-  for (const [, value] of candidates) {
+  for (const value of stringCandidates) {
     if (value == null) continue;
-    if (typeof value === 'string') {
-      if (value.startsWith('http') && !isLikelyPlaceholder(value)) return value;
-      continue;
+    if (typeof value === 'string' && value.startsWith('http') && !isLikelyPlaceholder(value)) {
+      console.log('[pickFirstImage] FOUND via string field:', value);
+      return value;
     }
-    if (Array.isArray(value)) {
-      for (const item of value) {
-        const url = extractUrl(item);
-        if (url && url.startsWith('http') && !isLikelyPlaceholder(url)) return url;
+  }
+
+  // Array field candidates — dot-path for nested arrays
+  const arrayCandidates = [
+    getField(result, 'listingInfo.images'),
+    getField(result, 'listingInfo.photos'),
+    getField(result, 'listingInfo.photoUrls'),
+    getField(result, 'listingInfo.imageUrls'),
+    getField(result, 'images'),
+    getField(result, 'photos'),
+    getField(result, 'photoUrls'),
+    getField(result, 'photo_urls'),
+    getField(result, 'imageUrls'),
+    getField(result, 'image_urls'),
+    getField(result, 'listingImages'),
+    getField(result, 'listing_images'),
+    getField(result, 'raw.images'),
+    getField(result, 'raw.photos'),
+  ];
+
+  for (const arr of arrayCandidates) {
+    if (!Array.isArray(arr)) continue;
+    for (const item of arr) {
+      const url = extractUrl(item);
+      if (url && url.startsWith('http') && !isLikelyPlaceholder(url)) {
+        console.log('[pickFirstImage] FOUND via array field:', url);
+        return url;
       }
     }
   }
 
+  console.log('[pickFirstImage] NO IMAGE FOUND');
   return undefined;
 }
 
 // ---- buildAddress (safe, no price/beds baked in) ----
 function buildAddress(result: AnyResult): string {
   const paths = [
-    () => getField(result, 'listingInfo', 'address'),
-    () => getField(result, 'property_snapshot', 'address'),
-    () => getField(result, 'propertySnapshot', 'address'),
+    () => getField(result, 'listingInfo.address'),
+    () => getField(result, 'property_snapshot.address'),
+    () => getField(result, 'propertySnapshot.address'),
     () => getField(result, 'fullAddress'),
     () => getField(result, 'full_address'),
     () => getField(result, 'address'),
@@ -149,7 +179,7 @@ function buildAddress(result: AnyResult): string {
 // ---- buildTitle (clean, no price/beds baked in) ----
 function buildTitle(result: AnyResult): string {
   const paths = [
-    () => getField(result, 'listingInfo', 'title'),
+    () => getField(result, 'listingInfo.title'),
     () => getField(result, 'propertyTitle'),
     () => getField(result, 'property_title'),
     () => getField(result, 'listingTitle'),
@@ -169,6 +199,13 @@ export function normalizeReportResult(result: AnyResult): NormalizedReport {
   const market = detectMarket(result);
   const reportMode = detectReportMode(result);
   const isBasic = detectBasicResult(result);
+
+  console.log('[NORMALIZE_FIELD_CHECK]', {
+    market: getField(result, 'market', 'Market'),
+    sourceDomain: getField(result, 'sourceDomain', 'source_domain'),
+    reportMode: getField(result, 'reportMode', 'report_mode', 'analysisType', 'mode'),
+    listingImage: getField(result, 'listingInfo.coverImageUrl', 'coverImageUrl', 'cover_image_url'),
+  });
 
   let normalized: NormalizedReport;
 

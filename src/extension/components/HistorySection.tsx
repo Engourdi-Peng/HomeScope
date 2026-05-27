@@ -1,4 +1,3 @@
-import React from 'react';
 import { ChevronRight, ExternalLink } from 'lucide-react';
 import { useAppState, useActions } from '../store';
 import type { AnalysisResult, AnalysisSummary, ListingInfo } from '../../../shared/types/analysis';
@@ -32,6 +31,7 @@ function getScoreColor(score?: number) {
 
 /** Inject listingInfo into full_result using AnalysisSummary metadata, matching Share/Account logic */
 function enrichWithListingInfo(result: AnalysisResult, summary: AnalysisSummary): AnalysisResult {
+  console.log('[enrichWithListingInfo] called, summary.cover_image_url:', summary.cover_image_url, 'result.listingInfo before:', (result as any).listingInfo);
   const listingInfo: ListingInfo = {
     title: summary.title || undefined,
     address: summary.address || undefined,
@@ -39,8 +39,9 @@ function enrichWithListingInfo(result: AnalysisResult, summary: AnalysisSummary)
     priceAmount: summary.weekly_rent || undefined,
     bedrooms: summary.bedrooms || undefined,
     bathrooms: summary.bathrooms || undefined,
-    carSpaces: summary.car_spaces || undefined,
+    parking: summary.car_spaces || undefined,
   };
+  console.log('[enrichWithListingInfo] returning listingInfo:', JSON.stringify(listingInfo));
   return { ...result, listingInfo };
 }
 
