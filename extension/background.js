@@ -657,6 +657,7 @@ async function handleMessage(message, sender, sendResponse) {
       if (listingData?.lotSize) optionalDetails.lotSize = listingData.lotSize;
       if (listingData?.hoaFee) optionalDetails.hoaFee = listingData.hoaFee;
       if (listingData?.propertyTax) optionalDetails.propertyTax = listingData.propertyTax;
+      if (listingData?.annualTaxAmount != null) optionalDetails.annualTaxAmount = listingData.annualTaxAmount;
       if (listingData?.zestimate) optionalDetails.zestimate = listingData.zestimate;
       if (listingData?.rentZestimate) optionalDetails.rentZestimate = listingData.rentZestimate;
       if (listingData?.daysOnZillow != null) optionalDetails.daysOnZillow = listingData.daysOnZillow;
@@ -672,7 +673,13 @@ async function handleMessage(message, sender, sendResponse) {
       if (listingData?.constructionMaterial) optionalDetails.constructionMaterial = listingData.constructionMaterial;
       if (listingData?.parcelNumber) optionalDetails.parcelNumber = listingData.parcelNumber;
       if (listingData?.taxAssessedValue != null) optionalDetails.taxAssessedValue = listingData.taxAssessedValue;
-      if (listingData?.annualTax != null) optionalDetails.annualTax = listingData.annualTax;
+      if (listingData?.taxAssessedValueAmount != null) optionalDetails.taxAssessedValueAmount = listingData.taxAssessedValueAmount;
+      if (listingData?.annualTaxAmount != null) optionalDetails.annualTaxAmount = listingData.annualTaxAmount;
+      if (listingData?.pricePerSqft) optionalDetails.pricePerSqft = listingData.pricePerSqft;
+      if (listingData?.pricePerSqftAmount != null) optionalDetails.pricePerSqftAmount = listingData.pricePerSqftAmount;
+      if (listingData?.dateListed) optionalDetails.dateListed = listingData.dateListed;
+      if (listingData?.availableDate) optionalDetails.availableDate = listingData.availableDate;
+      if (listingData?.financialDetails) optionalDetails.financialDetails = listingData.financialDetails;
       if (listingData?.gasMeters != null) optionalDetails.gasMeters = listingData.gasMeters;
 
       // Highlights/features list
@@ -705,6 +712,17 @@ async function handleMessage(message, sender, sendResponse) {
         const auth = await getAuth();
         const accessToken = auth?.session?.access_token || null;
         const url = `${serverConfig.url}/functions/v1/analyze?action=basic-sync`;
+        console.log('[AnalyzeRequest-basic] optionalDetails financial fields', {
+          propertyTax: optionalDetails.propertyTax,
+          annualTaxAmount: optionalDetails.annualTaxAmount,
+          taxAssessedValue: optionalDetails.taxAssessedValue,
+          taxAssessedValueAmount: optionalDetails.taxAssessedValueAmount,
+          pricePerSqft: optionalDetails.pricePerSqft,
+          pricePerSqftAmount: optionalDetails.pricePerSqftAmount,
+          dateListed: optionalDetails.dateListed,
+          availableDate: optionalDetails.availableDate,
+          financialDetails: optionalDetails.financialDetails,
+        });
         const requestBody = {
           description,
           reportMode,
@@ -826,6 +844,7 @@ async function handleMessage(message, sender, sendResponse) {
       if (listingData?.lotSize) optionalDetails.lotSize = listingData.lotSize;
       if (listingData?.hoaFee) optionalDetails.hoaFee = listingData.hoaFee;
       if (listingData?.propertyTax) optionalDetails.propertyTax = listingData.propertyTax;
+      if (listingData?.annualTaxAmount != null) optionalDetails.annualTaxAmount = listingData.annualTaxAmount;
       if (listingData?.zestimate) optionalDetails.zestimate = listingData.zestimate;
       if (listingData?.rentZestimate) optionalDetails.rentZestimate = listingData.rentZestimate;
       if (listingData?.daysOnZillow != null) optionalDetails.daysOnZillow = listingData.daysOnZillow;
@@ -841,7 +860,13 @@ async function handleMessage(message, sender, sendResponse) {
       if (listingData?.constructionMaterial) optionalDetails.constructionMaterial = listingData.constructionMaterial;
       if (listingData?.parcelNumber) optionalDetails.parcelNumber = listingData.parcelNumber;
       if (listingData?.taxAssessedValue != null) optionalDetails.taxAssessedValue = listingData.taxAssessedValue;
-      if (listingData?.annualTax != null) optionalDetails.annualTax = listingData.annualTax;
+      if (listingData?.taxAssessedValueAmount != null) optionalDetails.taxAssessedValueAmount = listingData.taxAssessedValueAmount;
+      if (listingData?.annualTaxAmount != null) optionalDetails.annualTaxAmount = listingData.annualTaxAmount;
+      if (listingData?.pricePerSqft) optionalDetails.pricePerSqft = listingData.pricePerSqft;
+      if (listingData?.pricePerSqftAmount != null) optionalDetails.pricePerSqftAmount = listingData.pricePerSqftAmount;
+      if (listingData?.dateListed) optionalDetails.dateListed = listingData.dateListed;
+      if (listingData?.availableDate) optionalDetails.availableDate = listingData.availableDate;
+      if (listingData?.financialDetails) optionalDetails.financialDetails = listingData.financialDetails;
       if (listingData?.gasMeters != null) optionalDetails.gasMeters = listingData.gasMeters;
 
       // Highlights/features list
@@ -866,6 +891,17 @@ async function handleMessage(message, sender, sendResponse) {
       optionalDetails.listingUrl = listingUrl;
 
       // Build request body for analyze function
+      console.log('[AnalyzeRequest] optionalDetails financial fields', {
+        propertyTax: optionalDetails.propertyTax,
+        annualTaxAmount: optionalDetails.annualTaxAmount,
+        taxAssessedValue: optionalDetails.taxAssessedValue,
+        taxAssessedValueAmount: optionalDetails.taxAssessedValueAmount,
+        pricePerSqft: optionalDetails.pricePerSqft,
+        pricePerSqftAmount: optionalDetails.pricePerSqftAmount,
+        dateListed: optionalDetails.dateListed,
+        availableDate: optionalDetails.availableDate,
+        financialDetails: optionalDetails.financialDetails,
+      });
       const requestBody = {
         imageUrls,
         description,

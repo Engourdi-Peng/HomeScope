@@ -25,6 +25,28 @@ function toText(value: unknown): string {
   return '';
 }
 
+// Format financial number to display string
+function fmtMoney(val: unknown): string {
+  if (typeof val === 'number' && Number.isFinite(val)) {
+    return '$' + val.toLocaleString();
+  }
+  return toText(val);
+}
+
+function fmtAnnualTax(val: unknown): string {
+  if (typeof val === 'number' && Number.isFinite(val)) {
+    return '$' + val.toLocaleString() + '/yr';
+  }
+  return toText(val);
+}
+
+function fmtPerSqft(val: unknown): string {
+  if (typeof val === 'number' && Number.isFinite(val)) {
+    return '$' + val + '/sqft';
+  }
+  return toText(val);
+}
+
 function makeItem(
   label: string,
   value: unknown,
@@ -118,16 +140,28 @@ function buildQuickFacts(result: USSaleResult): QuickFact[] {
     const t = toText(val);
     if (t) facts.push({ label, value: t });
   };
+  const addMoney = (label: string, val: unknown) => {
+    const t = fmtMoney(val);
+    if (t && t !== '$') facts.push({ label, value: t });
+  };
+  const addTaxYr = (label: string, val: unknown) => {
+    const t = fmtAnnualTax(val);
+    if (t && t !== '/yr') facts.push({ label, value: t });
+  };
+  const addPerSqft = (label: string, val: unknown) => {
+    const t = fmtPerSqft(val);
+    if (t && t !== '/sqft') facts.push({ label, value: t });
+  };
   add('Beds', snap.beds ?? snap.bedrooms);
   add('Baths', snap.baths ?? snap.bathrooms);
   add('Sqft', snap.sqft);
   add('Built', snap.yearBuilt ?? snap.year_built);
   add('Type', snap.homeType ?? snap.home_type);
   add('Lot', snap.lotSize ?? snap.lot_size);
-  add('Assessed', snap.taxAssessedValue ?? snap.tax_assessed_value);
-  add('Tax/yr', snap.annualTax ?? snap.annual_tax);
+  addMoney('Assessed', snap.tax_assessed_value_display ?? snap.taxAssessedValue ?? snap.tax_assessed_value);
+  addTaxYr('Tax/yr', snap.annual_tax_display ?? snap.annualTax ?? snap.annual_tax);
   add('HOA', snap.hoa);
-  add('$/sqft', snap.pricePerSqft ?? snap.price_per_sqft);
+  addPerSqft('$/sqft', snap.price_per_sqft_display ?? snap.pricePerSqft ?? snap.price_per_sqft);
   add('Region', snap.region);
   return facts;
 }
@@ -163,10 +197,15 @@ function buildSections(result: USSaleResult): ReportSection[] {
   if (snap.homeType ?? snap.home_type) snapItems.push({ title: 'Home Type', value: toText(snap.homeType ?? snap.home_type) });
   if (snap.roof) snapItems.push({ title: 'Roof', value: toText(snap.roof) });
   if (snap.lotSize ?? snap.lot_size) snapItems.push({ title: 'Lot Size', value: toText(snap.lotSize ?? snap.lot_size) });
-  if (snap.taxAssessedValue ?? snap.tax_assessed_value) snapItems.push({ title: 'Tax Assessed Value', value: toText(snap.taxAssessedValue ?? snap.tax_assessed_value) });
-  if (snap.annualTax ?? snap.annual_tax) snapItems.push({ title: 'Annual Tax', value: toText(snap.annualTax ?? snap.annual_tax) });
+  if (snap.taxAssessedValue ?? snap.tax_assessed_value) snapItems.push({ title: 'Tax Assessed Value', value: fmtMoney(snap.taxAssessedValue ?? snap.tax_assessed_value) });
+  if (snap.tax_assessed_value_display) snapItems.push({ title: 'Tax Assessed Value', value: toText(snap.tax_assessed_value_display) });
+  if (snap.annualTax ?? snap.annual_tax) snapItems.push({ title: 'Annual Tax', value: fmtAnnualTax(snap.annualTax ?? snap.annual_tax) });
+  if (snap.annual_tax_display) snapItems.push({ title: 'Annual Tax', value: toText(snap.annual_tax_display) });
   if (snap.hoa) snapItems.push({ title: 'HOA', value: toText(snap.hoa) });
-  if (snap.pricePerSqft ?? snap.price_per_sqft) snapItems.push({ title: 'Price/Sqft', value: toText(snap.pricePerSqft ?? snap.price_per_sqft) });
+  if (snap.pricePerSqft ?? snap.price_per_sqft) snapItems.push({ title: 'Price/Sqft', value: fmtPerSqft(snap.pricePerSqft ?? snap.price_per_sqft) });
+  if (snap.price_per_sqft_display) snapItems.push({ title: 'Price/Sqft', value: toText(snap.price_per_sqft_display) });
+  if (snap.date_listed) snapItems.push({ title: 'Date Listed', value: toText(snap.date_listed) });
+  if (snap.available_date) snapItems.push({ title: 'Available', value: toText(snap.available_date) });
   if (snap.region) snapItems.push({ title: 'Region', value: toText(snap.region) });
   if (snapItems.length > 0) sections.push({ id: 'property-snapshot', title: 'Property Snapshot', items: snapItems });
 
@@ -189,7 +228,8 @@ function buildSections(result: USSaleResult): ReportSection[] {
   // ── carrying_costs ─────────────────────────────────────────────────────────
   const costs = result.carrying_costs ?? result.carryingCosts ?? {};
   const costItems: SectionItem[] = [];
-  if (costs.annual_tax ?? costs.annualTax) costItems.push({ title: 'Annual Tax', value: toText(costs.annual_tax ?? costs.annualTax) });
+  if (costs.annual_tax ?? costs.annualTax) costItems.push({ title: 'Annual Tax', value: fmtAnnualTax(costs.annual_tax ?? costs.annualTax) });
+  if (costs.annual_tax_display) costItems.push({ title: 'Annual Tax', value: toText(costs.annual_tax_display) });
   if (costs.monthly_tax_equivalent ?? costs.monthlyTaxEquivalent) costItems.push({ title: 'Monthly Tax', value: toText(costs.monthly_tax_equivalent ?? costs.monthlyTaxEquivalent) });
   if (costs.hoa) costItems.push({ title: 'HOA', value: toText(costs.hoa) });
   const pressure = costs.cost_pressure ?? costs.costPressure;

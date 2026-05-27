@@ -1290,9 +1290,18 @@ function extractZillowData() {
     lotSize: null,
     hoaFee: null,
     propertyTax: null,
+    annualTaxAmount: null,
     sqft: null,
     daysOnZillow: null,
     schoolRatings: [],
+    // Financial details
+    taxAssessedValue: null,
+    taxAssessedValueAmount: null,
+    pricePerSqft: null,
+    pricePerSqftAmount: null,
+    dateListed: null,
+    availableDate: null,
+    financialDetails: null,
   };
 
   try {
@@ -1412,10 +1421,62 @@ function extractZillowData() {
           data.sqft = parseInt(sqftMatch[1].replace(/,/g, ''));
         }
       }
+
+      // Extract Price per Sqft
+      if (!data.pricePerSqft) {
+        const ppsMatch = bodyText.match(/\$\s*([\d,]+)\s*(?:\/|per)\s*sq\.?\s*ft/i);
+        if (ppsMatch) {
+          const ppsNum = parseInt(ppsMatch[1].replace(/,/g, ''), 10);
+          data.pricePerSqft = '$' + ppsNum + '/sqft';
+          data.pricePerSqftAmount = ppsNum;
+        }
+      }
+
+      // Extract Tax Assessed Value
+      if (!data.taxAssessedValue) {
+        const tavMatch = bodyText.match(/Tax Assessed Value[\s:]*\$([\d,]+)/i);
+        if (tavMatch) {
+          const tavNum = parseInt(tavMatch[1].replace(/,/g, ''), 10);
+          data.taxAssessedValue = '$' + tavNum.toLocaleString();
+          data.taxAssessedValueAmount = tavNum;
+        }
+      }
+
+      // Extract Date Listed
+      if (!data.dateListed) {
+        const dlMatch = bodyText.match(/Listed on\s*[:]?\s*(.*?\d{4})/i);
+        if (dlMatch) {
+          data.dateListed = dlMatch[1].trim();
+        }
+      }
+
+      // Extract Available Date
+      if (!data.availableDate) {
+        const avMatch = bodyText.match(/(?:Available|Move-in|Available by)[\s:]*\s*(.*?\d{4}|\w+ \d{1,2},? \d{4})/i);
+        if (avMatch) {
+          data.availableDate = avMatch[1].trim();
+        }
+      }
     }
   } catch (e) {
     // Silently handle errors
   }
+
+  // Build financialDetails from all accumulated values
+  const financial = {};
+  if (data.taxAssessedValue) financial.taxAssessedValueDisplay = data.taxAssessedValue;
+  if (data.taxAssessedValueAmount) financial.taxAssessedValue = data.taxAssessedValueAmount;
+  if (data.pricePerSqft) financial.pricePerSqftDisplay = data.pricePerSqft;
+  if (data.pricePerSqftAmount) financial.pricePerSqft = data.pricePerSqftAmount;
+  if (data.dateListed) financial.dateListed = data.dateListed;
+  if (data.availableDate) financial.availableDate = data.availableDate;
+  if (data.propertyTax) financial.propertyTaxDisplay = data.propertyTax;
+  if (data.annualTaxAmount) financial.annualTaxAmount = data.annualTaxAmount;
+  if (Object.keys(financial).length > 0) {
+    data.financialDetails = financial;
+  }
+
+  console.log('[ZillowExtractor] financialDetails', JSON.stringify(financial));
 
   return data;
 }
@@ -1461,33 +1522,34 @@ function findPropertyDataInObject(obj, depth = 0) {
  */
 function extractFieldsFromPropertyData(data) {
   const result = {};
-  
+  const financial = {};
+
   if (!data) return result;
-  
+
   // Zestimate
   if (data.zestimate) {
-    result.zestimate = typeof data.zestimate === 'number' 
+    result.zestimate = typeof data.zestimate === 'number'
       ? '$' + data.zestimate.toLocaleString()
       : String(data.zestimate);
   }
-  
+
   // Rent Zestimate
   if (data.rentZestimate) {
     result.rentZestimate = typeof data.rentZestimate === 'number'
       ? '$' + data.rentZestimate.toLocaleString()
       : String(data.rentZestimate);
   }
-  
+
   // Year Built
   if (data.yearBuilt || data.year_built) {
     result.yearBuilt = data.yearBuilt || data.year_built;
   }
-  
+
   // Lot Size
   if (data.lotSize || data.lot_size || data.lotSizeValue) {
     result.lotSize = String(data.lotSize || data.lot_size || data.lotSizeValue);
   }
-  
+
   // HOA Fee
   if (data.hoaFee || data.hoa_fee) {
     const hoaVal = data.hoaFee || data.hoa_fee;
@@ -1495,26 +1557,116 @@ function extractFieldsFromPropertyData(data) {
       ? '$' + hoaVal.toLocaleString() + '/mo'
       : String(hoaVal);
   }
-  
-  // Property Tax
+
+  // Property Tax — also capture raw number
   if (data.annualTax || data.propertyTax || data.taxAssessment) {
     const taxVal = data.annualTax || data.propertyTax || data.taxAssessment;
-    result.propertyTax = typeof taxVal === 'number'
-      ? '$' + taxVal.toLocaleString() + '/yr'
-      : String(taxVal);
+    if (typeof taxVal === 'number') {
+      result.propertyTax = '$' + taxVal.toLocaleString() + '/yr';
+      result.annualTaxAmount = taxVal;
+    } else {
+      result.propertyTax = String(taxVal);
+      // Try to parse "$6,070/yr" → 6070
+      const parsed = parseTaxAmount(String(taxVal));
+      if (parsed) result.annualTaxAmount = parsed;
+    }
   }
-  
+
   // Living Area (sqft)
   if (data.livingArea || data.sqft || data.area) {
     result.sqft = data.livingArea || data.sqft || data.area;
   }
-  
+
   // Days on Zillow
   if (data.daysOnZillow || data.listingAge || data.daysOnMarket) {
     result.daysOnZillow = data.daysOnZillow || data.listingAge || data.daysOnMarket;
   }
-  
+
+  // Tax Assessed Value
+  if (data.taxAssessedValue || data.tax_assessed_value) {
+    const tav = data.taxAssessedValue || data.tax_assessed_value;
+    if (typeof tav === 'number') {
+      result.taxAssessedValue = '$' + tav.toLocaleString();
+      result.taxAssessedValueAmount = tav;
+      financial.taxAssessedValueDisplay = '$' + tav.toLocaleString();
+      financial.taxAssessedValue = tav;
+    } else {
+      result.taxAssessedValue = String(tav);
+      const parsed = parseTaxAmount(String(tav));
+      if (parsed) {
+        result.taxAssessedValueAmount = parsed;
+        financial.taxAssessedValue = parsed;
+        financial.taxAssessedValueDisplay = '$' + parsed.toLocaleString();
+      } else {
+        financial.taxAssessedValueDisplay = String(tav);
+      }
+    }
+  }
+
+  // Price per Sqft
+  if (data.pricePerSqft || data.price_per_sqft || data.pricePerSqftAmount) {
+    const pps = data.pricePerSqft || data.price_per_sqft || data.pricePerSqftAmount;
+    if (typeof pps === 'number') {
+      result.pricePerSqft = '$' + pps + '/sqft';
+      result.pricePerSqftAmount = pps;
+      financial.pricePerSqft = pps;
+      financial.pricePerSqftDisplay = '$' + pps + '/sqft';
+    } else {
+      result.pricePerSqft = String(pps);
+      const parsed = parsePricePerSqftAmount(String(pps));
+      if (parsed) {
+        result.pricePerSqftAmount = parsed;
+        financial.pricePerSqft = parsed;
+        financial.pricePerSqftDisplay = '$' + parsed + '/sqft';
+      } else {
+        financial.pricePerSqftDisplay = String(pps);
+      }
+    }
+  }
+
+  // Date Listed
+  if (data.dateListed || data.date_listed || data.listingDate || data.listDate) {
+    const dl = data.dateListed || data.date_listed || data.listingDate || data.listDate;
+    result.dateListed = String(dl);
+    financial.dateListed = String(dl);
+  }
+
+  // Available Date
+  if (data.availableDate || data.available_date || data.moveInDate || data.move_in_date) {
+    const ad = data.availableDate || data.available_date || data.moveInDate || data.move_in_date;
+    result.availableDate = String(ad);
+    financial.availableDate = String(ad);
+  }
+
+  // Build financialDetails object from accumulated values
+  if (financial.taxAssessedValueDisplay || financial.pricePerSqftDisplay ||
+      financial.dateListed || financial.availableDate || result.annualTaxAmount) {
+    result.financialDetails = { ...financial };
+    if (result.propertyTax) {
+      result.financialDetails.propertyTaxDisplay = result.propertyTax;
+    }
+    if (result.annualTaxAmount) {
+      result.financialDetails.annualTaxAmount = result.annualTaxAmount;
+    }
+  }
+
   return result;
+}
+
+// Parse "$6,070/yr" or "$6070" → 6070 (number)
+function parseTaxAmount(str) {
+  if (!str) return null;
+  const cleaned = str.replace(/[$,]/g, '').replace(/\/yr|\/year/gi, '').trim();
+  const num = parseInt(cleaned, 10);
+  return isNaN(num) ? null : num;
+}
+
+// Parse "$434/sqft" or "434" → 434 (number)
+function parsePricePerSqftAmount(str) {
+  if (!str) return null;
+  const cleaned = String(str).replace(/[$,]|per sqft|per sq\.?|per\s*ft|\/sqft|\/sq\.?\s*ft/gi, '').trim();
+  const num = parseInt(cleaned, 10);
+  return isNaN(num) ? null : num;
 }
 
 /**
@@ -1691,7 +1843,16 @@ async function extractListingDataLight() {
       lotSize: zillowData.lotSize || null,
       hoaFee: zillowData.hoaFee || null,
       propertyTax: zillowData.propertyTax || null,
+      annualTaxAmount: zillowData.annualTaxAmount || null,
       daysOnZillow: zillowData.daysOnZillow || null,
+      // Financial details
+      taxAssessedValue: zillowData.taxAssessedValue || null,
+      taxAssessedValueAmount: zillowData.taxAssessedValueAmount || null,
+      pricePerSqft: zillowData.pricePerSqft || null,
+      pricePerSqftAmount: zillowData.pricePerSqftAmount || null,
+      dateListed: zillowData.dateListed || null,
+      availableDate: zillowData.availableDate || null,
+      financialDetails: zillowData.financialDetails || null,
     } : {}),
   };
   const detection = buildPropertyDetection(signals, listing);

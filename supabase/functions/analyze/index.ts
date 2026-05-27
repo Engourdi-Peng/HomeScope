@@ -3147,9 +3147,9 @@ function normalizeStep2Decision(
     stories: (optionalDetails as any)?.stories ?? null,
     parking: String((optionalDetails as any)?.parking ?? ''),
     hoa: String((optionalDetails as any)?.hoaFee ?? ''),
-    annual_tax: (optionalDetails as any)?.annualTax ?? (optionalDetails as any)?.propertyTax ?? null,
-    tax_assessed_value: (optionalDetails as any)?.taxAssessedValue ?? null,
-    price_per_sqft: (optionalDetails as any)?.pricePerSqft ?? null,
+    annual_tax: (optionalDetails as any)?.annualTaxAmount ?? parsePriceToNumber((optionalDetails as any)?.annualTax ?? (optionalDetails as any)?.propertyTax) ?? null,
+    tax_assessed_value: (optionalDetails as any)?.taxAssessedValueAmount ?? parsePriceToNumber((optionalDetails as any)?.taxAssessedValue) ?? null,
+    price_per_sqft: (optionalDetails as any)?.pricePerSqftAmount ?? parsePriceToNumber((optionalDetails as any)?.pricePerSqft) ?? null,
     roof: String((optionalDetails as any)?.roof ?? ''),
     materials: String((optionalDetails as any)?.constructionMaterial ?? ''),
     heating: String((optionalDetails as any)?.heating ?? ''),
@@ -4252,6 +4252,16 @@ function buildStep2Messages(
   visualAnalysis: Record<string, unknown> | null,
   description?: string,
   optionalDetails?: AnalyzeOptionalDetails,
+  verifiedFacts?: {
+    annual_tax: number | null;
+    annual_tax_display: string | null;
+    tax_assessed_value: number | null;
+    tax_assessed_value_display: string | null;
+    price_per_sqft: number | null;
+    price_per_sqft_display: string | null;
+    date_listed: string | null;
+    available_date: string | null;
+  },
 ) {
   // ── Prompt selection ───────────────────────────────────────────────────────
   let systemPrompt: string;
@@ -4381,6 +4391,41 @@ IMPORTANT:
 Use these listing facts heavily in your analysis. Do not say tax, year built, home type, roof, HOA, price per sqft, or multi-family status are unknown if they appear above.
 If a field is not listed above, then treat it as unknown and add it to data_gaps or external_data_needed.
 `;
+    }
+    // ── Step 4: Inject verified facts for US market ───────────────────────────
+    if (market === 'US' && verifiedFacts) {
+      const vfParts: string[] = [];
+      if (verifiedFacts.annual_tax_display) {
+        vfParts.push(`- Annual property tax: ${verifiedFacts.annual_tax_display}`);
+      }
+      if (verifiedFacts.tax_assessed_value_display) {
+        vfParts.push(`- Tax assessed value: ${verifiedFacts.tax_assessed_value_display}`);
+      }
+      if (verifiedFacts.price_per_sqft_display) {
+        vfParts.push(`- Price per sqft: ${verifiedFacts.price_per_sqft_display}`);
+      }
+      if (verifiedFacts.date_listed) {
+        vfParts.push(`- Date listed: ${verifiedFacts.date_listed}`);
+      }
+      if (verifiedFacts.available_date) {
+        vfParts.push(`- Available date: ${verifiedFacts.available_date}`);
+      }
+
+      if (vfParts.length > 0) {
+        textContent += `
+|VERIFIED LISTING FACTS — MUST NOT CONTRADICT:
+|${vfParts.join('\n')}
+|
+|RULES:
+|- If annual property tax is listed above, you MUST include it as carrying_costs.annual_tax.
+|- If annual property tax is listed above, you MUST NOT say annual tax is unknown.
+|- If annual property tax is listed above, you MUST NOT include "annual property tax" in missing_costs.
+|- If tax assessed value is listed above, include it in tax_context (it is NOT market value).
+|- If price per sqft is listed above, include it in price_assessment.price_per_sqft_context.
+|- HOA may remain "Unknown" if not provided — do not force a value.
+|- If annual tax is known but HOA is unknown, describe HOA status separately — do NOT say "annual tax and HOA unknown".
+`;
+      }
     }
   }
 
@@ -4987,9 +5032,19 @@ Deno.serve(async (req) => {
         stories: (optionalDetails as Record<string, unknown>)?.stories ?? null,
         parking: String((optionalDetails as Record<string, unknown>)?.parking ?? ''),
         hoa: String((optionalDetails as Record<string, unknown>)?.hoaFee ?? ''),
-        annual_tax: (optionalDetails as Record<string, unknown>)?.annualTax ?? (optionalDetails as Record<string, unknown>)?.propertyTax ?? null,
-        tax_assessed_value: (optionalDetails as Record<string, unknown>)?.taxAssessedValue ?? null,
-        price_per_sqft: (optionalDetails as Record<string, unknown>)?.pricePerSqft ?? null,
+        annual_tax: (optionalDetails as Record<string, unknown>)?.annualTaxAmount
+          ?? parsePriceToNumber((optionalDetails as Record<string, unknown>)?.annualTax ?? (optionalDetails as Record<string, unknown>)?.propertyTax) ?? null,
+        annual_tax_display: (optionalDetails as Record<string, unknown>)?.propertyTax as string | null ?? null,
+        tax_assessed_value: (optionalDetails as Record<string, unknown>)?.taxAssessedValueAmount
+          ?? parsePriceToNumber((optionalDetails as Record<string, unknown>)?.taxAssessedValue) ?? null,
+        tax_assessed_value_display: typeof (optionalDetails as Record<string, unknown>)?.taxAssessedValue === 'string'
+          ? (optionalDetails as Record<string, unknown>)?.taxAssessedValue as string : null,
+        price_per_sqft: (optionalDetails as Record<string, unknown>)?.pricePerSqftAmount
+          ?? parsePriceToNumber((optionalDetails as Record<string, unknown>)?.pricePerSqft) ?? null,
+        price_per_sqft_display: typeof (optionalDetails as Record<string, unknown>)?.pricePerSqft === 'string'
+          ? (optionalDetails as Record<string, unknown>)?.pricePerSqft as string : null,
+        date_listed: (optionalDetails as Record<string, unknown>)?.dateListed as string | null ?? null,
+        available_date: (optionalDetails as Record<string, unknown>)?.availableDate as string | null ?? null,
         roof: String((optionalDetails as Record<string, unknown>)?.roof ?? ''),
         materials: String((optionalDetails as Record<string, unknown>)?.constructionMaterial ?? ''),
         heating: String((optionalDetails as Record<string, unknown>)?.heating ?? ''),
@@ -5414,14 +5469,63 @@ Deno.serve(async (req) => {
         console.log("[Step 1] Skipped - no image URLs provided");
       }
 
-      // Before Step 2
-      await updateAnalysisState(id, {
-        stage: "extracting_strengths_and_issues",
-        message: "Extracting strengths and potential issues...",
-        progress: 55,
-      });
+      // ── Step 3: Build verifiedFacts from optionalDetails (deterministic) ─────────
+      // These are extracted directly from Zillow — AI must not contradict them
+      const od = optionalDetails as Record<string, unknown>;
+      const financial = (od.financialDetails ?? {}) as Record<string, unknown>;
 
-      console.log("\n[Step 2] Decision reasoning start");
+      const parseVerifiedNumberLocal = (val: unknown): number | null => {
+        if (typeof val === 'number' && !isNaN(val)) return val;
+        if (typeof val === 'string' && val.trim()) {
+          const cleaned = val.replace(/[$,]/g, '').replace(/\/yr|\/year|\/sqft|per\s*sq\.?\s*ft/gi, '').trim();
+          const n = parseInt(cleaned, 10);
+          return isNaN(n) ? null : n;
+        }
+        return null;
+      };
+
+      const verifiedAnnualTax = parseVerifiedNumberLocal(
+        financial.annualTaxAmount ?? od.annualTaxAmount ?? od.annualTax ?? od.propertyTax
+      );
+      const verifiedAnnualTaxDisplay = (financial.propertyTaxDisplay as string | null)
+        ?? (typeof (od.propertyTax as string) === 'string' ? (od.propertyTax as string) : null)
+        ?? (verifiedAnnualTax != null ? '$' + verifiedAnnualTax.toLocaleString() + '/yr' : null);
+
+      const verifiedTaxAssessed = parseVerifiedNumberLocal(
+        financial.taxAssessedValue as number | undefined
+          ?? (od.taxAssessedValueAmount ?? od.taxAssessedValue)
+      );
+      const verifiedTaxAssessedDisplay = (financial.taxAssessedValueDisplay as string | null)
+        ?? (typeof (od.taxAssessedValue as string) === 'string' ? (od.taxAssessedValue as string) : null)
+        ?? (verifiedTaxAssessed != null ? '$' + verifiedTaxAssessed.toLocaleString() : null);
+
+      const verifiedPricePerSqft = parseVerifiedNumberLocal(
+        financial.pricePerSqft as number | undefined
+          ?? (od.pricePerSqftAmount ?? od.pricePerSqft)
+      );
+      const verifiedPricePerSqftDisplay = (financial.pricePerSqftDisplay as string | null)
+        ?? (typeof (od.pricePerSqft as string) === 'string' ? (od.pricePerSqft as string) : null)
+        ?? (verifiedPricePerSqft != null ? '$' + verifiedPricePerSqft + '/sqft' : null);
+
+      const verifiedDateListed = (financial.dateListed as string | null)
+        ?? (od.dateListed as string | null)
+        ?? null;
+      const verifiedAvailableDate = (financial.availableDate as string | null)
+        ?? (od.availableDate as string | null)
+        ?? null;
+
+      const verifiedFacts = {
+        annual_tax: verifiedAnnualTax,
+        annual_tax_display: verifiedAnnualTaxDisplay,
+        tax_assessed_value: verifiedTaxAssessed,
+        tax_assessed_value_display: verifiedTaxAssessedDisplay,
+        price_per_sqft: verifiedPricePerSqft,
+        price_per_sqft_display: verifiedPricePerSqftDisplay,
+        date_listed: verifiedDateListed,
+        available_date: verifiedAvailableDate,
+      };
+
+      console.log('[Analyze] verified financial facts', verifiedFacts);
 
       const step2Messages = buildStep2Messages(
         reportMode,
@@ -5429,6 +5533,7 @@ Deno.serve(async (req) => {
         visualAnalysis,
         description,
         optionalDetails,
+        verifiedFacts,
       );
 
       const { rawText: step2RawText, parsed: decision } = await callStep2Model(
@@ -5471,7 +5576,7 @@ Deno.serve(async (req) => {
         level: 'MEDIUM',
         reasons: ['Unable to assess competition risk']
       };
-      
+
       const recommendation: Step2Recommendation = (normalizedDecision.recommendation as Step2Recommendation | null | undefined) ?? {
         verdict: normalizedDecision.overall_verdict || 'Need More Evidence',
         good_fit_for: [],
@@ -5794,6 +5899,104 @@ Deno.serve(async (req) => {
         detected_rooms: detectedRooms,
         room_counts: roomCounts,
       };
+
+      // ── Step 5: Post-processing — force-fill financial facts (deterministic) ─────
+      // If verifiedFacts has annual tax, NEVER let AI output "annual tax unknown"
+      const cc = result.carrying_costs as Record<string, unknown> | undefined;
+      if (cc && verifiedFacts.annual_tax != null) {
+        // Force annual_tax
+        cc.annual_tax = verifiedFacts.annual_tax;
+        if (verifiedFacts.annual_tax_display) {
+          cc.annual_tax_display = verifiedFacts.annual_tax_display;
+        }
+        // Remove property-tax-only items from missing_costs
+        // Only remove items that are explicitly about property tax, NOT generic "annual" items
+        const missing = Array.isArray(cc.missing_costs) ? cc.missing_costs : [];
+        cc.missing_costs = missing.filter((m: unknown) => {
+          if (typeof m !== 'string') return true;
+          const lower = m.toLowerCase();
+          // Only match items that explicitly describe property tax — not generic "annual" costs
+          const isPropertyTax = lower.includes('annual property tax')
+            || lower.includes('property tax')
+            || lower.includes('annual tax')
+            || lower.includes('tax bill')
+            || lower.includes('real estate tax');
+          return !isPropertyTax;
+        });
+        // Fix summary if AI says unknown
+        const summary = String(cc.summary || '');
+        const unknownPatterns = [
+          /annual\s+tax\s+(and\s+)?(hoa\s+)?unknown/gi,
+          /property\s+tax\s+unknown/gi,
+          /annual\s+and\s+hoa\s+(status\s+)?unknown/gi,
+        ];
+        if (unknownPatterns.some(p => p.test(summary))) {
+          const hoaPart = (od.hoaFee ? `HOA fee is $${od.hoaFee}/mo.` : 'HOA status is not provided on this listing.');
+          cc.summary = `Annual property tax is ${verifiedFacts.annual_tax_display}. ${hoaPart} Budget separately for insurance, utilities, maintenance reserves and financing costs.`;
+        }
+        // Fix cost_pressure: don't infer Low/High from absolute amount (varies by state).
+        // If we have both tax and assessed value, compute effective tax rate for context.
+        if ((cc.cost_pressure === 'Unknown' || cc.cost_pressure === 'unknown') && verifiedFacts.annual_tax != null) {
+          if (verifiedFacts.tax_assessed_value != null && verifiedFacts.tax_assessed_value > 0) {
+            const rate = ((verifiedFacts.annual_tax / verifiedFacts.tax_assessed_value) * 100).toFixed(2);
+            cc.cost_pressure = 'Known Tax / Partial Costs';
+            cc.tax_rate_percent = parseFloat(rate);
+          } else {
+            cc.cost_pressure = 'Known Tax / Partial Costs';
+          }
+        }
+        // Ensure tax context in price_assessment
+        if (verifiedFacts.tax_assessed_value != null || verifiedFacts.annual_tax != null) {
+          const pa = result.price_assessment as Record<string, unknown> | undefined;
+          if (pa && !pa.tax_context) {
+            if (verifiedFacts.tax_assessed_value != null && verifiedFacts.annual_tax != null) {
+              const rate = ((verifiedFacts.annual_tax / verifiedFacts.tax_assessed_value) * 100).toFixed(2);
+              pa.tax_context = `Tax assessed value: ${verifiedFacts.tax_assessed_value_display}. Annual property tax: ${verifiedFacts.annual_tax_display} (effective rate: ${rate}%).`;
+            } else if (verifiedFacts.annual_tax != null) {
+              pa.tax_context = `Annual property tax: ${verifiedFacts.annual_tax_display}. Tax assessed value not disclosed.`;
+            }
+          }
+        }
+      }
+
+      // If verifiedFacts has tax assessed value, add to property_snapshot
+      const ps = result.property_snapshot as Record<string, unknown> | undefined;
+      if (ps && verifiedFacts.tax_assessed_value != null) {
+        ps.tax_assessed_value = verifiedFacts.tax_assessed_value;
+        if (verifiedFacts.tax_assessed_value_display) {
+          ps.tax_assessed_value_display = verifiedFacts.tax_assessed_value_display;
+        }
+      }
+
+      // If verifiedFacts has price per sqft, add to property_snapshot or price_assessment
+      if (verifiedFacts.price_per_sqft != null) {
+        if (ps) {
+          ps.price_per_sqft = verifiedFacts.price_per_sqft;
+          if (verifiedFacts.price_per_sqft_display) {
+            ps.price_per_sqft_display = verifiedFacts.price_per_sqft_display;
+          }
+        }
+        const pa = result.price_assessment as Record<string, unknown> | undefined;
+        if (pa) {
+          pa.price_per_sqft = verifiedFacts.price_per_sqft;
+          if (verifiedFacts.price_per_sqft_display) {
+            pa.price_per_sqft_display = verifiedFacts.price_per_sqft_display;
+          }
+        }
+      }
+
+      // If verifiedFacts has date listed or available date, add to property_snapshot
+      if (ps) {
+        if (verifiedFacts.date_listed) ps.date_listed = verifiedFacts.date_listed;
+        if (verifiedFacts.available_date) ps.available_date = verifiedFacts.available_date;
+      }
+
+      console.log('[Analyze] post-processed carrying_costs', {
+        annual_tax: (result.carrying_costs as any)?.annual_tax,
+        missing_costs: (result.carrying_costs as any)?.missing_costs,
+        summary: (result.carrying_costs as any)?.summary,
+        cost_pressure: (result.carrying_costs as any)?.cost_pressure,
+      });
 
       // Update state before building final report
       await updateAnalysisState(id, {
