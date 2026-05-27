@@ -327,6 +327,7 @@ export function normalizeUSSaleReport(result: USSaleResult): NormalizedReport {
       source: toText(result.source ?? result.listingInfo?.source ?? ''),
       sourceDomain: toText(result.sourceDomain ?? result.source_domain ?? ''),
       isBasic: false,
+      usedSectionIds: [],
     },
     hero: buildHero(result),
     highlights: buildHighlights(result),

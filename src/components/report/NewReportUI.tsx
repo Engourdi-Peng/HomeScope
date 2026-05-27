@@ -208,14 +208,10 @@ function HeroSection({ report }: { report: NormalizedReport }) {
   const scoreText = score !== null && score !== undefined ? String(score) : null;
 
   return (
-    <div className="relative bg-slate-900 rounded-2xl p-6 sm:p-8 md:p-10 mb-6 overflow-hidden">
-      <div className="absolute inset-0 bg-gradient-to-r from-blue-600/5 via-purple-600/5 to-pink-600/5" />
+    <div className="relative rounded-2xl p-6 sm:p-8 md:p-10 mb-8 overflow-hidden" style={{ backgroundColor: '#282828' }}>
       <div className="relative z-10">
-        <div className="flex items-center gap-2 mb-4">
-          <div className="w-7 h-7 rounded-lg bg-slate-700/60 flex items-center justify-center">
-            <Shield className="w-4 h-4 text-slate-300" />
-          </div>
-          <span className="text-slate-300 uppercase tracking-wider text-sm font-semibold">Final Verdict</span>
+        <div className="flex items-center justify-center gap-2 mb-4">
+          <div className="text-slate-300 uppercase tracking-wider text-sm font-semibold">Decision Score</div>
         </div>
 
         {/* Property identity strip */}
@@ -246,30 +242,27 @@ function HeroSection({ report }: { report: NormalizedReport }) {
             <div className="text-7xl sm:text-8xl font-bold text-slate-500">—</div>
           )}
           <div className="text-3xl text-slate-400">/100</div>
-          <div className="text-slate-300 uppercase tracking-wider text-sm ml-2 sm:ml-4 self-center">
-            Decision Score
-          </div>
         </div>
 
         {hero.verdict && (
-          <div className="inline-flex items-center gap-2 bg-slate-700/30 backdrop-blur border border-slate-600/40 px-6 py-3 rounded-xl mb-4">
-            <Activity className="w-4 h-4 text-slate-300" />
-            <span className="font-semibold text-slate-200 tracking-wide">{renderValue(hero.verdict)}</span>
+          <div className="inline-flex items-center gap-2 backdrop-blur border px-6 py-3 rounded-xl mb-4" style={{ borderColor: '#DAA520', backgroundColor: 'rgba(218, 165, 32, 0.15)' }}>
+            <Activity className="w-4 h-4" style={{ color: '#DAA520' }} />
+            <span className="font-semibold tracking-wide" style={{ color: '#DAA520' }}>{renderValue(hero.verdict)}</span>
           </div>
         )}
 
         {hero.confidence && (
-          <div className="flex items-center gap-2 text-slate-300 font-medium mb-6 sm:mb-8">
+          <div className="flex items-center justify-center gap-2 text-slate-300 font-medium mb-6 sm:mb-8">
             <div className="w-2 h-2 rounded-full bg-slate-400" />
             <span>Report Confidence: {renderValue(hero.confidence)}</span>
           </div>
         )}
 
         {hero.summary && (
-          <div className="bg-slate-800/80 backdrop-blur border border-blue-500/20 rounded-xl p-5 sm:p-6 mb-4">
+          <div className="backdrop-blur border rounded-xl p-5 sm:p-6 mb-4" style={{ backgroundColor: '#3a3a3a', borderColor: 'rgba(148, 163, 184, 0.2)' }}>
             <div className="flex items-center gap-2 mb-2 sm:mb-3">
-              <Zap className="w-3.5 h-3.5 text-blue-400/70" />
-              <span className="text-blue-400/90 uppercase tracking-wider text-xs font-semibold">Key Takeaway</span>
+              <Zap className="w-3.5 h-3.5 text-slate-400" />
+              <span className="text-slate-300 uppercase tracking-wider text-xs font-semibold">Key Takeaway</span>
             </div>
             <p className="text-slate-100 text-base sm:text-lg leading-relaxed">{renderValue(hero.summary)}</p>
           </div>
@@ -295,12 +288,12 @@ function HeroSection({ report }: { report: NormalizedReport }) {
         )}
 
         {nextStep && (
-          <div className="bg-slate-800/40 border border-amber-500/30 rounded-xl p-4 sm:p-5">
+          <div className="border rounded-xl p-4 sm:p-5" style={{ backgroundColor: '#3a3a3a', borderColor: '#DAA520' }}>
             <div className="flex items-center gap-2 mb-2">
-              <div className="w-5 h-5 rounded-lg bg-amber-600/20 flex items-center justify-center">
-                <Activity className="w-3 h-3 text-amber-400/80" />
+              <div className="w-5 h-5 rounded-lg flex items-center justify-center" style={{ backgroundColor: 'rgba(218, 165, 32, 0.2)' }}>
+                <Activity className="w-3 h-3" style={{ color: '#DAA520' }} />
               </div>
-              <span className="text-amber-400/90 uppercase tracking-wider text-xs font-semibold">Next Step</span>
+              <span className="uppercase tracking-wider text-xs font-semibold" style={{ color: '#DAA520' }}>Next Step</span>
             </div>
             <p className="text-slate-100 text-sm">{renderValue(nextStep)}</p>
           </div>
@@ -375,7 +368,7 @@ function TopRisksSection({ report }: { report: NormalizedReport }) {
   return (
     <>
       <SectionRegistrar ids={consumedIds} />
-      <div className="bg-white rounded-2xl p-6 sm:p-8 md:p-10 mb-6 border border-slate-200">
+      <div className="bg-white rounded-2xl p-6 sm:p-8 md:p-10 mb-8 border border-slate-200">
         <div className="flex items-center gap-3 mb-6 sm:mb-8">
           <div className="w-10 h-10 rounded-xl bg-rose-500/10 flex items-center justify-center">
             <AlertTriangle className="w-5 h-5 text-rose-600/70" />
@@ -459,7 +452,7 @@ function BeforeProceedSection({ report }: { report: NormalizedReport }) {
   if (beforeItems.length === 0 && upsideItems.length === 0 && concernItems.length === 0) return null;
 
   return (
-    <div className="grid grid-cols-1 md:grid-cols-2 gap-4 sm:gap-6 mb-6">
+    <div className="grid grid-cols-1 md:grid-cols-2 gap-4 sm:gap-6 mb-8">
       <div className="bg-white rounded-2xl p-6 sm:p-8 border border-slate-200">
         <div className="flex items-center gap-3 mb-5 sm:mb-6">
           <div className="w-9 h-9 rounded-xl bg-indigo-500/10 flex items-center justify-center shrink-0">
@@ -569,7 +562,6 @@ function PropertySnapshotSection({ report }: { report: NormalizedReport }) {
 
   if (!hasAddress && !hasQuickFacts && !hasPriceData) return null;
 
-  // Filter and format price items
   const priceData = priceItems
     .map((item) => ({
       label: renderValue(item.title),
@@ -579,31 +571,31 @@ function PropertySnapshotSection({ report }: { report: NormalizedReport }) {
     .filter((i) => i.value || i.description);
 
   return (
-    <div className="bg-white rounded-2xl p-6 sm:p-8 md:p-10 mb-6 border border-slate-200">
+    <div className="rounded-2xl p-8 md:p-10 mb-8" style={{ backgroundColor: '#282828' }}>
       {/* Header */}
       <div className="flex items-center gap-3 mb-6">
-        <div className="w-10 h-10 rounded-xl bg-purple-500/10 flex items-center justify-center shrink-0">
-          <Home className="w-5 h-5 text-purple-600/70" />
+        <div className="w-10 h-10 rounded-xl flex items-center justify-center shrink-0" style={{ backgroundColor: 'rgba(218, 165, 32, 0.15)' }}>
+          <Home className="w-5 h-5" style={{ color: '#DAA520' }} />
         </div>
-        <h2 className="text-xl sm:text-2xl font-bold text-slate-900">Property Snapshot</h2>
+        <h2 className="text-2xl font-bold text-white">PROPERTY SNAPSHOT</h2>
       </div>
 
       {/* Address */}
       {hasAddress && (
-        <div className="mb-6 sm:mb-8">
-          <div className="text-gray-500 uppercase text-xs tracking-wider mb-2">Address</div>
-          <div className="text-xl sm:text-2xl font-semibold text-gray-900 min-w-0 break-words">{address}</div>
+        <div className="mb-8">
+          <div className="text-slate-400 uppercase text-xs tracking-wider mb-2">Address</div>
+          <div className="text-2xl text-white">{address}</div>
         </div>
       )}
 
       {/* Price Assessment (nested) */}
       {hasPriceData && (
-        <div className="bg-slate-50 rounded-xl p-6 sm:p-8 border border-slate-200">
-          <div className="flex items-center gap-3 mb-5 sm:mb-6">
-            <div className="w-9 h-9 rounded-xl bg-emerald-500/10 flex items-center justify-center shrink-0">
-              <DollarSign className="w-5 h-5 text-emerald-600/70" />
+        <div className="rounded-xl p-8 mb-6" style={{ backgroundColor: '#3a3a3a' }}>
+          <div className="flex items-center gap-3 mb-6">
+            <div className="w-9 h-9 rounded-xl flex items-center justify-center shrink-0" style={{ backgroundColor: 'rgba(218, 165, 32, 0.15)' }}>
+              <DollarSign className="w-5 h-5" style={{ color: '#DAA520' }} />
             </div>
-            <h3 className="text-lg sm:text-xl font-bold text-slate-900">
+            <h3 className="text-xl font-bold text-white">
               {renderValue(priceSection?.title ?? 'Price Assessment')}
             </h3>
           </div>
@@ -615,11 +607,11 @@ function PropertySnapshotSection({ report }: { report: NormalizedReport }) {
             if (estMin || estMax) {
               const range = [estMin, estMax].filter(Boolean).join(' – ');
               return (
-                <div className="mb-6 sm:mb-8">
-                  <div className="text-gray-500 uppercase text-xs tracking-wider mb-2 sm:mb-3">
+                <div className="mb-8">
+                  <div className="text-slate-400 uppercase text-xs tracking-wider mb-3">
                     Estimated Value Range
                   </div>
-                  <div className="text-3xl sm:text-4xl font-bold text-gray-900">{range}</div>
+                  <div className="text-4xl font-bold text-white">{range}</div>
                 </div>
               );
             }
@@ -633,11 +625,11 @@ function PropertySnapshotSection({ report }: { report: NormalizedReport }) {
             )?.value;
             if (asking) {
               return (
-                <div className="mb-6 sm:mb-8">
-                  <div className="text-gray-500 uppercase text-xs tracking-wider mb-2 sm:mb-3">
+                <div className="mb-8">
+                  <div className="text-slate-400 uppercase text-xs tracking-wider mb-3">
                     Asking Price
                   </div>
-                  <div className="text-3xl sm:text-4xl font-bold text-gray-900">{asking}</div>
+                  <div className="text-4xl font-bold text-white">{asking}</div>
                 </div>
               );
             }
@@ -650,16 +642,10 @@ function PropertySnapshotSection({ report }: { report: NormalizedReport }) {
             const confidence = priceData.find((i) => /confidence/i.test(i.label))?.value;
             if (!verdict && !confidence) return null;
             return (
-              <div className="flex items-center gap-4 mb-6 pb-6 border-b border-gray-200 flex-wrap">
-                {verdict && (
-                  <>
-                    <div className="text-gray-600 uppercase text-sm tracking-wide">Verdict</div>
-                    <div className="text-slate-700 font-semibold text-lg">{verdict}</div>
-                  </>
-                )}
-                {confidence && (
-                  <div className="text-gray-400">{confidence}</div>
-                )}
+              <div className="flex items-center gap-4 mb-6 pb-6 border-b flex-wrap" style={{ borderColor: 'rgba(148, 163, 184, 0.3)' }}>
+                <div className="text-slate-400 uppercase text-sm tracking-wide">Verdict</div>
+                <div className="text-white font-semibold text-lg">{verdict}</div>
+                <div className="text-slate-400">Confidence: {confidence}</div>
               </div>
             );
           })()}
@@ -673,7 +659,7 @@ function PropertySnapshotSection({ report }: { report: NormalizedReport }) {
             )?.value;
             if (analysis) {
               return (
-                <p className="text-gray-700 text-sm sm:text-base leading-relaxed mb-6">{analysis}</p>
+                <p className="text-slate-200 text-base leading-relaxed mb-6">{analysis}</p>
               );
             }
             return null;
@@ -684,11 +670,11 @@ function PropertySnapshotSection({ report }: { report: NormalizedReport }) {
             const conf = priceData.find((i) => /confidence/i.test(i.label) && i.description);
             if (!conf) return null;
             return (
-              <div className="bg-white border border-slate-300 rounded-lg p-4 sm:p-5">
-                <div className="font-semibold text-gray-900 mb-2">
+              <div className="rounded-lg p-5" style={{ backgroundColor: '#282828', borderColor: 'rgba(148, 163, 184, 0.2)', borderWidth: '1px', borderStyle: 'solid' }}>
+                <div className="font-semibold text-white mb-2">
                   Price Confidence: {renderValue(conf.value ?? '')}
                 </div>
-                <p className="text-gray-700 text-sm leading-relaxed">{conf.description}</p>
+                <p className="text-slate-300 text-sm leading-relaxed">{conf.description}</p>
               </div>
             );
           })()}
@@ -698,17 +684,17 @@ function PropertySnapshotSection({ report }: { report: NormalizedReport }) {
       {/* Quick Facts grid */}
       {hasQuickFacts && (
         <div className="mt-6 sm:mt-8">
-          {/* Quick Facts in a responsive grid */}
           <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-3 sm:gap-4">
             {qfItems.map((item, i) => (
               <div
                 key={i}
-                className="bg-slate-50 rounded-lg px-4 py-3 border border-slate-200 min-w-0"
+                className="rounded-lg px-4 py-3 min-w-0"
+                style={{ backgroundColor: '#3a3a3a' }}
               >
-                <div className="text-gray-500 uppercase text-xs tracking-wider mb-1 truncate">
+                <div className="text-slate-400 uppercase text-xs tracking-wider mb-1 truncate">
                   {item.label}
                 </div>
-                <div className="text-gray-900 font-semibold text-sm sm:text-base truncate min-w-0 break-words">
+                <div className="text-white font-semibold text-sm sm:text-base truncate min-w-0 break-words">
                   {item.value}
                 </div>
               </div>
@@ -747,7 +733,7 @@ function CarryingCostsSection({ report }: { report: NormalizedReport }) {
   const hasContent = costItems.length > 0 || missingCosts.length > 0;
 
   return (
-    <div className="bg-white rounded-2xl p-6 sm:p-8 md:p-10 mb-6 border border-slate-200">
+    <div className="bg-white rounded-2xl p-6 sm:p-8 md:p-10 mb-8 border border-slate-200">
       {/* Header */}
       <div className="flex items-center gap-3 mb-6">
         <div className="w-10 h-10 rounded-xl bg-violet-500/10 flex items-center justify-center shrink-0">
@@ -868,7 +854,7 @@ function InvestmentPotentialSection({ report }: { report: NormalizedReport }) {
   )?.description ?? '');
 
   return (
-    <div className="bg-white rounded-2xl p-6 sm:p-8 md:p-10 mb-6 border border-slate-200">
+    <div className="bg-white rounded-2xl p-6 sm:p-8 md:p-10 mb-8 border border-slate-200">
       {/* Header */}
       <div className="flex items-center gap-3 mb-6">
         <div className="w-10 h-10 rounded-xl bg-teal-500/10 flex items-center justify-center shrink-0">
@@ -981,7 +967,7 @@ function DetailedRiskAnalysisSection({ report }: { report: NormalizedReport }) {
   if (riskSections.length === 0) return null;
 
   return (
-    <div className="bg-white rounded-2xl p-6 sm:p-8 md:p-10 mb-6 border border-slate-200">
+    <div className="bg-white rounded-2xl p-6 sm:p-8 md:p-10 mb-8 border border-slate-200">
       {/* Header */}
       <div className="flex items-center gap-3 mb-6 sm:mb-8">
         <div className="w-10 h-10 rounded-xl bg-orange-500/10 flex items-center justify-center shrink-0">
@@ -1111,7 +1097,7 @@ function DataGapsSection({ report }: { report: NormalizedReport }) {
   if (gapItems.length === 0) return null;
 
   return (
-    <div className="bg-white rounded-2xl p-6 sm:p-8 md:p-10 mb-6 border border-slate-200">
+    <div className="bg-white rounded-2xl p-6 sm:p-8 md:p-10 mb-8 border border-slate-200">
       {/* Header */}
       <div className="flex items-center gap-3 mb-6">
         <div className="w-10 h-10 rounded-xl bg-sky-500/10 flex items-center justify-center shrink-0">
@@ -1159,7 +1145,7 @@ function NeighborhoodSection({ report }: { report: NormalizedReport }) {
   if (items.length === 0) return null;
 
   return (
-    <div className="bg-white rounded-2xl p-6 sm:p-8 md:p-10 border border-slate-200 mb-6">
+    <div className="bg-white rounded-2xl p-6 sm:p-8 md:p-10 border border-slate-200 mb-8">
       {/* Header */}
       <div className="flex items-center gap-3 mb-4 sm:mb-6">
         <div className="w-10 h-10 rounded-xl bg-pink-500/10 flex items-center justify-center shrink-0">
@@ -1250,7 +1236,7 @@ function GenericSectionCard({ section }: { section: ReportSection }) {
   if (items.length === 0) return null;
 
   return (
-    <div className="bg-white rounded-2xl p-6 sm:p-8 md:p-10 mb-6 border border-slate-200 overflow-hidden">
+    <div className="bg-white rounded-2xl p-6 sm:p-8 md:p-10 mb-8 border border-slate-200 overflow-hidden">
       {/* Header */}
       <div className="flex items-center gap-3 mb-5 sm:mb-6">
         <div className="w-10 h-10 rounded-xl bg-slate-100 flex items-center justify-center shrink-0">
@@ -1476,7 +1462,7 @@ function ReportClosingCTA({
   }
 
   return (
-    <div className="bg-white rounded-2xl p-6 sm:p-8 md:p-10 mb-6 border border-slate-200">
+    <div className="bg-white rounded-2xl p-6 sm:p-8 md:p-10 mb-8 border border-slate-200">
       {/* Header */}
       <div className="flex items-center gap-3 mb-6">
         <div className="w-10 h-10 rounded-xl bg-amber-500/10 flex items-center justify-center shrink-0">

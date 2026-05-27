@@ -26,3 +26,9 @@ dist-ssr
 
 .vercel
 .env*.local
+
+# Test files
+test-*.js
+
+# Misc
+新建文件夹/

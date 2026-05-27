@@ -1261,11 +1261,9 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         });
 
         if (statusResponse.status === 'done' && statusResponse.result) {
-          // Override reportMode from API (source of truth from analyses table)
-          const reportMode = (statusResponse as any).report_mode as string | undefined;
           const resultWithListingInfo = injectListingInfo(statusResponse.result, state.listingData);
-          
-          // Apply reportMode override from API response
+          // Override reportMode from API top-level field (source of truth from analyses table)
+          const reportMode = (statusResponse as any).report_mode as string | undefined;
           if (reportMode && resultWithListingInfo) {
             (resultWithListingInfo as AnalysisResult).reportMode = reportMode as 'rent' | 'sale';
           }
