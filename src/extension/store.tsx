@@ -35,6 +35,18 @@ function injectListingInfo(result: AnalysisResult, listingData: ListingData | Li
 
   const isV2 = isV2Data(listingData);
 
+  // Get the first image URL for injection into both listingInfo and top-level images
+  let firstImageUrl: string | null = null;
+  if (isV2) {
+    firstImageUrl = ((listingData as ListingDataV2).imageUrls?.length ?? 0) > 0
+      ? (listingData as ListingDataV2).imageUrls![0]
+      : null;
+  } else {
+    firstImageUrl = ((listingData as ListingData).imageUrls?.length ?? 0) > 0
+      ? (listingData as ListingData).imageUrls![0]
+      : null;
+  }
+
   // Build listingInfo
   const listingInfo: ListingInfo = {};
 
@@ -47,9 +59,7 @@ function injectListingInfo(result: AnalysisResult, listingData: ListingData | Li
     listingInfo.bedrooms = (listingData as ListingDataV2).bedrooms || null;
     listingInfo.bathrooms = (listingData as ListingDataV2).bathrooms || null;
     listingInfo.parking = (listingData as ListingDataV2).parking || null;
-    listingInfo.coverImageUrl = ((listingData as ListingDataV2).imageUrls?.length ?? 0) > 0
-      ? (listingData as ListingDataV2).imageUrls![0]
-      : null;
+    listingInfo.coverImageUrl = firstImageUrl;
   } else {
     // V1 格式: content.js 返回的原始格式
     // { title, address, priceText, bedrooms, bathrooms, parking, imageUrls, ... }
@@ -59,9 +69,7 @@ function injectListingInfo(result: AnalysisResult, listingData: ListingData | Li
     listingInfo.bedrooms = (listingData as ListingData).bedrooms ?? null;
     listingInfo.bathrooms = (listingData as ListingData).bathrooms ?? null;
     listingInfo.parking = (listingData as ListingData).parking ?? null;
-    listingInfo.coverImageUrl = ((listingData as ListingData).imageUrls?.length ?? 0) > 0
-      ? (listingData as ListingData).imageUrls![0]
-      : null;
+    listingInfo.coverImageUrl = firstImageUrl;
   }
 
   // Remove null values
@@ -72,8 +80,14 @@ function injectListingInfo(result: AnalysisResult, listingData: ListingData | Li
     }
   }
 
+  // Inject images array at top level so pickFirstImage() can find it via raw.images fallback
+  const resultWithImages = { ...result } as AnalysisResult & { images?: string[] };
+  if (firstImageUrl) {
+    resultWithImages.images = [firstImageUrl];
+  }
+
   return {
-    ...result,
+    ...resultWithImages,
     listingInfo: Object.keys(cleanListingInfo).length > 0 ? cleanListingInfo : null,
   };
 }

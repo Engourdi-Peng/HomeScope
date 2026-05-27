@@ -31,7 +31,6 @@ function getScoreColor(score?: number) {
 
 /** Inject listingInfo into full_result using AnalysisSummary metadata, matching Share/Account logic */
 function enrichWithListingInfo(result: AnalysisResult, summary: AnalysisSummary): AnalysisResult {
-  console.log('[enrichWithListingInfo] called, summary.cover_image_url:', summary.cover_image_url, 'result.listingInfo before:', (result as any).listingInfo);
   const listingInfo: ListingInfo = {
     title: summary.title || undefined,
     address: summary.address || undefined,
@@ -41,7 +40,6 @@ function enrichWithListingInfo(result: AnalysisResult, summary: AnalysisSummary)
     bathrooms: summary.bathrooms || undefined,
     parking: summary.car_spaces || undefined,
   };
-  console.log('[enrichWithListingInfo] returning listingInfo:', JSON.stringify(listingInfo));
   return { ...result, listingInfo };
 }
 
