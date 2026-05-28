@@ -4834,10 +4834,16 @@ Deno.serve(async (req) => {
     const description = typeof body.description === "string" ? body.description : "Property listing information";
     const reportMode: ReportMode = body.reportMode === 'sale' ? 'sale' : 'rent';
     const optionalDetails = body.optionalDetails ?? {};
+    const zillowFinancials = (body as Record<string, unknown>).zillowFinancials || null;
 
     console.log("Description length:", description.length);
     console.log("Report mode:", reportMode);
     console.log("Source:", body.source ?? null);
+    console.log('[analyze-basic] zillowFinancials received', {
+      topEstimate: (zillowFinancials as any)?.topEstimatedPayment?.value,
+      estimatedMonthlyPayment: (zillowFinancials as any)?.monthlyPayment?.estimatedMonthlyPayment?.value,
+      annualTaxAmount: (zillowFinancials as any)?.financialDetails?.annualTaxAmount?.value,
+    });
 
     const openRouterApiKey = Deno.env.get("OPENROUTER_API_KEY");
     if (!openRouterApiKey) {
@@ -5248,6 +5254,15 @@ Deno.serve(async (req) => {
     const imageUrls = Array.isArray(body.imageUrls) ? body.imageUrls.filter(isValidHttpUrl) : [];
     const description = typeof body.description === "string" ? body.description : "";
     const optionalDetails = body.optionalDetails ?? {};
+    const zillowFinancials = (body as Record<string, unknown>).zillowFinancials || null;
+    console.log('[analyze] zillowFinancials received', {
+      topEstimate: (zillowFinancials as any)?.topEstimatedPayment?.value,
+      estimatedMonthlyPayment: (zillowFinancials as any)?.monthlyPayment?.estimatedMonthlyPayment?.value,
+      principalAndInterest: (zillowFinancials as any)?.monthlyPayment?.principalAndInterest?.value,
+      propertyTaxes: (zillowFinancials as any)?.monthlyPayment?.propertyTaxes?.value,
+      homeInsurance: (zillowFinancials as any)?.monthlyPayment?.homeInsurance?.value,
+      annualTaxAmount: (zillowFinancials as any)?.financialDetails?.annualTaxAmount?.value,
+    });
     const reportMode: ReportMode = body.reportMode === 'sale' ? 'sale' : 'rent';
 
     // ── Market / Source resolution ─────────────────────────────────────────
@@ -5547,6 +5562,97 @@ Deno.serve(async (req) => {
       // Normalize Step2 decision to unified schema (handles US/AU field name differences)
       const normalizedDecision = normalizeStep2Decision(decision, detectedMarket, optionalDetails);
 
+      // ── Deterministic carrying_costs from Zillow financials (US sale only) ──────────
+      // This overrides any AI-generated carrying_costs with data directly from Zillow.
+      // If monthly payment breakdown is available, always prefer it over AI inference.
+      if (detectedMarket === 'US' && reportMode === 'sale' && zillowFinancials) {
+        const zf = zillowFinancials as any;
+        const monthlyPayment = zf.monthlyPayment || {};
+        const financialDetails = zf.financialDetails || {};
+        const estimatedPayment = monthlyPayment.estimatedMonthlyPayment;
+
+        if (estimatedPayment?.value != null) {
+          // Primary: use Zillow's estimated monthly payment
+          normalizedDecision.carrying_costs = normalizedDecision.carrying_costs || {};
+          normalizedDecision.carrying_costs.status = 'available';
+          normalizedDecision.carrying_costs.primary_monthly_estimate = estimatedPayment.value;
+          normalizedDecision.carrying_costs.monthly_breakdown = {
+            estimatedMonthlyPayment: estimatedPayment,
+            principalAndInterest: monthlyPayment.principalAndInterest ?? null,
+            mortgageInsurance: monthlyPayment.mortgageInsurance ?? null,
+            propertyTaxes: monthlyPayment.propertyTaxes ?? null,
+            homeInsurance: monthlyPayment.homeInsurance ?? null,
+            hoaFees: monthlyPayment.hoaFees ?? null,
+            utilities: monthlyPayment.utilities ?? null,
+          };
+        } else if (zf.derived?.knownMonthlyTotal?.value > 0) {
+          // Secondary: sum of known components
+          normalizedDecision.carrying_costs = normalizedDecision.carrying_costs || {};
+          normalizedDecision.carrying_costs.status = 'available';
+          normalizedDecision.carrying_costs.primary_monthly_estimate = zf.derived.knownMonthlyTotal.value;
+        } else if (zf.topEstimatedPayment?.value != null) {
+          // Tertiary: top-level estimated payment
+          normalizedDecision.carrying_costs = normalizedDecision.carrying_costs || {};
+          normalizedDecision.carrying_costs.status = 'partial';
+          normalizedDecision.carrying_costs.primary_monthly_estimate = zf.topEstimatedPayment.value;
+        } else if (financialDetails.annualTaxAmount?.value != null) {
+          // Fallback: annual tax only
+          normalizedDecision.carrying_costs = normalizedDecision.carrying_costs || {};
+          normalizedDecision.carrying_costs.status = 'partial';
+          normalizedDecision.carrying_costs.annual_tax = financialDetails.annualTaxAmount.value;
+          normalizedDecision.carrying_costs.annual_tax_display =
+            financialDetails.annualTaxAmount.raw || '$' + financialDetails.annualTaxAmount.value + '/yr';
+        }
+
+        const cc = normalizedDecision.carrying_costs;
+        if (cc) {
+          // HOA override
+          if (monthlyPayment.hoaFees?.status === 'not_applicable') {
+            cc.hoa = 'No';
+          } else if (monthlyPayment.hoaFees?.value != null) {
+            cc.hoa = 'Yes';
+            cc.hoa_amount = monthlyPayment.hoaFees.value;
+          }
+
+          // Annual tax from financial details (never leave it null if we have it)
+          if (financialDetails.annualTaxAmount?.value != null) {
+            cc.annual_tax = financialDetails.annualTaxAmount.value;
+            cc.annual_tax_display =
+              financialDetails.annualTaxAmount.raw || '$' + financialDetails.annualTaxAmount.value + '/yr';
+            cc.monthly_tax_equivalent = Math.round(financialDetails.annualTaxAmount.value / 12);
+          }
+
+          // Tax discrepancy note
+          if (monthlyPayment.propertyTaxes?.value != null && financialDetails.annualTaxAmount?.value != null) {
+            const monthlyFromAnnual = Math.round(financialDetails.annualTaxAmount.value / 12);
+            if (monthlyFromAnnual !== monthlyPayment.propertyTaxes.value) {
+              cc.tax_note =
+                `Annual tax amount implies about $${monthlyFromAnnual}/mo, ` +
+                `while Zillow monthly payment shows $${monthlyPayment.propertyTaxes.value}/mo.`;
+            }
+          }
+
+          // Set missing_costs and summary when we have monthly breakdown
+          if (cc.status === 'available' && cc.primary_monthly_estimate != null) {
+            const missing: string[] = [];
+            if (monthlyPayment.hoaFees?.status !== 'not_applicable' && monthlyPayment.hoaFees?.value == null) {
+              missing.push('hoa');
+            }
+            if (monthlyPayment.utilities?.status !== 'not_included' && monthlyPayment.utilities?.value == null) {
+              missing.push('utilities');
+            }
+            if (monthlyPayment.homeInsurance?.value == null) {
+              missing.push('insurance');
+            }
+            cc.missing_costs = missing;
+            cc.cost_pressure = 'Known Costs';
+            cc.summary =
+              `Monthly carrying costs: $${cc.primary_monthly_estimate}/mo. ` +
+              `Breakdown available from Zillow.`;
+          }
+        }
+      }
+
       console.log("[DIAG] normalized Step2 decision", {
         market: detectedMarket,
         raw_has_pros: Array.isArray((decision as any)?.pros),
@@ -5798,12 +5904,15 @@ Deno.serve(async (req) => {
         // === Sale 模式新增字段映射 END ===
       } : { price_assessment: null, investment_potential: null, affordability_check: null };
 
+      const coverImageUrl = pickCoverImage(imageUrls);
+
       const result = {
         id, // Analysis ID for sharing functionality
         reportMode, // NEW: report mode indicator
         source,     // market source for debugging
         sourceDomain, // domain extracted from URL or source for frontend routing
         market: detectedMarket, // market routing flag (replaces isUSMarket boolean)
+        coverImageUrl, // first non-logo image URL for Hero display
         listingUrl: (body as Record<string, unknown>).listingUrl as string | null
           ?? (optionalDetails as Record<string, unknown>).listingUrl as string | null
           ?? null, // listing URL for frontend source detection
@@ -5898,6 +6007,10 @@ Deno.serve(async (req) => {
         analyzed_photo_count: analyzedPhotoCount,
         detected_rooms: detectedRooms,
         room_counts: roomCounts,
+        // listingInfo carries coverImageUrl so normalizeReport's pickFirstImage finds it
+        listingInfo: {
+          coverImageUrl,
+        },
       };
 
       // ── Step 5: Post-processing — force-fill financial facts (deterministic) ─────

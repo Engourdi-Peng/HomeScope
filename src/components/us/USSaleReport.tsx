@@ -4,6 +4,7 @@ import { AnimatedNumber } from '../AnimatedNumber';
 import { RiskBadge } from './RiskBadge';
 import { ActionChecklist, buildChecklistItems } from './ActionChecklist';
 import { QuickBalance, buildQuickBalanceData } from './QuickBalance';
+import { PhotoSpaceAnalysisCard } from '../report/PhotoSpaceAnalysisCard';
 
 // ── Shared UI primitives ────────────────────────────────────────────────────
 function SectionDivider() {
@@ -223,10 +224,21 @@ function CarryingCostsCard({ cc }: { cc?: AnalysisResult['carrying_costs'] }) {
   const hasTaxData = cc?.annual_tax != null || cc?.monthly_tax_equivalent != null;
   // 只有明确的 HOA 费用金额才触发，'Yes' 或 'Unknown' 字符串不触发
   const hasHoa = typeof cc?.hoa === 'string' && cc.hoa !== 'Yes' && cc.hoa !== 'Unknown' && cc.hoa.length > 0;
-  const hasSufficientData = hasTaxData || hasHoa;
+
+  // Broader signal check — includes zillowFinancials-derived fields (monthly_breakdown)
+  // Uses value != null checks, NOT !value — because $0 is a valid value
+  const hasAnyCostSignal =
+    hasTaxData ||
+    hasHoa ||
+    cc?.primary_monthly_estimate != null ||
+    cc?.monthly_breakdown?.estimatedMonthlyPayment?.value != null ||
+    cc?.monthly_breakdown?.principalAndInterest?.value != null ||
+    cc?.monthly_breakdown?.propertyTaxes?.value != null ||
+    cc?.monthly_breakdown?.homeInsurance?.value != null ||
+    cc?.monthly_breakdown?.hoaFees?.value != null;
 
   // 数据不足时，切换到 "Not enough disclosed" 模式
-  if (!hasSufficientData) {
+  if (!hasAnyCostSignal) {
     return (
       <CardShell icon={<DollarSign size={18} className="text-amber-600" strokeWidth={1.5} />} title="Carrying Costs" delay={150}>
         <div className="bg-amber-50 rounded-xl p-4 mb-4">
@@ -274,9 +286,15 @@ function CarryingCostsCard({ cc }: { cc?: AnalysisResult['carrying_costs'] }) {
 
   // 有足够数据时，只显示有值的卡片
   const costItems: Array<{ label: string; value: string }> = [];
+  if (cc?.primary_monthly_estimate != null) {
+    costItems.push({ label: 'Est. Monthly', value: `$${cc.primary_monthly_estimate.toLocaleString()}` });
+  }
   if (cc?.annual_tax != null) costItems.push({ label: 'Annual Tax', value: `$${cc.annual_tax.toLocaleString()}` });
   if (cc?.monthly_tax_equivalent != null) costItems.push({ label: 'Monthly Tax', value: `$${cc.monthly_tax_equivalent.toLocaleString()}` });
   if (cc?.hoa && cc.hoa !== 'Yes') costItems.push({ label: 'HOA', value: cc.hoa });
+
+  // Monthly breakdown from Zillow financials
+  const breakdown = cc?.monthly_breakdown;
 
   return (
     <CardShell icon={<DollarSign size={18} className="text-amber-600" strokeWidth={1.5} />} title="Carrying Costs" delay={150}>
@@ -290,6 +308,68 @@ function CarryingCostsCard({ cc }: { cc?: AnalysisResult['carrying_costs'] }) {
           ))}
         </div>
       )}
+
+      {/* Monthly payment breakdown from Zillow financials */}
+      {breakdown && (
+        <div className="bg-slate-50 rounded-xl p-4 mb-4 space-y-2">
+          <div className="text-xs font-semibold text-slate-700 mb-2">Monthly Payment Breakdown</div>
+          {breakdown.estimatedMonthlyPayment?.value != null && (
+            <div className="flex justify-between text-sm">
+              <span className="text-slate-600">Estimated Monthly</span>
+              <span className="font-semibold text-slate-800">${breakdown.estimatedMonthlyPayment.value.toLocaleString()}/mo</span>
+            </div>
+          )}
+          {breakdown.principalAndInterest?.value != null && (
+            <div className="flex justify-between text-sm">
+              <span className="text-slate-600">Principal & Interest</span>
+              <span className="font-semibold text-slate-800">${breakdown.principalAndInterest.value.toLocaleString()}/mo</span>
+            </div>
+          )}
+          {breakdown.mortgageInsurance?.value != null && (
+            <div className="flex justify-between text-sm">
+              <span className="text-slate-600">Mortgage Insurance</span>
+              <span className="font-semibold text-slate-800">${breakdown.mortgageInsurance.value.toLocaleString()}/mo</span>
+            </div>
+          )}
+          {breakdown.propertyTaxes?.value != null && (
+            <div className="flex justify-between text-sm">
+              <span className="text-slate-600">Property Taxes</span>
+              <span className="font-semibold text-slate-800">${breakdown.propertyTaxes.value.toLocaleString()}/mo</span>
+            </div>
+          )}
+          {breakdown.homeInsurance?.value != null && (
+            <div className="flex justify-between text-sm">
+              <span className="text-slate-600">Home Insurance</span>
+              <span className="font-semibold text-slate-800">${breakdown.homeInsurance.value.toLocaleString()}/mo</span>
+            </div>
+          )}
+          {breakdown.hoaFees?.value != null ? (
+            <div className="flex justify-between text-sm">
+              <span className="text-slate-600">HOA Fees</span>
+              <span className="font-semibold text-slate-800">${breakdown.hoaFees.value.toLocaleString()}/mo</span>
+            </div>
+          ) : (
+            breakdown.hoaFees?.status === 'not_applicable' && (
+              <div className="flex justify-between text-sm">
+                <span className="text-slate-600">HOA Fees</span>
+                <span className="text-slate-400">N/A</span>
+              </div>
+            )
+          )}
+          {breakdown.utilities?.status === 'not_included' && (
+            <div className="flex justify-between text-sm">
+              <span className="text-slate-600">Utilities</span>
+              <span className="text-slate-400">Not included</span>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Tax note from Zillow financials (discrepancy between annual-derived and monthly payment tax) */}
+      {cc?.tax_note && (
+        <div className="text-xs text-slate-500 italic mb-3">{cc.tax_note}</div>
+      )}
+
       {cc?.cost_pressure && cc.cost_pressure !== 'Unknown' && (
         <div className="flex items-center gap-3 mb-4">
           <span className="text-xs font-medium uppercase tracking-wide text-stone-500">Cost Pressure</span>
@@ -872,27 +952,30 @@ export function USSaleReport({ result }: { result: AnalysisResult }) {
       {/* ── 2. Top Risks ── */}
       <TopRisksSection result={result} />
 
-      {/* ── 3. Before You Proceed Checklist ── */}
+      {/* ── 3. Photo & Space Analysis ── */}
+      <PhotoSpaceAnalysisCard raw={result as any} />
+
+      {/* ── 4. Before You Proceed Checklist ── */}
       <ActionChecklist items={checklistItems} delay={80} />
 
-      {/* ── 4. Quick Balance ── */}
+      {/* ── 5. Quick Balance ── */}
       <QuickBalance pros={quickBalance.pros} cons={quickBalance.cons} delay={100} />
 
-      {/* ── 5. Property Snapshot ── */}
+      {/* ── 6. Property Snapshot ── */}
       <PropertySnapshotCard result={result} />
 
-      {/* ── 6. Price Assessment ── */}
+      {/* ── 7. Price Assessment ── */}
       <PriceAssessmentCard pa={result.price_assessment} />
 
-      {/* ── 7. Carrying Costs ── */}
+      {/* ── 8. Carrying Costs ── */}
       <CarryingCostsCard cc={(result as any).carrying_costs} />
 
-      {/* ── 8. Investment Potential ── */}
+      {/* ── 9. Investment Potential ── */}
       <InvestmentPotentialCard ip={(result as any).investment_potential} />
 
       <SectionDivider />
 
-      {/* ── 9. Detailed Risk Analysis ── */}
+      {/* ── 10. Detailed Risk Analysis ── */}
       <div className="space-y-4">
         <div className="flex items-center gap-2">
           <div className="w-8 h-8 rounded-xl bg-stone-100 flex items-center justify-center shrink-0">

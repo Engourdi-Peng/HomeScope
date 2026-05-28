@@ -703,6 +703,9 @@ async function handleMessage(message, sender, sendResponse) {
       optionalDetails.market = market;
       optionalDetails.listingUrl = listingUrl;
 
+      // ── Zillow financials: deterministic monthly payment breakdown ─────────────────
+      console.log('[HomeScope][ZillowFinancials] extracted', listingData?.zillowFinancials);
+
       // ── Determine server ───────────────────────────────────────────────────────────
       const serverConfig = getAnalyzeApiUrl(sourceDomain);
 
@@ -731,7 +734,9 @@ async function handleMessage(message, sender, sendResponse) {
           sourceDomain,
           market,
           listingUrl,
+          zillowFinancials: listingData?.zillowFinancials || null,
         };
+        console.log('[HomeScope][AnalyzeRequest] has zillowFinancials', !!requestBody.zillowFinancials);
         console.log('[Edge Function Request Debug]', {
           action: 'basic-sync',
           method: 'POST',
@@ -902,6 +907,7 @@ async function handleMessage(message, sender, sendResponse) {
         availableDate: optionalDetails.availableDate,
         financialDetails: optionalDetails.financialDetails,
       });
+      console.log('[HomeScope][ZillowFinancials] extracted', listingData?.zillowFinancials);
       const requestBody = {
         imageUrls,
         description,
@@ -911,7 +917,9 @@ async function handleMessage(message, sender, sendResponse) {
         sourceDomain,
         market,
         listingUrl,
+        zillowFinancials: listingData?.zillowFinancials || null,
       };
+      console.log('[HomeScope][AnalyzeRequest] has zillowFinancials', !!requestBody.zillowFinancials);
 
       // Step 3: action=submit
       try {
@@ -1110,29 +1118,52 @@ async function handleMessage(message, sender, sendResponse) {
         return;
       }
 
-      const { analysisId } = message;
+      const { analysisId, sourceDomain } = message;
       if (!analysisId) {
         sendResponse({ status: 'error', error: 'Missing analysisId' });
         return;
       }
 
+      // ── Resolve serverConfig: memory Map → session storage → URL fallback ──
+      let serverConfig = _analysisServerMap.get(analysisId);
+
+      if (!serverConfig) {
+        const stored = await chrome.storage.session.get(`${HS_ANALYSIS_SERVER_PREFIX}${analysisId}`);
+        serverConfig = stored[`${HS_ANALYSIS_SERVER_PREFIX}${analysisId}`] || null;
+        if (serverConfig) {
+          _analysisServerMap.set(analysisId, serverConfig);
+        }
+      }
+
+      // URL-based fallback: derive server from sourceDomain
+      if (!serverConfig) {
+        const sd = sourceDomain || '';
+        const isUS = sd.includes('zillow') || sd.includes('realtor');
+        serverConfig = {
+          url: isUS ? (SUPABASE_US_URL || SUPABASE_URL) : SUPABASE_URL,
+          anonKey: isUS ? (SUPABASE_US_ANON_KEY || SUPABASE_ANON_KEY) : SUPABASE_ANON_KEY,
+          isUS,
+        };
+      }
+
+      console.log('[share_analysis] analysisId', analysisId);
+      console.log('[share_analysis] resolved server', serverConfig.url);
+      console.log('[share_analysis] share response');
+
       try {
         const accessToken = auth.session.access_token;
-        const url = `${SUPABASE_URL}/functions/v1/analyze?action=share`;
+        const url = `${serverConfig.url}/functions/v1/analyze?action=share`;
         console.log('[Edge Function Request Debug]', {
           action: 'share',
           method: 'POST',
           url,
-          hasAnonKey: !!SUPABASE_ANON_KEY,
-          anonKeyPrefix: SUPABASE_ANON_KEY?.slice(0, 16),
-          anonKeyLooksLikeJwt: SUPABASE_ANON_KEY?.startsWith('eyJ'),
-          anonKeyLooksPublishable: SUPABASE_ANON_KEY?.startsWith('sb_publishable_'),
+          server: serverConfig.isUS ? 'US' : 'AU',
+          hasAnonKey: !!serverConfig.anonKey,
           hasAccessToken: !!accessToken,
-          tokenPrefix: accessToken?.slice(0, 16),
         });
         const res = await fetch(url, {
           method: 'POST',
-          headers: buildSupabaseFunctionHeaders(accessToken, { anonKey: SUPABASE_ANON_KEY }),
+          headers: buildSupabaseFunctionHeaders(accessToken, serverConfig),
           body: JSON.stringify({ analysisId }),
         });
 

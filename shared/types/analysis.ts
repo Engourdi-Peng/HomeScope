@@ -421,11 +421,25 @@ export interface AnalysisResult {
 
   carrying_costs?: {
     annual_tax?: number | null;
+    annual_tax_display?: string | null;
     monthly_tax_equivalent?: number | null;
-    hoa?: 'Yes' | 'No' | 'Unknown';
-    cost_pressure?: 'Low' | 'Medium' | 'High' | 'Unknown';
+    hoa?: 'Yes' | 'No' | 'Unknown' | string;
+    hoa_amount?: number | null;
+    cost_pressure?: 'Low' | 'Medium' | 'High' | 'Unknown' | 'Known Costs';
     summary?: string;
     missing_costs?: string[];
+    status?: 'available' | 'partial' | 'not_enough_disclosed';
+    primary_monthly_estimate?: number | null;
+    monthly_breakdown?: {
+      estimatedMonthlyPayment?: { raw: string; value: number | null; status: string; period?: string } | null;
+      principalAndInterest?: { raw: string; value: number | null; status: string; period?: string } | null;
+      mortgageInsurance?: { raw: string; value: number | null; status: string; period?: string } | null;
+      propertyTaxes?: { raw: string; value: number | null; status: string; period?: string } | null;
+      homeInsurance?: { raw: string; value: number | null; status: string; period?: string } | null;
+      hoaFees?: { raw: string; value: number | null; status: string; period?: string } | null;
+      utilities?: { raw: string; value: number | null; status: string; period?: string } | null;
+    } | null;
+    tax_note?: string | null;
   } | null;
 
   maintenance_risk?: {

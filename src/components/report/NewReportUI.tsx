@@ -32,6 +32,7 @@ import {
   Activity,
 } from 'lucide-react';
 import type { NormalizedReport, ReportSection } from '../lib/reportAdapters/types';
+import { PhotoSpaceAnalysisCard } from './PhotoSpaceAnalysisCard';
 
 // ── Section dedup context ──────────────────────────────────────────────────────
 // Tracks which section IDs have been consumed by earlier components.
@@ -731,6 +732,15 @@ function CarryingCostsSection({ report }: { report: NormalizedReport }) {
     .map((i) => renderValue(i.description ?? i.title))
     .filter(Boolean);
 
+  // Broader signal check — uses value != null semantics, NOT !value
+  // This ensures $0 values are not treated as falsy
+  const hasAnyFinancialSignal = items.some((item) => {
+    const val = item.value ?? '';
+    const desc = item.description ?? '';
+    return /\$[\d,]/.test(val) || /\$[\d,]/.test(desc)
+      || /N\/A|Not included|Known|available/i.test(val + desc);
+  });
+
   const hasContent = costItems.length > 0 || missingCosts.length > 0;
 
   return (
@@ -746,7 +756,7 @@ function CarryingCostsSection({ report }: { report: NormalizedReport }) {
       </div>
 
       {/* Not Enough Disclosed warning */}
-      {!hasContent && (
+      {!hasContent && !hasAnyFinancialSignal && (
         <div className="bg-slate-50 border border-slate-300 rounded-xl p-5 sm:p-6 mb-6">
           <div className="font-semibold text-slate-800 mb-2">Not Enough Disclosed</div>
           <p className="text-slate-700 text-sm">
@@ -1605,6 +1615,12 @@ export function NewReportUI({ report, mode, showBackButton, onShare, analysisId 
       {/* Phase 1 */}
       <HeroSection report={report} />
       <TopRisksSection report={report} />
+
+      {/* Photo & Space Analysis — only render if there is real photo analysis data */}
+      {report.raw?.spaceAnalysis || report.raw?.visualAnalysis || report.raw?.photos ? (
+        <PhotoSpaceAnalysisCard raw={report.raw} />
+      ) : null}
+
       <BeforeProceedSection report={report} />
 
       {/* Phase 2 */}

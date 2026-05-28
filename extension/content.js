@@ -1482,6 +1482,167 @@ function extractZillowData() {
 }
 
 /**
+ * Parse a money string into a structured value object.
+ * Handles: $0, N/A, Not included, /sqft, /mo variants.
+ * Uses value != null checks — never !value — because $0 is a valid value.
+ */
+function parseMoney(raw) {
+  if (!raw || typeof raw !== 'string') {
+    return { raw: String(raw ?? ''), value: null, status: 'unknown' };
+  }
+  const s = raw.trim();
+  if (s === '' || s === 'N/A' || s === 'n/a') {
+    return { raw: s, value: null, status: 'not_applicable' };
+  }
+  if (s === 'Not included' || s === 'not included') {
+    return { raw: s, value: null, status: 'not_included' };
+  }
+
+  let period = null;
+  let cleaned = s;
+
+  // Detect period suffix
+  if (/\/sqft$/i.test(s) || /per\s*sq/i.test(s)) {
+    period = 'per_sqft';
+    cleaned = s.replace(/\/sqft$/i, '').replace(/per\s*sq\.?\s*ft/gi, '').trim();
+  } else if (/\/mo$/i.test(s) || /per\s*month/i.test(s)) {
+    period = 'monthly';
+    cleaned = s.replace(/\/mo$/i, '').replace(/per\s*month/gi, '').trim();
+  }
+
+  // Strip $ and commas
+  cleaned = cleaned.replace(/\$/g, '').replace(/,/g, '').trim();
+
+  const value = parseFloat(cleaned);
+  if (Number.isNaN(value)) {
+    return { raw: s, value: null, status: 'unknown' };
+  }
+
+  return { raw: s, value, status: 'known', ...(period ? { period } : {}) };
+}
+
+/**
+ * Extract Zillow financial data (monthly payment breakdown, financial details)
+ * from document.body.innerText using line-based section-bound extraction.
+ * Does NOT use Zillow class names — only text patterns.
+ * Only activates on Zillow US sale pages.
+ */
+function extractZillowFinancialsFromBodyText() {
+  const raw = document.body.innerText || '';
+  const lines = raw.split(/\n+/).map(s => s.trim()).filter(Boolean);
+
+  // Step 1: Extract top-level "Est. payment: $X/mo"
+  let topEstimatedPayment = null;
+  const topMatch = raw.match(/Est\.\s*payment[\s:]*\$?([\d,]+)/i);
+  if (topMatch) {
+    topEstimatedPayment = parseMoney('$' + topMatch[1] + '/mo');
+  }
+
+  // Step 2: Slice "Financial & listing details" section
+  const financialEnders = ['Show more', 'Hide', 'Services availability', 'Contact a buyer'];
+  let financialSectionLines = [];
+  let inFinancial = false;
+  for (const i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    if (line === 'Financial & listing details') { inFinancial = true; continue; }
+    if (inFinancial && financialEnders.includes(line)) break;
+    if (inFinancial) financialSectionLines.push(line);
+  }
+
+  // Step 3: Slice "Monthly payment" section
+  const monthlyEnders = ['All calculations are estimates', 'Mortgage interest rates', 'Contact a buyer'];
+  let monthlySectionLines = [];
+  let inMonthly = false;
+  for (const i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    if (line === 'Monthly payment') { inMonthly = true; continue; }
+    if (inMonthly && monthlyEnders.includes(line)) break;
+    if (inMonthly) monthlySectionLines.push(line);
+  }
+
+  // Step 4: Parse inline label:value pairs (used in financial section)
+  const parseInlineLabelValue = (sectionLines) => {
+    const result = {};
+    for (let i = 0; i < sectionLines.length; i++) {
+      const colonIdx = sectionLines[i].indexOf(':');
+      if (colonIdx > 0) {
+        const label = sectionLines[i].slice(0, colonIdx).trim();
+        const valueRaw = sectionLines[i].slice(colonIdx + 1).trim();
+        if (valueRaw) result[label] = parseMoney(valueRaw);
+      }
+    }
+    return result;
+  };
+
+  // Step 5: Parse label\nvalue pairs (used in monthly section)
+  const parseNextLineValues = (sectionLines) => {
+    const result = {};
+    for (let i = 0; i < sectionLines.length - 1; i++) {
+      const curr = sectionLines[i];
+      const next = sectionLines[i + 1];
+      // Curr has no colon, next has no colon, curr is short → curr is label, next is value
+      if (curr.indexOf(':') === -1 && next.indexOf(':') === -1 && curr.length < 60) {
+        if (!result[curr]) {
+          result[curr] = parseMoney(next);
+          i++; // skip the next line (consumed as value)
+        }
+      }
+    }
+    return result;
+  };
+
+  const inlineFinancial = parseInlineLabelValue(financialSectionLines);
+  const nextLineMonthly = parseNextLineValues(monthlySectionLines);
+
+  const financialDetails = {
+    pricePerSqft:     inlineFinancial['Price per square foot'] ?? null,
+    taxAssessedValue: inlineFinancial['Tax assessed value'] ?? null,
+    annualTaxAmount:  inlineFinancial['Annual tax amount'] ?? null,
+    dateOnMarket:     inlineFinancial['Date on market'] ?? null,
+  };
+
+  const monthlyPayment = {
+    estimatedMonthlyPayment: nextLineMonthly['Estimated monthly payment'] ?? null,
+    principalAndInterest:   nextLineMonthly['Principal & interest'] ?? null,
+    mortgageInsurance:      nextLineMonthly['Mortgage insurance'] ?? null,
+    propertyTaxes:          nextLineMonthly['Property taxes'] ?? null,
+    homeInsurance:          nextLineMonthly['Home insurance'] ?? null,
+    hoaFees:                nextLineMonthly['HOA fees'] ?? null,
+    utilities:              nextLineMonthly['Utilities'] ?? null,
+  };
+
+  // Derive knownMonthlyTotal from P&I + insurance + tax + home insurance components
+  const knownComponents = [
+    monthlyPayment.principalAndInterest,
+    monthlyPayment.mortgageInsurance,
+    monthlyPayment.propertyTaxes,
+    monthlyPayment.homeInsurance,
+  ].filter(m => m?.status === 'known' && m?.value != null);
+  const sum = knownComponents.reduce((acc, m) => acc + m.value, 0);
+  const knownMonthlyTotal = sum > 0 ? sum : null;
+
+  const propertyTaxMonthlyFromAnnual =
+    financialDetails.annualTaxAmount?.status === 'known'
+      ? Math.round(financialDetails.annualTaxAmount.value / 12)
+      : null;
+
+  return {
+    source: 'zillow',
+    topEstimatedPayment: topEstimatedPayment ?? null,
+    financialDetails,
+    monthlyPayment,
+    derived: {
+      knownMonthlyTotal: knownMonthlyTotal != null
+        ? { raw: '$' + knownMonthlyTotal, value: knownMonthlyTotal, status: 'known' }
+        : null,
+      propertyTaxMonthlyFromAnnual: propertyTaxMonthlyFromAnnual != null
+        ? { raw: '$' + propertyTaxMonthlyFromAnnual, value: propertyTaxMonthlyFromAnnual, status: 'known' }
+        : null,
+    }
+  };
+}
+
+/**
  * Recursively search for property data in nested objects
  */
 function findPropertyDataInObject(obj, depth = 0) {
@@ -1807,6 +1968,9 @@ async function extractListingDataLight() {
     
     // Get Zillow-specific fields
     zillowData = extractZillowData();
+
+    // Extract monthly payment breakdown from body text (deterministic, no AI needed)
+    const zillowFinancials = extractZillowFinancialsFromBodyText();
   }
 
   // NOTE: imageUrls is intentionally empty here — gallery collection is
@@ -1853,6 +2017,7 @@ async function extractListingDataLight() {
       dateListed: zillowData.dateListed || null,
       availableDate: zillowData.availableDate || null,
       financialDetails: zillowData.financialDetails || null,
+      zillowFinancials: zillowFinancials || null,
     } : {}),
   };
   const detection = buildPropertyDetection(signals, listing);

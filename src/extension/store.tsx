@@ -817,6 +817,10 @@ async function initializePageData(dispatch: React.Dispatch<AppAction>) {
 export function AppProvider({ children }: { children: React.ReactNode }) {
   const [state, dispatch] = useReducer(appReducer, initialState);
 
+  // Destructure frequently-used state slices at the top level so they are
+  // always up-to-date in callbacks (avoids stale-closure bugs in useCallback).
+  const { listingData, analysisResult } = state;
+
   const refreshUserDataAndHistory = useCallback(async (user: ExtUser) => {
     try {
       const userData = await sendMessage<{
@@ -1640,15 +1644,23 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     if (!analysisId) {
       throw new Error('Analysis ID not found');
     }
+    // Derive sourceDomain from listingData or analysisResult for server routing
+    const sourceDomain =
+      (listingData as any)?.sourceDomain ||
+      (listingData as any)?.source?.domain ||
+      (analysisResult as any)?.sourceDomain ||
+      (analysisResult as any)?.listingInfo?.sourceDomain ||
+      null;
     try {
       const result = await sendMessage<{
         status: string;
+        success?: boolean;
         slug?: string;
         shareUrl?: string;
         error?: string;
-      }>({ action: 'share_analysis', analysisId });
+      }>({ action: 'share_analysis', analysisId, sourceDomain });
 
-      if (result.status === 'success' && result.slug && result.shareUrl) {
+      if ((result.status === 'success' || result.success === true) && result.slug && result.shareUrl) {
         return { slug: result.slug, shareUrl: result.shareUrl };
       }
       throw new Error(result.error || 'Failed to share analysis');
@@ -1656,7 +1668,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       noop('[ExtApp] shareAnalysis error:', err);
       throw err;
     }
-  }, []);
+  }, [listingData, analysisResult]);
 
   const value: AppContextValue = {
     state,
