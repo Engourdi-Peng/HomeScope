@@ -909,9 +909,11 @@ async function handleMessage(message, sender, sendResponse) {
       });
       console.log('[HomeScope][ZillowFinancials] extracted', listingData?.zillowFinancials);
       const requestBody = {
+        action: 'submit',
         imageUrls,
         description,
         reportMode,
+        price: priceText,
         optionalDetails,
         source,
         sourceDomain,
@@ -919,6 +921,16 @@ async function handleMessage(message, sender, sendResponse) {
         listingUrl,
         zillowFinancials: listingData?.zillowFinancials || null,
       };
+      console.log('[BG][SUBMIT_URL_FINAL]', `${serverConfig.url}/functions/v1/analyze?action=submit`);
+      console.log('[BG][SUBMIT_BODY_FINAL]', {
+        action: 'submit',
+        hasZillowFinancials: !!requestBody.zillowFinancials,
+        price: requestBody.price,
+        askingPrice: requestBody.optionalDetails?.askingPrice,
+        monthlyEstimate: requestBody.zillowFinancials?.monthlyPayment?.estimatedMonthlyPayment?.value,
+        reportMode: requestBody.reportMode,
+        sourceDomain: requestBody.sourceDomain,
+      });
       console.log('[HomeScope][AnalyzeRequest] has zillowFinancials', !!requestBody.zillowFinancials);
 
       // Step 3: action=submit
@@ -983,10 +995,22 @@ async function handleMessage(message, sender, sendResponse) {
           tokenPrefix: runAccessToken?.slice(0, 16),
           server: serverConfig.isUS ? 'US' : 'AU',
         });
+        console.log('[BG][RUN_REQUEST_BODY_FINAL]', {
+          action: 'run',
+          hasZillowFinancials: !!requestBody.zillowFinancials,
+          monthlyEstimate: requestBody.zillowFinancials?.monthlyPayment?.estimatedMonthlyPayment?.value,
+          propertyTaxes: requestBody.zillowFinancials?.monthlyPayment?.propertyTaxes?.value,
+          principalAndInterest: requestBody.zillowFinancials?.monthlyPayment?.principalAndInterest?.value,
+          homeInsurance: requestBody.zillowFinancials?.monthlyPayment?.homeInsurance?.value,
+          sourceDomain: requestBody.sourceDomain,
+          market: requestBody.market,
+          reportMode: requestBody.reportMode,
+        });
+        console.log('[BG][RUN_URL_FINAL]', runUrl);
         fetch(runUrl, {
           method: 'POST',
           headers: buildSupabaseFunctionHeaders(runAccessToken, serverConfig),
-          body: JSON.stringify({ id: analysisId, ...requestBody }),
+          body: JSON.stringify({ ...requestBody, id: analysisId, action: 'run' }),
         }).catch((err) => console.error(`${LOG_PREFIX} analyze: run error —`, err.message));
 
         // Return analysisId immediately — frontend will poll for status
@@ -999,6 +1023,8 @@ async function handleMessage(message, sender, sendResponse) {
     }
 
     case 'get_analysis_status': {
+      // Always uses PRIMARY/AU server — all analyses and analysis_states live there.
+      // US Worker is a pure compute engine; all data is stored in PRIMARY.
       const { analysisId } = message;
       if (!analysisId) {
         sendResponse({ status: 'error', error: 'Missing analysisId' });
@@ -1011,47 +1037,33 @@ async function handleMessage(message, sender, sendResponse) {
         return;
       }
 
-      // 两层查找 serverConfig：内存 Map → session storage
-      let serverConfig = _analysisServerMap.get(analysisId);
+      const accessToken = auth.session.access_token;
+      const targetUrl = `${SUPABASE_URL}/functions/v1/analyze?id=${analysisId}`;
 
-      if (!serverConfig) {
-        const stored = await chrome.storage.session.get(`${HS_ANALYSIS_SERVER_PREFIX}${analysisId}`);
-        serverConfig = stored[`${HS_ANALYSIS_SERVER_PREFIX}${analysisId}`] || null;
-        if (serverConfig) {
-          _analysisServerMap.set(analysisId, serverConfig); // 回填内存 Map
-        }
-      }
-
-      if (!serverConfig) {
-        console.error(`${LOG_PREFIX} get_analysis_status: serverConfig not found for analysisId=${analysisId} — SW may have restarted`);
-        sendResponse({ status: 'error', error: 'Analysis server not found. Please restart the analysis.' });
-        return;
-      }
+      console.log('[get_analysis_status] using PRIMARY server only', {
+        action: 'get_status',
+        analysisId,
+        targetUrl,
+        forcePrimary: true,
+      });
 
       try {
-        const accessToken = auth.session.access_token;
-        const url = `${serverConfig.url}/functions/v1/analyze?id=${analysisId}`;
-        console.log('[Edge Function Request Debug]', {
-          action: 'get_status',
+        const res = await fetch(targetUrl, {
           method: 'GET',
-          url,
-          server: serverConfig.isUS ? 'US' : 'AU',
-          hasAnonKey: !!serverConfig.anonKey,
-          hasAccessToken: !!accessToken,
-        });
-        const res = await fetch(url, {
-          method: 'GET',
-          headers: buildSupabaseFunctionHeaders(accessToken, serverConfig),
+          headers: buildSupabaseFunctionHeaders(accessToken, {
+            anonKey: SUPABASE_ANON_KEY,
+          }),
         });
 
         if (!res.ok) {
-          sendResponse({ status: 'error', error: 'Failed to get analysis status' });
+          const errBody = await res.json().catch(() => ({}));
+          sendResponse({ status: 'error', error: errBody.message || 'Failed to get analysis status' });
           return;
         }
 
         const data = await res.json();
 
-        // 分析完成或失败后清理
+        // Clean up server config cache after terminal states
         if (data.status === 'done' || data.status === 'failed') {
           _analysisServerMap.delete(analysisId);
           await chrome.storage.session.remove(`${HS_ANALYSIS_SERVER_PREFIX}${analysisId}`);
@@ -1112,72 +1124,64 @@ async function handleMessage(message, sender, sendResponse) {
     }
 
     case 'share_analysis': {
+      // Share ALWAYS uses PRIMARY/AU server — all user data lives there.
+      // US Worker does not have share action logic and cannot access AU data.
+      const { analysisId } = message;
+
+      if (!analysisId) {
+        sendResponse({ success: false, error: 'Missing analysisId' });
+        return;
+      }
+
       const auth = await getAuth();
       if (!auth?.session?.access_token) {
-        sendResponse({ status: 'error', error: 'Please sign in first.' });
+        sendResponse({ success: false, error: 'Please sign in first.' });
         return;
       }
 
-      const { analysisId, sourceDomain } = message;
-      if (!analysisId) {
-        sendResponse({ status: 'error', error: 'Missing analysisId' });
-        return;
-      }
+      const accessToken = auth.session.access_token;
+      const targetUrl = `${SUPABASE_URL}/functions/v1/analyze?action=share`;
 
-      // ── Resolve serverConfig: memory Map → session storage → URL fallback ──
-      let serverConfig = _analysisServerMap.get(analysisId);
-
-      if (!serverConfig) {
-        const stored = await chrome.storage.session.get(`${HS_ANALYSIS_SERVER_PREFIX}${analysisId}`);
-        serverConfig = stored[`${HS_ANALYSIS_SERVER_PREFIX}${analysisId}`] || null;
-        if (serverConfig) {
-          _analysisServerMap.set(analysisId, serverConfig);
-        }
-      }
-
-      // URL-based fallback: derive server from sourceDomain
-      if (!serverConfig) {
-        const sd = sourceDomain || '';
-        const isUS = sd.includes('zillow') || sd.includes('realtor');
-        serverConfig = {
-          url: isUS ? (SUPABASE_US_URL || SUPABASE_URL) : SUPABASE_URL,
-          anonKey: isUS ? (SUPABASE_US_ANON_KEY || SUPABASE_ANON_KEY) : SUPABASE_ANON_KEY,
-          isUS,
-        };
-      }
-
-      console.log('[share_analysis] analysisId', analysisId);
-      console.log('[share_analysis] resolved server', serverConfig.url);
-      console.log('[share_analysis] share response');
+      console.log('[share_analysis] using PRIMARY server only', {
+        action: 'share',
+        analysisId,
+        targetUrl,
+        forcePrimary: true,
+      });
 
       try {
-        const accessToken = auth.session.access_token;
-        const url = `${serverConfig.url}/functions/v1/analyze?action=share`;
-        console.log('[Edge Function Request Debug]', {
-          action: 'share',
+        const res = await fetch(targetUrl, {
           method: 'POST',
-          url,
-          server: serverConfig.isUS ? 'US' : 'AU',
-          hasAnonKey: !!serverConfig.anonKey,
-          hasAccessToken: !!accessToken,
-        });
-        const res = await fetch(url, {
-          method: 'POST',
-          headers: buildSupabaseFunctionHeaders(accessToken, serverConfig),
-          body: JSON.stringify({ analysisId }),
+          headers: buildSupabaseFunctionHeaders(accessToken, {
+            anonKey: SUPABASE_ANON_KEY,
+          }),
+          body: JSON.stringify({ action: "share", analysisId }),
         });
 
+        const data = await res.json().catch(() => null);
+
         if (!res.ok) {
-          const err = await res.json().catch(() => ({ message: 'Failed to share analysis' }));
-          sendResponse({ status: 'error', error: err.message || 'Failed to share analysis' });
+          console.error('[share_analysis] failed', {
+            status: res.status,
+            data,
+          });
+          sendResponse({
+            success: false,
+            error: data?.message || `Share failed: ${res.status}`,
+            details: data,
+          });
           return;
         }
 
-        const data = await res.json();
-        sendResponse({ status: 'success', slug: data.slug, shareUrl: data.shareUrl });
+        sendResponse({
+          success: true,
+          slug: data.slug,
+          shareUrl: data.shareUrl,
+          alreadyShared: data.alreadyShared,
+        });
       } catch (err) {
         console.error(`${LOG_PREFIX} share_analysis: error —`, err.message);
-        sendResponse({ status: 'error', error: err.message });
+        sendResponse({ success: false, error: err.message });
       }
       break;
     }
@@ -1227,8 +1231,33 @@ async function handleMessage(message, sender, sendResponse) {
           return;
         }
 
+        // Keep SW alive: prime the session on every PING so it's ready for analyze
+        // This runs even on cold-start, preventing the 30s timeout gap
+        await migrateLegacySession();
+        const auth = await getSession();
+
         const response = await chrome.tabs.sendMessage(tabId, { action: 'PONG' });
-        sendResponse({ ok: true, url: response?.url, title: response?.title, readyState: response?.readyState });
+        sendResponse({ ok: true, url: response?.url, title: response?.title, readyState: response?.readyState, swAwake: true });
+      } catch (err) {
+        sendResponse({ ok: false, error: err.message });
+      }
+      break;
+    }
+
+    // KEEPALIVE: lightweight no-op that wakes the SW and primes auth cache.
+    // The side panel calls this on mount and before critical operations to
+    // prevent the 30s cold-start window where messages time out.
+    case 'KEEPALIVE': {
+      try {
+        // Trigger one-shot auth priming (migrate + read session, no network)
+        await migrateLegacySession();
+        const auth = await getSession();
+        sendResponse({
+          ok: true,
+          swAwake: true,
+          hasAuth: !!auth,
+          userId: auth?.user?.id,
+        });
       } catch (err) {
         sendResponse({ ok: false, error: err.message });
       }
@@ -1436,22 +1465,40 @@ chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
   handleCallbackTab(tabId, tab.url || '');
 });
 
-// Token refresh scheduler (prevents 7-day Supabase expiry)
+// Token refresh scheduler using chrome.alarms (survives SW termination unlike setTimeout)
 const REFRESH_INTERVAL_MS = 6 * 60 * 60 * 1000;
-let _refreshTimer = null;
+const REFRESH_ALARM_NAME = 'hs_token_refresh';
+let _refreshAlarmListener = null;
 
 async function scheduleTokenRefresh() {
-  if (_refreshTimer) {
-    clearTimeout(_refreshTimer);
-    _refreshTimer = null;
-  }
+  try {
+    // Cancel any existing alarm first
+    await chrome.alarms.clear(REFRESH_ALARM_NAME);
+  } catch (_) {}
 
-  _refreshTimer = setTimeout(async () => {
+  _refreshAlarmListener = async (alarm) => {
+    if (alarm.name !== REFRESH_ALARM_NAME) return;
+    console.log(`${LOG_PREFIX} [alarm] Token refresh triggered`);
     const result = await refreshSessionIfNeeded();
     if (result) {
-      scheduleTokenRefresh();
+      scheduleTokenRefresh(); // re-schedule
     }
-  }, REFRESH_INTERVAL_MS);
+  };
+
+  try {
+    chrome.alarms.onAlarm.addListener(_refreshAlarmListener);
+    await chrome.alarms.create(REFRESH_ALARM_NAME, {
+      delayInMinutes: REFRESH_INTERVAL_MS / 60000,
+    });
+    console.log(`${LOG_PREFIX} [alarm] Token refresh scheduled in ${REFRESH_INTERVAL_MS / 60000} minutes`);
+  } catch (err) {
+    console.warn(`${LOG_PREFIX} [alarm] chrome.alarms not available, falling back to setTimeout:`, err.message);
+    // Fallback: setTimeout (won't survive SW termination, but better than nothing)
+    setTimeout(async () => {
+      const result = await refreshSessionIfNeeded();
+      if (result) scheduleTokenRefresh();
+    }, REFRESH_INTERVAL_MS);
+  }
 }
 
 // Kick off on every service worker startup

@@ -3053,6 +3053,20 @@ function parsePriceToNumber(value: unknown): number | null {
 
 // Market type is defined in the Market Detection section below
 
+/**
+ * Returns the first value that is a valid, non-zero, finite number.
+ * Used for deterministic price fallback across all data sources.
+ */
+function firstValidPrice(...values: unknown[]): number | null {
+  for (const value of values) {
+    const parsed = parsePriceToNumber(value);
+    if (parsed != null && parsed !== 0 && Number.isFinite(parsed)) {
+      return parsed;
+    }
+  }
+  return null;
+}
+
 interface NormalizedPriceAssessment {
   estimated_min: number | null;
   estimated_max: number | null;
@@ -3075,11 +3089,11 @@ function normalizeStep2Decision(
   const priceRaw = (decision?.price_assessment ?? {}) as Record<string, unknown>;
 
   // Determine asking_price: priority is decision field > optionalDetails > null
-  const decisionAskingPrice = parsePriceToNumber(priceRaw.asking_price);
-  const optionalAskingPrice = optionalDetails?.askingPrice !== undefined
-    ? parsePriceToNumber(optionalDetails.askingPrice)
-    : parsePriceToNumber(optionalDetails?.price);
-  const asking_price = decisionAskingPrice ?? optionalAskingPrice ?? null;
+  const asking_price = firstValidPrice(
+    parsePriceToNumber(priceRaw.asking_price),
+    optionalDetails?.askingPrice,
+    optionalDetails?.price,
+  );
 
   // Determine estimated_min / estimated_max (AU has these; US may not)
   const estimated_min = parsePriceToNumber(priceRaw.estimated_min)
@@ -4442,8 +4456,10 @@ If a field is not listed above, then treat it as unknown and add it to data_gaps
 // ========== Main Handler ==========
 
 Deno.serve(async (req) => {
+  console.log('[DEPLOY_MARKER]', 'ZILLOW_CC_DEBUG_2026_05_29_002');
+
   console.log("=== Edge Function Entry ===", {
-    DEPLOY_MARKER: "analyze-us-2026-05-21-debug-json-v1",
+    DEPLOY_MARKER: "ZILLOW_CC_DEBUG_2026_05_29_002",
     method: req.method,
     url: req.url,
     hasAuthorization: !!req.headers.get("Authorization"),
@@ -4461,6 +4477,8 @@ Deno.serve(async (req) => {
   }
 
   const url = new URL(req.url);
+  let body: any = null; // declared early; assigned in POST block or later; null-safe via body?.action
+
   const action = url.searchParams.get("action");
   const queryId = url.searchParams.get("id");
   console.log("Action:", action, "QueryId:", queryId);
@@ -4471,11 +4489,24 @@ Deno.serve(async (req) => {
     if (!state) {
       return jsonResponse({ message: "Analysis not found" }, 404);
     }
-    // Fetch report_mode from analyses table for consistency
+
+    const stateStatus = String((state as any)?.status || '');
+    const isFinished =
+      stateStatus === 'done' ||
+      stateStatus === 'completed' ||
+      stateStatus === 'success' ||
+      stateStatus === 'failed';
+
+    // Always fetch from analyses table (needed for full_result when done, and for report_mode)
+    let full_result: unknown = null;
+    let overall_score: number | null = null;
+    let verdict: string | null = null;
     let reportMode: string = 'rent';
+
     try {
+      const encodedId = encodeURIComponent(queryId);
       const analysisRes = await fetch(
-        `${LOCAL_URL}/rest/v1/analyses?id=eq.${queryId}&select=report_mode`,
+        `${LOCAL_URL}/rest/v1/analyses?id=eq.${encodedId}&select=full_result,overall_score,verdict,report_mode`,
         {
           headers: {
             "apikey": LOCAL_SERVICE_KEY,
@@ -4484,15 +4515,91 @@ Deno.serve(async (req) => {
         }
       );
       if (analysisRes.ok) {
-        const analyses = await analysisRes.json();
-        if (analyses && analyses.length > 0 && analyses[0].report_mode) {
-          reportMode = analyses[0].report_mode;
+        const records = await analysisRes.json();
+        if (records && records.length > 0) {
+          const record = records[0];
+
+          // Parse full_result: may be stored as string or already-parsed object
+          if (record.full_result !== null) {
+            full_result =
+              typeof record.full_result === 'string'
+                ? JSON.parse(record.full_result)
+                : record.full_result;
+          }
+
+          overall_score = record.overall_score ?? null;
+          verdict = record.verdict ?? null;
+          reportMode = record.report_mode || 'rent';
+        } else {
+          console.warn('[GET polling] analyses record not found for id', queryId);
         }
       }
     } catch (e) {
-      console.error("Failed to fetch report_mode:", e);
+      console.error('[GET polling] Failed to fetch analyses record:', e);
     }
-    return jsonResponse({ ...state, report_mode: reportMode });
+
+    console.log('[GET polling] returning result summary', {
+      queryId,
+      stateStatus: state.status,
+      isFinished,
+      hasFullResult: !!full_result,
+      hasPriceAssessment: !!(full_result as Record<string, unknown>)?.price_assessment,
+      hasCarryingCosts: !!(full_result as Record<string, unknown>)?.carrying_costs,
+      askingPrice: (full_result as Record<string, unknown>)?.price_assessment
+        ? (full_result as Record<string, unknown>)?.price_assessment && ((full_result as Record<string, unknown>)?.price_assessment as Record<string, unknown>)?.['asking_price']
+        : undefined,
+      carryingMonthlyEstimate:
+        ((full_result as Record<string, unknown>)?.carrying_costs as Record<string, unknown>)?.['primary_monthly_estimate'],
+    });
+
+    // ── Canonical reportMode resolution (Fix 1 + Fix 2) ─────────────────────────
+    // Priority: analyses.report_mode (authoritative) > inferred from market/domain
+    //           > full_result.report_mode > full_result.reportMode > 'rent'
+    //
+    // Inferred: US listings on Zillow (sale listings) must not fallback to 'rent'.
+    // If market=US or sourceDomain includes 'zillow', strongly bias toward 'sale'.
+    const marketStr = String((full_result as Record<string, unknown>)?.market || '').toUpperCase();
+    const sourceDomainStr = String(
+      (full_result as Record<string, unknown>)?.sourceDomain ||
+      (full_result as Record<string, unknown>)?.source_domain ||
+      ''
+    ).toLowerCase();
+    const isUSMarket = marketStr === 'US';
+    const isZillowListing = sourceDomainStr.includes('zillow');
+
+    const inferredReportMode: string | null =
+      (isUSMarket || isZillowListing) ? 'sale' : null;
+
+    const canonicalReportMode =
+      reportMode ||
+      inferredReportMode ||
+      (full_result as Record<string, unknown>)?.report_mode ||
+      (full_result as Record<string, unknown>)?.reportMode ||
+      'rent';
+
+    // Strip stale reportMode from state to prevent it leaking into the response.
+    const { reportMode: _stateReportMode, ...cleanState } = state as unknown as Record<string, unknown>;
+
+    // Normalize full_result internally so that reading result.reportMode also returns
+    // the correct value (not just the top-level field).
+    if (full_result && typeof full_result === 'object') {
+      (full_result as Record<string, unknown>).report_mode = canonicalReportMode;
+      (full_result as Record<string, unknown>).reportMode = canonicalReportMode;
+    }
+
+    return jsonResponse({
+      ...cleanState,
+      status: state.status,
+      stage: state.stage,
+      message: state.message,
+      progress: state.progress,
+      error: state.error,
+      result: full_result,
+      overall_score,
+      verdict,
+      report_mode: canonicalReportMode,
+      reportMode: canonicalReportMode,
+    });
   }
 
   // GET: List user analyses history
@@ -4531,23 +4638,24 @@ Deno.serve(async (req) => {
 
   // POST: List user analyses history (preferred method - avoids Kong header filtering issues)
   if (req.method === "POST") {
-    // Use clone so main handler's req.json() still works for action=submit/run
+    // Use reqClone so original req body is preserved for submit/run downstream
     const reqClone = req.clone();
-    let body: Record<string, unknown> = {};
+    let postBody: any;
     try {
-      body = await reqClone.json();
+      postBody = await reqClone.json();
     } catch {
       return jsonResponse({ message: "Invalid JSON body" }, 400);
     }
+    const bodyAction = (postBody as any)?.action || null;
 
-    if (body.action === "list") {
+    if (bodyAction === "list") {
       const { user, error: authError, code: authCode } = await getCurrentUser(req);
       if (authError || !user) {
         return jsonResponse({ message: "Authentication required", code: "LIST_AUTH_FAILED_POST", reason: authError, authCode }, 401);
       }
 
-      const limit = Number.parseInt(String(body.limit || "20"), 10);
-      const offset = Number.parseInt(String(body.offset || "0"), 10);
+      const limit = Number.parseInt(String(postBody.limit || "20"), 10);
+      const offset = Number.parseInt(String(postBody.offset || "0"), 10);
 
       try {
         const response = await fetch(
@@ -4573,9 +4681,10 @@ Deno.serve(async (req) => {
       }
     }
 
+    const isShareAction = action === "share" || postBody?.action === "share";
     // POST: Make analysis public (share)
-    if (body.action === "share") {
-      const { analysisId } = body as { analysisId?: string };
+    if (isShareAction) {
+      const { analysisId } = postBody as { analysisId?: string };
       if (!analysisId) {
         return jsonResponse({ message: "Missing analysis ID" }, 400);
       }
@@ -4798,25 +4907,6 @@ Deno.serve(async (req) => {
     );
   }
 
-  let body: {
-    id?: string;
-    imageUrls?: string[];
-    description?: string;
-    reportMode?: ReportMode;
-    source?: string | null;
-    sourceDomain?: string | null;
-    optionalDetails?: {
-      weeklyRent?: string;
-      askingPrice?: string;
-      suburb?: string;
-      bedrooms?: string | number;
-      bathrooms?: string | number;
-      parking?: string | number;
-      source?: string | null;
-      sourceDomain?: string | null;
-    };
-  };
-
   try {
     body = await req.json();
   } catch (e) {
@@ -4827,8 +4917,27 @@ Deno.serve(async (req) => {
     return jsonResponse({ message: "Invalid JSON in request body", debugError: String(e), errorType: e?.constructor?.name }, 400);
   }
 
+  // action fallback: if Kong stripped URL query params, use body.action
+  const resolvedAction = action || (body?.action as string | null) || null;
+  const resolvedQueryId = queryId || (body?.id as string | null) || (body?.analysisId as string | null) || null;
+
+  console.log('[analyze][ENTRY]', {
+    marker: 'ZILLOW_CC_DEBUG_2026_05_29_002',
+    method: req.method,
+    action: resolvedAction,
+    urlAction: action,
+    bodyAction: (body as any)?.action,
+    hasZillowFinancials: !!(body as any)?.zillowFinancials,
+    zillowMonthlyEstimate: (body as any)?.zillowFinancials?.monthlyPayment?.estimatedMonthlyPayment?.value ?? null,
+    zillowPropertyTaxes: (body as any)?.zillowFinancials?.monthlyPayment?.propertyTaxes?.value ?? null,
+    price: (body as any)?.price || (body as any)?.optionalDetails?.askingPrice || null,
+    sourceDomain: (body as any)?.sourceDomain,
+    market: (body as any)?.market,
+    reportMode: (body as any)?.reportMode,
+  });
+
   // ========== Basic Sync Action (Anonymous by default, creates history if logged in) ==========
-  if (action === "basic-sync") {
+  if (resolvedAction === "basic-sync") {
     console.log("=== BASIC SYNC START ===");
 
     const description = typeof body.description === "string" ? body.description : "Property listing information";
@@ -5085,7 +5194,7 @@ Deno.serve(async (req) => {
   // ========== 权限检查 ==========
   // 只对 submit 和 run action 进行权限检查
   let user: UserProfile | null = null;
-  if (action === "submit" || action === "run" || !action) {
+  if (resolvedAction === "submit" || resolvedAction === "run" || !resolvedAction) {
     const result = await getCurrentUser(req);
     user = result.user;
     const authError = result.error;
@@ -5112,7 +5221,7 @@ Deno.serve(async (req) => {
   }
 
   // ACTION: submit (create new analysis task)
-  if (action === "submit" || !action) {
+  if (resolvedAction === "submit" || !resolvedAction) {
     const imageUrls = Array.isArray(body.imageUrls) ? body.imageUrls.filter(isValidHttpUrl) : [];
     const description = typeof body.description === "string" ? body.description : "";
     const reportMode: ReportMode = body.reportMode === 'sale' ? 'sale' : 'rent';
@@ -5197,7 +5306,7 @@ Deno.serve(async (req) => {
   }
 
   // ACTION: run (execute analysis)
-  if (action === "run") {
+  if (resolvedAction === "run") {
     console.log("=== RUN ACTION START ===");
     console.log("Request body:", JSON.stringify(body));
     
@@ -5254,8 +5363,19 @@ Deno.serve(async (req) => {
     const imageUrls = Array.isArray(body.imageUrls) ? body.imageUrls.filter(isValidHttpUrl) : [];
     const description = typeof body.description === "string" ? body.description : "";
     const optionalDetails = body.optionalDetails ?? {};
-    const zillowFinancials = (body as Record<string, unknown>).zillowFinancials || null;
-    console.log('[analyze] zillowFinancials received', {
+    const reportMode: ReportMode = body.reportMode === 'sale' ? 'sale' : 'rent';
+
+    // Multi-source fallback: body > listingData > optionalDetails
+    const rawZf = ((body as any)?.zillowFinancials)
+      || ((body as any)?.listingData?.zillowFinancials)
+      || ((optionalDetails as any)?.zillowFinancials)
+      || null;
+    const zillowFinancials = rawZf || null;
+
+    console.log('[analyze] zillowFinancials resolved', {
+      fromBody: !!((body as any)?.zillowFinancials),
+      fromListingData: !!((body as any)?.listingData?.zillowFinancials),
+      fromOptionalDetails: !!((optionalDetails as any)?.zillowFinancials),
       topEstimate: (zillowFinancials as any)?.topEstimatedPayment?.value,
       estimatedMonthlyPayment: (zillowFinancials as any)?.monthlyPayment?.estimatedMonthlyPayment?.value,
       principalAndInterest: (zillowFinancials as any)?.monthlyPayment?.principalAndInterest?.value,
@@ -5263,7 +5383,6 @@ Deno.serve(async (req) => {
       homeInsurance: (zillowFinancials as any)?.monthlyPayment?.homeInsurance?.value,
       annualTaxAmount: (zillowFinancials as any)?.financialDetails?.annualTaxAmount?.value,
     });
-    const reportMode: ReportMode = body.reportMode === 'sale' ? 'sale' : 'rent';
 
     // ── Market / Source resolution ─────────────────────────────────────────
     // Priority: body > analysis record (DB) > optionalDetails > URL fallback
@@ -5562,21 +5681,38 @@ Deno.serve(async (req) => {
       // Normalize Step2 decision to unified schema (handles US/AU field name differences)
       const normalizedDecision = normalizeStep2Decision(decision, detectedMarket, optionalDetails);
 
-      // ── Deterministic carrying_costs from Zillow financials (US sale only) ──────────
-      // This overrides any AI-generated carrying_costs with data directly from Zillow.
-      // If monthly payment breakdown is available, always prefer it over AI inference.
-      if (detectedMarket === 'US' && reportMode === 'sale' && zillowFinancials) {
+      // Stable Zillow sale check — not just market === 'US'
+      const isZillowSale = String((body as any)?.sourceDomain || '').includes('zillow')
+        && reportMode === 'sale';
+
+      console.log('[analyze][carrying_costs override gates]', {
+        sourceDomain: (body as any)?.sourceDomain,
+        market: detectedMarket,
+        reportMode,
+        isZillowSale,
+        hasZillowFinancials: !!zillowFinancials,
+        monthlyEstimate: (zillowFinancials as any)?.monthlyPayment?.estimatedMonthlyPayment?.value,
+        topEstimate: (zillowFinancials as any)?.topEstimatedPayment?.value,
+        annualTaxAmount: (zillowFinancials as any)?.financialDetails?.annualTaxAmount?.value,
+      });
+
+      // ── Deterministic carrying_costs from Zillow financials (Zillow US sale only) ──────
+      // Always overwrite AI's unknown carrying_costs if we have Zillow data.
+      // Do NOT use `|| {}` — AI's existing unknown object would block the override.
+      if (isZillowSale && zillowFinancials) {
         const zf = zillowFinancials as any;
         const monthlyPayment = zf.monthlyPayment || {};
         const financialDetails = zf.financialDetails || {};
         const estimatedPayment = monthlyPayment.estimatedMonthlyPayment;
 
+        // Build deterministic carrying_costs (always fresh object, never mutate AI's)
+        const deterministicCC: Record<string, unknown> = { status: 'unknown' };
+
         if (estimatedPayment?.value != null) {
           // Primary: use Zillow's estimated monthly payment
-          normalizedDecision.carrying_costs = normalizedDecision.carrying_costs || {};
-          normalizedDecision.carrying_costs.status = 'available';
-          normalizedDecision.carrying_costs.primary_monthly_estimate = estimatedPayment.value;
-          normalizedDecision.carrying_costs.monthly_breakdown = {
+          deterministicCC.status = 'available';
+          deterministicCC.primary_monthly_estimate = estimatedPayment.value;
+          deterministicCC.monthly_breakdown = {
             estimatedMonthlyPayment: estimatedPayment,
             principalAndInterest: monthlyPayment.principalAndInterest ?? null,
             mortgageInsurance: monthlyPayment.mortgageInsurance ?? null,
@@ -5587,53 +5723,51 @@ Deno.serve(async (req) => {
           };
         } else if (zf.derived?.knownMonthlyTotal?.value > 0) {
           // Secondary: sum of known components
-          normalizedDecision.carrying_costs = normalizedDecision.carrying_costs || {};
-          normalizedDecision.carrying_costs.status = 'available';
-          normalizedDecision.carrying_costs.primary_monthly_estimate = zf.derived.knownMonthlyTotal.value;
+          deterministicCC.status = 'available';
+          deterministicCC.primary_monthly_estimate = zf.derived.knownMonthlyTotal.value;
         } else if (zf.topEstimatedPayment?.value != null) {
           // Tertiary: top-level estimated payment
-          normalizedDecision.carrying_costs = normalizedDecision.carrying_costs || {};
-          normalizedDecision.carrying_costs.status = 'partial';
-          normalizedDecision.carrying_costs.primary_monthly_estimate = zf.topEstimatedPayment.value;
+          deterministicCC.status = 'partial';
+          deterministicCC.primary_monthly_estimate = zf.topEstimatedPayment.value;
         } else if (financialDetails.annualTaxAmount?.value != null) {
           // Fallback: annual tax only
-          normalizedDecision.carrying_costs = normalizedDecision.carrying_costs || {};
-          normalizedDecision.carrying_costs.status = 'partial';
-          normalizedDecision.carrying_costs.annual_tax = financialDetails.annualTaxAmount.value;
-          normalizedDecision.carrying_costs.annual_tax_display =
+          deterministicCC.status = 'partial';
+          deterministicCC.annual_tax = financialDetails.annualTaxAmount.value;
+          deterministicCC.annual_tax_display =
             financialDetails.annualTaxAmount.raw || '$' + financialDetails.annualTaxAmount.value + '/yr';
+          deterministicCC.monthly_tax_equivalent = Math.round(financialDetails.annualTaxAmount.value / 12);
         }
 
-        const cc = normalizedDecision.carrying_costs;
-        if (cc) {
+        // Fill remaining fields from Zillow data
+        if (deterministicCC.status !== 'unknown') {
           // HOA override
           if (monthlyPayment.hoaFees?.status === 'not_applicable') {
-            cc.hoa = 'No';
+            deterministicCC.hoa = 'No';
           } else if (monthlyPayment.hoaFees?.value != null) {
-            cc.hoa = 'Yes';
-            cc.hoa_amount = monthlyPayment.hoaFees.value;
+            deterministicCC.hoa = 'Yes';
+            deterministicCC.hoa_amount = monthlyPayment.hoaFees.value;
           }
 
-          // Annual tax from financial details (never leave it null if we have it)
+          // Annual tax from financial details
           if (financialDetails.annualTaxAmount?.value != null) {
-            cc.annual_tax = financialDetails.annualTaxAmount.value;
-            cc.annual_tax_display =
+            deterministicCC.annual_tax = financialDetails.annualTaxAmount.value;
+            deterministicCC.annual_tax_display =
               financialDetails.annualTaxAmount.raw || '$' + financialDetails.annualTaxAmount.value + '/yr';
-            cc.monthly_tax_equivalent = Math.round(financialDetails.annualTaxAmount.value / 12);
+            deterministicCC.monthly_tax_equivalent = Math.round(financialDetails.annualTaxAmount.value / 12);
           }
 
           // Tax discrepancy note
           if (monthlyPayment.propertyTaxes?.value != null && financialDetails.annualTaxAmount?.value != null) {
             const monthlyFromAnnual = Math.round(financialDetails.annualTaxAmount.value / 12);
             if (monthlyFromAnnual !== monthlyPayment.propertyTaxes.value) {
-              cc.tax_note =
+              deterministicCC.tax_note =
                 `Annual tax amount implies about $${monthlyFromAnnual}/mo, ` +
                 `while Zillow monthly payment shows $${monthlyPayment.propertyTaxes.value}/mo.`;
             }
           }
 
           // Set missing_costs and summary when we have monthly breakdown
-          if (cc.status === 'available' && cc.primary_monthly_estimate != null) {
+          if (deterministicCC.status === 'available' && deterministicCC.primary_monthly_estimate != null) {
             const missing: string[] = [];
             if (monthlyPayment.hoaFees?.status !== 'not_applicable' && monthlyPayment.hoaFees?.value == null) {
               missing.push('hoa');
@@ -5644,13 +5778,25 @@ Deno.serve(async (req) => {
             if (monthlyPayment.homeInsurance?.value == null) {
               missing.push('insurance');
             }
-            cc.missing_costs = missing;
-            cc.cost_pressure = 'Known Costs';
-            cc.summary =
-              `Monthly carrying costs: $${cc.primary_monthly_estimate}/mo. ` +
+            deterministicCC.missing_costs = missing;
+            deterministicCC.cost_pressure = 'Known Costs';
+            deterministicCC.summary =
+              `Monthly carrying costs: $${deterministicCC.primary_monthly_estimate}/mo. ` +
               `Breakdown available from Zillow.`;
           }
         }
+
+        // Force overwrite — even if AI already wrote an unknown object
+        if (deterministicCC.status !== 'unknown') {
+          normalizedDecision.carrying_costs = deterministicCC as any;
+        }
+
+        console.log('[analyze][carrying_costs override applied]', {
+          status: deterministicCC.status,
+          primary_monthly_estimate: deterministicCC.primary_monthly_estimate,
+          hoa: deterministicCC.hoa,
+          annual_tax: deterministicCC.annual_tax,
+        });
       }
 
       console.log("[DIAG] normalized Step2 decision", {
@@ -6109,6 +6255,105 @@ Deno.serve(async (req) => {
         missing_costs: (result.carrying_costs as any)?.missing_costs,
         summary: (result.carrying_costs as any)?.summary,
         cost_pressure: (result.carrying_costs as any)?.cost_pressure,
+        primary_monthly_estimate: (result.carrying_costs as any)?.primary_monthly_estimate,
+        status: (result.carrying_costs as any)?.status,
+      });
+
+      console.log('[Analyze] FINAL carrying_costs before DB save', JSON.stringify(result.carrying_costs, null, 2));
+
+      // ── FINAL deterministic overwrite: price_assessment.asking_price ──────────────
+      // Source of truth: body.optionalDetails.askingPrice from Zillow extraction.
+      // Must survive even if AI hallucinated 0 or null.
+      const finalAskingPrice = firstValidPrice(
+        (result as any)?.price_assessment?.asking_price,
+        (normalizedDecision as any)?.price_assessment?.asking_price,
+        (body as any)?.optionalDetails?.askingPrice,
+        (body as any)?.optionalDetails?.price,
+        (body as any)?.price,
+      );
+      if (reportMode === 'sale' && finalAskingPrice != null) {
+        (result as any).price_assessment = {
+          estimated_min: (result as any).price_assessment?.estimated_min ?? null,
+          estimated_max: (result as any).price_assessment?.estimated_max ?? null,
+          asking_price: finalAskingPrice,
+          verdict: (result as any).price_assessment?.verdict || 'Fair',
+          explanation: (result as any).price_assessment?.explanation || '',
+          tax_context: (result as any).price_assessment?.tax_context || '',
+          price_per_sqft_context: (result as any).price_assessment?.price_per_sqft_context || '',
+          valuation_confidence: (result as any).price_assessment?.valuation_confidence || 'Low',
+          missing_data: (result as any).price_assessment?.missing_data || [],
+        };
+      }
+
+      // ── FINAL deterministic overwrite: carrying_costs from Zillow financials ──────
+      // Only overwrite if we have real Zillow data; do not use || to avoid AI's unknown object blocking.
+      if (isZillowSale && zillowFinancials) {
+        const zf = zillowFinancials as any;
+        const monthlyPayment = zf.monthlyPayment || {};
+        const financialDetails = zf.financialDetails || {};
+        const estimatedPayment = monthlyPayment.estimatedMonthlyPayment;
+
+        const deterministicCC: Record<string, unknown> = { status: 'unknown' };
+
+        if (estimatedPayment?.value != null) {
+          deterministicCC.status = 'available';
+          deterministicCC.primary_monthly_estimate = estimatedPayment.value;
+          deterministicCC.monthly_breakdown = {
+            estimatedMonthlyPayment: estimatedPayment,
+            principalAndInterest: monthlyPayment.principalAndInterest ?? null,
+            mortgageInsurance: monthlyPayment.mortgageInsurance ?? null,
+            propertyTaxes: monthlyPayment.propertyTaxes ?? null,
+            homeInsurance: monthlyPayment.homeInsurance ?? null,
+            hoaFees: monthlyPayment.hoaFees ?? null,
+            utilities: monthlyPayment.utilities ?? null,
+          };
+        } else if (zf.derived?.knownMonthlyTotal?.value > 0) {
+          deterministicCC.status = 'available';
+          deterministicCC.primary_monthly_estimate = zf.derived.knownMonthlyTotal.value;
+        } else if (zf.topEstimatedPayment?.value != null) {
+          deterministicCC.status = 'partial';
+          deterministicCC.primary_monthly_estimate = zf.topEstimatedPayment.value;
+        }
+
+        if (deterministicCC.status !== 'unknown') {
+          // HOA
+          if (monthlyPayment.hoaFees?.status === 'not_applicable') {
+            deterministicCC.hoa = 'No';
+          } else if (monthlyPayment.hoaFees?.value != null) {
+            deterministicCC.hoa = 'Yes';
+            deterministicCC.hoa_amount = monthlyPayment.hoaFees.value;
+          }
+          // Annual tax
+          if (financialDetails.annualTaxAmount?.value != null) {
+            deterministicCC.annual_tax = financialDetails.annualTaxAmount.value;
+            deterministicCC.monthly_tax_equivalent = Math.round(financialDetails.annualTaxAmount.value / 12);
+          }
+          // Summary
+          deterministicCC.cost_pressure = 'Known Costs';
+          deterministicCC.summary =
+            `Monthly carrying costs: $${deterministicCC.primary_monthly_estimate}/mo. ` +
+            `Breakdown available from Zillow.`;
+          // Overwrite AI's unknown object
+          result.carrying_costs = deterministicCC as any;
+        }
+      }
+
+      // ── Debug logs ──────────────────────────────────────────────────────────────
+      console.log('[FINAL_BEFORE_SAVE][price_assessment]', {
+        asking_price: (result as any)?.price_assessment?.asking_price,
+        optionalAskingPrice: (body as any)?.optionalDetails?.askingPrice,
+        bodyPrice: (body as any)?.price,
+        bodyOptionalPrice: (body as any)?.optionalDetails?.price,
+        normalizedDecisionPrice: (normalizedDecision as any)?.price_assessment?.asking_price,
+      });
+      console.log('[FINAL_BEFORE_SAVE][carrying_costs]', {
+        status: (result as any)?.carrying_costs?.status,
+        primaryMonthlyEstimate:
+          (result as any)?.carrying_costs?.primary_monthly_estimate?.value ||
+          (result as any)?.carrying_costs?.primary_monthly_estimate,
+        hasMonthlyBreakdown: !!(result as any)?.carrying_costs?.monthly_breakdown,
+        isZillowSale,
+        hasZillowFinancials: !!zillowFinancials,
       });
 
       // Update state before building final report
