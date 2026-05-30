@@ -1,36 +1,29 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { supabase } from '../lib/supabase';
 import { Loader2 } from 'lucide-react';
 import type { Session } from '@supabase/supabase-js';
 
 /**
- * 将 session 直接推送到 extension background，通过 postMessage 实现。
- * 页面只负责发消息，不等待 extension 响应。
- *
- * 架构：
- * 1. 页面通过 window.postMessage 发送 session（source: 'homescope-auth-bridge'）
- * 2. content script 在 isolated world 监听 message，转发到 background
- * 3. background 保存 session，自动关闭 callback tab
+ * PKCE exchange 完全由 Supabase SDK 的 detectSessionInUrl 自动处理。
+ * 本组件只负责：
+ * 1. 等待 SIGNED_IN 事件（SDK exchange 成功后触发）
+ * 2. 将 session 推送到 extension（如果是扩展流程）
+ * 3. 清理 URL 中的 ?code=
+ * 4. 导航回首页
  */
+
 interface PushSessionOptions {
   flowId?: string | null;
 }
 
 function pushSessionToExtension(session: Session, options: PushSessionOptions = {}): void {
   const { flowId } = options;
-  const hasAccessToken = !!session.access_token;
-  const hasRefreshToken = !!session.refresh_token;
-  const userId = session.user?.id;
 
   console.log('[HomeScope AuthCallback] pushSessionToExtension: START');
-  console.log('[HomeScope AuthCallback]   hasAccessToken:', hasAccessToken);
-  console.log('[HomeScope AuthCallback]   hasRefreshToken:', hasRefreshToken);
-  console.log('[HomeScope AuthCallback]   userId:', userId);
+  console.log('[HomeScope AuthCallback]   userId:', session.user?.id);
   console.log('[HomeScope AuthCallback]   flowId:', flowId);
-  console.log('[HomeScope AuthCallback]   accessToken:', session.access_token ? session.access_token.substring(0, 10) + '...' : 'null');
 
-  // 发送 session 到 content script（通过 postMessage）
   const message = {
     source: 'homescope-auth-bridge',
     type: 'HOMESCOPE_SYNC_SESSION',
@@ -38,19 +31,14 @@ function pushSessionToExtension(session: Session, options: PushSessionOptions = 
       access_token: session.access_token,
       refresh_token: session.refresh_token,
       user: session.user,
-      flowId: flowId || null // 双重校验的 flowId
-    }
+      flowId: flowId || null,
+    },
   };
 
-  console.log('[HomeScope AuthCallback]   targetOrigin:', window.location.origin);
-  console.log('[HomeScope AuthCallback]   message.type:', message.type);
-
   window.postMessage(message, window.location.origin);
-
   console.log('[HomeScope AuthCallback] pushSessionToExtension: postMessage dispatched');
 }
 
-/** 扩展 flow_id 只存在于同标签 sessionStorage（跨标签不可见） */
 function getFlowId(): string | null {
   try {
     const stored = sessionStorage.getItem('hs_ext_flow');
@@ -66,24 +54,37 @@ function getFlowId(): string | null {
 
 export function AuthCallback() {
   const navigate = useNavigate();
-
   const [status, setStatus] = useState<'loading' | 'success' | 'error'>('loading');
   const [message, setMessage] = useState('Processing your login...');
 
+  // 单例守卫：防止 React StrictMode 双倍执行
+  const initializedRef = useRef(false);
+
   useEffect(() => {
-    let finished = false;
+    if (initializedRef.current) return;
+    initializedRef.current = true;
 
     const flowId = getFlowId();
     const isFromExtension = !!flowId;
 
     console.log('[HomeScope AuthCallback] PAGE LOADED, isFromExtension:', isFromExtension, ', flowId:', flowId);
 
-    async function pushIfSession(session: { user: { id: string }; access_token: string; refresh_token?: string } | null) {
-      if (finished || !session) return;
+    let finished = false;
+
+    async function handleSignedIn(session: Session) {
+      if (finished) return;
       finished = true;
       subscription.unsubscribe();
       clearTimeout(timeoutId);
       sessionStorage.removeItem('hs_ext_flow');
+
+      // 清理 URL 中的 ?code=
+      const url = new URL(window.location.href);
+      if (url.searchParams.has('code')) {
+        url.searchParams.delete('code');
+        window.history.replaceState({}, '', url.pathname + url.search);
+        console.log('[HomeScope AuthCallback] cleaned ?code= from URL');
+      }
 
       if (isFromExtension) {
         pushSessionToExtension(session, { flowId });
@@ -92,33 +93,41 @@ export function AuthCallback() {
       } else {
         setStatus('success');
         setMessage('Login successful! Redirecting...');
-        window.history.replaceState({}, '', '/');
         setTimeout(() => navigate('/', { replace: true }), 1500);
       }
     }
 
+    // 监听 SIGNED_IN：SDK detectSessionInUrl exchange 成功后自动触发
     const { data: { subscription } } = supabase.auth.onAuthStateChange((event, sess) => {
       if (event === 'SIGNED_IN' && sess) {
         console.log('[HomeScope AuthCallback] onAuthStateChange SIGNED_IN, userId=', sess.user?.id);
-        void pushIfSession(sess);
+        void handleSignedIn(sess);
       }
     });
 
-    // 立即主动检查 session（AuthContext 可能在 AuthCallback 之前处理了 callback，
-    // 导致 SIGNED_IN 事件在 AuthCallback 监听器注册前就触发了）
+    // 兜底：SDK exchange 可能在监听器注册前就完成了
     void (async () => {
       const { data } = await supabase.auth.getSession();
       if (data.session) {
         console.log('[HomeScope AuthCallback] immediate getSession: found session, userId=', data.session.user?.id);
-        await pushIfSession(data.session);
+        await handleSignedIn(data.session);
       }
     })();
 
+    // 超时保护
     const timeoutId = setTimeout(() => {
       if (finished) return;
       finished = true;
       subscription.unsubscribe();
       sessionStorage.removeItem('hs_ext_flow');
+
+      // 超时了也要清理 URL，避免刷新后持续报错
+      const url = new URL(window.location.href);
+      if (url.searchParams.has('code')) {
+        url.searchParams.delete('code');
+        window.history.replaceState({}, '', url.pathname + url.search);
+      }
+
       setStatus('error');
       setMessage(
         isFromExtension

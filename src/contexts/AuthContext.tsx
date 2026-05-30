@@ -1,4 +1,4 @@
-import { createContext, useContext, useEffect, useState } from 'react';
+import { createContext, useContext, useEffect, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
 import type { User } from '@supabase/supabase-js';
 import { supabase, type Profile } from '../lib/supabase';
@@ -29,7 +29,6 @@ export function AuthProvider({ children }: AuthProviderProps) {
   const creditsRemaining = Math.max(0, (profile?.credits_remaining ?? 0) - (profile?.credits_reserved ?? 0));
   const isAuthenticated = !!user;
 
-  // 获取用户 profile
   const fetchProfile = async (userId: string) => {
     try {
       const { data, error } = await supabase
@@ -50,85 +49,24 @@ export function AuthProvider({ children }: AuthProviderProps) {
     }
   };
 
-  // 初始化：监听认证状态和处理 OAuth 回跳
+  // 单例守卫：防止 React StrictMode 双倍执行
+  const initializedRef = useRef(false);
+
   useEffect(() => {
+    if (initializedRef.current) return;
+    initializedRef.current = true;
+
     const initAuth = async () => {
       try {
-        // 检查 URL 中是否存在 auth code
-        const urlParams = new URLSearchParams(window.location.search);
-        const code = urlParams.get('code');
-
-        // 如果存在 code，交换 session（AuthContext 是唯一负责 exchangeCodeForSession 的地方）
-        if (code) {
-          // 先检查是否已有 session（避免重复 exchange 或竞态条件）
-          try {
-            const { data: existingSession } = await supabase.auth.getSession();
-            if (existingSession?.session) {
-              console.log('[AuthContext] initAuth: session already exists, skipping exchange');
-              setUser(existingSession.session.user ?? null);
-              if (existingSession.session.user) fetchProfile(existingSession.session.user.id);
-              return;
-            }
-          } catch {
-            // getSession 失败继续尝试 exchange
-          }
-
-          let exchangeSucceeded = false;
-          let retryCount = 0;
-          const maxRetries = 5;
-
-          while (!exchangeSucceeded && retryCount <= maxRetries) {
-            try {
-              console.log(`[AuthContext] initAuth: exchanging code... (attempt ${retryCount + 1})`);
-              const { error } = await supabase.auth.exchangeCodeForSession(code);
-
-              if (!error) {
-                console.log('[AuthContext] initAuth: exchangeCodeForSession succeeded');
-                exchangeSucceeded = true;
-                // 清除 URL 中的 code 参数
-                const url = new URL(window.location.href);
-                url.searchParams.delete('code');
-                window.history.replaceState({}, '', url.pathname + url.search);
-                // 不再立即 getSession — session 通过 onAuthStateChange 的 SIGNED_IN 事件传来
-              } else if (error.message?.includes('PKCE code verifier not found')) {
-                // PKCE verifier 尚未就绪，等待后重试（处理 SDK 初始化竞态）
-                retryCount++;
-                if (retryCount <= maxRetries) {
-                  console.warn(`[AuthContext] initAuth: PKCE verifier not ready, retrying in 500ms... (${retryCount}/${maxRetries})`);
-                  await new Promise(resolve => setTimeout(resolve, 500));
-                } else {
-                  console.error('[AuthContext] initAuth: PKCE verifier exchange failed after retries:', error.message);
-                }
-              } else {
-                console.warn('[AuthContext] initAuth: exchangeCodeForSession error:', error.message);
-                exchangeSucceeded = true;
-              }
-            } catch (err) {
-              const errMsg = err instanceof Error ? err.message : String(err);
-              if (errMsg.includes('PKCE code verifier not found') && retryCount < maxRetries) {
-                retryCount++;
-                console.warn(`[AuthContext] initAuth: PKCE verifier not ready (exception), retrying in 500ms... (${retryCount}/${maxRetries})`);
-                await new Promise(resolve => setTimeout(resolve, 500));
-              } else {
-                console.error('[AuthContext] initAuth: exchangeCodeForSession exception:', err);
-                exchangeSucceeded = true;
-              }
-            }
-          }
-        } else {
-          // 无 code：检查是否有已存在的 session（页面刷新时）
-          try {
-            const { data: { session } } = await supabase.auth.getSession();
-            if (session) {
-              setUser(session.user ?? null);
-              if (session.user) fetchProfile(session.user.id);
-            }
-          } catch {
-            /* ignore — getSession may throw on invalid refresh token */
-          }
+        // Supabase SDK 通过 detectSessionInUrl: true 自动处理 ?code= exchange
+        // 这里只负责恢复已有 session
+        const { data: { session } } = await supabase.auth.getSession();
+        if (session) {
+          setUser(session.user ?? null);
+          if (session.user) fetchProfile(session.user.id);
         }
-      } catch (err) {
-        console.warn('[AuthContext] initAuth error:', err);
+      } catch {
+        /* ignore — getSession may throw on invalid refresh token */
       } finally {
         setIsLoading(false);
       }
@@ -136,17 +74,25 @@ export function AuthProvider({ children }: AuthProviderProps) {
 
     initAuth();
 
-    // 监听认证状态变化（SIGNED_IN 在 exchangeCodeForSession 写入 IndexedDB 完成后触发）
-  const { data: { subscription } } = supabase.auth.onAuthStateChange((event: string, session: { user: User } | null) => {
+    // onAuthStateChange：SDK 的 detectSessionInUrl 在 exchange 完成后会触发 SIGNED_IN
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((event: string, session: { user: User } | null) => {
       console.log('[AuthContext] onAuthStateChange:', event, session?.user?.id ?? 'null');
+
       if (event === 'SIGNED_IN' && session?.user) {
         setUser(session.user);
         fetchProfile(session.user.id);
         setIsLoading(false);
 
+        // ── 清理 URL 中的 ?code=（确认 exchange 成功后再清理）───────────
+        const url = new URL(window.location.href);
+        if (url.searchParams.has('code')) {
+          url.searchParams.delete('code');
+          window.history.replaceState({}, '', url.pathname + url.search);
+          console.log('[AuthContext] onAuthStateChange: cleaned ?code= from URL');
+        }
+        // ──────────────────────────────────────────────────────────────
+
         // ── 扩展流程：推送 session 到 extension ──────────────────────
-        // 无论是 /auth/callback 还是根路径 /（Supabase 有时回跳到根路径）
-        // 只要 hs_ext_flow 存在，就说明是扩展触发的登录，需要把 session 同步给扩展
         try {
           const extFlowRaw = sessionStorage.getItem('hs_ext_flow');
           if (extFlowRaw) {
@@ -164,7 +110,6 @@ export function AuthProvider({ children }: AuthProviderProps) {
             };
             console.log('[AuthContext] onAuthStateChange: extension flow detected, pushing session via postMessage, flowId=', flowId);
             window.postMessage(message, window.location.origin);
-            // 立即清理 sessionStorage（防止重复推送）
             sessionStorage.removeItem('hs_ext_flow');
           }
         } catch {
@@ -185,12 +130,10 @@ export function AuthProvider({ children }: AuthProviderProps) {
 
   // Google 登录
   const signInWithGoogle = async () => {
-    // 检查 URL 参数：flow_id 表示这是扩展发起的登录流程
     const urlParams = new URLSearchParams(window.location.search);
-    const flowId = urlParams.get('flow_id'); // flowId 是扩展流程的唯一标记
+    const flowId = urlParams.get('flow_id');
 
     if (flowId) {
-      // 扩展触发的登录：flowId 存入 sessionStorage（跨标签页传递）
       const extFlowData = JSON.stringify({ flowId });
       sessionStorage.setItem('hs_ext_flow', extFlowData);
       console.log('[Auth] signInWithGoogle: extension flow detected, flowId:', flowId);
@@ -198,7 +141,6 @@ export function AuthProvider({ children }: AuthProviderProps) {
       console.log('[Auth] signInWithGoogle: normal web flow (no flow_id in URL)');
     }
 
-    // redirectTo 只传 flowId（sessionStorage 作为主要传递方式）
     const callbackParams = new URLSearchParams();
     if (flowId) callbackParams.set('flow_id', flowId);
     const redirectTo = `${window.location.origin}/auth/callback${callbackParams.toString() ? '?' + callbackParams.toString() : ''}`;
