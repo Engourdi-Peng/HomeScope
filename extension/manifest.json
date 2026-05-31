@@ -16,7 +16,8 @@
     "storage",
     "tabs",
     "sidePanel",
-    "scripting"
+    "scripting",
+    "alarms"
   ],
   "host_permissions": [
     "https://www.realestate.com.au/*",
@@ -37,7 +38,10 @@
     {
       "matches": [
         "https://www.realestate.com.au/*",
+        "https://*.realestate.com.au/*",
+        "https://www.zillow.com/*",
         "https://*.zillow.com/*",
+        "https://zillow.com/*",
         "https://*.tryhomescope.com/*",
         "https://trteewgplkqiedonomzg.supabase.co/*"
       ],

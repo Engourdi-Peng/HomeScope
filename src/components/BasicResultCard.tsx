@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import type { BasicAnalysisResult } from '../types';
-import { ArrowLeft, Share2, Check, AlertTriangle, CheckCircle, ArrowRight, Zap, Star } from 'lucide-react';
+import { ArrowLeft, Share2, Check, AlertTriangle, CheckCircle, ArrowRight, Zap, Star, Copy } from 'lucide-react';
 
 interface BasicResultCardProps {
   result: BasicAnalysisResult;
@@ -12,6 +12,14 @@ interface BasicResultCardProps {
   /** 是否为 extension 模式，用于调整样式 */
   isExtension?: boolean;
   analysisId?: string;
+  /** 外部管理的分享状态，用于 extension 模式同步顶栏和底栏分享状态 */
+  shareState?: {
+    isSharing?: boolean;
+    shareResult?: { slug: string; shareUrl: string } | null;
+    copied?: boolean;
+  };
+  /** 外部拦截分享点击（extension 模式用于触发父组件的分享逻辑并自动复制） */
+  onShareClick?: () => void;
 }
 
 const recommendationConfig = {
@@ -84,27 +92,38 @@ export function BasicResultCard({
   hideNav,
   isExtension,
   analysisId,
+  shareState,
+  onShareClick,
 }: BasicResultCardProps) {
-  const [copied, setCopied] = useState(false);
-  const [isSharing, setIsSharing] = useState(false);
+  const [copiedLocal, setCopiedLocal] = useState(false);
+  const [isSharingLocal, setIsSharingLocal] = useState(false);
+
+  const effectiveCopied = shareState !== undefined ? (shareState.copied ?? false) : copiedLocal;
+  const effectiveIsSharing = shareState !== undefined ? (shareState.isSharing ?? false) : isSharingLocal;
 
   const recConfig = recommendationConfig[result.decision.recommendation];
   const RecIcon = recConfig.icon;
   const priceConfig = priceFairnessConfig[result.textAnalysis.priceFairness];
 
   const handleShare = async () => {
+    // Extension mode: delegate to parent
+    if (onShareClick) {
+      onShareClick();
+      return;
+    }
+
     if (!onShare || !analysisId) return;
-    setIsSharing(true);
+    setIsSharingLocal(true);
     try {
       const shareResponse = await onShare(analysisId);
       const fullUrl = shareResponse.shareUrl || `${window.location.origin}/share/${shareResponse.slug}`;
       await navigator.clipboard.writeText(fullUrl);
-      setCopied(true);
-      setTimeout(() => setCopied(false), 2000);
+      setCopiedLocal(true);
+      setTimeout(() => setCopiedLocal(false), 2000);
     } catch (err) {
       console.error('Share failed:', err);
     } finally {
-      setIsSharing(false);
+      setIsSharingLocal(false);
     }
   };
 
@@ -127,10 +146,10 @@ export function BasicResultCard({
           {onShare && analysisId && (
             <button
               onClick={handleShare}
-              disabled={isSharing}
+              disabled={effectiveIsSharing}
               className="flex items-center gap-2 text-stone-400 hover:text-white transition-colors disabled:opacity-50"
             >
-              {copied ? (
+              {effectiveCopied ? (
                 <>
                   <Check size={14} className="text-green-400" />
                   <span className="text-xs font-medium">Copied!</span>

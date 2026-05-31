@@ -1,8 +1,11 @@
 /**
- * PhotoSpaceAnalysisCard — 共享组件
- * 被 NewReportUI (网站主链路) 和 USSaleReport (extension 备用链路) 共用。
+ * PhotoSpaceAnalysisCard — shared component
+ * "What the Photos Reveal — and What They Don't Show"
+ *
+ * Part 1: What we can see (existing analysis)
+ * Part 2: What is missing (missing photo signals)
  */
-import { Camera } from 'lucide-react';
+import { Camera, Eye, AlertTriangle } from 'lucide-react';
 
 function getSpaceTypeLabel(spaceType: string): string {
   const map: Record<string, string> = {
@@ -15,7 +18,7 @@ function getSpaceTypeLabel(spaceType: string): string {
     backyard: 'Backyard',
     frontyard: 'Frontyard',
     garage: 'Garage',
-    basement: 'Basement',
+    basement: 'Basement / Storage',
     pool: 'Pool',
     yard: 'Yard',
     dining_room: 'Dining Room',
@@ -26,9 +29,20 @@ function getSpaceTypeLabel(spaceType: string): string {
     stairs: 'Stairs',
     roof: 'Roof',
     unknown: 'Unknown Area',
+    storage: 'Basement / Storage',
+    basement_storage: 'Basement / Storage',
   };
-  return map[spaceType?.toLowerCase()] || spaceType;
+  const normalized = spaceType?.toLowerCase() ?? '';
+  if (map[normalized]) return map[normalized];
+  if (/storage|basement|cellar|utility.*room/i.test(normalized)) return 'Basement / Storage';
+  return spaceType;
 }
+
+const INTERIOR_AREAS = [
+  'kitchen', 'bathroom', 'bedroom', 'living room',
+  'livingroom', 'hallway', 'dining room', 'basement',
+  'storage', 'attic', 'laundry', 'office', 'family room',
+];
 
 function getScoreColor(score: number): string {
   if (score >= 70) return 'text-green-500';
@@ -101,12 +115,14 @@ export function PhotoSpaceAnalysisCard({ raw }: PhotoSpaceAnalysisCardProps) {
     return null;
   }
 
+  // ── Part 1: What we can see ────────────────────────────────────────────────
+
   const summaryItems: Array<{ label: string; value: string }> = [];
   if (analyzedPhotoCount != null && analyzedPhotoCount > 0) {
     summaryItems.push({ label: 'Photos analysed', value: String(analyzedPhotoCount) });
   }
   if (detectedRooms && detectedRooms.length > 0) {
-    const labels = detectedRooms.slice(0, 6).map(r => getSpaceTypeLabel(r));
+    const labels = detectedRooms.slice(0, 6).map((r) => getSpaceTypeLabel(r));
     summaryItems.push({ label: 'Areas detected', value: labels.join(', ') });
   }
   if (roomCounts && Object.keys(roomCounts).length > 0) {
@@ -133,57 +149,112 @@ export function PhotoSpaceAnalysisCard({ raw }: PhotoSpaceAnalysisCardProps) {
     addIf('Bathroom', visualAnalysis.bathroomCondition);
   }
 
-  const spaceCards = hasSpaceAnalysis ? spaceAnalysis!.map((space) => ({
-    spaceType: space.spaceType,
-    label: getSpaceTypeLabel(space.spaceType ?? ''),
-    score: space.score ?? 0,
-    photoCount: space.photoCount ?? 0,
-    explanation: space.explanation,
-    observations: (space.observations || []).slice(0, 3),
-  })) : [];
-
-  const fallbackPhotos = !hasSpaceAnalysis && hasPhotosFallback
-    ? photos!.slice(0, 6).map(p => ({
-        label: p.areaType ? getSpaceTypeLabel(p.areaType) : 'Photo',
-        score: p.score ?? 0,
-        summary: p.summary || '',
-        signals: (p.signals || []).slice(0, 2),
+  const spaceCards = hasSpaceAnalysis
+    ? spaceAnalysis!.map((space) => ({
+        spaceType: space.spaceType,
+        label: getSpaceTypeLabel(space.spaceType ?? ''),
+        score: space.score ?? 0,
+        photoCount: space.photoCount ?? 0,
+        explanation: space.explanation,
+        observations: (space.observations || []).slice(0, 3),
       }))
     : [];
 
+  const fallbackPhotos =
+    !hasSpaceAnalysis && hasPhotosFallback
+      ? photos!.slice(0, 6).map((p) => ({
+          label: p.areaType ? getSpaceTypeLabel(p.areaType) : 'Photo',
+          score: p.score ?? 0,
+          summary: p.summary || '',
+          signals: (p.signals || []).slice(0, 2),
+        }))
+      : [];
+
+  // ── Part 2: What is missing ─────────────────────────────────────────────────
+
+  // Determine missing photo signals — PHOTO CONSISTENCY RULE:
+  // If interior areas are detected (kitchen/bathroom/bedroom/living room/etc.),
+  // do NOT show "Missing Interior Photos" or "No interior photos detected".
+  // Only show missing signals when we genuinely lack interior coverage.
+  const detectedSet = new Set(
+    (detectedRooms ?? []).map((r) => r.toLowerCase())
+  );
+
+  // Check if we have any interior photo coverage
+  const hasInteriorCoverage = INTERIOR_AREAS.some(area => detectedSet.has(area.toLowerCase()));
+  const photoCount = analyzedPhotoCount ?? photos?.length ?? 0;
+  const isLimitedPhotos = photoCount <= 3;
+
+  // Only generate missing signals when interior photos are genuinely absent
+  const missingSignals: string[] = [];
+  if (!hasInteriorCoverage) {
+    if (isLimitedPhotos) {
+      if (!detectedSet.has('kitchen') && !detectedSet.has('bathroom') && !detectedSet.has('bedroom')) {
+        missingSignals.push('No interior photos detected');
+      }
+      if (!detectedSet.has('kitchen')) missingSignals.push('No kitchen condition shown');
+      if (!detectedSet.has('bathroom')) missingSignals.push('No bathroom condition shown');
+      if (!detectedSet.has('basement')) missingSignals.push('No basement or foundation clues');
+      if (!detectedSet.has('roof')) missingSignals.push('No roof close-up');
+      if (!detectedSet.has('garage')) missingSignals.push('No garage or parking area shown');
+      if (!detectedSet.has('exterior')) missingSignals.push('No exterior close-up');
+    }
+    // From visualAnalysis missingKeyAreas
+    if (visualAnalysis?.missingKeyAreas && visualAnalysis.missingKeyAreas.length > 0) {
+      for (const area of visualAnalysis.missingKeyAreas) {
+        const normalized = area.toLowerCase();
+        const mapped = `No ${getSpaceTypeLabel(normalized).toLowerCase()} detected`;
+        if (!missingSignals.includes(mapped)) missingSignals.push(mapped);
+      }
+    }
+  }
+
+  const hasMissingSignals = missingSignals.length > 0;
+
+  // ── Render ─────────────────────────────────────────────────────────────────
+
   return (
-    <div className="bg-white rounded-2xl p-5 border border-stone-100 shadow-[0_1px_4px_rgba(0,0,0,0.04)] animate-in fade-in slide-in-from-bottom-8 duration-700 ease-out mb-8">
+    <div className="bg-white rounded-2xl p-6 sm:p-8 md:p-10 mb-8 border border-slate-200">
       {/* Header */}
-      <div className="flex items-center gap-3 mb-5">
+      <div className="flex items-center gap-3 mb-5 sm:mb-6">
         <div className="w-10 h-10 rounded-xl bg-stone-100 flex items-center justify-center shrink-0">
           <Camera size={18} className="text-stone-600" strokeWidth={1.5} />
         </div>
         <div>
-          <h3 className="text-sm font-semibold text-stone-900">Photo &amp; Space Analysis</h3>
-          <p className="text-xs text-stone-500">What the listing photos reveal about condition, layout and liveability</p>
+          <h3 className="text-lg sm:text-xl font-bold text-slate-900">
+            What the Photos Reveal — and What They Don&apos;t Show
+          </h3>
         </div>
       </div>
 
-      {/* A. Summary Row */}
+      {/* ── Part 1: What we can see ── */}
+
+      {/* Summary Row */}
       {summaryItems.length > 0 && (
         <div className="flex flex-wrap gap-x-6 gap-y-2 mb-5 p-3 bg-stone-50 rounded-xl">
           {summaryItems.map((item, i) => (
             <div key={i} className="flex items-center gap-2">
-              <span className="text-[10px] font-medium uppercase tracking-wider text-stone-500 shrink-0">{item.label}</span>
+              <span className="text-[10px] font-medium uppercase tracking-wider text-stone-500 shrink-0">
+                {item.label}
+              </span>
               <span className="text-xs font-semibold text-stone-800">{item.value}</span>
             </div>
           ))}
         </div>
       )}
 
-      {/* B. Visual Read indicators */}
+      {/* Visual Read indicators */}
       {visualItems.length > 0 && (
         <div className="mb-5">
-          <div className="text-[10px] font-semibold uppercase tracking-widest text-stone-500 mb-3">Visual Read</div>
+          <div className="text-[10px] font-semibold uppercase tracking-widest text-stone-500 mb-3">
+            Visual Read
+          </div>
           <div className="grid grid-cols-2 @container[size>=400px]:grid-cols-3 gap-2">
             {visualItems.map((item, i) => (
               <div key={i} className="flex flex-col p-3 bg-stone-50 rounded-xl">
-                <span className="text-[10px] font-medium text-stone-500 uppercase tracking-wider mb-1">{item.label}</span>
+                <span className="text-[10px] font-medium text-stone-500 uppercase tracking-wider mb-1">
+                  {item.label}
+                </span>
                 <span className="text-xs font-semibold text-stone-800 leading-snug">{item.value}</span>
               </div>
             ))}
@@ -192,7 +263,7 @@ export function PhotoSpaceAnalysisCard({ raw }: PhotoSpaceAnalysisCardProps) {
             <div className="mt-3 space-y-1.5">
               {visualAnalysis.photoObservations.slice(0, 3).map((obs, i) => (
                 <div key={i} className="flex items-start gap-2 text-xs text-stone-600">
-                  <span className="text-stone-400 shrink-0">•</span>
+                  <span className="text-stone-400 shrink-0">-</span>
                   {obs}
                 </div>
               ))}
@@ -201,11 +272,14 @@ export function PhotoSpaceAnalysisCard({ raw }: PhotoSpaceAnalysisCardProps) {
         </div>
       )}
 
-      {/* C. Space Cards */}
+      {/* Space Cards */}
       {spaceCards.length > 0 && (
-        <div className="grid grid-cols-1 @container[size>=500px]:grid-cols-2 gap-3">
+        <div className="grid grid-cols-1 @container[size>=500px]:grid-cols-2 gap-3 mb-5">
           {spaceCards.map((card, i) => (
-            <div key={i} className={`p-4 rounded-xl border border-stone-100 ${getScoreBg(card.score)}`}>
+            <div
+              key={i}
+              className={`p-4 rounded-xl border border-stone-100 ${getScoreBg(card.score)}`}
+            >
               <div className="flex items-start justify-between gap-3 mb-2">
                 <div className="text-[11px] font-semibold uppercase tracking-wider text-stone-600">
                   {card.label}
@@ -226,7 +300,7 @@ export function PhotoSpaceAnalysisCard({ raw }: PhotoSpaceAnalysisCardProps) {
                 <ul className="space-y-1">
                   {card.observations.map((obs, j) => (
                     <li key={j} className="flex items-start gap-1.5 text-xs text-stone-600">
-                      <span className="text-stone-400 shrink-0 mt-0.5">•</span>
+                      <span className="text-stone-400 shrink-0 mt-0.5">-</span>
                       {obs}
                     </li>
                   ))}
@@ -237,11 +311,14 @@ export function PhotoSpaceAnalysisCard({ raw }: PhotoSpaceAnalysisCardProps) {
         </div>
       )}
 
-      {/* D. Fallback: photo-level summaries */}
+      {/* Fallback: photo-level summaries */}
       {fallbackPhotos.length > 0 && (
-        <div className="grid grid-cols-2 @container[size>=500px]:grid-cols-3 gap-3">
+        <div className="grid grid-cols-2 @container[size>=500px]:grid-cols-3 gap-3 mb-5">
           {fallbackPhotos.map((photo, i) => (
-            <div key={i} className={`p-3 rounded-xl border border-stone-100 ${getScoreBg(photo.score)}`}>
+            <div
+              key={i}
+              className={`p-3 rounded-xl border border-stone-100 ${getScoreBg(photo.score)}`}
+            >
               <div className="flex items-start justify-between gap-2 mb-1.5">
                 <span className="text-[10px] font-semibold uppercase tracking-wider text-stone-600">
                   {photo.label}
@@ -265,12 +342,63 @@ export function PhotoSpaceAnalysisCard({ raw }: PhotoSpaceAnalysisCardProps) {
         </div>
       )}
 
-      {/* Missing Key Areas */}
-      {visualAnalysis?.missingKeyAreas && visualAnalysis.missingKeyAreas.length > 0 && (
-        <div className="mt-4 p-3 bg-amber-50 rounded-xl">
-          <div className="text-[10px] font-semibold text-amber-700 uppercase tracking-wider mb-1.5">No Photos Found</div>
-          <div className="text-xs text-amber-800">
-            {visualAnalysis.missingKeyAreas.join(', ')}
+      {/* ── Part 2: What is missing ── */}
+
+      {hasMissingSignals && (
+        <div className="mt-4 pt-5 border-t border-stone-200">
+          <div className="flex items-center gap-2 mb-3">
+            <AlertTriangle className="w-4 h-4 text-amber-500 shrink-0" />
+            <span className="text-sm font-bold text-slate-900 uppercase tracking-wide">
+              What the Photos Don&apos;t Show
+            </span>
+          </div>
+
+          {/* Limited photos warning — only show when no interior photos detected */}
+          {isLimitedPhotos && !hasInteriorCoverage && photoCount <= 2 && (
+            <div className="rounded-xl p-4 mb-4 bg-amber-50 border border-amber-200">
+              <p className="text-amber-800 text-sm leading-relaxed">
+                Only exterior photos were available. No kitchen, bathroom, bedroom, basement, roof, or
+                mechanical-system photos were detected. This limits confidence and should be treated as a
+                viewing risk.
+              </p>
+            </div>
+          )}
+
+          {/* Missing signals list */}
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 mb-4">
+            {missingSignals.map((signal, i) => (
+              <div key={i} className="flex items-start gap-2 p-3 rounded-lg bg-slate-50 border border-slate-200">
+                <div className="w-5 h-5 rounded-full bg-amber-100 border border-amber-200 flex items-center justify-center flex-shrink-0 mt-0.5">
+                  <AlertTriangle className="w-3 h-3 text-amber-500" />
+                </div>
+                <span className="text-slate-700 text-xs leading-relaxed">{signal}</span>
+              </div>
+            ))}
+          </div>
+
+          {/* Why this matters */}
+          <div className="rounded-xl p-4 bg-slate-50 border border-slate-200">
+            <div className="flex items-start gap-2">
+              <Eye className="w-4 h-4 text-slate-400 mt-0.5 shrink-0" />
+              <p className="text-slate-600 text-sm leading-relaxed">
+                Missing photos do not prove there is a problem, but they reduce confidence. Ask for
+                additional photos before spending time on a viewing.
+              </p>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Good coverage note */}
+      {!hasMissingSignals && (
+        <div className="mt-4 pt-5 border-t border-stone-200">
+          <div className="rounded-xl p-4 bg-emerald-50 border border-emerald-100">
+            <div className="flex items-start gap-2">
+              <Camera className="w-4 h-4 text-emerald-500 mt-0.5 shrink-0" />
+              <p className="text-emerald-700 text-sm leading-relaxed">
+                Photo coverage looks reasonable, but still verify condition in person.
+              </p>
+            </div>
           </div>
         </div>
       )}

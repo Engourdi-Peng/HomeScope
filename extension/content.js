@@ -1542,7 +1542,7 @@ function extractZillowFinancialsFromBodyText() {
   const financialEnders = ['Show more', 'Hide', 'Services availability', 'Contact a buyer'];
   let financialSectionLines = [];
   let inFinancial = false;
-  for (const i = 0; i < lines.length; i++) {
+  for (let i = 0; i < lines.length; i++) {
     const line = lines[i];
     if (line === 'Financial & listing details') { inFinancial = true; continue; }
     if (inFinancial && financialEnders.includes(line)) break;
@@ -1553,7 +1553,7 @@ function extractZillowFinancialsFromBodyText() {
   const monthlyEnders = ['All calculations are estimates', 'Mortgage interest rates', 'Contact a buyer'];
   let monthlySectionLines = [];
   let inMonthly = false;
-  for (const i = 0; i < lines.length; i++) {
+  for (let i = 0; i < lines.length; i++) {
     const line = lines[i];
     if (line === 'Monthly payment') { inMonthly = true; continue; }
     if (inMonthly && monthlyEnders.includes(line)) break;
@@ -1640,6 +1640,477 @@ function extractZillowFinancialsFromBodyText() {
         : null,
     }
   };
+}
+
+function extractZillowListingFromBodyTextV2() {
+  const raw = document.body.innerText || '';
+
+  const lines = raw
+    .split(/\n+/)
+    .map(s => s.trim())
+    .filter(Boolean);
+
+  function findExact(label, start = 0) {
+    const lower = label.toLowerCase();
+    return lines.findIndex((line, i) =>
+      i >= start && line.toLowerCase() === lower
+    );
+  }
+
+  function findIncludes(label, start = 0) {
+    const lower = label.toLowerCase();
+    return lines.findIndex((line, i) =>
+      i >= start && line.toLowerCase().includes(lower)
+    );
+  }
+
+  function parsePlainNumber(rawValue) {
+    if (!rawValue) return null;
+    const match = String(rawValue).match(/[\d,]+/);
+    return match ? Number(match[0].replace(/,/g, '')) : null;
+  }
+
+  function parseMoney(rawValue, defaultPeriod = 'unknown') {
+    if (!rawValue) return null;
+
+    const clean = String(rawValue).trim();
+
+    if (/^n\/a$/i.test(clean)) {
+      return {
+        raw: clean,
+        value: null,
+        status: 'not_applicable',
+        period: defaultPeriod
+      };
+    }
+
+    if (/not included/i.test(clean)) {
+      return {
+        raw: clean,
+        value: null,
+        status: 'not_included',
+        period: defaultPeriod
+      };
+    }
+
+    if (/not available|--/i.test(clean)) {
+      return {
+        raw: clean,
+        value: null,
+        status: 'unknown',
+        period: defaultPeriod
+      };
+    }
+
+    const match = clean.match(/\$?\s*([\d,]+)/);
+
+    if (!match) {
+      return {
+        raw: clean,
+        value: null,
+        status: 'unknown',
+        period: defaultPeriod
+      };
+    }
+
+    let period = defaultPeriod;
+
+    if (/\/\s*mo|per\s*month/i.test(clean)) {
+      period = 'monthly';
+    } else if (/\/\s*sqft|per\s*square\s*foot/i.test(clean)) {
+      period = 'per_sqft';
+    }
+
+    return {
+      raw: clean,
+      value: Number(match[1].replace(/,/g, '')),
+      status: 'known',
+      period
+    };
+  }
+
+  function valueAfterLabel(sectionLines, label) {
+    const labelLower = label.toLowerCase();
+
+    for (let i = 0; i < sectionLines.length; i++) {
+      const line = sectionLines[i];
+
+      // Format: "Annual tax amount: $3,490"
+      if (line.toLowerCase().startsWith(labelLower + ':')) {
+        return line.slice(line.indexOf(':') + 1).trim();
+      }
+
+      // Format:
+      // "Property taxes"
+      // "$449"
+      if (line.toLowerCase() === labelLower) {
+        return sectionLines[i + 1] || null;
+      }
+    }
+
+    return null;
+  }
+
+  function sliceBetweenByIndex(startIndex, endLabels) {
+    if (startIndex === -1) return [];
+
+    let end = lines.length;
+
+    for (const label of endLabels) {
+      const idx = findIncludes(label, startIndex + 1);
+      if (idx !== -1 && idx < end) end = idx;
+    }
+
+    return lines.slice(startIndex, end);
+  }
+
+  function sliceBetweenLabel(startLabel, endLabels, startSearchFrom = 0) {
+    const start = findExact(startLabel, startSearchFrom);
+    return sliceBetweenByIndex(start, endLabels);
+  }
+
+  function extractTopSummary() {
+    // Do not use nav "Facts & features" as boundary.
+    // Find first standalone listing price line, e.g. "$749,000".
+    const priceIndex = lines.findIndex(line =>
+      /^\$[\d,]+$/.test(line) &&
+      !/\/mo|\/sqft|HOA|Zestimate/i.test(line)
+    );
+
+    const priceLine = priceIndex !== -1 ? lines[priceIndex] : null;
+
+    const nearby = priceIndex !== -1
+      ? lines.slice(priceIndex, priceIndex + 20)
+      : [];
+
+    const addressLine = priceIndex !== -1
+      ? lines[priceIndex + 1] || null
+      : null;
+
+    function numberBeforeLabel(label) {
+      const idx = nearby.findIndex(line =>
+        line.toLowerCase() === label.toLowerCase()
+      );
+
+      if (idx > 0) return parsePlainNumber(nearby[idx - 1]);
+      return null;
+    }
+
+    const estPaymentLine = nearby.find(line =>
+      /Est\.?\s*payment/i.test(line)
+    );
+
+    const estPaymentMatch = estPaymentLine
+      ? estPaymentLine.match(/(?:Est\.?\s*payment|Estimated\s*payment)\s*:?\s*(\$[\d,]+)\s*\/?\s*mo/i)
+      : raw.match(/(?:Est\.?\s*payment|Estimated\s*payment)\s*:?\s*(\$[\d,]+)\s*\/?\s*mo/i);
+
+    return {
+      price: priceLine
+        ? {
+            raw: priceLine,
+            value: Number(priceLine.replace(/[^\d]/g, '')),
+            source: 'top_summary',
+            lineIndex: priceIndex
+          }
+        : null,
+
+      address: addressLine,
+
+      beds: numberBeforeLabel('beds'),
+      baths: numberBeforeLabel('baths'),
+      sqft: numberBeforeLabel('sqft'),
+
+      estimatedPayment: estPaymentMatch
+        ? {
+            ...parseMoney(estPaymentMatch[1] + '/mo', 'monthly'),
+            source: 'top_summary'
+          }
+        : null,
+
+      debugNearbyLines: nearby
+    };
+  }
+
+  function extractWhatsSpecial(priceIndex) {
+    const start = findExact("What's special", priceIndex || 0);
+
+    if (start === -1) {
+      return {
+        tags: [],
+        description: null,
+        debugSection: []
+      };
+    }
+
+    // Zillow description normally ends at the first "Hide" after What's special.
+    const hideIndex = findExact('Hide', start + 1);
+    const end = hideIndex !== -1 ? hideIndex : Math.min(lines.length, start + 80);
+
+    const section = lines.slice(start, end);
+    const content = section.slice(1);
+
+    const tags = [];
+    const descriptionLines = [];
+
+    for (const line of content) {
+      const isLikelyTag =
+        /^[A-Z0-9\s&'-]{3,80}$/.test(line) &&
+        line.length <= 80 &&
+        !/[.!?]$/.test(line);
+
+      if (isLikelyTag && descriptionLines.length === 0) {
+        // Some Zillow chips can be merged in innerText like:
+        // "GENEROUS BACKYARDFULL KITCHEN"
+        // Keep raw first; later we can improve with DOM chip extraction.
+        tags.push(line);
+      } else {
+        descriptionLines.push(line);
+      }
+    }
+
+    return {
+      tags,
+      description: descriptionLines.join('\n').trim() || null,
+      debugSection: section
+    };
+  }
+
+  function extractFinancialDetails() {
+    const section = sliceBetweenLabel('Financial & listing details', [
+      'Show more',
+      'Hide',
+      'Services availability',
+      'Contact a buyer',
+      'Monthly payment',
+      'Nearby schools'
+    ]);
+
+    return {
+      pricePerSqft: parseMoney(
+        valueAfterLabel(section, 'Price per square foot'),
+        'per_sqft'
+      ),
+      taxAssessedValue: parseMoney(
+        valueAfterLabel(section, 'Tax assessed value'),
+        'one_time'
+      ),
+      annualTaxAmount: parseMoney(
+        valueAfterLabel(section, 'Annual tax amount'),
+        'annual'
+      ),
+      dateOnMarket: valueAfterLabel(section, 'Date on market'),
+      cumulativeDaysOnMarket: valueAfterLabel(section, 'Cumulative days on market'),
+      listingAgreement: valueAfterLabel(section, 'Listing agreement'),
+      listingTerms: valueAfterLabel(section, 'Listing terms'),
+      tenantPays: valueAfterLabel(section, 'Tenant pays'),
+      electricUtilityOnProperty: valueAfterLabel(section, 'Electric utility on property'),
+      debugSection: section
+    };
+  }
+
+  function extractMonthlyPayment() {
+    const section = sliceBetweenLabel('Monthly payment', [
+      'All calculations are estimates',
+      'Mortgage interest rates',
+      'Contact a buyer',
+      'Nearby schools',
+      'Neighborhood'
+    ]);
+
+    const monthlyPayment = {
+      estimatedMonthlyPayment: parseMoney(
+        valueAfterLabel(section, 'Estimated monthly payment'),
+        'monthly'
+      ),
+      principalAndInterest: parseMoney(
+        valueAfterLabel(section, 'Principal & interest'),
+        'monthly'
+      ),
+      mortgageInsurance: parseMoney(
+        valueAfterLabel(section, 'Mortgage insurance'),
+        'monthly'
+      ),
+      propertyTaxes: parseMoney(
+        valueAfterLabel(section, 'Property taxes'),
+        'monthly'
+      ),
+      homeInsurance: parseMoney(
+        valueAfterLabel(section, 'Home insurance'),
+        'monthly'
+      ),
+      hoaFees: parseMoney(
+        valueAfterLabel(section, 'HOA fees'),
+        'monthly'
+      ),
+      utilities: parseMoney(
+        valueAfterLabel(section, 'Utilities'),
+        'monthly'
+      ),
+      debugSection: section
+    };
+
+    monthlyPayment.derivedKnownMonthlyTotal = [
+      monthlyPayment.principalAndInterest,
+      monthlyPayment.mortgageInsurance,
+      monthlyPayment.propertyTaxes,
+      monthlyPayment.homeInsurance,
+      monthlyPayment.hoaFees,
+      monthlyPayment.utilities
+    ]
+      .filter(x => x && x.status === 'known' && x.value != null)
+      .reduce((sum, x) => sum + x.value, 0);
+
+    return monthlyPayment;
+  }
+
+  function extractFactsFeatures() {
+    // Do not use nav "Facts & features".
+    // Use actual content heading "Interior" as start.
+    const interiorIndex = findExact('Interior');
+    const factsStart = interiorIndex !== -1
+      ? interiorIndex
+      : findExact('Bedrooms & bathrooms');
+
+    if (factsStart === -1) {
+      return {
+        sections: {},
+        rawFactsSection: []
+      };
+    }
+
+    const section = sliceBetweenByIndex(factsStart, [
+      'Financial & listing details',
+      'Price history',
+      'Public tax history',
+      'Monthly payment',
+      'Nearby schools'
+    ]);
+
+    const mainHeadings = [
+      'Interior',
+      'Property',
+      'Construction',
+      'Utilities & green energy',
+      'Community & HOA'
+    ];
+
+    const result = {};
+    let current = null;
+
+    for (const line of section) {
+      if (mainHeadings.includes(line)) {
+        current = line;
+        result[current] = [];
+        continue;
+      }
+
+      if (current) {
+        result[current].push(line);
+      }
+    }
+
+    return {
+      sections: result,
+      rawFactsSection: section
+    };
+  }
+
+  const topSummary = extractTopSummary();
+  const priceIndex = topSummary?.price?.lineIndex ?? 0;
+
+  const whatsSpecial = extractWhatsSpecial(priceIndex);
+  const factsFeatures = extractFactsFeatures();
+  const financialDetails = extractFinancialDetails();
+  const monthlyPayment = extractMonthlyPayment();
+
+  const zillowFinancials = {
+    source: 'zillow',
+
+    askingPrice: topSummary.price,
+    topEstimatedPayment: topSummary.estimatedPayment,
+
+    financialDetails: {
+      pricePerSqft: financialDetails.pricePerSqft,
+      taxAssessedValue: financialDetails.taxAssessedValue,
+      annualTaxAmount: financialDetails.annualTaxAmount,
+      dateOnMarket: financialDetails.dateOnMarket,
+      cumulativeDaysOnMarket: financialDetails.cumulativeDaysOnMarket,
+      listingAgreement: financialDetails.listingAgreement,
+      listingTerms: financialDetails.listingTerms,
+      tenantPays: financialDetails.tenantPays,
+      electricUtilityOnProperty: financialDetails.electricUtilityOnProperty
+    },
+
+    monthlyPayment: {
+      estimatedMonthlyPayment: monthlyPayment.estimatedMonthlyPayment,
+      principalAndInterest: monthlyPayment.principalAndInterest,
+      mortgageInsurance: monthlyPayment.mortgageInsurance,
+      propertyTaxes: monthlyPayment.propertyTaxes,
+      homeInsurance: monthlyPayment.homeInsurance,
+      hoaFees: monthlyPayment.hoaFees,
+      utilities: monthlyPayment.utilities
+    },
+
+    derived: {
+      knownMonthlyTotal: monthlyPayment.derivedKnownMonthlyTotal || null,
+      propertyTaxMonthlyFromAnnual:
+        financialDetails.annualTaxAmount?.value != null
+          ? Math.round(financialDetails.annualTaxAmount.value / 12)
+          : null
+    },
+
+    whatsSpecial,
+    factsFeatures
+  };
+
+  const listing = {
+    source: 'zillow',
+    sourceDomain: 'zillow.com',
+    reportMode: 'sale',
+
+    price: topSummary.price?.raw || null,
+    askingPrice: topSummary.price?.raw || null,
+    priceValue: topSummary.price?.value || null,
+
+    address: topSummary.address || null,
+
+    bedrooms: topSummary.beds,
+    beds: topSummary.beds,
+
+    bathrooms: topSummary.baths,
+    baths: topSummary.baths,
+
+    sqft: topSummary.sqft,
+    propertySize: topSummary.sqft,
+
+    estimatedPayment: topSummary.estimatedPayment,
+
+    description: whatsSpecial.description,
+    features: whatsSpecial.tags,
+
+    factsFeatures,
+    financialDetails,
+    monthlyPayment,
+
+    zillowFinancials
+  };
+
+  console.log('[ZILLOW_V2_EXTRACTOR_OUTPUT]', {
+    price: listing.price,
+    askingPrice: listing.askingPrice,
+    priceValue: listing.priceValue,
+    address: listing.address,
+    beds: listing.beds,
+    baths: listing.baths,
+    sqft: listing.sqft,
+    estimatedPayment: listing.estimatedPayment?.value,
+    hasZillowFinancials: !!listing.zillowFinancials,
+    zillowTopEstimate: listing.zillowFinancials?.topEstimatedPayment?.value,
+    zillowMonthlyEstimate:
+      listing.zillowFinancials?.monthlyPayment?.estimatedMonthlyPayment?.value
+  });
+
+  return listing;
 }
 
 /**
@@ -1929,6 +2400,48 @@ function extractRoomsZillow() {
 }
 
 async function extractListingDataLight() {
+  // Zillow V2 extractor — priority path, returns fully-structured listing
+  const isZillow = location.hostname.includes('zillow.com');
+  if (isZillow) {
+    const zillowV2 = extractZillowListingFromBodyTextV2();
+    if (zillowV2?.price || zillowV2?.zillowFinancials) {
+      // Enrich V2 listing with compatibility fields that the rest of the pipeline expects
+      zillowV2.title = zillowV2.address || null;
+      zillowV2.extractionConfidence = 0.95;
+      zillowV2.confidence = 0.95;
+
+      console.log('[TRACE][ZILLOW_V2_RETURN_SHAPE]', {
+        hasListing: !!zillowV2,
+        price: zillowV2.price,
+        askingPrice: zillowV2.askingPrice,
+        confidence: zillowV2.confidence,
+        extractionConfidence: zillowV2.extractionConfidence,
+        hasZillowFinancials: !!zillowV2.zillowFinancials,
+        monthlyEstimate: zillowV2.zillowFinancials?.monthlyPayment?.estimatedMonthlyPayment?.value,
+      });
+
+      console.log('[TRACE][CONTENT_EXTRACTED]', {
+        price: zillowV2.price,
+        askingPrice: zillowV2.askingPrice,
+        priceValue: zillowV2.priceValue,
+        address: zillowV2.address,
+        beds: zillowV2.beds,
+        baths: zillowV2.baths,
+        sqft: zillowV2.sqft,
+        reportMode: zillowV2.reportMode,
+        sourceDomain: zillowV2.sourceDomain,
+        hasZillowFinancials: !!zillowV2.zillowFinancials,
+        zillowTopEstimate: zillowV2.zillowFinancials?.topEstimatedPayment?.value,
+        zillowMonthlyEstimate:
+          zillowV2.zillowFinancials?.monthlyPayment?.estimatedMonthlyPayment?.value,
+      });
+      return {
+        listing: zillowV2,
+        detection: buildPropertyDetection(detectPropertySignals(), zillowV2)
+      };
+    }
+  }
+
   const signals = detectPropertySignals();
   propertySignals = signals;
 
@@ -2094,7 +2607,7 @@ function detectPropertySignals() {
 }
 
 function buildPropertyDetection(signals, listing) {
-  let score = signals.confidence;
+  let score = (signals && signals.confidence != null) ? signals.confidence : 0;
   if (listing?.title && String(listing.title).trim().length > 8) score += 0.08;
   if (listing?.address) score += 0.08;
   if (listing?.price) score += 0.12;
@@ -2110,8 +2623,8 @@ function buildPropertyDetection(signals, listing) {
   else if (score >= 0.22) tier = 'partial';
   const canAnalyze =
     score >= 0.3 &&
-    !!(listing?.title || listing?.address || listing?.price || nImg >= 1 || signals.hasPrice || signals.imageCount >= 1);
-  return { score, signals: signals.signals, tier, canAnalyze };
+    !!(listing?.title || listing?.address || listing?.price || nImg >= 1 || signals?.hasPrice || signals?.imageCount >= 1);
+  return { score, signals: signals?.signals ?? [], tier, canAnalyze };
 }
 
 // ─────────────────────────────────────────────────────────────

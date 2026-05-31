@@ -5,9 +5,8 @@
  * Delegates entirely to the shared ReportShell + ResultCard components.
  *
  * Flow: App.tsx switches to currentView='report' → renders ExtensionResultView
- *
- * Auto-starts analysis when the view mounts (if not already running).
- * Loading / error / empty states are shown inline here while analysis is in progress.
+ * Analysis is triggered by AnalyseSection button click (sole entry point).
+ * ExtensionResultView is purely for rendering the result/loading/error states.
  * All states share the same ReportShell container for layout consistency.
  * The NavBar is rendered here (not inside ResultCard) to match the web layout.
  */
@@ -20,22 +19,13 @@ import { ReportScreen } from '../../shared/report/ReportScreen';
 import { ReportShell } from '../../shared/report/ReportShell';
 
 export function ExtensionResultView() {
-  const { analysisPhase, analysisProgress, analysisError, analysisResult, listingData, authStatus } = useAppState();
-  const { retryAnalysis, navigateToHome, startAnalysis, shareAnalysis } = useActions();
-  const hasStartedAnalysis = React.useRef(false);
+  const { analysisPhase, analysisProgress, analysisError, analysisResult, authStatus } = useAppState();
+  const { retryAnalysis, navigateToHome, shareAnalysis } = useActions();
 
   // Top bar share state — same logic as ResultCard bottom share
   const [isSharing, setIsSharing] = useState(false);
   const [shareResult, setShareResult] = useState<{ slug: string; shareUrl: string } | null>(null);
   const [copied, setCopied] = useState(false);
-
-  // Auto-start analysis when the report view mounts
-  React.useEffect(() => {
-    if (analysisPhase === 'idle' && !hasStartedAnalysis.current && listingData) {
-      hasStartedAnalysis.current = true;
-      startAnalysis();
-    }
-  }, [analysisPhase, listingData, startAnalysis]);
 
   const isAnalysing = ['preparing', 'reading_page', 'opening_gallery', 'collecting_photos', 'sending_data', 'analysing', 'generating_report'].includes(analysisPhase);
   const isError = analysisPhase === 'error';
@@ -190,6 +180,12 @@ export function ExtensionResultView() {
         onShare={authStatus === 'logged_in' ? handleShare : undefined}
         analysisId={analysisResult?.id}
         noShell
+        shareState={{
+          isSharing,
+          shareResult,
+          copied,
+        }}
+        onShareClick={authStatus === 'logged_in' ? handleTopBarShare : undefined}
       />
     </ReportShell>
   );

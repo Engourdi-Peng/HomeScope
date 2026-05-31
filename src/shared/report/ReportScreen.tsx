@@ -11,8 +11,14 @@ import type { AnalysisResult, BasicAnalysisResult } from '../../types';
 import { ResultCard } from '../../components/ResultCard';
 import { BasicResultCard } from '../../components/BasicResultCard';
 import { ReportShell } from './ReportShell';
-import { normalizeReportResult } from '../../lib/reportAdapters';
+import { normalizeReportResult, buildReportViewModel } from '../../lib/reportAdapters';
 import { NewReportUI } from '../../components/report/NewReportUI';
+
+type ShareStateProps = {
+  isSharing?: boolean;
+  shareResult?: { slug: string; shareUrl: string } | null;
+  copied?: boolean;
+};
 
 type ReportScreenProps = {
   mode: 'web' | 'extension';
@@ -23,9 +29,13 @@ type ReportScreenProps = {
   analysisId?: string;
   /** 跳过外层 ReportShell 包裹（用于 extension 模式，外部已包 Shell） */
   noShell?: boolean;
+  /** 外部管理的分享状态，用于 extension 模式同步顶栏和底栏分享状态 */
+  shareState?: ShareStateProps;
+  /** 外部拦截分享点击（extension 模式用于触发父组件的分享逻辑并自动复制） */
+  onShareClick?: () => void;
 };
 
-export function ReportScreen({ mode, result, onBack, onShare, onUpgrade, analysisId, noShell }: ReportScreenProps) {
+export function ReportScreen({ mode, result, onBack, onShare, onUpgrade, analysisId, noShell, shareState, onShareClick }: ReportScreenProps) {
   const isExtension = mode === 'extension';
 
   // Detect share page to suppress back button
@@ -35,17 +45,21 @@ export function ReportScreen({ mode, result, onBack, onShare, onUpgrade, analysi
 
   const showBackButton = mode !== 'extension' && !isSharePage;
 
-  // ── New unified path: normalize → NewReportUI ─────────────────────────────
+  // ── New unified path: normalize → buildReportViewModel → NewReportUI ──────────
   try {
     const normalizedReport = normalizeReportResult(result);
+    const viewModel = buildReportViewModel(result, result?.listingInfo);
 
     const newContent = (
       <NewReportUI
         report={normalizedReport}
+        viewModel={viewModel}
         mode={mode}
         showBackButton={showBackButton}
         onShare={onShare}
         analysisId={analysisId}
+        shareState={shareState}
+        onShareClick={onShareClick}
       />
     );
 
@@ -76,6 +90,8 @@ export function ReportScreen({ mode, result, onBack, onShare, onUpgrade, analysi
         hideNav={mode === 'extension'}
         isExtension={isExtension}
         analysisId={analysisId}
+        shareState={shareState}
+        onShareClick={onShareClick}
       />
     );
 
@@ -102,6 +118,8 @@ export function ReportScreen({ mode, result, onBack, onShare, onUpgrade, analysi
       isExtension={isExtension}
       analysisId={analysisId}
       isBasicAnalysis={isNewBasic}
+      shareState={shareState}
+      onShareClick={onShareClick}
     />
   );
 

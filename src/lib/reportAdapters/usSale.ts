@@ -247,8 +247,8 @@ function buildSections(result: USSaleResult): ReportSection[] {
   if (invest.estimated_monthly_rent ?? invest.estimatedMonthlyRent) investItems.push({ title: 'Est. Monthly Rent', value: toText(invest.estimated_monthly_rent ?? invest.estimatedMonthlyRent) });
   if (invest.summary) investItems.push({ title: 'Summary', description: toText(invest.summary) });
   // supporting_signals are strings like "4 bedrooms suggest rental income" → title=actual text
-  const signals = Array.isArray(invest.supporting_signals) ? invest.supporting_signals : [];
-  for (const s of signals) {
+  const invSignals = Array.isArray(invest.supporting_signals) ? invest.supporting_signals : [];
+  for (const s of invSignals) {
     const t = toText(s);
     if (t) investItems.push({ title: t });
   }
@@ -319,13 +319,37 @@ function buildSections(result: USSaleResult): ReportSection[] {
   }
   if (realityItems.length > 0) sections.push({ id: 'listing-reality-check', title: 'Listing Reality Check', subtitle: 'What the listing language really means', items: realityItems });
 
-  // ── neighborhood_lifestyle ─────────────────────────────────────────────────
+  // ── location_reality_check (replaces neighborhood_lifestyle) ─────────────────
   const neigh = result.neighborhood_lifestyle ?? result.neighborhoodLifestyle ?? {};
-  const neighItems: SectionItem[] = [];
-  if (neigh.summary) neighItems.push({ title: 'Summary', description: toText(neigh.summary) });
-  neighItems.push(...objectItems(neigh.page_signals, { title: 'Signal' }));
-  neighItems.push(...objectItems(neigh.external_data_needed, { title: 'Data Needed' }));
-  if (neighItems.length > 0) sections.push({ id: 'neighborhood', title: 'Neighborhood', items: neighItems });
+  const claims: string[] = [];
+  const verifications: string[] = [];
+
+  // page_signals → What the listing claims
+  const pageSignals = neigh.page_signals ?? {};
+  for (const [, value] of Object.entries(pageSignals)) {
+    const text = toText(value);
+    if (text) claims.push(text);
+  }
+
+  // external_data_needed → What to verify (deduplicated, cleaned)
+  const external = neigh.external_data_needed ?? {};
+  for (const [, value] of Object.entries(external)) {
+    const text = toText(value);
+    if (text) verifications.push(text);
+  }
+
+  if (claims.length > 0 || verifications.length > 0) {
+    sections.push({
+      id: 'location-reality-check',
+      title: 'Location Reality Check',
+      subtitle: 'Based on listing claims, not independently verified.',
+      items: [
+        { title: 'claims', description: claims.join('\n') },
+        { title: 'verifications', description: verifications.join('\n') },
+        { title: 'summary', description: toText(neigh.summary ?? '') },
+      ],
+    });
+  }
 
   // ── data_gaps ──────────────────────────────────────────────────────────────
   const gaps = Array.isArray(result.data_gaps ?? result.dataGaps) ? result.data_gaps ?? result.dataGaps : [];

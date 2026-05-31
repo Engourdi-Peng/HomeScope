@@ -1,5 +1,5 @@
 // @ts-nocheck — chrome global type not in tsconfig.libs (pre-existing errors suppressed)
-import React, { createContext, useContext, useReducer, useEffect, useCallback } from 'react';
+import React, { createContext, useContext, useReducer, useEffect, useCallback, useRef } from 'react';
 import type {
   AppState,
   AppAction,
@@ -817,6 +817,10 @@ async function initializePageData(dispatch: React.Dispatch<AppAction>) {
 export function AppProvider({ children }: { children: React.ReactNode }) {
   const [state, dispatch] = useReducer(appReducer, initialState);
 
+  // Re-entry guard: prevents concurrent startAnalysis calls (e.g. from multiple
+  // useEffect triggers + React.StrictMode double-invoke during development).
+  const analysisInFlightRef = useRef(false);
+
   // Destructure frequently-used state slices at the top level so they are
   // always up-to-date in callbacks (avoids stale-closure bugs in useCallback).
   const { listingData, analysisResult } = state;
@@ -871,6 +875,12 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   // ---- 初始化：检查认证状态 ----
   useEffect(() => {
     const checkAuth = async () => {
+      // Prime the service worker on mount so it's ready for critical operations.
+      // This prevents cold-start timeouts on the first analyze click.
+      try {
+        await sendMessage<{ ok: boolean }>({ action: 'KEEPALIVE' });
+      } catch (_) {}
+
       try {
         const authResult = await sendMessage<{
           state: string;
@@ -1096,17 +1106,32 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     const bypassCache = options?.bypassCache ?? false;
     const analysisType = options?.analysisType ?? 'full';
 
-    noop('[ExtApp] startAnalysis called:', { bypassCache, analysisType });
-
-    // Step 1: Check cooldown
-    const now = Date.now();
-    if (!bypassCache && state.cooldownEndsAt !== null && now < state.cooldownEndsAt) {
+    // Re-entry guard — prevents concurrent calls from multiple useEffect triggers
+    // and React.StrictMode double-invokes during development.
+    if (analysisInFlightRef.current) {
+      noop('[ExtApp] startAnalysis ignored: already in flight');
       return;
     }
+    analysisInFlightRef.current = true;
 
-    dispatch({ type: 'SET_ANALYSIS_PHASE', phase: 'preparing', error: null });
-    dispatch({ type: 'SET_ANALYSIS_RESULT', result: null });
-    dispatch({ type: 'SET_VIEWING_HISTORY', id: null });
+    try {
+      noop('[ExtApp] startAnalysis called:', { bypassCache, analysisType });
+
+      // Prime the service worker before critical operation to prevent cold-start timeout.
+      // Even if SW was terminated, this wakes it up before we start the async flow.
+      try {
+        await sendMessage<{ ok: boolean }>({ action: 'KEEPALIVE' });
+      } catch (_) {}
+
+      // Step 1: Check cooldown
+      const now = Date.now();
+      if (!bypassCache && state.cooldownEndsAt !== null && now < state.cooldownEndsAt) {
+        return;
+      }
+
+      dispatch({ type: 'SET_ANALYSIS_PHASE', phase: 'preparing', error: null });
+      dispatch({ type: 'SET_ANALYSIS_RESULT', result: null });
+      dispatch({ type: 'SET_VIEWING_HISTORY', id: null });
 
     // Step 1: Determine which tab to use for analysis
     // Prefer the stored source tab ID (captured when sidepanel first loaded),
@@ -1243,6 +1268,17 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       return;
     }
 
+    noop('[TRACE][BG_EXTRACTION_RESPONSE]', {
+      hasResponse: true,
+      hasData: !!response.data,
+      responseConfidence: response.detection?.canAnalyze,
+      dataConfidence: (listingData as any).confidence,
+      dataExtractionConfidence: (listingData as any).extractionConfidence,
+      dataPrice: (listingData as any).price,
+      dataAskingPrice: (listingData as any).askingPrice,
+      hasZillowFinancials: !!(listingData as any).zillowFinancials,
+      monthlyEstimate: (listingData as any).zillowFinancials?.monthlyPayment?.estimatedMonthlyPayment?.value,
+    });
     noop('[ExtApp] startAnalysis: extraction successful, images:', (listingData as any).imageUrls?.length || (listingData as any).images?.length || 0);
 
     dispatch({ type: 'SET_PROPERTY_STATUS', propertyStatus: 'detected', listingData, propertyDetection: response.detection ?? null });
@@ -1252,6 +1288,9 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
 
     // Step 5: Submit to analyze API (passes analysisType)
     await submitAnalysis(listingData, analysisType);
+    } finally {
+      analysisInFlightRef.current = false;
+    }
   }, [state.cooldownEndsAt, state.lastExtractedUrl, state.extractionCached, state.listingData, state.sourceTabId]);
 
   /**

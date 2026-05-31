@@ -20,6 +20,14 @@ interface ResultProps {
   analysisId?: string;
   /** 是否为基础分析模式（用于区分卡片显示） */
   isBasicAnalysis?: boolean;
+  /** 外部管理的分享状态，用于 extension 模式同步顶栏和底栏分享状态 */
+  shareState?: {
+    isSharing?: boolean;
+    shareResult?: { slug: string; shareUrl: string } | null;
+    copied?: boolean;
+  };
+  /** 外部拦截分享点击（extension 模式下用于触发父组件的分享逻辑并自动复制） */
+  onShareClick?: () => void;
 }
 
 const verdictConfig = {
@@ -184,7 +192,7 @@ function SectionDivider() {
   return <div className="h-px bg-stone-200 my-14"></div>;
 }
 
-export function ResultCard({ result, onBack, onShare, hideNav, isPublicShare, onUpgrade, isExtension, analysisId, isBasicAnalysis }: ResultProps) {
+export function ResultCard({ result, onBack, onShare, hideNav, isPublicShare, onUpgrade, isExtension, analysisId, isBasicAnalysis, shareState, onShareClick }: ResultProps) {
   // Guard: if result is undefined/null, render nothing
   if (!result) {
     return (
@@ -194,9 +202,15 @@ export function ResultCard({ result, onBack, onShare, hideNav, isPublicShare, on
     );
   }
 
-  const [isSharing, setIsSharing] = useState(false);
-  const [shareResult, setShareResult] = useState<{ slug: string; shareUrl: string } | null>(null);
-  const [copied, setCopied] = useState(false);
+  // Extension mode: use externally-managed share state from parent (synchronized with top bar)
+  // Web mode: use local state
+  const [isSharingLocal, setIsSharingLocal] = useState(false);
+  const [shareResultLocal, setShareResultLocal] = useState<{ slug: string; shareUrl: string } | null>(null);
+  const [copiedLocal, setCopiedLocal] = useState(false);
+
+  const effectiveShareResult = shareState !== undefined ? (shareState.shareResult ?? null) : shareResultLocal;
+  const effectiveCopied = shareState !== undefined ? (shareState.copied ?? false) : copiedLocal;
+  const effectiveIsSharing = shareState !== undefined ? (shareState.isSharing ?? false) : isSharingLocal;
 
   // Check if this is a basic analysis (new format)
   const isBasic = isBasicAnalysis || result.analysisType === 'basic';
@@ -281,33 +295,41 @@ export function ResultCard({ result, onBack, onShare, hideNav, isPublicShare, on
   };
 
   const handleShare = async () => {
+    // Extension mode: delegate to parent (top bar share)
+    if (onShareClick) {
+      onShareClick();
+      return;
+    }
+
     if (!onShare) return;
     const analysisId = result.id || '';
 
-    setIsSharing(true);
+    setIsSharingLocal(true);
     try {
       const shareResponse = await onShare(analysisId);
-      setShareResult(shareResponse);
+      setShareResultLocal(shareResponse);
 
       // Use the full shareUrl if provided, otherwise construct from origin
       const fullUrl = shareResponse.shareUrl || `${window.location.origin}/share/${shareResponse.slug}`;
       copyToClipboardFallback(fullUrl);
-      setCopied(true);
+      setCopiedLocal(true);
 
-      setTimeout(() => setCopied(false), 2000);
+      setTimeout(() => setCopiedLocal(false), 2000);
     } catch (err) {
       console.error('Share failed:', err);
     } finally {
-      setIsSharing(false);
+      setIsSharingLocal(false);
     }
   };
 
   const copyToClipboard = () => {
-    if (!shareResult) return;
-    const fullUrl = shareResult.shareUrl || `${window.location.origin}/share/${shareResult.slug}`;
+    if (!effectiveShareResult) return;
+    const fullUrl = effectiveShareResult.shareUrl || `${window.location.origin}/share/${effectiveShareResult.slug}`;
     copyToClipboardFallback(fullUrl);
-    setCopied(true);
-    setTimeout(() => setCopied(false), 2000);
+    if (shareState === undefined) setCopiedLocal(true);
+    setTimeout(() => {
+      if (shareState === undefined) setCopiedLocal(false);
+    }, 2000);
   };
 
   return (
@@ -1541,20 +1563,20 @@ export function ResultCard({ result, onBack, onShare, hideNav, isPublicShare, on
                   Big decision — worth getting a second opinion before you move forward.
                 </p>
               )}
-              {!shareResult ? (
+              {!effectiveShareResult ? (
                 <button
                   onClick={handleShare}
-                  disabled={isSharing}
+                  disabled={effectiveIsSharing}
                   className="group relative inline-flex items-center justify-center gap-2 px-6 py-3 bg-stone-100 text-stone-600 rounded-full transition-all duration-300 hover:bg-stone-200 disabled:opacity-50"
                 >
                   <Share2 size={14} />
                   <span className="text-[10px] font-bold uppercase tracking-[0.15em]">
-                    {isSharing ? 'Generating share link...' : 'Share report'}
+                    {effectiveIsSharing ? 'Generating share link...' : 'Generate share link and copy'}
                   </span>
                 </button>
               ) : (
                 <div className="flex items-center gap-2 bg-green-50 text-green-700 px-4 py-2 rounded-full">
-                  {copied ? (
+                  {effectiveCopied ? (
                     <>
                       <CheckCircle size={14} />
                       <span className="text-xs font-medium">Copied!</span>
@@ -1562,13 +1584,13 @@ export function ResultCard({ result, onBack, onShare, hideNav, isPublicShare, on
                   ) : (
                     <>
                       <CheckCircle size={14} />
-                      <span className="text-xs font-medium">Link copied!</span>
+                      <span className="text-xs font-medium">Copied</span>
                       <button
                         onClick={copyToClipboard}
-                        className="ml-1 p-1 hover:bg-green-100 rounded"
-                        title="Copy link"
+                        className="ml-0.5 p-1 hover:bg-green-100 rounded transition-colors cursor-pointer"
+                        title="Copy link again"
                       >
-                        <Copy size={12} />
+                        <Copy size={11} />
                       </button>
                     </>
                   )}
