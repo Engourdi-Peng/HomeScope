@@ -48,18 +48,21 @@ export function ReportScreen({ mode, result, onBack, onShare, onUpgrade, analysi
   // ── New unified path: normalize → buildReportViewModel → NewReportUI ──────────
   try {
     const normalizedReport = normalizeReportResult(result);
-    const viewModel = buildReportViewModel(result, result?.listingInfo);
+    const isBasic = normalizedReport.meta.isBasic;
+    const viewModel = buildReportViewModel(result, result?.listingInfo, normalizedReport);
 
     const newContent = (
       <NewReportUI
         report={normalizedReport}
         viewModel={viewModel}
+        isBasic={isBasic}
         mode={mode}
         showBackButton={showBackButton}
         onShare={onShare}
         analysisId={analysisId}
         shareState={shareState}
         onShareClick={onShareClick}
+        onUpgrade={onUpgrade}
       />
     );
 

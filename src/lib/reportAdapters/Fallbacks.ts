@@ -7,7 +7,7 @@
 // ── A. 模块级 fallback ────────────────────────────────────────────────────────
 
 export const MODULE_FALLBACKS = {
-  HERO_BOTTOM_LINE: 'Based on available data, this property has significant factors worth verifying before making a decision.',
+  HERO_BOTTOM_LINE: 'This listing provides some useful basic signals, but several important decision details are still missing or unverified.',
   HERO_NEXT_BEST_MOVE_DEFAULT: 'Request additional details and verify key risks before your next step.',
   PRICE_ANALYSIS_UNKNOWN: 'Price cannot be judged confidently from the available data.',
   PRICE_ANALYSIS_OVERPRICED: 'The asking price appears high relative to visible condition, market time, or unverified assumptions.',
@@ -36,7 +36,151 @@ export const RISK_ACTION_FALLBACKS = {
   default: 'Verify this risk with a licensed inspector and relevant public records before making any commitment.',
 } as const;
 
-// ── C. Questions 兜底列表 ─────────────────────────────────────────────────────
+// ── C. Questions 动态生成函数（替代旧静态 fallback 列表）───────────────
+// Basic 模式下的 fallback 问题按已知字段动态生成，不再使用静态列表。
+// 调用 buildBasicQuestionFallbacks(context) 来获取 fallback 问题。
+
+export interface BasicQuestionContext {
+  hasPrice: boolean;
+  hasBeds: boolean;
+  hasBaths: boolean;
+  hasSqft: boolean;
+  hasPropertyType: boolean;
+  hasCondition: boolean;
+  hasLegalUse: boolean;
+  hasCosts: boolean;
+  hasComps: boolean;
+  hasZillowMonthly: boolean;
+  isUS: boolean;
+  isAU: boolean;
+}
+
+/**
+ * 从 what_we_know 结构中提取已知字段状态。
+ * 兼容 snake_case 和 camelCase 字段名。
+ */
+export function extractKnownFacts(wwKnow: any): Omit<BasicQuestionContext, 'isUS' | 'isAU'> {
+  const has = (v: unknown) => v != null && v !== '';
+  return {
+    hasPrice:        has(wwKnow?.asking_price ?? wwKnow?.askingPrice ?? wwKnow?.price),
+    hasBeds:         has(wwKnow?.beds ?? wwKnow?.bedrooms),
+    hasBaths:        has(wwKnow?.baths ?? wwKnow?.bathrooms),
+    hasSqft:         has(wwKnow?.sqft ?? wwKnow?.square_feet ?? wwKnow?.squareFeet ?? wwKnow?.floor_area),
+    hasPropertyType: has(wwKnow?.property_type ?? wwKnow?.propertyType ?? wwKnow?.home_type ?? wwKnow?.homeType),
+    // condition 来自 photo analysis 信号
+    hasCondition:    false,
+    // legal use — 检查 whats_missing 中是否有相关 gap
+    hasLegalUse:     false,
+    // costs — 检查是否有 tax/insurance/HOA 数据
+    hasCosts:        has(wwKnow?.taxes ?? wwKnow?.annual_tax ?? wwKnow?.insurance ?? wwKnow?.hoa),
+    // comps — 检查是否有 comparable sales 数据
+    hasComps:        has(wwKnow?.comparable_sales ?? wwKnow?.comparableSales ?? wwKnow?.zestimate),
+  };
+}
+
+/**
+ * 按已知/未知字段动态生成 Basic 模式的 fallback 问题。
+ * 不再使用 "Can you provide beds/baths/sqft" 语气 —— 已知字段用 verify。
+ */
+export function buildBasicQuestionFallbacks(ctx: BasicQuestionContext): Array<{ text: string; category: string; tagColor: string }> {
+  const { hasPrice, hasBeds, hasBaths, hasSqft, hasPropertyType, hasCondition, hasLegalUse, hasCosts, hasComps, hasZillowMonthly, isUS, isAU } = ctx;
+  const questions: Array<{ text: string; category: string; tagColor: string }> = [];
+
+  // 1. Comparable Sales / Rental History — 无论价格是否已知，都应该问
+  if (!hasComps || hasPrice) {
+    questions.push({
+      text: isUS
+        ? 'Can you provide recent comparable sales or rental history to support the asking price?'
+        : 'Can you provide recent comparable sales or rental history to support the asking price?',
+      category: 'Price',
+      tagColor: 'bg-amber-100 text-amber-700',
+    });
+  }
+
+  // 2. Legal Use / Certificate of Occupancy
+  if (!hasLegalUse) {
+    questions.push({
+      text: isUS
+        ? 'Can you provide the Certificate of Occupancy or legal-use documents?'
+        : 'Can you provide official documents confirming the approved use of the property?',
+      category: 'Legal',
+      tagColor: 'bg-violet-100 text-violet-700',
+    });
+  }
+
+  // 3. Costs — Zillow monthly estimate available: ask to verify it; otherwise ask for costs
+  if (hasZillowMonthly) {
+    questions.push({
+      text: isUS
+        ? 'Can you confirm whether Zillow\'s estimated taxes, insurance, HOA fees, and monthly payment are accurate for this property?'
+        : 'Can you confirm whether the estimated council rates, strata fees, insurance, and monthly costs are accurate?',
+      category: 'Costs',
+      tagColor: 'bg-teal-100 text-teal-700',
+    });
+  } else if (!hasCosts) {
+    questions.push({
+      text: isUS
+        ? 'What are the estimated annual property taxes, insurance, and any HOA fees?'
+        : isAU
+        ? 'What are the council rates, strata fees, insurance, and other ongoing costs?'
+        : 'What are the annual property taxes, insurance, and any HOA or community fees?',
+      category: 'Costs',
+      tagColor: 'bg-teal-100 text-teal-700',
+    });
+  }
+
+  // 4. Beds / Baths / Sqft — 已知时 verify，未知时 provide
+  const anyBasicFieldKnown = hasBeds || hasBaths || hasSqft || hasPropertyType;
+  if (anyBasicFieldKnown) {
+    questions.push({
+      text: isUS
+        ? 'Can you confirm whether the listed property details match public records and the Certificate of Occupancy?'
+        : 'Can you confirm whether the listed property details match official records?',
+      category: isUS ? 'Public Records' : 'Records',
+      tagColor: 'bg-violet-100 text-violet-700',
+    });
+  } else {
+    questions.push({
+      text: 'Can you provide the missing basic property details such as property type, beds, baths, and interior size?',
+      category: 'Listing Facts',
+      tagColor: 'bg-slate-100 text-slate-700',
+    });
+  }
+
+  // 5. Property Condition (仅在 hasCondition = false 时)
+  if (!hasCondition) {
+    questions.push({
+      text: 'Can you provide more detail on the property condition, repairs, renovations, or major system updates, if any?',
+      category: 'Condition',
+      tagColor: 'bg-orange-100 text-orange-700',
+    });
+  }
+
+  // 6. Open violations (US)
+  if (isUS) {
+    questions.push({
+      text: 'Are there any open DOB or HPD violations, permits, complaints, or unresolved building issues?',
+      category: 'Legal',
+      tagColor: 'bg-violet-100 text-violet-700',
+    });
+  }
+
+  return questions;
+}
+
+/**
+ * 已废弃的静态 fallback 列表。
+ * 仅保留用于非 Basic 模式的 Deep 报告 fallback。
+ * Basic 模式应使用 buildBasicQuestionFallbacks()。
+ * @deprecated Basic 模式请使用 buildBasicQuestionFallbacks()
+ */
+export const QUESTION_FALLBACKS_BASIC = [
+  'Can you confirm whether the listed property details match public records and legal-use documents?',
+  'Can you provide the Certificate of Occupancy or legal-use documents?',
+  'Are there any open DOB or HPD violations, permits, complaints, or unresolved building issues?',
+  'What are the estimated annual property taxes, insurance, and any HOA fees?',
+  'Can you provide recent comparable sales to support the asking price?',
+] as const;
 
 export const QUESTION_FALLBACKS = [
   'Is this property legally registered as a two-family with NYC HPD, and what does the Certificate of Occupancy allow?',
@@ -48,3 +192,46 @@ export const QUESTION_FALLBACKS = [
   'Can you provide recent comparable sales and actual rental comps to justify the asking price?',
   'What are the real monthly costs including insurance, utilities, repairs, vacancy, and maintenance reserve?',
 ] as const;
+
+// ── D. Listing Claims Fallbacks ─────────────────────────────────────────────────
+// 用于 Basic Report 的 "Listing Claims to Verify" 模块。
+// 每个条目包含关键词模式（匹配 listing 文本）和对应的解码文案。
+// Basic 模式不依赖图片，只基于 listing 文本提取 claims。
+
+export const LISTING_CLAIM_FALLBACKS: Array<{
+  keyword: RegExp;
+  phrase: string;
+  homeScopeCheck: string;
+  askBeforeViewing: string;
+}> = [
+  {
+    keyword: /legal 2-family|two.family|multi.family|rental.approved/i,
+    phrase: 'LEGAL 2-FAMILY',
+    homeScopeCheck: 'Listing-stated only. Confirm through Certificate of Occupancy and public records.',
+    askBeforeViewing: 'Can you provide the Certificate of Occupancy or legal-use documents?',
+  },
+  {
+    keyword: /\bTLC\b|needs work|needs updating|needs renovation|needs repair/i,
+    phrase: 'Needs TLC',
+    homeScopeCheck: 'This may mean repairs, renovations, or system updates are needed.',
+    askBeforeViewing: 'Are any repairs, renovations, or major system updates needed?',
+  },
+  {
+    keyword: /\svacant\b|delivered vacant|tenant vacated/i,
+    phrase: 'Delivered Vacant',
+    homeScopeCheck: 'Vacant properties can have maintenance, security, insurance, or deterioration concerns.',
+    askBeforeViewing: 'How long has it been vacant, and have utilities, heating, plumbing, and security been maintained?',
+  },
+  {
+    keyword: /sold as.is|as.is\b|as is\b/i,
+    phrase: 'Sold As-Is',
+    homeScopeCheck: 'As-is sales typically indicate the seller will not make repairs or provide credits.',
+    askBeforeViewing: 'Is the asking price reflective of the as-is condition, and are repairs needed before financing?',
+  },
+  {
+    keyword: /motivated seller|price reduced|price drop|price adjustment/i,
+    phrase: 'Motivated Seller / Price Reduced',
+    homeScopeCheck: 'Price reductions may signal pricing concerns, condition issues, or weak demand.',
+    askBeforeViewing: "Why has the price been reduced, and what is the seller's motivation?",
+  },
+];

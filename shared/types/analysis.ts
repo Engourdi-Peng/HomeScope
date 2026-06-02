@@ -26,6 +26,9 @@ export interface Photo {
 export interface OptionalDetails {
   reportMode?: 'rent' | 'sale';
   source?: ListingSource;  // 网站来源
+  sourceDomain?: string;
+  market?: string;
+  listingUrl?: string;
   weeklyRent?: string;
   askingPrice?: string;
   suburb?: string;
@@ -261,6 +264,10 @@ export interface ListingInfo {
   parking?: number | null;
   /** 封面图 URL（第一张图） */
   coverImageUrl?: string;
+  /** 面积 (US) */
+  sqft?: number | string | null;
+  /** 房型 (US) */
+  propertyType?: string | null;
 }
 
 export interface AnalysisResult {

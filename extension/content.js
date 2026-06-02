@@ -2063,6 +2063,31 @@ function extractZillowListingFromBodyTextV2() {
     factsFeatures
   };
 
+  // Extract property type: try Style section, facts, or URL
+  let propertyType = null;
+  // Try Style section in facts
+  if (factsFeatures?.sections?.['Style']) {
+    propertyType = factsFeatures.sections['Style'].join(' ').trim() || null;
+  }
+  // Try URL-based inference
+  if (!propertyType) {
+    const urlLower = window.location.href.toLowerCase();
+    if (urlLower.includes('/condo/')) propertyType = 'Condo';
+    else if (urlLower.includes('/townhouse/')) propertyType = 'Townhouse';
+    else if (urlLower.includes('/lot/')) propertyType = 'Lot / Land';
+  }
+  // Try to find property type in facts features
+  if (!propertyType && factsFeatures?.rawFactsSection) {
+    const rawFacts = factsFeatures.rawFactsSection.join(' ');
+    if (/single\s*family/i.test(rawFacts)) propertyType = 'Single Family Home';
+    else if (/multi\s*family/i.test(rawFacts)) propertyType = 'Multi-Family';
+    else if (/condo/i.test(rawFacts)) propertyType = 'Condo';
+    else if (/townhouse/i.test(rawFacts)) propertyType = 'Townhouse';
+    else if (/apartment/i.test(rawFacts)) propertyType = 'Apartment';
+    else if (/duplex/i.test(rawFacts)) propertyType = 'Duplex';
+    else if (/lot/i.test(rawFacts) || /land/i.test(rawFacts)) propertyType = 'Lot / Land';
+  }
+
   const listing = {
     source: 'zillow',
     sourceDomain: 'zillow.com',
@@ -2088,6 +2113,8 @@ function extractZillowListingFromBodyTextV2() {
     description: whatsSpecial.description,
     features: whatsSpecial.tags,
 
+    propertyType,
+
     factsFeatures,
     financialDetails,
     monthlyPayment,
@@ -2103,6 +2130,7 @@ function extractZillowListingFromBodyTextV2() {
     beds: listing.beds,
     baths: listing.baths,
     sqft: listing.sqft,
+    propertyType: listing.propertyType,
     estimatedPayment: listing.estimatedPayment?.value,
     hasZillowFinancials: !!listing.zillowFinancials,
     zillowTopEstimate: listing.zillowFinancials?.topEstimatedPayment?.value,
@@ -2175,6 +2203,17 @@ function extractFieldsFromPropertyData(data) {
   // Year Built
   if (data.yearBuilt || data.year_built) {
     result.yearBuilt = data.yearBuilt || data.year_built;
+  }
+
+  // Property Type — Zillow uses @type field (e.g. "SingleFamilyResidence", "Condo", "Townhouse")
+  // Also accept homeType / propertyType / buildingType variants
+  if (data.homeType || data.propertyType || data.home_type || data.property_type || data.buildingType || data.listingType) {
+    result.propertyType = data.homeType || data.propertyType || data.home_type || data.property_type || data.buildingType || data.listingType;
+  }
+  // Also check @type from JSON-LD (normalize to readable format)
+  if (data['@type'] && !result.propertyType) {
+    const t = String(data['@type']).replace(/([A-Z])/g, ' $1').trim();
+    result.propertyType = t;
   }
 
   // Lot Size

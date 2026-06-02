@@ -190,6 +190,9 @@ export function Home() {
   const handleBasicAnalysis = async () => {
     console.log('[BasicAnalysis] Starting lightweight basic analysis...');
 
+    // Clear stale cache so the result page always shows the latest response, not an old result
+    sessionStorage.removeItem('analysisResult');
+
     // 1. 权限检查 - 无需登录，任何人都可以使用
     // 注意：basic 分析不需要登录
 
@@ -211,6 +214,10 @@ export function Home() {
         reportMode: optionalDetails.reportMode || 'rent',
         description,
         optionalDetails: Object.keys(optionalDetails).length > 0 ? optionalDetails : undefined,
+        source: optionalDetails.source,
+        sourceDomain: optionalDetails.sourceDomain,
+        market: optionalDetails.market,
+        listingUrl: optionalDetails.listingUrl,
       });
 
       setProgressPct(100);
@@ -230,6 +237,8 @@ export function Home() {
         bedrooms: optionalDetails.bedrooms ? parseInt(optionalDetails.bedrooms, 10) : undefined,
         bathrooms: optionalDetails.bathrooms ? parseInt(optionalDetails.bathrooms, 10) : undefined,
         parking: optionalDetails.parking ? parseInt(optionalDetails.parking, 10) : undefined,
+        sqft: optionalDetails.sqft ?? null,
+        propertyType: optionalDetails.propertyType ?? null,
       };
 
       const resultWithListingInfo = {
@@ -258,6 +267,10 @@ export function Home() {
   };
 
   const handleSubmit = async (analysisType: 'basic' | 'full' = 'full') => {
+    console.log('[Analysis] mode:', analysisType);
+    console.log('[Analysis] requiresLogin:', analysisType === 'full');
+    console.log('[Analysis] shouldProcessImages:', analysisType === 'full');
+
     // ========== Basic Analysis - 轻量路径 ==========
     if (analysisType === 'basic') {
       return handleBasicAnalysis();
@@ -281,7 +294,7 @@ export function Home() {
     }
 
     // 2. 已登录但无可用积分 - 深度分析需要积分，基础分析不需要
-    if (analysisType === 'full' && creditsRemaining <= 0) {
+    if (creditsRemaining <= 0) {
       console.log('analyze blocked reason: NO_CREDITS');
       setError('You\'ve used all credits. Use Basic Analysis for free!');
       return;
@@ -296,15 +309,13 @@ export function Home() {
 
     setIsLoading(true);
     setError('');
-    setAnalyzingCount(Math.min(photos.length, analysisType === 'basic' ? 4 : 10));
+    setAnalyzingCount(Math.min(photos.length, 10));
     setIsComplete(false);
     setActiveStage(null);
     setProgressPct(0);
 
     try {
-      const photosToAnalyze = analysisType === 'basic'
-        ? photos.slice(0, 4)
-        : photos.slice(0, 10);
+      const photosToAnalyze = photos.slice(0, 10);
 
       // ========== Step 1: Compress images ==========
       setProgressLabel('Preparing photos...');
@@ -348,7 +359,7 @@ export function Home() {
       console.log('Analysis submitted, ID:', analysisId);
 
       // ========== Step 5: Trigger the analysis runner ==========
-      setProgressLabel(analysisType === 'basic' ? 'Running basic analysis...' : 'Analyzing property...');
+      setProgressLabel('Analyzing property...');
       setActiveStage('upload_received');
       setProgressPct(Math.max(65, stageToPct('upload_received')));
 
@@ -394,9 +405,7 @@ export function Home() {
             setProgressLabel('Analysis complete');
             clearPollTimer();
             // Refresh user profile to update credits display
-            if (analysisType === 'full') {
-              refreshProfile();
-            }
+            refreshProfile();
             setTimeout(() => {
               navigate('/result');
             }, 500);

@@ -4,7 +4,7 @@
 // 包含 5 大一致性校验规则.
 
 import type { ReportSection } from './types';
-import { MODULE_FALLBACKS, RISK_ACTION_FALLBACKS, QUESTION_FALLBACKS } from './Fallbacks';
+import { MODULE_FALLBACKS, RISK_ACTION_FALLBACKS, QUESTION_FALLBACKS, buildBasicQuestionFallbacks } from './Fallbacks';
 
 // ── 通用工具 ──────────────────────────────────────────────────────────────────
 
@@ -66,6 +66,71 @@ function preferRawFact<T>(...values: T[]): T {
     if (v !== null && v !== undefined && v !== '') return v;
   }
   return values[values.length - 1];
+}
+
+// ── Evidence Score 计算 ────────────────────────────────────────────────────────
+
+export type EvidenceVerdict = 'Strong Listing Evidence' | 'Enough to Review' | 'Need More Evidence' | 'High Uncertainty';
+
+/**
+ * computeEvidenceScore — Evidence Score for Basic reports.
+ * Represents listing information completeness, NOT property quality.
+ * ALWAYS calculated from raw listing data; never trusts AI-supplied scores.
+ *
+ * Scoring:
+ *   base 20
+ *   address +10
+ *   asking price +10
+ *   beds +8
+ *   baths +8
+ *   sqft +12
+ *   property type +8
+ *   year built +6
+ *   tax/HOA +8
+ *   photos count > 0 +8
+ *   listing description +5
+ *   legal/multi-family confirmed +8
+ *   comps/zestimate/market estimate +8
+ *   cap 100
+ *
+ * Max achievable with only address+price+beds+baths = 20+10+10+8+8 = 76.
+ * Needs sqft+type+tax+photos+desc+legal+comps to reach 85+.
+ */
+export function computeEvidenceScore(result: any, listingInfo?: any): number {
+  const raw = result?.raw ?? result;
+
+  let score = 20;
+  const snap = raw?.property_snapshot ?? {};
+  const info = listingInfo ?? {};
+
+  const has = (v: unknown) => v != null && v !== '';
+
+  if (has(snap?.address ?? info?.address)) score += 10;
+  if (has(snap?.asking_price ?? info?.price ?? snap?.askingPrice)) score += 10;
+  if (has(snap?.beds ?? info?.bedrooms ?? snap?.beds)) score += 8;
+  if (has(snap?.baths ?? info?.bathrooms ?? snap?.baths)) score += 8;
+  if (has(snap?.sqft ?? info?.sqft ?? snap?.squareFeet)) score += 12;
+  if (has(snap?.home_type ?? info?.propertyType)) score += 8;
+  if (has(snap?.year_built ?? info?.yearBuilt)) score += 6;
+  if (has(snap?.annual_tax ?? info?.taxes ?? info?.tax ?? snap?.hoa ?? info?.hoa)) score += 8;
+  if (has(snap?.photos_count ?? info?.photos_count)) score += 8;
+  if (has(raw?.quickSummary ?? raw?.quick_summary ?? raw?.summary ?? raw?.bottom_line)) score += 5;
+  if (has(raw?.legal_compliance ?? raw?.certificateOfOccupancy ?? snap?.legal_use)) score += 8;
+  if (has(snap?.price_per_sqft ?? info?.zestimate ?? snap?.zestimate ?? snap?.market_estimate)) score += 8;
+
+  return Math.min(100, score);
+}
+
+export function evidenceVerdict(score: number): EvidenceVerdict {
+  // Must match backend getBasicVerdict() in analyze/index.ts exactly:
+  // score >= 80 -> Enough to Review
+  // score >= 60 -> Review With Caution
+  // score >= 40 -> Need More Evidence
+  // score < 40  -> High Uncertainty
+  if (score >= 80) return 'Enough to Review';
+  if (score >= 60) return 'Review With Caution';
+  if (score >= 40) return 'Need More Evidence';
+  return 'High Uncertainty';
 }
 
 // ── 校验函数 ──────────────────────────────────────────────────────────────────
@@ -464,14 +529,72 @@ export interface QuestionVM {
   tagColor: string;
 }
 
+/** 从 result 中提取 what_we_know 和 whats_missing，识别已知字段和缺失维度 */
+function extractQuestionContext(result: any): {
+  hasPrice: boolean;
+  hasBeds: boolean;
+  hasBaths: boolean;
+  hasSqft: boolean;
+  hasPropertyType: boolean;
+  hasCondition: boolean;
+  hasLegalUse: boolean;
+  hasCosts: boolean;
+  hasComps: boolean;
+  hasZillowMonthly: boolean;
+  isUS: boolean;
+  isAU: boolean;
+  sourceDomain: string;
+} {
+  const wwKnow = result?.what_we_know ?? result?.whatWeKnow ?? {};
+  const missing = result?.whats_missing ?? result?.whatsMissing ?? [];
+  const raw = result?.raw ?? result;
+
+  const has = (v: unknown) => v != null && v !== '';
+
+  const missingLabels = (missing as any[]).map((m: any) => {
+    const label = typeof m === 'string' ? m : (m.label ?? '');
+    return label.toLowerCase();
+  });
+
+  const sourceDomain = raw?.sourceDomain ?? raw?.source_domain ?? '';
+  const isAU = /realestate|domain|allhomes/i.test(sourceDomain);
+  const isUS = !isAU;
+
+  return {
+    hasPrice:        has(wwKnow?.asking_price ?? wwKnow?.askingPrice ?? wwKnow?.price),
+    hasBeds:         has(wwKnow?.beds ?? wwKnow?.bedrooms),
+    hasBaths:        has(wwKnow?.baths ?? wwKnow?.bathrooms),
+    hasSqft:         has(wwKnow?.sqft ?? wwKnow?.square_feet ?? wwKnow?.squareFeet ?? wwKnow?.floor_area),
+    hasPropertyType: has(wwKnow?.property_type ?? wwKnow?.propertyType ?? wwKnow?.home_type ?? wwKnow?.homeType),
+    hasCondition:    !!(raw?.spaceAnalysis || raw?.visualAnalysis || raw?.photos || raw?.space_analysis),
+    // Legal use is considered missing if whats_missing mentions it (so !hasLegalUse triggers a question)
+    // If nothing legal is mentioned in missing, we still don't have confirmed CO — ask anyway
+    hasLegalUse:    false, // Always ask for legal docs unless we have an explicit CO confirmation
+    // hasCosts: true if we have tax/insurance/HOA from what_we_know OR monthly_cost_snapshot from Zillow
+    hasCosts:        !!(raw?.monthly_cost_snapshot?.estimated_monthly_payment) ||
+                       has(wwKnow?.taxes ?? wwKnow?.annual_tax ?? wwKnow?.insurance ?? wwKnow?.hoa),
+    hasComps:        has(wwKnow?.comparable_sales ?? wwKnow?.comparableSales ?? wwKnow?.zestimate),
+    hasZillowMonthly: !!(raw?.monthly_cost_snapshot?.estimated_monthly_payment),
+    isUS,
+    isAU,
+    sourceDomain,
+  };
+}
+
 export function normalizeQuestions(
   questions: any[],
-  context: { isNYC?: boolean } = {},
+  context: {
+    isNYC?: boolean;
+    maxQuestions?: number;
+    /** 传入原始 result，用于动态 fallback 生成 */
+    result?: any;
+  } = {},
 ): QuestionVM[] {
-  const { isNYC = false } = context;
+  const { isNYC = false, maxQuestions = 8, result: rawResult } = context;
   const results: QuestionVM[] = [];
   const seen = new Set<string>();
 
+  // Photos tag: only match explicit photo/image keywords, NOT "interior"
   const TAG_MAP: Array<{ pattern: RegExp; label: string; color: string }> = [
     { pattern: /legal|co |occupancy|permit|violation|registered/i, label: 'Legal', color: 'bg-violet-100 text-violet-700' },
     { pattern: /roof|drainage|leak/i, label: 'Roof', color: 'bg-amber-100 text-amber-700' },
@@ -479,7 +602,8 @@ export function normalizeQuestions(
     { pattern: /basement|foundation|water|intrusion|drainage/i, label: 'Basement', color: 'bg-blue-100 text-blue-700' },
     { pattern: /rental|rent|income|lease|tenant|legal rent/i, label: 'Rent', color: 'bg-green-100 text-green-700' },
     { pattern: /flood|insurance|zone|windstorm|hurricane/i, label: 'Insurance', color: 'bg-blue-100 text-blue-700' },
-    { pattern: /photo|interior|basement|exterior|mechanical|system photo/i, label: 'Photos', color: 'bg-pink-100 text-pink-700' },
+    // Photos: only explicit photo/image keywords — NOT "interior" (which causes false matches on "interior square footage")
+    { pattern: /\bphotos?\b|photo |photo-|interior photo|exterior photo|\bimages?\b|\bpictures?\b|\bvisuals?\b/i, label: 'Photos', color: 'bg-pink-100 text-pink-700' },
     { pattern: /monthly|cost|tax|hoa|maintenance|reserve|expense|utility/i, label: 'Costs', color: 'bg-teal-100 text-teal-700' },
     { pattern: /comparable|comp|sale|market.*value|price.*verdict/i, label: 'Price', color: 'bg-amber-100 text-amber-700' },
     { pattern: /days on market|market time|listed|262|hasn't sold/i, label: 'Market Time', color: 'bg-indigo-100 text-indigo-700' },
@@ -499,6 +623,8 @@ export function normalizeQuestions(
     { keywords: /days on market|market time|listed|262|hasn't sold/i },
   ];
 
+  const FALLBACKS = context?.fallbackQuestions ?? QUESTION_FALLBACKS;
+
   function getTag(text: string): { label: string; color: string } {
     for (const { pattern, label, color } of TAG_MAP) {
       if (pattern.test(text)) return { label, color };
@@ -515,8 +641,9 @@ export function normalizeQuestions(
   }
 
   for (const q of questions) {
-    const title = toText(q.title ?? q.text ?? q.q ?? '');
-    const desc = toText(q.description ?? q.text ?? '');
+    // Support both new backend format ({ category, question }) and legacy ({ title, description })
+    const title = toText(q.question ?? q.title ?? q.text ?? q.q ?? '');
+    const desc = toText(q.description ?? '');
     const fullText = (desc.length > title.length ? desc : title).trim();
     if (!fullText) continue;
     if (/missing data|summary|overview|where to verify|things to verify|questions to ask/i.test(fullText)) continue;
@@ -539,26 +666,38 @@ export function normalizeQuestions(
     deduped.push(q);
   }
 
-  // 数量不足时补充 fallback；也确保 basement 和 costs 类别不缺失
-  const hasBasement = deduped.some(q => /basement|foundation|water.*intrusion|drainage/i.test(q.text));
-  // Only count "real monthly costs" style questions, not generic cost mentions
-  const hasCostsQuestion = deduped.some(q =>
-    /what are the real monthly costs/i.test(q.text) ||
-    (/(?:monthly|cost).*(?:insurance|utility|repairs|vacancy|maintenance)/i.test(q.text) &&
-     /what|ask|verify|include/i.test(q.text))
-  );
-  if (deduped.length < 4 || !hasBasement || !hasCostsQuestion) {
-    for (const qText of QUESTION_FALLBACKS) {
-      if (deduped.length >= 8) break;
-      if (!seen.has(qText)) {
-        seen.add(qText);
-        const { label, color } = getTag(qText);
-        deduped.push({ text: qText, category: label, tagColor: color });
+  // ── Fallback injection: use DYNAMIC generation for Basic mode ──────────────────
+  // Basic mode fallback must know which fields are already known.
+  // Build fallback questions per-topic based on what is missing.
+  // Only inject when deduped questions are fewer than maxQuestions.
+  if (deduped.length < maxQuestions) {
+    const ctx = rawResult ? extractQuestionContext(rawResult) : null;
+
+    if (ctx) {
+      // Dynamic fallback generation: knows which fields are already confirmed
+      const dynamicFallbacks = buildBasicQuestionFallbacks(ctx);
+      for (const fq of dynamicFallbacks) {
+        if (deduped.length >= maxQuestions) break;
+        if (!seen.has(fq.text)) {
+          seen.add(fq.text);
+          deduped.push({ text: fq.text, category: fq.category, tagColor: fq.tagColor });
+        }
+      }
+    } else {
+      // Legacy: non-Basic or no result context — use static fallbacks
+      const staticFallbacks = context?.fallbackQuestions ?? FALLBACKS;
+      for (const qText of staticFallbacks) {
+        if (deduped.length >= maxQuestions) break;
+        if (!seen.has(qText)) {
+          seen.add(qText);
+          const { label, color } = getTag(qText);
+          deduped.push({ text: qText, category: label, tagColor: color });
+        }
       }
     }
   }
 
-  return deduped.slice(0, 8);
+  return deduped.slice(0, maxQuestions);
 }
 
 // ── 顶层 viewModel 组装 ───────────────────────────────────────────────────────
@@ -609,13 +748,23 @@ export interface ReportViewModel {
 /**
  * buildReportViewModel — 结果页数据标准化入口
  * 把原始 result 转换为可稳定渲染的 viewModel.
+ * normalizedReport is used to derive the isBasic flag — if not provided,
+ * falls back to result.meta.isBasic.
  */
-export function buildReportViewModel(result: any, listingInfo?: any): ReportViewModel {
+export function buildReportViewModel(
+  result: any,
+  listingInfo?: any,
+  normalizedReport?: { meta?: { isBasic?: boolean } },
+): ReportViewModel {
   const raw = result?.raw ?? result;
+
+  // isBasic is the authoritative flag from the normalize layer
+  const isBasic = normalizedReport?.meta?.isBasic ?? result?.meta?.isBasic ?? false;
 
   const heroAddr = preferRawFact(
     listingInfo?.address,
     result?.listingInfo?.address,
+    raw?.listingOverview?.address,
     raw?.property_snapshot?.address,
   );
   const isNYC = /nyc|new york city|bronx|brooklyn|manhattan|queens|staten/i.test(
@@ -638,7 +787,7 @@ export function buildReportViewModel(result: any, listingInfo?: any): ReportView
   const questionsRaw = raw?.questions_to_ask ?? raw?.questionsToAsk ?? [];
   const questionsVM = normalizeQuestions(
     Array.isArray(questionsRaw) ? questionsRaw : [],
-    { isNYC },
+    { isNYC, maxQuestions: isBasic ? 5 : 8, result: raw },
   );
 
   const decisionCardsVM = normalizeDecisionCards(
@@ -652,13 +801,26 @@ export function buildReportViewModel(result: any, listingInfo?: any): ReportView
     { isNYC },
   );
 
+  const rawScore = raw?.overallScore ?? raw?.overall_score ?? null;
+
+  // For Basic mode: trust the backend's already-normalized score and verdict.
+  // The backend enforces evidence_score caps and recomputes verdict from score.
+  // Do NOT recompute here — that would reintroduce inconsistencies.
+  const effectiveScore = isBasic
+    ? (raw?.overallScore ?? raw?.overall_score ?? raw?.evidence_score ?? 50)
+    : rawScore;
+
+  const effectiveVerdict = isBasic
+    ? (raw?.verdict ?? evidenceVerdict(effectiveScore as number))
+    : (raw?.verdict ?? raw?.overallVerdict ?? 'Review');
+
   const hero: HeroVM = {
     address: heroAddr,
     title: preferRawFact(listingInfo?.title, result?.listingInfo?.title, raw?.title ?? ''),
     price: preferRawFact(listingInfo?.price, result?.listingInfo?.price, null),
     imageUrl: imageUrls[0] ?? null,
-    score: (raw?.overallScore ?? raw?.overall_score ?? null) as number | null,
-    verdict: raw?.verdict ?? raw?.overallVerdict ?? 'Review',
+    score: effectiveScore as number | null,
+    verdict: effectiveVerdict,
     bottomLine: raw?.quickSummary ?? raw?.quick_summary ?? raw?.summary
       ?? MODULE_FALLBACKS.HERO_BOTTOM_LINE,
     nextBestMove: raw?.nextBestMove ?? raw?.next_step ?? MODULE_FALLBACKS.HERO_NEXT_BEST_MOVE_DEFAULT,
@@ -693,7 +855,7 @@ export function buildReportViewModel(result: any, listingInfo?: any): ReportView
       market: result?.meta?.market ?? 'US',
       reportMode: result?.meta?.reportMode ?? 'sale',
       sourceDomain: result?.meta?.sourceDomain,
-      isBasic: result?.meta?.isBasic ?? false,
+      isBasic,
       isNYC,
     },
     raw,

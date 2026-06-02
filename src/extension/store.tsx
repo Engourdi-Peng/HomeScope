@@ -52,24 +52,32 @@ function injectListingInfo(result: AnalysisResult, listingData: ListingData | Li
 
   // Title: prefer title, fallback to address
   if (isV2) {
-    listingInfo.title = (listingData as ListingDataV2).title || null;
-    listingInfo.address = (listingData as ListingDataV2).address || null;
-    listingInfo.price = (listingData as ListingDataV2).price || null;
-    listingInfo.priceAmount = (listingData as ListingDataV2).priceAmount || null;
-    listingInfo.bedrooms = (listingData as ListingDataV2).bedrooms || null;
-    listingInfo.bathrooms = (listingData as ListingDataV2).bathrooms || null;
-    listingInfo.parking = (listingData as ListingDataV2).parking || null;
+    const v2 = listingData as ListingDataV2;
+    listingInfo.title = v2.title || null;
+    listingInfo.address = v2.address || null;
+    listingInfo.price = v2.price || null;
+    listingInfo.priceAmount = v2.priceAmount || null;
+    listingInfo.bedrooms = v2.bedrooms || null;
+    listingInfo.bathrooms = v2.bathrooms || null;
+    listingInfo.parking = v2.parking || null;
     listingInfo.coverImageUrl = firstImageUrl;
+    // US Sale specific fields
+    listingInfo.sqft = (v2 as Record<string, unknown>).sqft ?? (v2 as Record<string, unknown>).floorArea ?? null;
+    listingInfo.propertyType = (v2 as Record<string, unknown>).propertyType ?? (v2 as Record<string, unknown>).homeType ?? null;
   } else {
     // V1 格式: content.js 返回的原始格式
     // { title, address, priceText, bedrooms, bathrooms, parking, imageUrls, ... }
-    listingInfo.title = (listingData as ListingData).title || null;
-    listingInfo.address = (listingData as ListingData).address || null;
-    listingInfo.price = (listingData as ListingData).priceText || (listingData as ListingData).price || null;
-    listingInfo.bedrooms = (listingData as ListingData).bedrooms ?? null;
-    listingInfo.bathrooms = (listingData as ListingData).bathrooms ?? null;
-    listingInfo.parking = (listingData as ListingData).parking ?? null;
+    const v1 = listingData as ListingData;
+    listingInfo.title = v1.title || null;
+    listingInfo.address = v1.address || null;
+    listingInfo.price = v1.priceText || v1.price || null;
+    listingInfo.bedrooms = v1.bedrooms ?? null;
+    listingInfo.bathrooms = v1.bathrooms ?? null;
+    listingInfo.parking = v1.parking ?? null;
     listingInfo.coverImageUrl = firstImageUrl;
+    // US Sale specific fields
+    listingInfo.sqft = (v1 as Record<string, unknown>).sqft ?? null;
+    listingInfo.propertyType = (v1 as Record<string, unknown>).propertyType ?? null;
   }
 
   // Remove null values
@@ -160,26 +168,16 @@ interface BasicSyncResult {
 function convertBasicToFullResult(basicResult: BasicSyncResult): AnalysisResult {
   // Check if this is the new backend format (has overallScore)
   if (basicResult.overallScore !== undefined) {
-    // New backend format - direct mapping
-    const verdictMap: Record<string, AnalysisResult['verdict']> = {
-      'Strong Buy': 'Worth Inspecting',
-      'Consider Carefully': 'Need More Evidence',
-      'Probably Skip': 'Likely Overpriced / Risky',
-    };
-
-    const priorityMap: Record<string, 'HIGH' | 'MEDIUM' | 'LOW'> = {
-      'Worth Inspecting': 'HIGH',
-      'Need More Evidence': 'MEDIUM',
-      'Probably Skip': 'LOW',
-    };
-
-    const verdict = verdictMap[basicResult.verdict || ''] || 'Need More Evidence';
+    // New backend format - verdict is already normalized by backend.
+    // Do NOT re-map it here — that would reintroduce inconsistencies.
+    // The backend enforces: score >= 80 -> Enough to Review, etc.
     const overallScore = basicResult.overallScore || 50;
+    const verdict = basicResult.verdict || 'Need More Evidence';
 
-    // Calculate priority based on score
+    // Calculate priority based on score (aligned with backend verdict thresholds)
     let priority: 'HIGH' | 'MEDIUM' | 'LOW' = 'MEDIUM';
-    if (overallScore >= 65) priority = 'HIGH';
-    else if (overallScore < 45) priority = 'LOW';
+    if (overallScore >= 80) priority = 'HIGH';
+    else if (overallScore < 40) priority = 'LOW';
 
     const result: AnalysisResult = {
       reportMode: basicResult.reportMode || 'rent',
@@ -215,6 +213,9 @@ function convertBasicToFullResult(basicResult: BasicSyncResult): AnalysisResult 
       'neighborhood_lifestyle', 'legal_compliance', 'environmental_risk',
       'data_gaps', 'questions_to_ask', 'recommendation', 'property_snapshot',
       'room_by_room',
+      // Basic-mode specific fields
+      'evidence_score', 'bottom_line', 'what_we_know', 'whats_missing',
+      'top_3_things_to_check', 'upsell_cta',
     ];
     for (const field of passthroughFields) {
       if (field in basicResult) {
@@ -1116,6 +1117,9 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
 
     try {
       noop('[ExtApp] startAnalysis called:', { bypassCache, analysisType });
+      noop('[Analysis] mode:', analysisType);
+      noop('[Analysis] requiresLogin:', analysisType === 'full');
+      noop('[Analysis] shouldProcessImages:', analysisType === 'full');
 
       // Prime the service worker before critical operation to prevent cold-start timeout.
       // Even if SW was terminated, this wakes it up before we start the async flow.
@@ -1186,7 +1190,13 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       if (hasImages || hasValidDesc) {
         noop('[ExtApp] Cache HIT - valid:', { images: cached.imageUrls?.length, descLen: cached.description?.length });
         dispatch({ type: 'SET_ANALYSIS_PHASE', phase: 'sending_data' });
-        await submitAnalysis(cached, analysisType);
+
+        // Basic: strip images from cached data (never re-extract gallery)
+        const dataToSubmit = analysisType === 'basic'
+          ? { ...cached, imageUrls: [] }
+          : cached;
+
+        await submitAnalysis(dataToSubmit, analysisType);
         return;
       }
 
@@ -1197,7 +1207,9 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     // Step 3: Ensure content script is loaded (reuse shared helper)
     await ensureContentScriptLoaded(tabId);
 
-    // Step 4: Send START_USER_EXTRACTION
+    // Step 4: Extract listing data
+    // Basic: skip START_USER_EXTRACTION (no gallery, no image collection)
+    // Full: extract images via gallery/PhotoSwipe
     dispatch({ type: 'SET_ANALYSIS_PHASE', phase: 'reading_page' });
 
     // Define the expected response structure from content script
@@ -1209,6 +1221,43 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       code?: string;
     };
 
+    // ── BASIC: lightweight text-only extraction ──────────────────────────────
+    if (analysisType === 'basic') {
+      noop('[ExtApp] startAnalysis: BASIC mode — skipping image extraction');
+
+      let extractResult: { success: boolean; data?: ContentScriptResponse; error?: string } | null = null;
+      try {
+        extractResult = await sendMessageWithTimeout<ContentScriptResponse>(
+          { action: 'EXTRACT_LISTING', includeGalleryImages: false },
+          tabId,
+          10000
+        );
+      } catch (err) {
+        noop('[ExtApp] startAnalysis: EXTRACT_LISTING threw:', err);
+      }
+
+      // Use whatever we got; fall back to empty data
+      const response = extractResult?.data;
+      const listingData: ListingData = {
+        description: response?.data?.description || '',
+        imageUrls: [],
+        title: response?.data?.title || '',
+        price: response?.data?.price || '',
+        address: response?.data?.address || '',
+        bedrooms: response?.data?.bedrooms,
+        bathrooms: response?.data?.bathrooms,
+        reportMode: response?.data?.reportMode || 'rent',
+        ...(response?.data && typeof response.data === 'object'
+          ? response.data
+          : {}),
+      };
+
+      dispatch({ type: 'SET_PROPERTY_STATUS', propertyStatus: 'detected', listingData, propertyDetection: response?.detection ?? null });
+      await submitAnalysis(listingData, 'basic');
+      return;
+    }
+
+    // ── FULL: extract images via gallery ────────────────────────────────────
     let extractResult: { success: boolean; data?: ContentScriptResponse; error?: string } | null = null;
     try {
       extractResult = await sendMessageWithTimeout<ContentScriptResponse>(

@@ -326,7 +326,15 @@ export interface BasicAnalysisRequest {
     bedrooms?: string | number;
     bathrooms?: string | number;
     parking?: string | number;
+    source?: string;
+    sourceDomain?: string;
+    market?: string;
+    listingUrl?: string;
   };
+  source?: string;
+  sourceDomain?: string;
+  market?: string;
+  listingUrl?: string;
 }
 
 /**
@@ -376,6 +384,10 @@ export async function analyzeBasicSync(data: BasicAnalysisRequest, sourceDomain?
       reportMode: data.reportMode,
       description: data.description,
       optionalDetails: data.optionalDetails,
+      source: data.source,
+      sourceDomain: data.sourceDomain,
+      market: data.market,
+      listingUrl: data.listingUrl,
     }),
   });
 

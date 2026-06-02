@@ -102,7 +102,11 @@ function buildQuickFacts(result: AURentResult): QuickFact[] {
   add('Baths', info.bathrooms ?? result.bathrooms);
   add('Parking', info.parking ?? result.parking);
   add('Rent/wk', info.weeklyRent ?? result.weeklyRent);
-  add('Type', info.propertyType ?? result.propertyType);
+  const auType = info.propertyType ?? result.propertyType ?? '';
+  const auTypeDisplay = auType && /legal|approved|compliant|certified/i.test(auType)
+    ? `${auType.trim()} (listing-stated)`
+    : auType;
+  add('Type', auTypeDisplay);
   const fair = result.rent_fairness ?? result.rentFairness ?? {};
   if (fair.estimated_min ?? fair.estimatedMin) add('Est. Rent Min', toText(fair.estimated_min ?? fair.estimatedMin));
   if (fair.estimated_max ?? fair.estimatedMax) add('Est. Rent Max', toText(fair.estimated_max ?? fair.estimatedMax));

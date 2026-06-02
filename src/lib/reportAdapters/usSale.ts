@@ -156,7 +156,11 @@ function buildQuickFacts(result: USSaleResult): QuickFact[] {
   add('Baths', snap.baths ?? snap.bathrooms);
   add('Sqft', snap.sqft);
   add('Built', snap.yearBuilt ?? snap.year_built);
-  add('Type', snap.homeType ?? snap.home_type);
+  const usHomeTypeRaw = snap.homeType ?? snap.home_type ?? '';
+  const usHomeTypeDisplay = usHomeTypeRaw && /legal|approved|compliant|certified/i.test(usHomeTypeRaw)
+    ? `${usHomeTypeRaw.trim()} (listing-stated)`
+    : usHomeTypeRaw;
+  add('Type', usHomeTypeDisplay);
   add('Lot', snap.lotSize ?? snap.lot_size);
   addMoney('Assessed', snap.tax_assessed_value_display ?? snap.taxAssessedValue ?? snap.tax_assessed_value);
   addTaxYr('Tax/yr', snap.annual_tax_display ?? snap.annualTax ?? snap.annual_tax);
@@ -194,7 +198,13 @@ function buildSections(result: USSaleResult): ReportSection[] {
   if (snap.baths ?? snap.bathrooms) snapItems.push({ title: 'Baths', value: toText(snap.baths ?? snap.bathrooms) });
   if (snap.sqft) snapItems.push({ title: 'Sqft', value: toText(snap.sqft) });
   if (snap.yearBuilt ?? snap.year_built) snapItems.push({ title: 'Year Built', value: toText(snap.yearBuilt ?? snap.year_built) });
-  if (snap.homeType ?? snap.home_type) snapItems.push({ title: 'Home Type', value: toText(snap.homeType ?? snap.home_type) });
+  if (snap.homeType ?? snap.home_type) {
+    const snapHomeTypeRaw = snap.homeType ?? snap.home_type;
+    const snapHomeTypeDisplay = /legal|approved|compliant|certified/i.test(snapHomeTypeRaw)
+      ? `${snapHomeTypeRaw.trim()} (listing-stated, not independently verified)`
+      : snapHomeTypeRaw;
+    snapItems.push({ title: 'Home Type', value: toText(snapHomeTypeDisplay) });
+  }
   if (snap.roof) snapItems.push({ title: 'Roof', value: toText(snap.roof) });
   if (snap.lotSize ?? snap.lot_size) snapItems.push({ title: 'Lot Size', value: toText(snap.lotSize ?? snap.lot_size) });
   if (snap.taxAssessedValue ?? snap.tax_assessed_value) snapItems.push({ title: 'Tax Assessed Value', value: fmtMoney(snap.taxAssessedValue ?? snap.tax_assessed_value) });

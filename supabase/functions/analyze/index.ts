@@ -2727,7 +2727,6 @@ STRUCTURAL FLAGS (Orange - Medium):
 - "structural" / "structural works" → "Check nature and cost of structural work"
 
 FINANCIAL FLAGS (Yellow - Watch):
-- "body corporate" / "strata" → "High fees impact yield — get exact figure"
 - "vacant possession" → "No rental history to verify yield"
 - "sold before" / "passed in" → "May indicate overpricing or condition issues"
 - "motivated seller" / "must sell" → "Could be negotiation opportunity"
@@ -3427,6 +3426,317 @@ async function runRealityCheck(
     console.error("[RealityCheck] Error:", err);
     return { should_display: false };
   }
+}
+
+// ========== Basic Report Cleanup Helpers ==========
+
+/**
+ * normalizeBasicChecks — backend enforcement for top_3_things_to_check
+ * Rules:
+ * - Strip "without X" for already-known fields (sqft/beds/baths/property type/price)
+ * - Full rewrite if still mentions known fields after stripping
+ */
+function normalizeBasicChecks(result: any): any {
+  const wwKnow = result.what_we_know ?? {};
+  const missing = result.whats_missing ?? [];
+
+  const hasSqft = !!(wwKnow.sqft);
+  const hasBeds = !!(wwKnow.beds || wwKnow.bedrooms);
+  const hasBaths = !!(wwKnow.baths || wwKnow.bathrooms);
+  const hasPropertyType = !!(wwKnow.property_type || wwKnow.propertyType);
+  const hasPrice = !!(wwKnow.asking_price || wwKnow.askingPrice || wwKnow.price);
+
+  const missingLabels = (missing as any[]).map((m: any) => {
+    const label = typeof m === 'string' ? m : (m.label ?? '');
+    return label.toLowerCase();
+  });
+  const missingFieldMap: Record<string, string> = {
+    'property type': 'property type and zoning',
+    'legal use': 'legal use and Certificate of Occupancy',
+    'legal': 'legal status and permits',
+    'coc': 'Certificate of Occupancy',
+    'certificate of occupancy': 'Certificate of Occupancy',
+    'taxes': 'annual tax amount and insurance',
+    'insurance': 'insurance estimates',
+    'hoa': 'HOA fees and restrictions',
+    'council': 'council rates',
+    'comparables': 'comparable sales or rent data',
+    'comps': 'comparable sales or rent data',
+    'condition': 'interior condition and visible quality',
+    'photos': 'listing photos and condition evidence',
+    'maintenance': 'maintenance history and system age',
+    'carrying cost': 'carrying costs and holding expenses',
+    'sqft': 'square footage and lot size',
+    'square footage': 'square footage and lot size',
+  };
+  const dynamicMissingText = () => {
+    const parts = missingLabels
+      .filter(l => l.length > 2)
+      .map(l => missingFieldMap[l] ?? l)
+      .filter((v, i, a) => a.indexOf(v) === i)
+      .slice(0, 4);
+    return parts.length > 0 ? parts.join(', ') : 'property type, legal use, costs, and comparable context';
+  };
+
+  const topChecks = (result.top_3_things_to_check ?? []).map((check: any) => {
+    const rawTitle = typeof check === 'string' ? check : (check.title ?? '');
+    const rawExplanation = typeof check === 'string' ? '' : (check.explanation ?? '');
+
+    // Strip "without X" patterns from title and explanation independently.
+    // Use combined for the "still mentions known without" check.
+    let cleanedTitle = rawTitle;
+    let cleanedExplanation = rawExplanation;
+
+    if (hasSqft) {
+      const sqftPattern = /without\s+(sqft|square\s*footage|square\s*feet|interior\s*(size|area)?)\s*,?\s*/gi;
+      cleanedTitle = cleanedTitle.replace(sqftPattern, '');
+      cleanedExplanation = cleanedExplanation.replace(sqftPattern, '');
+    }
+    if (hasBeds) {
+      cleanedTitle = cleanedTitle.replace(/without\s+(beds?|bedrooms?)\s*,?\s*/gi, '');
+      cleanedExplanation = cleanedExplanation.replace(/without\s+(beds?|bedrooms?)\s*,?\s*/gi, '');
+    }
+    if (hasBaths) {
+      cleanedTitle = cleanedTitle.replace(/without\s+(baths?|bathrooms?)\s*,?\s*/gi, '');
+      cleanedExplanation = cleanedExplanation.replace(/without\s+(baths?|bathrooms?)\s*,?\s*/gi, '');
+    }
+    if (hasPropertyType) {
+      cleanedTitle = cleanedTitle.replace(/without\s+(property\s*type|home\s*type|building\s*type)\s*,?\s*/gi, '');
+      cleanedExplanation = cleanedExplanation.replace(/without\s+(property\s*type|home\s*type|building\s*type)\s*,?\s*/gi, '');
+    }
+    if (hasPrice) {
+      cleanedTitle = cleanedTitle.replace(/without\s+(asking\s*price|listing\s*price)\s*,?\s*/gi, '');
+      cleanedExplanation = cleanedExplanation.replace(/without\s+(asking\s*price|listing\s*price)\s*,?\s*/gi, '');
+    }
+
+    // Build combined for the "still mentions known without" check only
+    let combined = (cleanedTitle + ' ' + cleanedExplanation)
+      .replace(/\bwithout\s*,?\s*and\b/gi, 'without')
+      .replace(/,\s*and\s+/gi, ' and ')
+      .replace(/,\s*,/g, ',')
+      .replace(/^\s*,\s*/, '').replace(/\s*,\s*$/, '').trim();
+
+    const stillMentionsKnownWithout =
+      hasSqft && /without\s+(sqft|square\s*footage|square\s*feet|interior)/i.test(combined) ||
+      hasBeds && /without\s+(beds?|bedrooms?)/i.test(combined) ||
+      hasBaths && /without\s+(baths?|bathrooms?)/i.test(combined) ||
+      hasPropertyType && /without\s+(property\s*type|home\s*type|building\s*type)/i.test(combined) ||
+      hasPrice && /without\s+(asking\s*price|listing\s*price)/i.test(combined);
+
+    if (stillMentionsKnownWithout || !combined.trim()) {
+      const missingItems = (missing as any[]).map((m: any) => {
+        const label = typeof m === 'string' ? m : (m.label ?? '');
+        return label.toLowerCase();
+      }).filter((l: string) => l.length > 2);
+      const hasLegalGap = missingItems.some((l: string) => /legal|coc|certificate|zoning|permit/i.test(l));
+      const hasCostGap = missingItems.some((l: string) => /cost|tax|insurance|hoa|council/i.test(l));
+      const hasCompGap = missingItems.some((l: string) => /comp|comparab|market/i.test(l));
+
+      let rewrittenTitle = 'Verify unverified claims and missing decision-critical information';
+      const missingParts: string[] = [];
+      if (!hasSqft) missingParts.push('interior size');
+      if (!hasBeds && !hasBaths) missingParts.push('bed and bath count');
+      if (!hasPropertyType) missingParts.push('property type and zoning');
+      if (!hasPrice) missingParts.push('asking price context');
+      if (hasLegalGap) missingParts.push('legal use and permits');
+      if (hasCostGap) missingParts.push('carrying costs and tax amount');
+      if (hasCompGap) missingParts.push('comparable sales or market data');
+      else if (missingParts.length === 0) missingParts.push('public records and documentation');
+
+      let rewrittenExplanation = '';
+      if (hasLegalGap) {
+        rewrittenExplanation = `Confirm legal use, zoning, and permits through the Certificate of Occupancy and title documents. Also verify: ${missingParts.join(', ')}.`;
+      } else if (hasCostGap) {
+        rewrittenExplanation = `Confirm carrying costs (taxes, insurance, HOA) and ownership expenses. Also verify: ${missingParts.join(', ')}.`;
+      } else if (hasCompGap) {
+        rewrittenExplanation = `Confirm the asking price against comparable sales or rent data and recent market activity. Also verify: ${missingParts.join(', ')}.`;
+      } else {
+        rewrittenExplanation = `Confirm listed facts against public records and title documents. Key areas not yet verified: ${missingParts.join(', ')}.`;
+      }
+
+      return { title: rewrittenTitle, explanation: rewrittenExplanation };
+    }
+
+    // Extract first sentence from cleaned title only (don't concatenate explanation).
+    const dotIdx = cleanedTitle.indexOf('. ');
+    const firstSentence = dotIdx > 0 ? cleanedTitle.substring(0, dotIdx + 1) : cleanedTitle.trim();
+    const titleText = firstSentence.length > 80
+      ? firstSentence.substring(0, 80).replace(/\s+\S*$/, '') + '...'
+      : firstSentence;
+
+    // Use the cleaned explanation as-is; only derive if truly empty.
+    let explanationText = cleanedExplanation.trim() || (dotIdx > 0 ? cleanedTitle.substring(dotIdx + 1).trim() : '');
+
+    // ── Legal Use CO enhancement: US market ─────────────────────────────────────
+    // If the check title mentions legal/zoning/2-family but doesn't mention CO,
+    // enhance the explanation to explicitly reference Certificate of Occupancy.
+    const isLegalCheck = /legal|2-family|multi-family|zoning|certificate|occupancy/i.test(titleText + ' ' + explanationText);
+    const alreadyHasCO = /certificate of occupancy|co\b/i.test(explanationText);
+    const alreadyHasCOInTitle = /certificate of occupancy|co\b/i.test(titleText);
+    if (isLegalCheck && !alreadyHasCO && !alreadyHasCOInTitle) {
+      const isUSMarket = (result.market === 'US' || result.market === 'UNKNOWN');
+      if (isUSMarket) {
+        explanationText = explanationText
+          ? `Confirm the listed use through the Certificate of Occupancy and public records. ${explanationText}`
+          : 'Confirm the listed use through the Certificate of Occupancy and public records.';
+      } else {
+        explanationText = explanationText
+          ? `Confirm the approved use and planning details through official records. ${explanationText}`
+          : 'Confirm the approved use and planning details through official records.';
+      }
+    }
+
+    return { title: titleText, explanation: explanationText };
+  });
+
+  result.top_3_things_to_check = topChecks.slice(0, 3);
+  return result;
+}
+
+/**
+ * normalizeBasicQuestions — backend enforcement for questions_to_ask
+ * Rules:
+ * - If Zillow monthly payment exists, replace cost questions with confirm-Zillow format
+ * - Known fields (sqft/beds/baths/type/price) -> "confirm against records"
+ * - Unknown fields -> "can you provide"
+ * - If questions_to_ask is empty, generate dynamic fallback based on what_we_know
+ * - Fallback questions max 5
+ */
+function normalizeBasicQuestions(result: any, hasZillowMonthly: boolean): any {
+  const wwKnow = result.what_we_know ?? {};
+  const hasSqft = !!(wwKnow.sqft);
+  const hasBeds = !!(wwKnow.beds || wwKnow.bedrooms);
+  const hasBaths = !!(wwKnow.baths || wwKnow.bathrooms);
+  const hasPropertyType = !!(wwKnow.property_type || wwKnow.propertyType);
+  const hasPrice = !!(wwKnow.asking_price || wwKnow.askingPrice || wwKnow.price);
+  const hasTaxInfo = !!(wwKnow.taxes || wwKnow.annual_tax);
+  const hasHOA = !!(wwKnow.hoa || wwKnow.hoa_fees);
+
+  // Determine gaps from what_we_know presence
+  const hasLegalGap = !hasPropertyType;
+  const hasCostGap = !hasTaxInfo && !hasHOA;
+  const hasCompGap = true; // Basic mode cannot verify comparables
+  const hasConditionGap = true; // Basic mode cannot verify condition
+
+  // Transform existing questions
+  const transformed = (result.questions_to_ask ?? []).map((q: any) => {
+    const questionText = typeof q === 'string' ? q : (q.question ?? '');
+    const rawCategory = typeof q === 'string' ? 'General' : q.category;
+    const category = (rawCategory && rawCategory.trim()) ? rawCategory.trim() : 'General';
+
+    // If this is a cost question and Zillow monthly payment exists, replace it
+    if (hasZillowMonthly && /cost|tax|insurance|hoa|fee|afford|monthly\s+payment/i.test(questionText)) {
+      return {
+        category: 'Costs',
+        question: 'Can you confirm whether Zillow\'s estimated taxes, insurance, HOA fees, and monthly payment are accurate for this property?',
+      };
+    }
+
+    const askingForKnownAsMissing =
+      /can you (provide|tell me|give me|share|confirm|find out)\s+(the\s+)?(beds?|baths?|sqft|square\s*footage|square\s*feet|interior\s*size|property\s*type|home\s*type|asking\s*price|listing\s*price|number\s+of\s+beds)/i.test(questionText) ||
+      /could you (provide|tell|give|confirm)\s+(the\s+)?(beds?|baths?|sqft|square\s*footage|square\s*feet|interior|property\s*type|home\s*type|asking\s*price|listing\s*price)/i.test(questionText) ||
+      /what (is|are)\s+(the\s+)?(beds?|baths?|sqft|square\s*footage|square\s*feet|interior\s*size|property\s*type|asking\s*price)/i.test(questionText) ||
+      /please (provide|confirm|tell|give)\s+(the\s+)?(beds?|baths?|sqft|square\s*footage|square\s*feet|interior|property\s*type|asking\s*price)/i.test(questionText) ||
+      /\bbeds?\b.*\?\s*$|\bbaths?\b.*\?\s*$/i.test(questionText) ||
+      /how many (beds?|baths?)\b/i.test(questionText) ||
+      /(beds?|baths?|sqft|square\s*footage|property\s*type|home\s*type)\s+are\s+(listed|confirmed|disclosed|available)/i.test(questionText);
+
+    const alreadyVerification = /verify|confirm.*records?|public.*records?|certificate|coc|title\s+documents?|official\s+records?/i.test(questionText);
+
+    if (!askingForKnownAsMissing || alreadyVerification) return q;
+
+    const knownParts: string[] = [];
+    if (hasPropertyType) knownParts.push('property type');
+    if (hasBeds) knownParts.push('beds');
+    if (hasBaths) knownParts.push('baths');
+    if (hasSqft) knownParts.push('square footage');
+
+    if (knownParts.length === 0) {
+      return {
+        category: 'Listing Facts',
+        question: 'Can you provide the property type, beds, baths, and interior square footage?',
+      };
+    }
+
+    let questionSuffix = '';
+    if (hasLegalGap) {
+      questionSuffix = ' and provide the Certificate of Occupancy and title documents to verify legal use and zoning';
+    } else if (hasCostGap) {
+      questionSuffix = hasZillowMonthly
+        ? ' and confirm whether Zillow\'s estimated taxes, insurance, and HOA fees are accurate'
+        : ' and confirm annual tax amount, insurance, and any HOA fees';
+    } else if (hasCompGap) {
+      questionSuffix = ' and confirm the asking price against comparable sales or rent data';
+    } else if (hasConditionGap) {
+      questionSuffix = ' and confirm the property condition and any disclosed issues';
+    }
+
+    return {
+      category: 'Public Records',
+      question: `Can you confirm whether the ${knownParts.join(', ')} match public records${questionSuffix}?`,
+    };
+  });
+
+  // If no questions exist, generate dynamic fallback based on what_we_know
+  if (transformed.length === 0) {
+    const fallbackQuestions: any[] = [];
+
+    // Question 1: Property details — known fields verify, unknown fields provide
+    const fallbackKnownParts: string[] = [];
+    if (hasPropertyType) fallbackKnownParts.push('property type');
+    if (hasBeds) fallbackKnownParts.push('beds');
+    if (hasBaths) fallbackKnownParts.push('baths');
+    if (hasSqft) fallbackKnownParts.push('square footage');
+
+    if (fallbackKnownParts.length > 0) {
+      fallbackQuestions.push({
+        category: 'Public Records',
+        question: `Can you confirm whether the ${fallbackKnownParts.join(', ')} match public records and the Certificate of Occupancy?`,
+      });
+    } else {
+      fallbackQuestions.push({
+        category: 'Listing Facts',
+        question: 'Can you provide the property type, beds, baths, and interior square footage?',
+      });
+    }
+
+    // Question 2: COC / legal use
+    fallbackQuestions.push({
+      category: 'Legal',
+      question: 'Can you provide the Certificate of Occupancy or legal-use documents for this property?',
+    });
+
+    // Question 3: Costs — vary by Zillow availability
+    if (hasZillowMonthly) {
+      fallbackQuestions.push({
+        category: 'Costs',
+        question: 'Can you confirm whether Zillow\'s estimated taxes, insurance, HOA fees, and monthly payment are accurate for this property?',
+      });
+    } else {
+      fallbackQuestions.push({
+        category: 'Costs',
+        question: 'What are the estimated annual property taxes, insurance, and any HOA fees?',
+      });
+    }
+
+    // Question 4: Open violations
+    fallbackQuestions.push({
+      category: 'Legal',
+      question: 'Are there any open DOB, HPD, or building department violations, permits, or unresolved issues?',
+    });
+
+    // Question 5: Comparables
+    fallbackQuestions.push({
+      category: 'Price',
+      question: 'Can you provide recent comparable sales or active listings to support the asking price?',
+    });
+
+    result.questions_to_ask = fallbackQuestions;
+    return result;
+  }
+
+  result.questions_to_ask = transformed.slice(0, 5);
+  return result;
 }
 
 // ========== Helper Functions ==========
@@ -4995,16 +5305,181 @@ Deno.serve(async (req) => {
       : (reportMode === 'sale' ? 'basic-us-sale (UNKNOWN→US fallback)' : 'basic-us-rent (UNKNOWN→US fallback)');
 
     const systemPrompt = detectedMarket === 'US' || detectedMarket === 'UNKNOWN'
-      ? `You are a US real estate analyst. Analyze the property listing and provide a basic assessment.`
-      : `You are an Australian property analyst. Analyze the listing and provide a basic assessment.`;
+      ? `You are generating a BASIC / FREE property check, not a full property analysis.
+
+The purpose: tell the user what the listing says, what is still unverified, and what to ask before booking a viewing.
+
+--- CORE RESTRICTIONS ---
+- Do NOT analyse photos. Basic report has no photos.
+- Do NOT generate Agent Spin Decoder.
+- Do NOT generate full carrying cost analysis.
+- Do NOT generate detailed maintenance / legal / environmental risk cards.
+- Do NOT produce a full buyer recommendation.
+- Do NOT infer: legal status, rental income, property type, beds, baths, sqft, renovation costs, or market time — unless explicitly stated in the listing text.
+- Do NOT use these phrases unless listing explicitly provides supporting facts:
+  * "legal 2-family", "legal multi-family", "approved use", "compliant"
+  * "good potential", "strong rental setup", "investment-ready"
+  * "requires renovations", "needs work", "renovation potential"
+  * "good condition", "poor condition", "move-in ready"
+  * "fair price", "overpriced", "bargain", "good value"
+  * "income-producing", "investment-grade"
+--- END RESTRICTIONS ---
+
+--- LEGAL USE RULES ---
+If the listing mentions rental, multi-family, or second-unit use without a Certificate of Occupancy:
+- NEVER say the property IS "legal 2-family", "legal multi-family", or "compliant"
+- Use CAUTIOUS language only: "the listing suggests", "appears to be", "may indicate"
+- Recommend verification through Certificate of Occupancy and public records.
+--- END LEGAL USE RULES ---
+
+--- BOTTOM LINE RULES ---
+Write ONE sentence that is specific and grounded in the actual data present vs. missing.
+Follow this template structure:
+"This listing provides useful basic facts, including [known facts], but [missing categories] still need verification before relying on this property."
+Only mention categories that are genuinely missing from the listing data.
+If key fields are heavily missing, say: "This listing does not provide enough verified information to judge the deal confidently. Key basics such as [list] are missing or unclear."
+--- END BOTTOM LINE RULES ---
+
+--- LISTING CLAIMS RULES ---
+Only flag claims that appear EXPLICITLY in the listing text.
+Only flag claims in one of these categories (max 3 total):
+- LEGAL 2-FAMILY / rental setup — flag if listing says "legal 2-family", "two-family", "multi-family", "rental-approved", "income opportunity"
+- CONDITION — flag if listing says "TLC", "needs work", "needs updating", "needs renovation", "as-is", "vacant", "sold as-is", "probate"
+- PRICE MOTIVATION — flag if listing says "price reduced", "motivated seller", "price drop"
+For each claim: give the phrase, a HomeScope check, and one "ask before viewing" question.
+If no clear listing-language claims exist, set listing_claims to empty array.
+--- END LISTING CLAIMS RULES ---
+
+--- QUESTIONS RULES ---
+Generate up to 5 questions to ask before booking a viewing.
+Questions must cover genuine gaps in the listing — NOT restate confirmed facts.
+Rules:
+- If beds/baths/sqft/price are confirmed, frame questions as "confirm accuracy" not "can you provide X"
+- If rental or multi-family is mentioned, ask about Certificate of Occupancy
+- Ask about: legal use, costs (taxes/insurance/HOA/utilities), condition/repairs, comparable sales or rental history, open permits/violations/title issues
+- If Zillow monthly payment data exists in the listing text, ask to confirm those cost estimates
+- Max 5 questions. Each must be a real question (start with Can/Is/Are/What/How/Why).
+--- END QUESTIONS RULES ---
+
+--- CTA RULES ---
+Use exactly this upsell_cta:
+- title: "Unlock Full Analysis"
+- body: "Basic shows what the listing says and what still needs verification. Full Analysis goes deeper into photos, price confidence, legal and maintenance risks, carrying-cost assumptions, and whether this property is actually worth viewing."
+- button: "Unlock Full Analysis"
+--- END CTA RULES ---
+
+Tone: Clear, Practical, Conservative, No overclaiming, No hallucinated facts.
+Do not pretend the report has enough data for a full decision.`
+      : `You are generating a BASIC / FREE property check, not a full property analysis.
+
+The purpose: tell the user what the listing says, what is still unverified, and what to ask before booking a viewing.
+
+--- CORE RESTRICTIONS ---
+- Do NOT analyse photos. Basic report has no photos.
+- Do NOT generate Agent Spin Decoder.
+- Do NOT generate full carrying cost analysis.
+- Do NOT generate detailed maintenance / legal / environmental risk cards.
+- Do NOT produce a full buyer recommendation.
+- Do NOT infer: legal status, rental income, property type, beds, baths, sqft, renovation costs, or market time — unless explicitly stated in the listing text.
+- Do NOT use these phrases unless listing explicitly provides supporting facts:
+  * "legal setup", "approved use", "compliant"
+  * "good potential", "strong rental yield", "investment-ready"
+  * "requires renovations", "needs work", "renovation potential"
+  * "good condition", "poor condition", "move-in ready"
+  * "fair price", "overpriced", "bargain", "good value"
+--- END RESTRICTIONS ---
+
+--- LEGAL USE RULES ---
+If the listing mentions rental or multi-unit use without documentation:
+- Use CAUTIOUS language only: "the listing suggests", "appears to be", "may indicate"
+- Recommend verification through documentation and public records.
+--- END LEGAL USE RULES ---
+
+--- BOTTOM LINE RULES ---
+Write ONE sentence that is specific and grounded in the actual data present vs. missing.
+Follow this template structure:
+"This listing provides useful basic facts, including [known facts], but [missing categories] still need verification before relying on this property."
+Only mention categories that are genuinely missing from the listing data.
+If key fields are heavily missing, say: "This listing does not provide enough verified information to judge the deal confidently. Key basics such as [list] are missing or unclear."
+--- END BOTTOM LINE RULES ---
+
+--- LISTING CLAIMS RULES ---
+Only flag claims that appear EXPLICITLY in the listing text.
+Only flag claims in one of these categories (max 3 total):
+- LEGAL 2-FAMILY / rental setup — flag if listing says "legal 2-family", "two-family", "multi-family", "rental-approved", "income opportunity"
+- CONDITION — flag if listing says "TLC", "needs work", "needs updating", "needs renovation", "as-is", "vacant", "sold as-is", "probate"
+- PRICE MOTIVATION — flag if listing says "price reduced", "motivated seller", "price drop"
+For each claim: give the phrase, a HomeScope check, and one "ask before viewing" question.
+If no clear listing-language claims exist, set listing_claims to empty array.
+--- END LISTING CLAIMS RULES ---
+
+--- QUESTIONS RULES ---
+Generate up to 5 questions to ask before booking a viewing.
+Questions must cover genuine gaps in the listing — NOT restate confirmed facts.
+Rules:
+- If beds/baths/sqft/price are confirmed, frame questions as "confirm accuracy" not "can you provide X"
+- If rental or multi-family is mentioned, ask about Certificate of Occupancy / legal use
+- Ask about: legal use, costs (council rates/insurance/strata/utilities), condition/repairs, comparable sales or rental history, open permits/violations/title issues
+- Max 5 questions. Each must be a real question (start with Can/Is/Are/What/How/Why).
+--- END QUESTIONS RULES ---
+
+--- CTA RULES ---
+Use exactly this upsell_cta:
+- title: "Unlock Full Analysis"
+- body: "Basic shows what the listing says and what still needs verification. Full Analysis goes deeper into photos, price confidence, legal and maintenance risks, carrying-cost assumptions, and whether this property is actually worth viewing."
+- button: "Unlock Full Analysis"
+--- END CTA RULES ---
+
+Tone: Clear, Practical, Conservative, No overclaiming, No hallucinated facts.
+Do not pretend the report has enough data for a full decision.`;
 
     const userPrompt = reportMode === 'rent'
       ? (detectedMarket === 'US' || detectedMarket === 'UNKNOWN'
-          ? `Analyze this rental property listing. Provide a basic score (0-100) and key insights.\n\nListing:\n${description}\n\n${optionalDetails.weeklyRent ? `Weekly Rent: ${optionalDetails.weeklyRent}\n` : ''}${optionalDetails.suburb ? `Location: ${optionalDetails.suburb}\n` : ''}${optionalDetails.bedrooms ? `Bedrooms: ${optionalDetails.bedrooms}\n` : ''}${optionalDetails.bathrooms ? `Bathrooms: ${optionalDetails.bathrooms}\n` : ''}\n\nReturn JSON with: { score: number (0-100), verdict: "Strong Buy" | "Consider Carefully" | "Probably Skip", quickSummary: string, whatLooksGood: string[], riskSignals: string[] }`
-          : `Analyze this rental property listing. Provide a basic score (0-100) and key insights in Australian English.\n\nListing:\n${description}\n\n${optionalDetails.weeklyRent ? `Weekly Rent: ${optionalDetails.weeklyRent}\n` : ''}${optionalDetails.suburb ? `Location: ${optionalDetails.suburb}\n` : ''}${optionalDetails.bedrooms ? `Bedrooms: ${optionalDetails.bedrooms}\n` : ''}${optionalDetails.bathrooms ? `Bathrooms: ${optionalDetails.bathrooms}\n` : ''}\n\nReturn JSON with: { score: number (0-100), verdict: "Strong Buy" | "Consider Carefully" | "Probably Skip", quickSummary: string, whatLooksGood: string[], riskSignals: string[] }`)
+          ? `Analyze this rental property listing. Return JSON with ONLY these fields (remove all others):
+{
+  "bottom_line": "one specific sentence about what this listing shows and what still needs verification",
+  "listing_claims": [{ "phrase": "exact listing text", "check": "what HomeScope can or cannot verify", "ask": "one question to ask before viewing" }],
+  "questions_to_ask": [{ "category": "Legal" | "Costs" | "Condition" | "Price" | "General", "question": "specific question text" }],
+  "upsell_cta": { "title": "Unlock Full Analysis", "body": "Basic shows what the listing says and what still needs verification. Full Analysis goes deeper into photos, price confidence, legal and maintenance risks, carrying-cost assumptions, and whether this property is actually worth viewing.", "button": "Unlock Full Analysis" }
+}
+
+Only output the JSON. No other text.
+Listing: ${description}
+${optionalDetails.weeklyRent ? `Weekly Rent: ${optionalDetails.weeklyRent}\n` : ''}${optionalDetails.suburb ? `Location: ${optionalDetails.suburb}\n` : ''}${optionalDetails.bedrooms ? `Bedrooms: ${optionalDetails.bedrooms}\n` : ''}${optionalDetails.bathrooms ? `Bathrooms: ${optionalDetails.bathrooms}\n` : ''}`
+          : `Analyze this rental property listing. Return JSON with ONLY these fields (remove all others):
+{
+  "bottom_line": "one specific sentence about what this listing shows and what still needs verification",
+  "listing_claims": [{ "phrase": "exact listing text", "check": "what HomeScope can or cannot verify", "ask": "one question to ask before viewing" }],
+  "questions_to_ask": [{ "category": "Legal" | "Costs" | "Condition" | "Price" | "General", "question": "specific question text" }],
+  "upsell_cta": { "title": "Unlock Full Analysis", "body": "Basic shows what the listing says and what still needs verification. Full Analysis goes deeper into photos, price confidence, legal and maintenance risks, carrying-cost assumptions, and whether this property is actually worth viewing.", "button": "Unlock Full Analysis" }
+}
+
+Only output the JSON. No other text.
+Listing: ${description}
+${optionalDetails.weeklyRent ? `Weekly Rent: ${optionalDetails.weeklyRent}\n` : ''}${optionalDetails.suburb ? `Location: ${optionalDetails.suburb}\n` : ''}${optionalDetails.bedrooms ? `Bedrooms: ${optionalDetails.bedrooms}\n` : ''}${optionalDetails.bathrooms ? `Bathrooms: ${optionalDetails.bathrooms}\n` : ''}`)
       : (detectedMarket === 'US' || detectedMarket === 'UNKNOWN'
-          ? `Analyze this property for sale. Provide a basic score (0-100) and key insights.\n\nListing:\n${description}\n\n${optionalDetails.askingPrice ? `Asking Price: ${optionalDetails.askingPrice}\n` : ''}${optionalDetails.suburb ? `Location: ${optionalDetails.suburb}\n` : ''}${optionalDetails.bedrooms ? `Bedrooms: ${optionalDetails.bedrooms}\n` : ''}${optionalDetails.bathrooms ? `Bathrooms: ${optionalDetails.bathrooms}\n` : ''}\n\nReturn JSON with: { score: number (0-100), verdict: "Strong Buy" | "Consider Carefully" | "Probably Skip", quickSummary: string, whatLooksGood: string[], riskSignals: string[] }`
-          : `Analyze this property for sale. Provide a basic score (0-100) and key insights in Australian English.\n\nListing:\n${description}\n\n${optionalDetails.askingPrice ? `Asking Price: ${optionalDetails.askingPrice}\n` : ''}${optionalDetails.suburb ? `Location: ${optionalDetails.suburb}\n` : ''}${optionalDetails.bedrooms ? `Bedrooms: ${optionalDetails.bedrooms}\n` : ''}${optionalDetails.bathrooms ? `Bathrooms: ${optionalDetails.bathrooms}\n` : ''}\n\nReturn JSON with: { score: number (0-100), verdict: "Strong Buy" | "Consider Carefully" | "Probably Skip", quickSummary: string, whatLooksGood: string[], riskSignals: string[] }`);
+          ? `Analyze this property for sale. Return JSON with ONLY these fields (remove all others):
+{
+  "bottom_line": "one specific sentence about what this listing shows and what still needs verification",
+  "listing_claims": [{ "phrase": "exact listing text", "check": "what HomeScope can or cannot verify", "ask": "one question to ask before viewing" }],
+  "questions_to_ask": [{ "category": "Legal" | "Costs" | "Condition" | "Price" | "General", "question": "specific question text" }],
+  "upsell_cta": { "title": "Unlock Full Analysis", "body": "Basic shows what the listing says and what still needs verification. Full Analysis goes deeper into photos, price confidence, legal and maintenance risks, carrying-cost assumptions, and whether this property is actually worth viewing.", "button": "Unlock Full Analysis" }
+}
+
+Only output the JSON. No other text.
+Listing: ${description}
+${optionalDetails.askingPrice ? `Asking Price: ${optionalDetails.askingPrice}\n` : ''}${optionalDetails.suburb ? `Location: ${optionalDetails.suburb}\n` : ''}${optionalDetails.bedrooms ? `Bedrooms: ${optionalDetails.bedrooms}\n` : ''}${optionalDetails.bathrooms ? `Bathrooms: ${optionalDetails.bathrooms}\n` : ''}`
+          : `Analyze this property for sale. Return JSON with ONLY these fields (remove all others):
+{
+  "bottom_line": "one specific sentence about what this listing shows and what still needs verification",
+  "listing_claims": [{ "phrase": "exact listing text", "check": "what HomeScope can or cannot verify", "ask": "one question to ask before viewing" }],
+  "questions_to_ask": [{ "category": "Legal" | "Costs" | "Condition" | "Price" | "General", "question": "specific question text" }],
+  "upsell_cta": { "title": "Unlock Full Analysis", "body": "Basic shows what the listing says and what still needs verification. Full Analysis goes deeper into photos, price confidence, legal and maintenance risks, carrying-cost assumptions, and whether this property is actually worth viewing.", "button": "Unlock Full Analysis" }
+}
+
+Only output the JSON. No other text.
+Listing: ${description}
+${optionalDetails.askingPrice ? `Asking Price: ${optionalDetails.askingPrice}\n` : ''}${optionalDetails.suburb ? `Location: ${optionalDetails.suburb}\n` : ''}${optionalDetails.bedrooms ? `Bedrooms: ${optionalDetails.bedrooms}\n` : ''}${optionalDetails.bathrooms ? `Bathrooms: ${optionalDetails.bathrooms}\n` : ''}`);
 
     console.log("[DIAG] market routing — basic-sync:", {
       action: "basic-sync",
@@ -5055,13 +5530,13 @@ Deno.serve(async (req) => {
           "X-Title": "HomeScope Basic Analysis",
         },
         body: JSON.stringify({
-          model: "openai/gpt-4.1-mini",
+          model: "openai/gpt-4o-mini",
           messages: [
             { role: "system", content: systemPrompt },
             { role: "user", content: userPrompt }
           ],
-          temperature: 0.3,
-          max_tokens: 1500,
+          temperature: 0.1,
+          max_tokens: 1000,
         }),
       });
 
@@ -5081,46 +5556,182 @@ Deno.serve(async (req) => {
         const jsonMatch = content.match(/```(?:json)?\s*([\s\S]*?)```/) || content.match(/(\{[\s\S]*\})/);
         const jsonStr = jsonMatch ? jsonMatch[1] : content;
         result = JSON.parse(jsonStr);
+
+        // Backward compatibility: map old schema fields
+        if (result.score !== undefined && result.overallScore === undefined) {
+          result.overallScore = result.score;
+        }
+        if (result.quickSummary !== undefined && result.bottom_line === undefined) {
+          result.bottom_line = result.quickSummary;
+        }
+        if (result.verdict && !result.evidence_score) {
+          const verdictScoreMap: Record<string, number> = {
+            'Strong Buy': 75, 'Consider Carefully': 45, 'Probably Skip': 25,
+          };
+          result.evidence_score = verdictScoreMap[result.verdict] ?? result.overallScore ?? 50;
+        }
       } catch (parseErr) {
         console.error("Failed to parse AI response:", parseErr);
-        // Return a default result structure
         result = {
-          score: 50,
-          verdict: "Consider Carefully",
-          quickSummary: "Unable to fully analyze listing.",
+          // These will be filled in by backend enforcement below
+          bottom_line: "Unable to fully analyse listing from available data.",
+          listing_claims: [],
+          questions_to_ask: [],
+          upsell_cta: {
+            title: "Unlock Full Analysis",
+            body: "Basic shows what the listing says and what still needs verification. Full Analysis goes deeper into photos, price confidence, legal and maintenance risks, carrying-cost assumptions, and whether this property is actually worth viewing.",
+            button: "Unlock Full Analysis",
+          },
+          // Legacy compat — will be overwritten by backend enforcement
+          evidence_score: 30,
+          verdict: "High Uncertainty",
+          what_we_know: {},
+          whats_missing: [],
+          top_3_things_to_check: [],
+          overallScore: 30,
+          quickSummary: "Unable to fully analyse listing from available data.",
           whatLooksGood: [],
-          riskSignals: ["Analysis could not be completed"]
+          riskSignals: ["Analysis could not be completed"],
         };
       }
 
+      // Backend enforcement: compute evidence_score from actual field completeness
+      {
+        const opts = optionalDetails as Record<string, unknown>;
+        const rawScore = (result.evidence_score ?? result.overallScore ?? 50) as number;
+
+        const hasPrice = !!(opts.askingPrice || opts.weeklyRent);
+        const hasBeds = !!(opts.bedrooms);
+        const hasBaths = !!(opts.bathrooms);
+        const hasSqft = !!(opts.sqft);
+        const hasPropertyType = !!(opts.propertyType);
+        const hasSource = !!(result.sourceDomain || result.listingUrl || opts.sourceDomain || opts.listingUrl);
+        const hasLegalUse = false; // Basic mode cannot verify legal use
+        const hasCostDetails = !!(opts.hoaFee || opts.propertyTax || opts.annualTaxAmount || opts.propertyTax);
+        const hasComparableContext = false; // Basic mode cannot verify comparables
+        const hasConditionEvidence = false; // Basic mode does not analyze photos
+
+        const missingCore = [hasPrice, hasBeds, hasBaths, hasSqft, hasSource].filter(Boolean).length;
+
+        let deduction = 0;
+        if (!hasPrice) deduction += 15;
+        if (!hasBeds) deduction += 8;
+        if (!hasBaths) deduction += 8;
+        if (!hasSqft) deduction += 12;
+        if (!hasPropertyType) deduction += 10;
+        if (!hasSource) deduction += 8;
+        if (!hasCostDetails) deduction += 10;
+        if (!hasLegalUse) deduction += 10;
+        if (!hasComparableContext) deduction += 10;
+
+        let evidence_score = Math.min(rawScore, 100 - deduction);
+
+        // Hard cap: if price/beds/baths/sqft all missing, cap at 55
+        if (!hasPrice && !hasBeds && !hasBaths && !hasSqft) {
+          evidence_score = Math.min(evidence_score, 55);
+        }
+
+        // Hard cap: if source info missing, cap at 65
+        if (!hasSource) {
+          evidence_score = Math.min(evidence_score, 65);
+        }
+
+        // Hard cap: if missing property type, cap at 79
+        if (!hasPropertyType) {
+          evidence_score = Math.min(evidence_score, 79);
+        }
+
+        // Hard cap: if multi-family/rental context but no legal use verification, cap at 75
+        const isMultiFamilyOrRental = !!(opts.askingPrice); // US sale listing
+        if (isMultiFamilyOrRental && !hasLegalUse) {
+          evidence_score = Math.min(evidence_score, 75);
+        }
+
+        // Hard cap: if most major decision fields are missing, cap at 79
+        const missingMajorCount = [!hasPropertyType, !hasLegalUse, !hasCostDetails, !hasComparableContext, !hasConditionEvidence].filter(Boolean).length;
+        if (missingMajorCount >= 3) {
+          evidence_score = Math.min(evidence_score, 79);
+        }
+
+        result.evidence_score = evidence_score;
+      }
+
+      // Backend enforcement: verdict is determined EXCLUSIVELY by evidence_score
+      // Never trust AI's verdict — always recompute from score
+      {
+        const score = result.evidence_score as number;
+        if (score >= 80) result.verdict = 'Enough to Review';
+        else if (score >= 60) result.verdict = 'Review With Caution';
+        else if (score >= 40) result.verdict = 'Need More Evidence';
+        else result.verdict = 'High Uncertainty';
+      }
+
+      // Step 0: Enforce what_we_know from optionalDetails as source of truth.
+      // The AI's what_we_know may have null values or wrong field names,
+      // but optionalDetails contains the actual extracted structured data.
+      {
+        const opts = optionalDetails as Record<string, unknown>;
+        const wwKnow = result.what_we_know ?? {};
+
+        const setIfMissing = (wwKey: string, value: unknown) => {
+          if (!(wwKey in wwKnow) || wwKnow[wwKey] == null || wwKnow[wwKey] === '') {
+            (wwKnow as any)[wwKey] = value ?? null;
+          }
+        };
+
+        setIfMissing('sqft', opts.sqft ?? opts.squareFeet ?? opts.floorArea);
+        setIfMissing('beds', opts.bedrooms ?? opts.beds);
+        setIfMissing('baths', opts.bathrooms ?? opts.baths);
+        setIfMissing('property_type', opts.propertyType ?? opts.property_type);
+        setIfMissing('asking_price', opts.askingPrice ?? opts.price);
+
+        result.what_we_know = wwKnow;
+      }
+
+      // ── BEFORE: diagnostic log ──────────────────────────────────────────────
+      console.log('[Basic cleanup BEFORE]', {
+        questions_to_ask: result.questions_to_ask,
+        listing_claims: result.listing_claims,
+      });
+
+      // Set market on result so normalizeBasicChecks can reference it
+      result.market = detectedMarket;
+
+      const hasZillowMonthly = !!(zillowFinancials && ((zillowFinancials as any)?.monthlyPayment?.estimatedMonthlyPayment?.value || (zillowFinancials as any)?.topEstimatedPayment?.value));
+
+      // Cleanup: normalize questions only (top_3_things_to_check removed from output)
+      result = normalizeBasicQuestions(result, hasZillowMonthly);
+
+      // ── AFTER: diagnostic log ──────────────────────────────────────────────
+      console.log('[Basic cleanup AFTER]', {
+        questions_to_ask: result.questions_to_ask,
+        listing_claims: result.listing_claims,
+      });
+
       console.log("=== BASIC SYNC SUCCESS ===");
-      console.log("Score:", result.score);
+      console.log("Evidence Score:", result.evidence_score);
       console.log("Verdict:", result.verdict);
+      console.log("Bottom Line:", result.bottom_line);
       console.log("Analysis ID:", analysisId);
+
+      // verdict is already set by the enforcement block above — keep it for history record
 
       // If we have an analysisId, update the record with the result
       if (analysisId) {
-        const verdictMap: Record<string, string> = {
-          'Strong Buy': 'Worth Inspecting',
-          'Consider Carefully': 'Need More Evidence',
-          'Probably Skip': 'Likely Overpriced / Risky',
-        };
-        const mappedVerdict = verdictMap[result.verdict] || result.verdict;
-
         await updateAnalysisRecord(
           analysisId,
-          result.score,
-          mappedVerdict,
+          result.evidence_score ?? result.overallScore ?? 50,
+          result.verdict,
           {
-            quickSummary: result.quickSummary,
+            quickSummary: result.bottom_line ?? result.quickSummary,
             whatLooksGood: result.whatLooksGood || [],
             riskSignals: result.riskSignals || [],
           },
           {
             analysisType: 'basic',
-            overallScore: result.score,
-            verdict: mappedVerdict,
-            quickSummary: result.quickSummary,
+            overallScore: result.evidence_score ?? result.overallScore ?? 50,
+            verdict: result.verdict,
+            quickSummary: result.bottom_line ?? result.quickSummary,
             whatLooksGood: result.whatLooksGood || [],
             riskSignals: result.riskSignals || [],
             reportMode,
@@ -5129,9 +5740,6 @@ Deno.serve(async (req) => {
           reportMode
         );
         console.log("Basic sync: History record updated with result");
-
-        // Also map verdict for the frontend response
-        result.verdict = mappedVerdict;
       }
 
       // Build property_snapshot from optionalDetails for US market display
@@ -5170,11 +5778,19 @@ Deno.serve(async (req) => {
 
       return jsonResponse({
         result: {
-          overallScore: result.score,
+          // New evidence_score schema fields
+          evidence_score: result.evidence_score ?? result.overallScore ?? 50,
           verdict: result.verdict,
-          quickSummary: result.quickSummary,
-          whatLooksGood: result.whatLooksGood || [],
-          riskSignals: result.riskSignals || [],
+          bottom_line: result.bottom_line ?? result.quickSummary ?? '',
+          what_we_know: result.what_we_know ?? {},
+          listing_claims: (result.listing_claims ?? []).slice(0, 3),
+          questions_to_ask: (result.questions_to_ask ?? []).slice(0, 5),
+          upsell_cta: result.upsell_cta ?? {},
+          // Legacy fields for backward compatibility
+          overallScore: result.evidence_score ?? result.overallScore ?? result.score ?? 50,
+          quickSummary: result.bottom_line ?? result.quickSummary ?? '',
+          whatLooksGood: result.whatLooksGood ?? [],
+          riskSignals: result.riskSignals ?? [],
           reportMode,
           market: detectedMarket,
           source: bodySource || null,
@@ -5182,6 +5798,20 @@ Deno.serve(async (req) => {
           listingUrl: bodyListingUrl || null,
           optionalDetails,
           property_snapshot,
+          // Zillow monthly payment breakdown — available from plugin extraction
+          monthly_cost_snapshot: zillowFinancials
+            ? {
+                source: 'Zillow/listing estimate',
+                estimated_monthly_payment: (zillowFinancials as any)?.monthlyPayment?.estimatedMonthlyPayment?.value ?? null,
+                principal_and_interest: (zillowFinancials as any)?.monthlyPayment?.principalAndInterest?.value ?? null,
+                mortgage_insurance: (zillowFinancials as any)?.monthlyPayment?.mortgageInsurance?.value ?? null,
+                property_taxes: (zillowFinancials as any)?.monthlyPayment?.propertyTaxes?.value ?? null,
+                home_insurance: (zillowFinancials as any)?.monthlyPayment?.homeInsurance?.value ?? null,
+                hoa_fees: (zillowFinancials as any)?.monthlyPayment?.hoaFees?.value ?? null,
+                utilities: (zillowFinancials as any)?.monthlyPayment?.utilities?.value ?? null,
+                disclaimer: 'Based on Zillow listing estimate only. Not independently verified by HomeScope.',
+              }
+            : null,
         },
         analysisId, // Will be null for anonymous users, actual ID for logged-in users
       });

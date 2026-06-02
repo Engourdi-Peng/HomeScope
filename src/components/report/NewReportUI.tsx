@@ -196,7 +196,7 @@ function isRiskSection(section: ReportSection): boolean {
 // MODULE 1: HeroSection — Decision Summary
 // ─────────────────────────────────────────────────────────────────────────────
 
-function HeroSection({ report }: { report: NormalizedReport }) {
+function HeroSection({ report, isBasic }: { report: NormalizedReport; isBasic?: boolean }) {
   const { hero, highlights, sections } = report;
 
   // Address: structured hero.address first, then property_snapshot section, then hero.title as last resort
@@ -209,6 +209,44 @@ function HeroSection({ report }: { report: NormalizedReport }) {
 
   // Generate headline based on top risk
   const headline = React.useMemo(() => {
+    // Basic mode: generate specific Bottom Line based on what is confirmed vs. unverified
+    if (isBasic) {
+      const listingText = [
+        hero.summary ?? '',
+        (report.raw?.listingInfo?.description ?? ''),
+        (report.raw?.listingOverview?.description ?? ''),
+        (report.raw?.description ?? ''),
+        (report.raw?.listingInfo?.propertyType ?? ''),
+        (report.raw?.propertyType ?? ''),
+      ].join(' ');
+
+      const monthlyCostSnapshot = (report.raw as any)?.monthly_cost_snapshot ?? null;
+      const hasZillowMonthly = !!(monthlyCostSnapshot?.estimated_monthly_payment);
+      const isRentalMentioned = /legal 2-family|two.family|multi.family|rental|second unit|income|tenant/i.test(listingText);
+      const hasConditionSignal = /TLC|needs work|needs updating|needs renovation|needs repair|vacant|as.is|sold/i.test(listingText);
+
+      // Build a targeted list of genuinely missing / unverified items
+      const missing: string[] = [];
+      if (isRentalMentioned) missing.push('legal use');
+      if (!hasZillowMonthly) missing.push('carrying costs');
+      if (!hasConditionSignal) missing.push('condition details');
+      missing.push('comparable sales/rent context');
+
+      if (missing.length >= 2) {
+        const last = missing.pop();
+        const rest = missing.join(', ');
+        return `This listing provides useful basic facts, including price, beds, baths, size, and${isRentalMentioned ? ' listing-stated property type,' : ''} but ${rest}, and ${last} still need verification before relying on this property.`;
+      }
+      if (missing.length === 1) {
+        return `This listing provides useful basic facts, including price, beds, baths, and size, but ${missing[0]} still needs verification before relying on this property.`;
+      }
+      if (hero.summary) {
+        return hero.summary;
+      }
+      return 'This listing provides useful basic facts, but key decision details still need verification before relying on this property.';
+    }
+
+    // Deep mode: use headline inference from risks/cons
     const allRiskText = [
       ...highlights.risks,
       ...highlights.cons,
@@ -228,18 +266,23 @@ function HeroSection({ report }: { report: NormalizedReport }) {
       return 'Looks promising, but the photos leave important questions unanswered.';
     }
     return 'Worth reviewing further, but key risks need verification first.';
-  }, [highlights, sections]);
+  }, [highlights, sections, hero.summary, hero.verdict, isBasic, report]);
 
   // Next Best Move — NYC-aware, actionable
   const nextBestMove = React.useMemo(() => {
     const isNYC = /nyc|new york city|brooklyn|queens|bronx|manhattan|staten/i.test(
       (hero.address ?? '') + (hero.title ?? '')
     );
+    if (isBasic) {
+      return isNYC
+        ? 'Ask for the Certificate of Occupancy, open violation records, and actual rental history before booking a viewing, or unlock the full report.'
+        : 'Ask the agent for legal use, repair history, and comparable sales before booking a viewing, or unlock the full report.';
+    }
     if (isNYC) {
       return 'Ask for the Certificate of Occupancy, open violation records, roof age, and actual rental history before booking a viewing.';
     }
     return 'Ask the agent for legal use, repair history, open permits, and comparable sales before booking a viewing.';
-  }, [hero.address, hero.title]);
+  }, [hero.address, hero.title, isBasic]);
 
   const mainReasons: string[] = [];
   const seen = new Set<string>();
@@ -294,28 +337,46 @@ function HeroSection({ report }: { report: NormalizedReport }) {
           </div>
         )}
 
-        {/* Score + /100 */}
-        <div className="flex items-baseline gap-3 mb-6">
-          {scoreText !== null ? (
-            <div className="text-7xl sm:text-8xl font-bold bg-gradient-to-br from-white via-slate-200 to-slate-300 bg-clip-text text-transparent">
-              {scoreText}
+        {/* Score + /100 — Evidence Score style for basic, gradient style for deep */}
+        {isBasic ? (
+          scoreText !== null && (
+            <div className="mb-4">
+              <div className="text-slate-400 uppercase text-xs tracking-wider mb-2">Evidence Score</div>
+              <div className="flex items-baseline gap-2">
+                <div className="text-6xl sm:text-7xl font-bold text-amber-400">{scoreText}</div>
+                <div className="text-2xl text-slate-400">/100</div>
+              </div>
             </div>
-          ) : (
-            <div className="text-7xl sm:text-8xl font-bold text-slate-500">—</div>
-          )}
-          <div className="text-3xl text-slate-400">/100</div>
-        </div>
+          )
+        ) : (
+          <div className="flex items-baseline gap-3 mb-6">
+            {scoreText !== null ? (
+              <div className="text-7xl sm:text-8xl font-bold bg-gradient-to-br from-white via-slate-200 to-slate-300 bg-clip-text text-transparent">
+                {scoreText}
+              </div>
+            ) : (
+              <div className="text-7xl sm:text-8xl font-bold text-slate-500">—</div>
+            )}
+            <div className="text-3xl text-slate-400">/100</div>
+          </div>
+        )}
 
-        {/* Verdict badge */}
+        {/* Verdict badge — basic mode uses different styling */}
         {hero.verdict && (
-          <div className="inline-flex items-center gap-2 backdrop-blur border px-6 py-3 rounded-xl mb-4" style={{ borderColor: '#DAA520', backgroundColor: 'rgba(218, 165, 32, 0.15)' }}>
+          <div className={`inline-flex items-center gap-2 backdrop-blur border px-6 py-3 rounded-xl mb-4 ${
+            isBasic
+              ? hero.verdict === 'High Uncertainty' ? 'border-red-400/50 bg-red-500/10' :
+                hero.verdict === 'Need More Evidence' ? 'border-amber-400/50 bg-amber-500/10' :
+                'border-green-400/50 bg-green-500/10'
+              : 'border-amber-400/50 bg-amber-500/10'
+          }`}>
             <Activity className="w-4 h-4" style={{ color: '#DAA520' }} />
             <span className="font-semibold tracking-wide" style={{ color: '#DAA520' }}>{renderValue(hero.verdict)}</span>
           </div>
         )}
 
-        {/* Report Confidence */}
-        {hero.confidence && (
+        {/* Report Confidence — only in deep mode */}
+        {!isBasic && hero.confidence && (
           <div className="flex items-center justify-center gap-2 text-slate-300 font-medium mb-6 sm:mb-8">
             <div className="w-2 h-2 rounded-full bg-slate-400" />
             <span>Report Confidence: {renderValue(hero.confidence)}</span>
@@ -331,15 +392,15 @@ function HeroSection({ report }: { report: NormalizedReport }) {
           <p className="text-slate-100 text-base sm:text-lg leading-relaxed font-medium">{headline}</p>
         </div>
 
-        {/* Short explanation paragraph */}
-        {hero.summary && (
+        {/* Short explanation paragraph — hidden in basic mode (Bottom Line already shows) */}
+        {!isBasic && hero.summary && (
           <p className="text-slate-300 text-sm sm:text-base leading-relaxed mb-6">
             {renderValue(hero.summary)}
           </p>
         )}
 
-        {/* Main Reasons */}
-        {mainReasons.length > 0 && (
+        {/* Main Reasons — hidden in basic mode (no unverified inference) */}
+        {!isBasic && mainReasons.length > 0 && (
           <div className="mb-4">
             <div className="flex items-center gap-2 mb-3 sm:mb-4">
               <div className="w-1 h-4 bg-gradient-to-b from-slate-400 to-slate-500 rounded-full" />
@@ -1632,8 +1693,9 @@ function getFallbackQuestions(isNYC: boolean): Array<{ q: string; tag: string; c
   ];
 }
 
-function QuestionsToAskSection({ report, viewModel }: { report: NormalizedReport; viewModel?: ReportViewModel }) {
+function QuestionsToAskSection({ report, viewModel, isBasic }: { report: NormalizedReport; viewModel?: ReportViewModel; isBasic?: boolean }) {
   const { sections, hero } = report;
+  const maxQuestions = isBasic ? 5 : 8;
 
   const isNYC = viewModel?.meta?.isNYC
     ?? /nyc|new york city|brooklyn|queens|bronx|manhattan|staten/i.test(
@@ -1656,10 +1718,10 @@ function QuestionsToAskSection({ report, viewModel }: { report: NormalizedReport
       /monthly|cost|insurance|utility|maintenance|reserve/i.test(q.question)
     );
     const seenQ = new Set(finalQuestions.map(q => q.question));
-    if (finalQuestions.length < 8 || !hasCosts) {
+    if (finalQuestions.length < maxQuestions || !hasCosts) {
       const fallback = getFallbackQuestions(isNYC);
       for (const fq of fallback) {
-        if (finalQuestions.length >= 8) break;
+        if (finalQuestions.length >= maxQuestions) break;
         if (seenQ.has(fq.q)) continue;
         finalQuestions.push({ question: fq.q, tag: fq.tag, tagColor: fq.color, whereToVerify: '' });
         seenQ.add(fq.q);
@@ -1733,13 +1795,13 @@ function QuestionsToAskSection({ report, viewModel }: { report: NormalizedReport
       if (deduped.length < 4) {
         const fallback = getFallbackQuestions(isNYC);
         for (const fq of fallback) {
-          if (deduped.length >= 8) break;
+          if (deduped.length >= maxQuestions) break;
           if (seenQ.has(fq.q)) continue;
           deduped.push({ question: fq.q, tag: fq.tag, tagColor: fq.color, whereToVerify: '' });
           seenQ.add(fq.q);
         }
       }
-      finalQuestions = deduped.slice(0, 8);
+      finalQuestions = deduped.slice(0, maxQuestions);
     }
   }
 
@@ -2498,6 +2560,221 @@ function ReportClosingCTA({
   );
 }
 
+// ── Basic Report Components ────────────────────────────────────────────────────
+
+// ── WhatWeKnowSection ────────────────────────────────────────────────────────
+function WhatWeKnowSection({ report }: { report: NormalizedReport }) {
+  const section = report.sections.find((s) => s.id === 'what-we-know');
+  if (!section || section.items.length === 0) return null;
+
+  return (
+    <div className="bg-white rounded-2xl p-6 sm:p-8 md:p-10 mb-8 border border-slate-200">
+      <div className="flex items-center gap-3 mb-6">
+        <div className="w-10 h-10 rounded-xl bg-slate-100 flex items-center justify-center shrink-0">
+          <Home className="w-5 h-5 text-slate-600" />
+        </div>
+        <div>
+          <h2 className="text-xl sm:text-2xl font-bold text-slate-900">What We Know</h2>
+          <p className="text-xs text-stone-400 mt-0.5">{section.subtitle}</p>
+        </div>
+      </div>
+      <div className="divide-y divide-slate-100">
+        {section.items.map((item, i) => (
+          <div key={i} className="py-3 first:pt-0 last:pb-0 flex items-start justify-between gap-4">
+            <div className="flex-1 min-w-0">
+              <span className="text-sm font-medium text-slate-600">{renderValue(item.title)}</span>
+            </div>
+            <span className={`text-sm font-semibold text-slate-900 shrink-0 text-right ${renderValue(item.value ?? '').startsWith('Not ') ? 'text-stone-400 italic' : ''}`}>
+              {renderValue(item.value ?? '')}
+            </span>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+// ── BasicDecisionSection — "What Could Change Your Decision" cards for Basic mode ─
+function BasicDecisionSection({ report }: { report: NormalizedReport }) {
+  const section = report.sections.find((s) => s.id === 'basic-decision-cards');
+  if (!section || section.items.length === 0) return null;
+
+  return (
+    <div className="bg-white rounded-2xl p-6 sm:p-8 md:p-10 mb-8 border border-slate-200">
+      <div className="flex items-center gap-3 mb-6">
+        <div className="w-10 h-10 rounded-xl bg-amber-500/10 flex items-center justify-center shrink-0">
+          <AlertTriangle className="w-5 h-5 text-amber-600/70" />
+        </div>
+        <div>
+          <h2 className="text-xl sm:text-2xl font-bold text-slate-900">What Could Change Your Decision</h2>
+          <p className="text-xs text-stone-400 mt-0.5">Based on listing signals only — not independent analysis.</p>
+        </div>
+      </div>
+      <div className="space-y-4 sm:space-y-5">
+        {section.items.map((item, i) => (
+          <div key={i} className="flex flex-col gap-3 p-5 rounded-xl bg-slate-50 border border-slate-200">
+            <div className="font-bold text-slate-900 text-base">{renderValue(item.title)}</div>
+            {item.description && (
+              <div className="flex items-start gap-2">
+                <span className="text-amber-600 font-semibold text-xs shrink-0 mt-0.5">Why it matters:</span>
+                <span className="text-slate-700 text-sm leading-relaxed">{renderValue(item.description)}</span>
+              </div>
+            )}
+            {item.value && (
+              <div className="flex items-start gap-2">
+                <div className="bg-slate-800 px-3 py-1.5 rounded-lg flex items-center gap-1.5 shrink-0">
+                  <Target className="w-3 h-3 text-white" />
+                  <span className="uppercase text-[10px] font-bold tracking-wide text-white">Action</span>
+                </div>
+                <span className="text-slate-700 text-sm font-medium leading-relaxed">{renderValue(item.value)}</span>
+              </div>
+            )}
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+// ── MonthlyCostSnapshotSection ─────────────────────────────────────────────────
+function MonthlyCostSnapshotSection({ report }: { report: NormalizedReport }) {
+  const section = report.sections.find((s) => s.id === 'monthly-cost-snapshot');
+  if (!section || section.items.length === 0) return null;
+
+  return (
+    <div className="bg-white rounded-2xl p-6 sm:p-8 md:p-10 mb-8 border border-slate-200">
+      <div className="flex items-center gap-3 mb-6">
+        <div className="w-10 h-10 rounded-xl bg-slate-100 flex items-center justify-center shrink-0">
+          <DollarSign className="w-5 h-5 text-slate-600" />
+        </div>
+        <div>
+          <h2 className="text-xl sm:text-2xl font-bold text-slate-900">{section.title}</h2>
+          {section.subtitle && (
+            <p className="text-xs text-stone-400 mt-0.5">{section.subtitle}</p>
+          )}
+        </div>
+      </div>
+      <div className="grid grid-cols-2 @container[size>=560px]:grid-cols-3 gap-4">
+        {section.items.map((item, i) => (
+          <div key={i} className="p-4 bg-slate-50 rounded-xl">
+            <div className="text-[10px] font-medium uppercase tracking-widest text-stone-500 mb-1">{renderValue(item.title)}</div>
+            <div className="text-sm font-semibold text-slate-800">{renderValue(item.value)}</div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+// ── ListingClaimsSection — "Listing Claims to Verify" for Basic mode ──────────────────
+function ListingClaimsSection({ report }: { report: NormalizedReport }) {
+  const section = report.sections.find((s) => s.id === 'listing-claims');
+  if (!section || section.items.length === 0) return null;
+
+  return (
+    <div className="bg-white rounded-2xl p-6 sm:p-8 md:p-10 mb-8 border border-slate-200">
+      <div className="flex items-center gap-3 mb-6">
+        <div className="w-10 h-10 rounded-xl bg-indigo-500/10 flex items-center justify-center shrink-0">
+          <FileSearch className="w-5 h-5 text-indigo-600/70" />
+        </div>
+        <div>
+          <h2 className="text-xl sm:text-2xl font-bold text-slate-900">Listing Claims to Verify</h2>
+          <p className="text-xs text-stone-400 mt-0.5">{section.subtitle}</p>
+        </div>
+      </div>
+      <div className="space-y-4 sm:space-y-5">
+        {section.items.map((item, i) => (
+          <div key={i} className="rounded-xl border border-slate-200 overflow-hidden">
+            {/* Listing says */}
+            <div className="bg-slate-50 px-5 py-4 border-b border-slate-200">
+              <div className="text-[10px] font-semibold uppercase tracking-widest text-slate-500 mb-1">Listing says</div>
+              <p className="text-slate-800 text-sm font-medium italic">"{renderValue(item.title)}"</p>
+            </div>
+            {/* HomeScope check */}
+            <div className="px-5 py-4 border-b border-slate-100">
+              <div className="flex items-start gap-2">
+                <Eye className="w-4 h-4 text-indigo-500 mt-0.5 shrink-0" />
+                <div>
+                  <div className="text-[10px] font-semibold uppercase tracking-widest text-slate-500 mb-1">HomeScope check</div>
+                  <p className="text-slate-700 text-sm leading-relaxed">{renderValue(item.description)}</p>
+                </div>
+              </div>
+            </div>
+            {/* Ask before viewing */}
+            {item.value && (
+              <div className="px-5 py-4 bg-amber-50/50">
+                <div className="flex items-start gap-2">
+                  <CircleHelp className="w-4 h-4 text-amber-600 mt-0.5 shrink-0" />
+                  <div>
+                    <div className="text-[10px] font-semibold uppercase tracking-widest text-amber-600 mb-1">Ask before viewing</div>
+                    <p className="text-slate-700 text-sm leading-relaxed">{renderValue(item.value)}</p>
+                  </div>
+                </div>
+              </div>
+            )}
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+// ── BasicCTA ──────────────────────────────────────────────────────────────────
+function BasicCTA({ report, analysisId, mode, onUpgrade }: {
+  report: NormalizedReport;
+  analysisId?: string;
+  mode?: 'web' | 'extension';
+  onUpgrade?: () => void;
+}) {
+  function handleAnalyseAnother() {
+    if (mode === 'extension') return;
+    if (window.history.length > 1) {
+      window.history.back();
+    } else {
+      window.location.href = '/';
+    }
+  }
+
+  // Pull CTA content from the adapter-generated section
+  const ctaSection = report.sections.find((s) => s.id === 'basic-cta');
+  const ctaTitle = ctaSection?.title || 'Unlock Full Analysis';
+  const ctaBody = ctaSection?.items?.[0]?.title || 'Basic shows what the listing says and what still needs verification. Full Analysis goes deeper into photos, price confidence, legal and maintenance risks, carrying-cost assumptions, and whether this property is actually worth viewing.';
+
+  return (
+    <div className="bg-[#282828] rounded-2xl p-6 sm:p-8 md:p-10 mb-8 overflow-hidden" style={{ border: '1px solid rgba(218, 165, 32, 0.3)' }}>
+      <div className="flex items-start gap-4">
+        <div className="w-12 h-12 bg-yellow-500/20 rounded-2xl flex items-center justify-center shrink-0">
+          <Zap className="w-6 h-6 text-yellow-400" />
+        </div>
+        <div className="flex-1 min-w-0">
+          <h3 className="text-xl font-semibold text-white mb-2">{ctaTitle}</h3>
+          <p className="text-stone-300 text-sm leading-relaxed mb-6">
+            {ctaBody}
+          </p>
+          <div className="flex flex-col sm:flex-row gap-3">
+            <button
+              type="button"
+              onClick={onUpgrade}
+              className="px-6 py-3 bg-yellow-500 hover:bg-yellow-400 text-stone-900 font-semibold text-sm rounded-xl transition-colors cursor-pointer"
+            >
+              Unlock Full Analysis
+            </button>
+            {mode !== 'extension' && (
+              <button
+                type="button"
+                onClick={handleAnalyseAnother}
+                className="px-6 py-3 bg-white/10 hover:bg-white/20 text-white font-semibold text-sm rounded-xl transition-colors cursor-pointer border border-white/20"
+              >
+                Analyse another property
+              </button>
+            )}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ── Empty State ────────────────────────────────────────────────────────────────
 
 function EmptyState() {
@@ -2521,16 +2798,22 @@ function EmptyState() {
 interface NewReportUIProps {
   report: NormalizedReport;
   viewModel?: ReportViewModel;
+  /** Set to true for basic/free reports to use the lightweight Quick Property Check layout */
+  isBasic?: boolean;
   mode?: 'web' | 'extension';
   showBackButton?: boolean;
   onShare?: (analysisId: string) => Promise<{ slug: string; shareUrl: string }>;
   analysisId?: string;
   shareState?: { isSharing?: boolean; shareResult?: { slug: string; shareUrl: string } | null; copied?: boolean };
   onShareClick?: () => void;
+  onUpgrade?: () => void;
 }
 
-export function NewReportUI({ report, viewModel, mode, showBackButton, onShare, analysisId, shareState, onShareClick }: NewReportUIProps) {
+export function NewReportUI({ report, viewModel, isBasic: isBasicProp, mode, showBackButton, onShare, analysisId, shareState, onShareClick, onUpgrade }: NewReportUIProps) {
   const { sections, highlights, quickFacts, hero } = report;
+
+  // Resolve isBasic: explicit prop wins; fall back to viewModel.meta.isBasic
+  const effectiveIsBasic = isBasicProp ?? viewModel?.meta?.isBasic ?? false;
 
   const hasSections = sections && sections.length > 0;
   const hasHighlights = highlights.pros.length > 0 || highlights.cons.length > 0 || highlights.risks.length > 0;
@@ -2572,50 +2855,85 @@ export function NewReportUI({ report, viewModel, mode, showBackButton, onShare, 
         </button>
       )}
 
-      {/* 1. Hero */}
-      <HeroSection report={report} />
+      {/* ── Basic Report Layout ─────────────────────────────────────── */}
+      {effectiveIsBasic ? (
+        <>
+          {/* 1. Hero — Quick Property Check */}
+          <HeroSection report={report} isBasic={true} />
 
-      {/* 2. What Could Change Your Decision */}
-      <WhatCouldChangeYourDecisionSection report={report} />
+          {/* 2. What We Know */}
+          <WhatWeKnowSection report={report} />
 
-      {/* 3. Deal-Changing Risks */}
-      <DealChangingRisksSection report={report} />
+          {/* 3. Listing-Stated Monthly Payment — only shown if Zillow data exists */}
+          <MonthlyCostSnapshotSection report={report} />
 
-      {/* 4. Property Snapshot (Is the Price Fair?) */}
-      <PropertySnapshotSection report={report} />
+          {/* 4. Listing Claims to Verify */}
+          <ListingClaimsSection report={report} />
 
-      {/* 5. Carrying Costs */}
-      <CarryingCostsSection report={report} />
+          {/* 5. What Could Change Your Decision */}
+          <BasicDecisionSection report={report} />
 
-      {/* 6. Location Reality Check */}
-      <LocationRealityCheckSection report={report} />
+          {/* 6. Questions to Ask — capped at 5 in basic mode */}
+          <QuestionsToAskSection report={report} viewModel={viewModel} isBasic={true} />
 
-      {/* 7. Photo & Space Analysis */}
-      {report.raw?.spaceAnalysis || report.raw?.visualAnalysis || report.raw?.photos ? (
-        <PhotoSpaceAnalysisCard raw={report.raw} />
-      ) : null}
+          {/* 7. Unlock Full Analysis CTA */}
+          <BasicCTA
+            report={report}
+            analysisId={analysisId}
+            mode={mode}
+            onUpgrade={onUpgrade}
+          />
+        </>
+      ) : (
+        <>
+          {/* ── Deep Report Layout ─────────────────────────────────── */}
 
-      {/* 8. Agent Spin Decoder */}
-      <AgentSpinDecoderSection report={report} />
+          {/* 1. Hero */}
+          <HeroSection report={report} isBasic={false} />
 
-      {/* 9. Who This Property Works For */}
-      <WhoThisPropertyWorksForSection report={report} />
+          {/* 2. What Could Change Your Decision */}
+          <WhatCouldChangeYourDecisionSection report={report} />
 
-      {/* 10. Questions to Ask */}
-      <QuestionsToAskSection report={report} />
+          {/* 3. Deal-Changing Risks */}
+          <DealChangingRisksSection report={report} />
 
-      {/* 11. Next Best Move */}
-      <NextBestMoveSection report={report} />
+          {/* 4. Property Snapshot (Is the Price Fair?) */}
+          <PropertySnapshotSection report={report} />
 
-      {/* 11. Closing CTA */}
-      <ReportClosingCTA
-        report={report}
-        onShare={onShare}
-        analysisId={analysisId}
-        mode={mode}
-        shareState={shareState}
-        onShareClick={onShareClick}
-      />
+          {/* 5. Carrying Costs */}
+          <CarryingCostsSection report={report} />
+
+          {/* 6. Location Reality Check */}
+          <LocationRealityCheckSection report={report} />
+
+          {/* 7. Photo & Space Analysis */}
+          {report.raw?.spaceAnalysis || report.raw?.visualAnalysis || report.raw?.photos ? (
+            <PhotoSpaceAnalysisCard raw={report.raw} />
+          ) : null}
+
+          {/* 8. Agent Spin Decoder */}
+          <AgentSpinDecoderSection report={report} />
+
+          {/* 9. Who This Property Works For */}
+          <WhoThisPropertyWorksForSection report={report} />
+
+          {/* 10. Questions to Ask */}
+          <QuestionsToAskSection report={report} viewModel={viewModel} isBasic={false} />
+
+          {/* 11. Next Best Move */}
+          <NextBestMoveSection report={report} />
+
+          {/* 12. Closing CTA */}
+          <ReportClosingCTA
+            report={report}
+            onShare={onShare}
+            analysisId={analysisId}
+            mode={mode}
+            shareState={shareState}
+            onShareClick={onShareClick}
+          />
+        </>
+      )}
     </div>
     </RegisterSectionsCtx.Provider>
     </UsedSectionsCtx.Provider>

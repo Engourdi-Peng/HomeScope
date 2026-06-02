@@ -169,11 +169,15 @@ export function BasicResultCard({
       <div className="mb-8 animate-in fade-in slide-in-from-bottom-8 duration-700 ease-out">
         <div className="w-full px-6 py-5 rounded-2xl border bg-stone-100/80 border-stone-200/80">
           <div className="flex items-center gap-3 mb-3">
-            {result.listingOverview.propertyType && (
-              <span className="text-[10px] font-semibold uppercase tracking-wider text-stone-500 bg-stone-200/50 px-2 py-1 rounded">
-                {result.listingOverview.propertyType}
-              </span>
-            )}
+            {(() => {
+              const pt = result.listingOverview.propertyType;
+              const hasLegal = pt && /legal|approved|compliant|certified/i.test(pt);
+              return (
+                <span className="text-[10px] font-semibold uppercase tracking-wider text-stone-500 bg-stone-200/50 px-2 py-1 rounded">
+                  {hasLegal ? `${pt} (listing-stated)` : pt}
+                </span>
+              );
+            })()}
           </div>
           <h1 className="text-xl font-semibold text-stone-900 mb-1">
             {result.listingOverview.address || 'Property'}

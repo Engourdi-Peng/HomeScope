@@ -109,7 +109,12 @@ function PropertySnapshotCard({ result }: { result: AnalysisResult }) {
   const rows: Array<{ label: string; value: React.ReactNode }> = [];
 
   if (region) rows.push({ label: 'Address', value: region });
-  if (homeType) rows.push({ label: 'Type', value: homeType });
+  if (homeType) {
+    const displayType = /legal|approved|compliant|certified/i.test(homeType)
+      ? <>{homeType} <span style={{ fontSize: '0.75em', opacity: 0.7 }}>(listing-stated)</span></>
+      : homeType;
+    rows.push({ label: 'Type', value: displayType });
+  }
   // Beds×Baths 只在两者都有值时才显示
   if (beds != null && baths != null) {
     rows.push({ label: 'Beds / Baths', value: `${beds} / ${baths}` });

@@ -62,6 +62,7 @@ function detectReportMode(result: AnyResult): ReportMode {
 }
 
 // ---- detect basic result ----
+// Priority: explicit analysisType='basic' > legacy 'decision' format > no deep modules
 function detectBasicResult(result: AnyResult): boolean {
   if (getField(result, 'analysisType') === 'basic') return true;
   if ('decision' in result && result.decision !== undefined) return true;
