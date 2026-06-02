@@ -5714,35 +5714,7 @@ ${optionalDetails.askingPrice ? `Asking Price: ${optionalDetails.askingPrice}\n`
       console.log("Bottom Line:", result.bottom_line);
       console.log("Analysis ID:", analysisId);
 
-      // verdict is already set by the enforcement block above — keep it for history record
-
-      // If we have an analysisId, update the record with the result
-      if (analysisId) {
-        await updateAnalysisRecord(
-          analysisId,
-          result.evidence_score ?? result.overallScore ?? 50,
-          result.verdict,
-          {
-            quickSummary: result.bottom_line ?? result.quickSummary,
-            whatLooksGood: result.whatLooksGood || [],
-            riskSignals: result.riskSignals || [],
-          },
-          {
-            analysisType: 'basic',
-            overallScore: result.evidence_score ?? result.overallScore ?? 50,
-            verdict: result.verdict,
-            quickSummary: result.bottom_line ?? result.quickSummary,
-            whatLooksGood: result.whatLooksGood || [],
-            riskSignals: result.riskSignals || [],
-            reportMode,
-            optionalDetails,
-          },
-          reportMode
-        );
-        console.log("Basic sync: History record updated with result");
-      }
-
-      // Build property_snapshot from optionalDetails for US market display
+      // Build property_snapshot from optionalDetails (needed for both DB save and API response)
       const property_snapshot = {
         beds: (optionalDetails as Record<string, unknown>)?.bedrooms ?? null,
         baths: (optionalDetails as Record<string, unknown>)?.bathrooms ?? null,
@@ -5776,6 +5748,60 @@ ${optionalDetails.askingPrice ? `Asking Price: ${optionalDetails.askingPrice}\n`
         region: String((optionalDetails as Record<string, unknown>)?.region ?? (optionalDetails as Record<string, unknown>)?.suburb ?? ''),
       };
 
+      // Build Zillow monthly cost snapshot
+      const monthly_cost_snapshot = zillowFinancials
+        ? {
+            source: 'Zillow/listing estimate',
+            estimated_monthly_payment: (zillowFinancials as any)?.monthlyPayment?.estimatedMonthlyPayment?.value ?? null,
+            principal_and_interest: (zillowFinancials as any)?.monthlyPayment?.principalAndInterest?.value ?? null,
+            mortgage_insurance: (zillowFinancials as any)?.monthlyPayment?.mortgageInsurance?.value ?? null,
+            property_taxes: (zillowFinancials as any)?.monthlyPayment?.propertyTaxes?.value ?? null,
+            home_insurance: (zillowFinancials as any)?.monthlyPayment?.homeInsurance?.value ?? null,
+            hoa_fees: (zillowFinancials as any)?.monthlyPayment?.hoaFees?.value ?? null,
+            utilities: (zillowFinancials as any)?.monthlyPayment?.utilities?.value ?? null,
+            disclaimer: 'Based on Zillow listing estimate only. Not independently verified by HomeScope.',
+          }
+        : null;
+
+      // If we have an analysisId, update the record with the FULL result
+      // (what_we_know, listing_claims, questions_to_ask, monthly_cost_snapshot etc.
+      // are needed for history playback via NewReportUI.)
+      if (analysisId) {
+        await updateAnalysisRecord(
+          analysisId,
+          result.evidence_score ?? result.overallScore ?? 50,
+          result.verdict,
+          {
+            quickSummary: result.bottom_line ?? result.quickSummary,
+            whatLooksGood: result.whatLooksGood || [],
+            riskSignals: result.riskSignals || [],
+          },
+          {
+            analysisType: 'basic',
+            overallScore: result.evidence_score ?? result.overallScore ?? 50,
+            verdict: result.verdict,
+            quickSummary: result.bottom_line ?? result.quickSummary,
+            whatLooksGood: result.whatLooksGood || [],
+            riskSignals: result.riskSignals || [],
+            reportMode,
+            market: detectedMarket,
+            source: bodySource || null,
+            sourceDomain: bodySourceDomain || null,
+            listingUrl: bodyListingUrl || null,
+            optionalDetails,
+            property_snapshot,
+            monthly_cost_snapshot,
+            // These fields are needed for NewReportUI sections:
+            what_we_know: result.what_we_know ?? {},
+            listing_claims: (result.listing_claims ?? []).slice(0, 3),
+            questions_to_ask: (result.questions_to_ask ?? []).slice(0, 5),
+            upsell_cta: result.upsell_cta ?? {},
+          },
+          reportMode
+        );
+        console.log("Basic sync: History record updated with full result");
+      }
+
       return jsonResponse({
         result: {
           // New evidence_score schema fields
@@ -5798,20 +5824,7 @@ ${optionalDetails.askingPrice ? `Asking Price: ${optionalDetails.askingPrice}\n`
           listingUrl: bodyListingUrl || null,
           optionalDetails,
           property_snapshot,
-          // Zillow monthly payment breakdown — available from plugin extraction
-          monthly_cost_snapshot: zillowFinancials
-            ? {
-                source: 'Zillow/listing estimate',
-                estimated_monthly_payment: (zillowFinancials as any)?.monthlyPayment?.estimatedMonthlyPayment?.value ?? null,
-                principal_and_interest: (zillowFinancials as any)?.monthlyPayment?.principalAndInterest?.value ?? null,
-                mortgage_insurance: (zillowFinancials as any)?.monthlyPayment?.mortgageInsurance?.value ?? null,
-                property_taxes: (zillowFinancials as any)?.monthlyPayment?.propertyTaxes?.value ?? null,
-                home_insurance: (zillowFinancials as any)?.monthlyPayment?.homeInsurance?.value ?? null,
-                hoa_fees: (zillowFinancials as any)?.monthlyPayment?.hoaFees?.value ?? null,
-                utilities: (zillowFinancials as any)?.monthlyPayment?.utilities?.value ?? null,
-                disclaimer: 'Based on Zillow listing estimate only. Not independently verified by HomeScope.',
-              }
-            : null,
+          monthly_cost_snapshot,
         },
         analysisId, // Will be null for anonymous users, actual ID for logged-in users
       });

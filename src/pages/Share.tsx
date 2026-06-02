@@ -70,6 +70,40 @@ export function SharePage() {
         // Add to transformed result
         (transformedResult as AnalysisResult & { listingInfo: ListingInfo }).listingInfo = listingInfo;
 
+        // Rebuild property_snapshot so US-market sections render correctly
+        if (!('property_snapshot' in transformedResult) || !transformedResult.property_snapshot) {
+          (transformedResult as Record<string, unknown>).property_snapshot = {
+            beds: (analysis as Record<string, unknown>).bedrooms ?? null,
+            baths: (analysis as Record<string, unknown>).bathrooms ?? null,
+            sqft: null,
+            lot_size: null,
+            year_built: null,
+            home_type: '',
+            parking: (analysis as Record<string, unknown>).car_spaces
+              ? String((analysis as Record<string, unknown>).car_spaces) : '',
+            hoa: '',
+            annual_tax: null,
+            tax_assessed_value: null,
+          };
+        }
+
+        // Rebuild what_we_know so "What We Know" section is not empty
+        if (!('what_we_know' in transformedResult) || !transformedResult.what_we_know) {
+          const opt = (transformedResult as Record<string, unknown>).optionalDetails as Record<string, unknown> | undefined;
+          (transformedResult as Record<string, unknown>).what_we_know = {
+            address: analysis.address ?? null,
+            asking_price: (analysis as Record<string, unknown>).weekly_rent
+              ? String((analysis as Record<string, unknown>).weekly_rent)
+              : opt?.askingPrice ?? null,
+            beds: (analysis as Record<string, unknown>).bedrooms ?? null,
+            baths: (analysis as Record<string, unknown>).bathrooms ?? null,
+            sqft: opt?.sqft ?? null,
+            property_type: opt?.propertyType ?? null,
+            source: (transformedResult as Record<string, unknown>).sourceDomain
+              ?? (transformedResult as Record<string, unknown>).source ?? null,
+          };
+        }
+
         setResult(transformedResult);
       } catch (err) {
         console.error('Failed to fetch public analysis:', err);

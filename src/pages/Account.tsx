@@ -88,6 +88,43 @@ export function AccountPage() {
         };
         (result as AnalysisResult & { listingInfo: ListingInfo }).listingInfo = listingInfo;
 
+        // Rebuild property_snapshot from individual fields so US-market sections render correctly
+        const typedResult = result as Record<string, unknown>;
+        if (!typedResult.property_snapshot) {
+          typedResult.property_snapshot = {
+            beds: analysis.bedrooms ?? null,
+            baths: analysis.bathrooms ?? null,
+            sqft: null,
+            lot_size: null,
+            year_built: null,
+            home_type: '',
+            parking: analysis.car_spaces ? String(analysis.car_spaces) : '',
+            hoa: '',
+            annual_tax: null,
+            tax_assessed_value: null,
+          };
+        }
+
+        // Rebuild what_we_know from optionalDetails so "What We Know" section is not empty
+        const optionalDetails = typedResult.optionalDetails as Record<string, unknown> | undefined;
+        if (!typedResult.what_we_know && optionalDetails) {
+          (typedResult as Record<string, unknown>).what_we_know = {
+            address: analysis.address ?? null,
+            asking_price: analysis.weekly_rent ? String(analysis.weekly_rent) : (optionalDetails.askingPrice ?? null),
+            beds: analysis.bedrooms ?? null,
+            baths: analysis.bathrooms ?? null,
+            sqft: optionalDetails.sqft ?? null,
+            property_type: optionalDetails.propertyType ?? null,
+            source: typedResult.sourceDomain ?? typedResult.source ?? null,
+          };
+        }
+
+        // report_mode may be in DB but not in the TypeScript type — use it if present
+        const reportModeFromDb = (analysis as Record<string, unknown>).report_mode;
+        if (reportModeFromDb && !typedResult.reportMode) {
+          typedResult.reportMode = reportModeFromDb;
+        }
+
         sessionStorage.setItem('analysisResult', JSON.stringify(result));
         navigate('/result');
       }
