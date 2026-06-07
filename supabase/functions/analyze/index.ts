@@ -1516,6 +1516,15 @@ Price per sqft context: compare to typical ranges if evidence supports it, other
 
 Verdict options: "Underpriced" | "Fair" | "Overpriced" | "Unknown"
 
+For price_assessment.explanation (MANDATORY RULES):
+- Zestimate is a Zillow signal only — do NOT present it as HomeScope's own valuation
+- Do NOT write "fair valuation" unless comparable sales data is explicitly available
+- Write: "appears reasonable based on Zillow signals" or "sits within estimated range" — not "fair value" or "good deal"
+- If no independent comps are available, set valuation_confidence to "Low" or "Unknown"
+- Never wrap the price assessment as HomeScope's own opinion
+- example (WRONG): "Fair valuation for legal 2-family with rental potential"
+- example (CORRECT): "Asking price sits within Zillow's estimated range, but value still depends on verified legal use, condition, and comparable sales"
+
 ================================
 TAX & CARRYING COST ANALYSIS
 ================================
@@ -1552,14 +1561,38 @@ Use:
 - Photos of condition
 
 Key risk patterns to flag:
-- Built before 1960: older systems, inspect electrical panel, plumbing, heating
+- Built before 1960: older systems — electrical panel, wiring updates, plumbing material, and heating age and efficiency should be verified before estimating repair costs. Do not assume wiring needs full replacement without evidence.
 - Flat roof: roof drainage, leak history, remaining life — HIGH priority
 - Brick/masonry exterior: facade cracks, moisture intrusion, tuck-pointing needed
 - No basement: verify drainage, storage, laundry situation
 - Gas or hot water heating: inspect boiler age and efficiency
 - Fireplace: inspect chimney and flue condition
 
-Convert age + condition signals into specific inspection priorities.
+Convert age + condition signals into specific inspection priorities, not cost estimates.
+
+Do NOT write specific repair dollar amounts (e.g. "budget $15k-$30k") unless:
+- An inspection report, contractor quote, or itemized cost estimate is explicitly on the listing page
+- OR the listing text explicitly mentions a known renovation cost or permit amount
+
+For buildings built before 1960: use "condition should be verified before estimating repair costs" or "electrical panel, wiring, plumbing, heating and roof age should be independently assessed" — do NOT write dollar amounts for age alone.
+
+================================
+MAINTENANCE CLAIM GUARDRAILS
+================================
+Do NOT write these phrases unless you have specific evidence (inspection report, contractor quote, electrical panel photo, repair record, or official age documentation):
+- "full rewiring may be needed"
+- "systems are near end of life"
+- "deferred maintenance confirmed"
+- "fire hazard"
+- "major repairs required"
+- "panel capacity is insufficient"
+- "electrical system is unsafe"
+
+Instead, use conservative language:
+- "Built in [year], so electrical panel, wiring updates, plumbing, heating and roof age should be verified before estimating repair costs."
+- "Photos show dated finishes, but major system condition still requires inspection."
+- "Older building systems may be original, updated, or partially updated — verify before relying on repair costs."
+- Use: "may", "could", "should verify", "condition unclear", "requires inspection"
 
 ================================
 LAYOUT & USE FLEXIBILITY ANALYSIS
@@ -1588,13 +1621,22 @@ LISTING LANGUAGE REALITY CHECK
 ================================
 Analyze the listing description for marketing language. Do NOT copy the language verbatim — translate it.
 
+CRITICAL LANGUAGE RULES — MANDATORY, not optional:
+- Every listing_language_reality_check entry MUST use "listing claims", "listing describes", or "listing suggests" in what_it_may_mean. NEVER present as verified fact.
+- NEVER use: "is confirmed", "is registered", "is verified", "allows rental", "separate dwelling", "legal to rent" — unless CO/DOB/HPD/ACRIS official records are explicitly shown on the page.
+- Do NOT write "registered with HPD" or "approved by CO" unless page explicitly shows official records.
+- Do NOT write "should allow rental use" or "is legally rentable" — write "rental legality still needs verification".
+- Do NOT write "no probate delays expected" — write "court approval may reduce one hurdle; title and liens still need independent verification".
+- Do NOT describe basement features (entrance, utilities) as confirmed unless explicitly stated on the listing page.
+
 Examples to watch for:
+- "legal two-family property" → "listing claims legal two-family use, but CO / HPD status and rental legality should still be verified"
+- "full above-grade basement that comprises the second unit" → "listing describes the above-grade basement as the second unit, but legal rental use, egress, ceiling height and utility setup still need verification"
+- "Probate sale with court approval already obtained" → "court approval may reduce one probate hurdle, but title, liens and closing conditions still need independent verification"
 - "plenty of possibilities" → may mean flexible use, but requires due diligence on legal layout and renovation scope
 - "cozy mother and daughter" → verify legal occupancy and Certificate of Occupancy
-- "2 or 3 possible bedroom" → one room may not be a standard/legal bedroom
 - "separate street entrance" → verify legality of rental use
-- "huge backyard" → assess maintenance burden and privacy
-- "A Must see!!" → may indicate desperation or a feature that photographs well but lacks substance
+- "2 or 3 possible bedroom" → one room may not be a standard/legal bedroom
 
 ================================
 NEIGHBORHOOD & LIFESTYLE
@@ -1624,7 +1666,8 @@ If the property is in Brooklyn, NYC, or coastal areas, flag:
 - Flat roof + coastal borough may affect insurance and maintenance costs
 - Water intrusion history (ask seller disclosures)
 
-DO NOT assert the property is in a flood zone unless explicitly stated. Use: "Verify — do not assume."
+DO NOT assert the property is in a flood zone unless explicitly stated in the listing text. Use: "Verify — do not assume."
+IMPORTANT: If flood zone, Walk Score, Bike Score, or school ratings are provided in the "LOCATION DATA (ZILLOW)" section in this prompt, use those values instead of saying they are unavailable.
 
 ================================
 LEGAL, ZONING & COMPLIANCE (NYC/Brooklyn critical)
@@ -3202,9 +3245,36 @@ function normalizeStep2Decision(
 
   const neighborhood_lifestyle = (decision as any).neighborhood_lifestyle ?? {};
 
+  // Inject extracted Zillow location data into neighborhood_lifestyle if AI output is empty
+  const extractedLocation = (decision as any)._extractedLocation ?? {};
+  if (extractedLocation.neighborhood || extractedLocation.floodZone || extractedLocation.walkScore || extractedLocation.bikeScore || extractedLocation.schoolRatings || extractedLocation.transit) {
+    const signals: string[] = [];
+    const extNeeded: string[] = [];
+    if (extractedLocation.neighborhood) signals.push(`Neighborhood: ${extractedLocation.neighborhood}`);
+    if (extractedLocation.walkScore) signals.push(`Walk Score: ${extractedLocation.walkScore}`);
+    if (extractedLocation.bikeScore) signals.push(`Bike Score: ${extractedLocation.bikeScore}`);
+    if (extractedLocation.schoolRatings) signals.push(`School Ratings: ${extractedLocation.schoolRatings}`);
+    if (extractedLocation.floodZone) signals.push(`Flood Zone: ${extractedLocation.floodZone}`);
+    if (!extractedLocation.walkScore) extNeeded.push('Walk Score / Transit Score');
+    if (!extractedLocation.schoolRatings) extNeeded.push('School ratings');
+    if (!extractedLocation.floodZone) extNeeded.push('Flood zone');
+    (neighborhood_lifestyle as any).page_signals = signals.length ? signals : (neighborhood_lifestyle as any).page_signals ?? [];
+    (neighborhood_lifestyle as any).external_data_needed = extNeeded.length ? extNeeded : (neighborhood_lifestyle as any).external_data_needed ?? [];
+  }
+
   const legal_compliance = (decision as any).legal_compliance ?? {};
 
   const environmental_risk = (decision as any).environmental_risk ?? {};
+
+  // Inject flood zone into environmental_risk when available from Zillow
+  if (extractedLocation.floodZone) {
+    if (!environmental_risk.items_to_check) (environmental_risk as any).items_to_check = [];
+    const fzList: string[] = (environmental_risk as any).items_to_check;
+    const hasFloodEntry = fzList.some((item: any) => /flood/i.test(String(item)));
+    if (!hasFloodEntry) {
+      fzList.push(`Flood Zone: ${extractedLocation.floodZone} — verify flood insurance cost and any basement water history`);
+    }
+  }
 
   const data_gaps = Array.isArray((decision as any).data_gaps)
     ? (decision as any).data_gaps
@@ -3656,6 +3726,9 @@ function normalizeBasicQuestions(result: any, hasZillowMonthly: boolean): any {
         category: 'Listing Facts',
         question: 'Can you provide the property type, beds, baths, and interior square footage?',
       };
+    } else if (knownParts.length >= 3) {
+      // 3+ basic fields already known — skip generating a redundant question about them
+      return null;
     }
 
     let questionSuffix = '';
@@ -3735,7 +3808,7 @@ function normalizeBasicQuestions(result: any, hasZillowMonthly: boolean): any {
     return result;
   }
 
-  result.questions_to_ask = transformed.slice(0, 5);
+  result.questions_to_ask = transformed.filter(Boolean).slice(0, 5);
   return result;
 }
 
@@ -4577,6 +4650,41 @@ function buildStep2Messages(
   description?: string,
   optionalDetails?: AnalyzeOptionalDetails,
   verifiedFacts?: {
+    // ── Basic property facts ──
+    address: string | null;
+    price: number | null;
+    price_display: string | null;
+    beds: number | null;
+    baths: number | null;
+    sqft: number | null;
+    propertyType: string | null;
+    yearBuilt: number | null;
+    // ── Zillow estimates ──
+    zestimate: number | null;
+    zestimate_display: string | null;
+    rentZestimate: number | null;
+    rentZestimate_display: string | null;
+    estimatedSalesRangeMin: number | null;
+    estimatedSalesRangeMax: number | null;
+    // ── Financial facts ──
+    pricePerSqft: number | null;
+    pricePerSqft_display: string | null;
+    taxAssessedValue: number | null;
+    taxAssessedValue_display: string | null;
+    annualTax: number | null;
+    annualTax_display: string | null;
+    daysOnMarket: number | null;
+    dateListed: string | null;
+    // ── Monthly payment (from zillowFinancials.monthlyPayment) ──
+    monthlyPayment: number | null;
+    monthlyPayment_display: string | null;
+    principalAndInterest: number | null;
+    propertyTaxMonthly: number | null;
+    homeInsuranceMonthly: number | null;
+    hoa: 'yes' | 'no' | 'unknown';
+    hoaAmount: number | null;
+    utilitiesIncluded: boolean | null;
+    // ── Legacy aliases (for existing logic) ──
     annual_tax: number | null;
     annual_tax_display: string | null;
     tax_assessed_value: number | null;
@@ -4585,6 +4693,12 @@ function buildStep2Messages(
     price_per_sqft_display: string | null;
     date_listed: string | null;
     available_date: string | null;
+    // ── Normalized property category ──
+    normalizedPropertyCategory: string;
+    displayType: string;
+    rawHomeType: string;
+    rawPropertyType: string;
+    rawPropertySubtype: string;
   },
 ) {
   // ── Prompt selection ───────────────────────────────────────────────────────
@@ -4613,6 +4727,20 @@ function buildStep2Messages(
   let textContent = visualAnalysis
     ? `VISUAL ANALYSIS RESULTS:\n${JSON.stringify(visualAnalysis, null, 2)}\n\n`
     : "VISUAL ANALYSIS RESULTS:\nNo photos provided - analysis based on listing description only.\n\n";
+
+  // ── P0-9: Photo evidence rules — prevent unfounded assertions from photo observations ─
+  textContent += `
+PHOTO EVIDENCE RULES (STRICT):
+- If a condition is NOT explicitly visible in the photos, you MUST use one of these conservative phrasings:
+  - "[area] condition is unclear from available photos"
+  - "[specific feature] not shown in available photos"
+  - "not verified from listing photos"
+- DO NOT write: "visible moisture", "visible cracks", "visible damage", "foundation issue"
+  UNLESS the photo clearly shows water stains, mold, active cracks, or structural failure.
+- Positive observations: Only report what is clearly visible and positive. Do not extrapolate condition from style or age.
+- When in doubt, state the photo coverage gap rather than inferring a problem.
+- These rules apply to ALL photo-based conclusions including basement, kitchen, bathroom, exterior, and roof observations.
+`;
 
   if (description?.trim()) {
     textContent += `LISTING DESCRIPTION:\n${description}\n\n`;
@@ -4697,6 +4825,44 @@ function buildStep2Messages(
     addDetail('School Ratings', optionalDetails.schoolRatings);
     addDetail('Raw Facts & Features', optionalDetails.facts);
 
+    // ── Zillow Monthly Payment Breakdown (inject into prompt so AI uses exact values, not recalculated) ──
+    const mp = verifiedFacts?.monthlyPayment;
+    const pi = verifiedFacts?.principalAndInterest;
+    const pt = verifiedFacts?.propertyTaxMonthly;
+    const ins = verifiedFacts?.homeInsuranceMonthly;
+    const mi = (verifiedFacts as any)?.mortgageInsurance;
+    const ha = verifiedFacts?.hoaAmount;
+    const mpDisplay = verifiedFacts?.monthlyPayment_display;
+    if (mp != null || pi != null || pt != null || ins != null || mi != null || ha != null || mpDisplay) {
+      textContent += `\nMONTHLY PAYMENT (ZILLOW ESTIMATE — USE THESE EXACT VALUES, DO NOT RECALCULATE OR ESTIMATE DIFFERENTLY. If the Estimated Monthly Payment is listed above, use it as-is for all monthly cost calculations.):`;
+      if (mp != null) textContent += `\n- Estimated Monthly Payment: $${mp.toLocaleString()}/mo`;
+      if (pi != null) textContent += `\n- Principal & Interest: $${pi.toLocaleString()}/mo`;
+      if (pt != null) textContent += `\n- Property Taxes: $${pt.toLocaleString()}/mo`;
+      if (ins != null) textContent += `\n- Home Insurance: $${ins.toLocaleString()}/mo`;
+      if (mi != null) textContent += `\n- Mortgage Insurance: $${mi.toLocaleString()}/mo`;
+      if (ha != null) textContent += `\n- HOA Fees: $${ha.toLocaleString()}/mo`;
+    }
+
+    // ── Zillow Location Facts (inject so AI uses real data, not inference) ──
+    // All location data is sourced from optionalDetails which carries Zillow-extracted values
+    const zf2 = (optionalDetails as any)?.zillowFinancials ?? {};
+    const od = optionalDetails;
+    const extractedNeighborhood = od?.neighborhood ?? od?.region ?? '';
+    const extractedFloodZone = (zf2 as any)?.floodZone ?? (od as any)?.floodZone ?? (od as any)?.flood_zone ?? '';
+    const extractedWalkScore = (zf2 as any)?.walkScore ?? (od as any)?.walkScore ?? (od as any)?.walk_score ?? '';
+    const extractedBikeScore = (zf2 as any)?.bikeScore ?? (od as any)?.bikeScore ?? (od as any)?.bike_score ?? '';
+    const extractedSchoolRatings = (zf2 as any)?.schoolRatings ?? (od as any)?.schoolRatings ?? (od as any)?.school_ratings ?? '';
+    const extractedTransit = (zf2 as any)?.transit ?? (od as any)?.transit ?? '';
+    if (extractedNeighborhood || extractedFloodZone || extractedWalkScore || extractedBikeScore || extractedSchoolRatings || extractedTransit) {
+      textContent += `\nLOCATION DATA (ZILLOW):`;
+      if (extractedNeighborhood) textContent += `\n- Neighborhood: ${extractedNeighborhood}`;
+      if (extractedFloodZone) textContent += `\n- Flood Zone: ${extractedFloodZone}`;
+      if (extractedWalkScore) textContent += `\n- Walk Score: ${extractedWalkScore}`;
+      if (extractedBikeScore) textContent += `\n- Bike Score: ${extractedBikeScore}`;
+      if (extractedSchoolRatings) textContent += `\n- School Ratings: ${extractedSchoolRatings}`;
+      if (extractedTransit) textContent += `\n- Transit Score: ${extractedTransit}`;
+    }
+
     // Debug log: verify facts are included
     console.log('[DIAG] Step2 optionalDetails included', {
       market,
@@ -4716,23 +4882,50 @@ Use these listing facts heavily in your analysis. Do not say tax, year built, ho
 If a field is not listed above, then treat it as unknown and add it to data_gaps or external_data_needed.
 `;
     }
-    // ── Step 4: Inject verified facts for US market ───────────────────────────
+    // ── Step 4: Inject verified facts for US market ──────────────────────────────────────────
     if (market === 'US' && verifiedFacts) {
       const vfParts: string[] = [];
-      if (verifiedFacts.annual_tax_display) {
-        vfParts.push(`- Annual property tax: ${verifiedFacts.annual_tax_display}`);
+
+      // Basic property facts
+      if (verifiedFacts.address) vfParts.push(`- Address: ${verifiedFacts.address}`);
+      if (verifiedFacts.price_display) vfParts.push(`- Asking Price: ${verifiedFacts.price_display}`);
+      if (verifiedFacts.beds != null) vfParts.push(`- Bedrooms: ${verifiedFacts.beds}`);
+      if (verifiedFacts.baths != null) vfParts.push(`- Bathrooms: ${verifiedFacts.baths}`);
+      if (verifiedFacts.sqft != null) vfParts.push(`- Sqft: ${verifiedFacts.sqft}`);
+      if (verifiedFacts.propertyType) vfParts.push(`- Property Type: ${verifiedFacts.propertyType}`);
+      if (verifiedFacts.yearBuilt != null) vfParts.push(`- Year Built: ${verifiedFacts.yearBuilt}`);
+
+      // Financial facts
+      if (verifiedFacts.annualTax_display) vfParts.push(`- Annual property tax: ${verifiedFacts.annualTax_display}`);
+      if (verifiedFacts.taxAssessedValue_display) vfParts.push(`- Tax assessed value: ${verifiedFacts.taxAssessedValue_display}`);
+      if (verifiedFacts.pricePerSqft_display) vfParts.push(`- Price per sqft: ${verifiedFacts.pricePerSqft_display}`);
+      if (verifiedFacts.dateListed) vfParts.push(`- Date listed: ${verifiedFacts.dateListed}`);
+      if (verifiedFacts.daysOnMarket != null) vfParts.push(`- Days on market: ${verifiedFacts.daysOnMarket}`);
+
+      // Zillow estimates
+      if (verifiedFacts.zestimate_display) vfParts.push(`- Zestimate: ${verifiedFacts.zestimate_display}`);
+      if (verifiedFacts.rentZestimate_display) vfParts.push(`- Rent Zestimate: ${verifiedFacts.rentZestimate_display}`);
+      if (verifiedFacts.estimatedSalesRangeMin != null && verifiedFacts.estimatedSalesRangeMax != null) {
+        vfParts.push(`- Estimated sales range: $${verifiedFacts.estimatedSalesRangeMin.toLocaleString()} - $${verifiedFacts.estimatedSalesRangeMax.toLocaleString()}`);
       }
-      if (verifiedFacts.tax_assessed_value_display) {
-        vfParts.push(`- Tax assessed value: ${verifiedFacts.tax_assessed_value_display}`);
+
+      // Monthly payment
+      if (verifiedFacts.monthlyPayment != null) {
+        vfParts.push(`- Estimated monthly payment: $${verifiedFacts.monthlyPayment.toLocaleString()}/mo`);
       }
-      if (verifiedFacts.price_per_sqft_display) {
-        vfParts.push(`- Price per sqft: ${verifiedFacts.price_per_sqft_display}`);
+      if (verifiedFacts.principalAndInterest != null) {
+        vfParts.push(`- Principal & interest: $${verifiedFacts.principalAndInterest.toLocaleString()}/mo`);
       }
-      if (verifiedFacts.date_listed) {
-        vfParts.push(`- Date listed: ${verifiedFacts.date_listed}`);
+      if (verifiedFacts.hoa === 'yes' && verifiedFacts.hoaAmount != null) {
+        vfParts.push(`- HOA: $${verifiedFacts.hoaAmount}/mo`);
+      } else if (verifiedFacts.hoa === 'no') {
+        vfParts.push(`- HOA: None`);
       }
-      if (verifiedFacts.available_date) {
-        vfParts.push(`- Available date: ${verifiedFacts.available_date}`);
+
+      // Property type classification
+      vfParts.push(`- Normalized Property Category: ${verifiedFacts.normalizedPropertyCategory}`);
+      if (verifiedFacts.displayType) {
+        vfParts.push(`- Display Type: ${verifiedFacts.displayType}`);
       }
 
       if (vfParts.length > 0) {
@@ -4741,15 +4934,199 @@ If a field is not listed above, then treat it as unknown and add it to data_gaps
 |${vfParts.join('\n')}
 |
 |RULES:
-|- If annual property tax is listed above, you MUST include it as carrying_costs.annual_tax.
-|- If annual property tax is listed above, you MUST NOT say annual tax is unknown.
-|- If annual property tax is listed above, you MUST NOT include "annual property tax" in missing_costs.
-|- If tax assessed value is listed above, include it in tax_context (it is NOT market value).
-|- If price per sqft is listed above, include it in price_assessment.price_per_sqft_context.
-|- HOA may remain "Unknown" if not provided — do not force a value.
-|- If annual tax is known but HOA is unknown, describe HOA status separately — do NOT say "annual tax and HOA unknown".
+|- The fields above are from Zillow listing data and are VERIFIED. You MUST include them in the report.
+|- If Year Built is listed above, you MUST NOT say year built is unknown.
+|- If Zestimate is listed above, you MUST include it in price_assessment.zestimate_context. Do NOT say "No Zestimate available".
+|- If Rent Zestimate is listed above, include it in price_assessment.rent_context.
+|- If Annual property tax is listed above, you MUST include it as carrying_costs.annual_tax. Do NOT say annual tax is unknown.
+|- If Price per sqft is listed above, you MUST include it in price_assessment.price_per_sqft_context. Do NOT say price-per-sqft data is not available.
+|- If Estimated monthly payment is listed above, include it in carrying_costs.primary_monthly_estimate.
+|- If HOA is listed as "None", set carrying_costs.hoa = "No".
+|- Do NOT ask about missing basic property details (beds/baths/sqft/propertyType) if they are listed above.
+|- If a field is listed above, it is KNOWN — do NOT list it as a question to ask.
 `;
       }
+    }
+  }
+
+  // ── Inject property-type-specific instructions for US SALE ──────────────────
+  if (market === 'US' && reportMode === 'sale' && verifiedFacts) {
+    const cat = verifiedFacts.normalizedPropertyCategory;
+    let typeInstructions = '';
+
+    if (cat === 'co_op') {
+      typeInstructions = `
+|PROPERTY TYPE: CO-OP
+|This listing is a cooperative (co-op). Apply the co-op-specific rules below.
+|
+|SUPPRESS — do NOT generate any of the following unless the listing explicitly states them:
+|  - "two-family", "multi-family", "duplex", "income unit", "rental unit", "rental income", "second unit"
+|  - "probate", "title issue", "court approval", "oil heating", "oil tank"
+|  - "basement rental", "basement apartment", "legal basement", "rent roll", "lease terms", "legal unit count"
+|  - "certificate of occupancy" as a rental or income concern
+|If the listing does not explicitly mention these, do NOT generate them.
+|
+|PRIORITIZE in hidden_risks, questions_to_ask, and deal_breakers (when listing data is available):
+|- Monthly maintenance fee amount and what it includes (e.g., taxes, electricity, water, heat, hot water)
+|- Current or upcoming special assessments
+|- Board approval requirements and timeline
+|- Sublet/rental policy (how many years before subletting, limits, fees)
+|- Flip tax amount and calculation
+|- Reserve fund balance and building financials (last 2-3 years)
+|- Financing restrictions (allowed types: conventional, FHA, co-op-specific; minimum down payment)
+|- Owner-occupancy requirements
+|- Walkup vs elevator access and its effect on resale
+|- Building age, roof, boiler, facade, plumbing, electrical updates
+|- Long days on market - ask why, whether there were prior offers or board rejections
+|- Parking availability and waitlist
+|- Yearly AC fee (if listing mentions it)
+|
+|BOTTOM LINE guidance for CO-OP:
+|  - The low asking price may reflect high maintenance, restrictive board rules, financing limits, or building problems - do NOT mark it as "Likely Overpriced" without first flagging maintenance cost uncertainty.
+|  - Focus on: maintenance verification, board rules, assessments, financing eligibility.
+|  - Do NOT mention two-family, probate, oil heating, rent roll, or legal unit count.
+|  - If the listing mentions "maintenance includes electricity and taxes", reference this and note it should be confirmed with the board.
+|
+|VERDICT guidance: Do NOT say "Likely Overpriced" just because price is low or days on market is high. For co-ops with undisclosed maintenance, prefer "High Verification Risk" or "Needs Cost Verification".
+`;
+    } else if (cat === 'single_family') {
+      typeInstructions = `
+|PROPERTY TYPE: SINGLE-FAMILY HOME
+|This is a single-family residence. Apply the single-family rules below.
+|
+|IMPORTANT — DO NOT over-infer rental income:
+|- "Finished lower level", "mother-daughter layout", or "separate entrance" does NOT automatically mean legal rental or basement bedroom.
+|- Do NOT mention "second unit rent" or "legal two-family status" unless the listing explicitly confirms multi-family legal use.
+|- Do NOT use "rental income potential" as a primary use case unless explicit.
+|
+|WHERE listing mentions "finished lower level" or "mother-daughter":
+|- State: "Finished lower level / mother-daughter layout may not be legal sleeping space or rental space unless egress, ceiling height, permits, and Certificate of Occupancy support it."
+|- Flag: Ask for the Certificate of Occupancy to confirm legal use.
+|
+|PRIORITIZE in hidden_risks and questions_to_ask:
+|- Roof age and condition
+|- Boiler, water heater, and HVAC age
+|- Electrical panel capacity and material
+|- Plumbing age and material (copper, galvanized, PEX)
+|- Basement moisture, foundation, and drainage
+|- Permits for finished basement or recent renovations
+|- Certificate of Occupancy to confirm legal use
+|- DOB records and open violations
+|- Comparable single-family sales (not rental comps)
+|- Insurance and utility costs
+`;
+    } else if (cat === 'multi_family') {
+      typeInstructions = `
+|PROPERTY TYPE: MULTI-FAMILY HOME
+|This is a multi-family property. Apply the multi-family rules below.
+|
+|SUPPRESS (do not include in hidden_risks, questions_to_ask, or data_gaps unless the listing EXPLICITLY mentions basement-related keywords):
+|- "Basement rental legality" or "basement apartment income" — only include if listing explicitly mentions: basement, finished basement, lower level, cellar, below grade, basement apartment, or mother/daughter lower level. Otherwise DO NOT mention basement as a rental risk.
+|- Default "Legal unit count" phrasing — instead phrase as "Certificate of Occupancy confirming legal unit count"
+|
+|PRIORITIZE in hidden_risks, questions_to_ask, and deal_breakers:
+|- Certificate of Occupancy confirming legal unit count
+|- Actual rent roll and current lease terms
+|- Rent stabilization or rent control status of any units
+|- Separate utilities metering: If the listing mentions "Separate Gas Meters: N", include it in hidden_risks. If N=1 for a two-family, flag as owner-paid utility risk.
+|- Fire safety and egress for each unit
+|- Open DOB, HPD, ECB, or fire violations
+|- Actual annual operating expenses (last 2-3 years)
+|- Cap rate and NOI based on actual (not estimated) rents
+|- Any illegal or unpermitted units and path to legalization
+|- Tenant profiles and lease expiration dates
+|- Insurance costs for multi-family
+`;
+    } else if (cat === 'condo') {
+      typeInstructions = `
+|PROPERTY TYPE: CONDO
+|This is a condominium. Apply the condo rules below.
+|
+|SUPPRESS — DO NOT GENERATE:
+|- Basement rental legality or basement rental income (condos do not have basement rental units)
+|- Legal two-family status, CO as rental-income issue, rent roll, or second-unit rent
+|- Probate, estate sale, or sheriff's sale language
+|- Oil heating or oil tank references
+|- Multi-family compliance, unit count, or rental income potential
+|
+|PRIORITIZE in hidden_risks and questions_to_ask:
+|- HOA common charges amount and what's included
+|- Special assessments (current or upcoming)
+|- Reserve fund balance and reserve study date
+|- Master insurance policy coverage and deductible
+|- Rental restrictions and right of first refusal policy
+|- Pending or active HOA litigation or board disputes
+|- Owner-occupancy ratio and any financing restrictions
+|- Deeded parking documentation and exclusive-use rights
+|- Building maintenance responsibility (who maintains what)
+`;
+    } else if (cat === 'townhouse') {
+      typeInstructions = `
+|PROPERTY TYPE: TOWNHOUSE
+|This is a townhouse. Apply the townhouse rules below.
+|
+|PRIORITIZE in hidden_risks and questions_to_ask:
+|- HOA fees, what they cover (exterior maintenance, roof, landscaping, snow removal)
+|- Exterior maintenance responsibilities and shared-wall obligations
+|- Parking arrangements (deeded, assigned, or unassigned spots)
+|- Reserve fund and special assessment history
+|- Renovation permit history
+|- Comparable townhouse sales in the same HOA or neighborhood
+`;
+    } else if (cat === 'land') {
+      typeInstructions = `
+|PROPERTY TYPE: LAND / LOT
+|This is a vacant land or lot listing. Apply the land rules below.
+|
+|SUPPRESS: All interior/photo room analysis. Do not discuss bedrooms, kitchens, bathrooms, basement, or interior systems.
+|
+|PRIORITIZE in hidden_risks and questions_to_ask:
+|- Zoning and permitted uses (confirm with local planning department)
+|- Buildability for your intended use (setbacks, height limits,着什么)
+|- Utilities availability and cost at the lot line (water, sewer, gas, electric)
+|- Current survey showing lot dimensions, boundaries, easements
+|- FEMA flood zone designation and flood insurance requirement
+|- Phase I environmental report or history of contamination
+|- Legal access (frontage on public road or recorded easement)
+|- Comparable vacant land sales
+`;
+    } else if (cat === 'manufactured') {
+      typeInstructions = `
+|PROPERTY TYPE: MANUFACTURED HOME
+|This is a manufactured or mobile home. Apply the manufactured home rules below.
+|
+|PRIORITIZE in hidden_risks and questions_to_ask:
+|- Land ownership: do you own the lot or rent in a park? Monthly lot rent amount?
+|- Park rules, age restrictions, pet policies, lot rent increase limits
+|- Financing options (conventional, chattel loan, or other) and whether land is included
+|- HUD tag number, construction date, original installation records
+|- Foundation type and whether properly anchored
+|- Clear title and any liens on the home or lot
+|- Total monthly cost: lot rent + home payment + insurance + utilities + park fees
+`;
+    }
+
+    if (typeInstructions) {
+      textContent += typeInstructions;
+    }
+
+    // Category-specific BOTTOM LINE rules - must be AFTER typeInstructions
+    if (cat === 'co_op') {
+      textContent += `
+|BOTTOM LINE for CO-OP: Focus on affordability, maintenance cost verification, board rules, and financing. Do NOT mention two-family, probate, oil heating, rent roll, or legal unit count unless the listing explicitly states them.
+`;
+    } else if (cat === 'multi_family') {
+      textContent += `
+|BOTTOM LINE for MULTI-FAMILY: Focus on CO, rent roll, legal unit count, utility metering, and operating expenses. Only mention probate, oil, or TLC if the listing explicitly states them.
+`;
+    } else if (cat === 'single_family') {
+      textContent += `
+|BOTTOM LINE for SINGLE-FAMILY: Focus on systems age, permit history, and condition. Do NOT mention rental income, rent roll, two-family, or legal unit count unless the listing explicitly states them.
+`;
+    } else if (cat === 'condo') {
+      textContent += `
+|BOTTOM LINE for CONDO: Focus on HOA financials, reserve fund balance, special assessments, rental restrictions, master insurance, and deeded parking documentation. Do NOT mention probate, oil heating, rent roll, two-family status, or CO as rental-income issue unless the listing explicitly states them.
+`;
     }
   }
 
@@ -5745,7 +6122,13 @@ ${optionalDetails.askingPrice ? `Asking Price: ${optionalDetails.askingPrice}\n`
         heating: String((optionalDetails as Record<string, unknown>)?.heating ?? ''),
         basement: String((optionalDetails as Record<string, unknown>)?.basement ?? ''),
         fireplace: String((optionalDetails as Record<string, unknown>)?.fireplace ?? ''),
-        region: String((optionalDetails as Record<string, unknown>)?.region ?? (optionalDetails as Record<string, unknown>)?.suburb ?? ''),
+        region: (() => {
+          const rawRegion = String((optionalDetails as Record<string, unknown>)?.region ?? (optionalDetails as Record<string, unknown>)?.suburb ?? '');
+          // Skip if region looks like a full street address (same guard as frontend usSale.ts line 410-414)
+          const isFullAddress = /^\d+\s+[A-Za-z].*,.*[A-Z]{2}\s*\d{5}/.test(rawRegion)
+            || /^\d+\s+[A-Za-z][A-Za-z\s]*\s*(avenue|street|ave|st|road|rd|drive|dr|place|pl|boulevard|blvd|terrace|ter|court|ct|lane|ln)\b/i.test(rawRegion);
+          return isFullAddress ? '' : rawRegion;
+        })(),
       };
 
       // Build Zillow monthly cost snapshot
@@ -6291,7 +6674,178 @@ ${optionalDetails.askingPrice ? `Asking Price: ${optionalDetails.askingPrice}\n`
         ?? (od.availableDate as string | null)
         ?? null;
 
+      // ── Property-type classification for report routing ────────────────────────
+      // Drives which risk modules, questions, and content templates are used.
+      // Priority order: co_op first (critical), then condo, townhouse, multi_family,
+      // single_family, manufactured, land, apartment, unknown.
+      // IMPORTANT: Do not rely on a single raw field. Combine homeType, propertyType,
+      // propertySubtype, and listingDescription text signals.
+      const rawHomeType = String(od.homeType ?? od.home_type ?? '').toLowerCase();
+      const rawPropertyType = String(od.propertyType ?? '').toLowerCase();
+      const rawPropertySubtype = String((od as any).propertySubtype ?? '').toLowerCase();
+      const descriptionText = [
+        (od as any).description ?? '',
+        (od as any).highlights ?? '',
+        (financial as any).description ?? '',
+        (od as any).factsText ?? '',
+      ].join(' ').toLowerCase();
+      const combinedText = [rawHomeType, rawPropertyType, rawPropertySubtype, descriptionText].join(' ');
+
+      /**
+       * Normalize US property category using multi-source signals.
+       * Priority: co_op > condo > townhouse > multi_family > single_family >
+       * manufactured > land > apartment > unknown
+       */
+      function normalizeUSPropertyCategory(input: {
+        homeType?: string | null;
+        propertyType?: string | null;
+        propertySubtype?: string | null;
+        listingDescription?: string | null;
+        factsText?: string | null;
+      }): string {
+        const allText = [
+          input.homeType ?? '',
+          input.propertyType ?? '',
+          input.propertySubtype ?? '',
+          input.listingDescription ?? '',
+          input.factsText ?? '',
+        ].join(' ').toLowerCase();
+
+        // 1. Co-op detection FIRST — must not fall through to condo/land
+        if (/cooperative|stock cooperative|co-op\b|coop\b/i.test(allText)) {
+          return 'co_op';
+        }
+        // 2. Condo
+        if (/condo|condominium/i.test(allText)) {
+          return 'condo';
+        }
+        // 3. Townhouse
+        if (/townhouse|townhome|rowhouse/i.test(allText)) {
+          return 'townhouse';
+        }
+        // 4. Multi-family — explicit type OR listing text signals
+        if (/multi.family|multi.family residence|duplex|triplex|fourplex|2 family|two.family|3 family|three.family|4 family/i.test(allText)) {
+          return 'multi_family';
+        }
+        // 5. Single-family — do NOT match just because year/price suggests it
+        if (/single.family|single family residence|single family home|house\b/i.test(allText)) {
+          return 'single_family';
+        }
+        // 6. Manufactured
+        if (/manufactured|mobile home|modular/i.test(allText)) {
+          return 'manufactured';
+        }
+        // 7. Land
+        if (/\blot\b|\bland\b|vacant land/i.test(allText)) {
+          return 'land';
+        }
+        // 8. Apartment
+        if (/apartment\b/i.test(allText)) {
+          return 'apartment';
+        }
+        // 9. Otherwise
+        return 'unknown';
+      }
+
+      const normalizedPropertyCategory = normalizeUSPropertyCategory({
+        homeType: (od.homeType ?? od.home_type) as string ?? null,
+        propertyType: od.propertyType as string ?? null,
+        propertySubtype: (od as any).propertySubtype as string ?? null,
+        listingDescription: descriptionText,
+        factsText: null,
+      });
+
+      // Legacy reportProfile — map normalized category to existing values for backward compat
+      const LEGACY_PROFILE_MAP: Record<string, string> = {
+        co_op: 'coop',
+        condo: 'condo',
+        single_family: 'single_family_owner_occupier',
+        townhouse: 'townhouse',
+        multi_family: 'multi_family',
+        manufactured: 'unknown',
+        land: 'land',
+        apartment: 'unknown',
+        unknown: 'unknown',
+      };
+      const reportProfile = LEGACY_PROFILE_MAP[normalizedPropertyCategory] ?? 'unknown';
+
+      // Display type label for UI
+      const DISPLAY_TYPE_MAP: Record<string, string> = {
+        co_op: 'Co-op',
+        condo: 'Condo',
+        single_family: 'Single-family home',
+        townhouse: 'Townhouse',
+        multi_family: 'Multi-family home',
+        manufactured: 'Manufactured home',
+        land: 'Land / lot',
+        apartment: 'Apartment',
+        unknown: 'Not clearly disclosed',
+      };
+      const displayType = DISPLAY_TYPE_MAP[normalizedPropertyCategory] ?? 'Not clearly disclosed';
+
+      console.log('[US Report] property normalization', {
+        rawHomeType,
+        rawPropertyType,
+        rawPropertySubtype,
+        normalizedPropertyCategory,
+        displayType,
+        reportProfile,
+      });
+
       const verifiedFacts = {
+        // ── Basic property facts ──
+        address: String(od.address ?? od.fullAddress ?? od.streetAddress ?? '') || null,
+        price: parseVerifiedNumberLocal(od.askingPrice ?? od.price) ?? null,
+        price_display: String(od.askingPrice ?? od.price ?? ''),
+        beds: typeof od.bedrooms === 'number' ? od.bedrooms : null,
+        baths: typeof od.bathrooms === 'number' ? od.bathrooms : null,
+        sqft: parseVerifiedNumberLocal(od.sqft) ?? null,
+        propertyType: (od.propertyType as string | null) ?? null,
+        yearBuilt: parseVerifiedNumberLocal(od.yearBuilt) ?? null,
+        // ── Zillow estimates ──
+        zestimate: parseVerifiedNumberLocal(od.zestimate) ?? null,
+        zestimate_display: String(od.zestimate ?? ''),
+        rentZestimate: parseVerifiedNumberLocal(od.rentZestimate) ?? null,
+        rentZestimate_display: String(od.rentZestimate ?? ''),
+        // estimatedSalesRange injected by content.js into optionalDetails.estimatedSalesRange
+        estimatedSalesRangeMin: parseVerifiedNumberLocal(
+          (od as any)?.estimatedSalesRange?.min
+        ) ?? null,
+        estimatedSalesRangeMax: parseVerifiedNumberLocal(
+          (od as any)?.estimatedSalesRange?.max
+        ) ?? null,
+        // ── Financial facts ──
+        pricePerSqft: parseVerifiedNumberLocal(
+          financial.pricePerSqft ?? od.pricePerSqftAmount ?? od.pricePerSqft
+        ) ?? null,
+        pricePerSqft_display: (financial.pricePerSqftDisplay as string | null)
+          ?? (typeof (od.pricePerSqft as string) === 'string' ? (od.pricePerSqft as string) : null)
+          ?? (verifiedPricePerSqft != null ? '$' + verifiedPricePerSqft + '/sqft' : null),
+        taxAssessedValue: verifiedTaxAssessed,
+        taxAssessedValue_display: verifiedTaxAssessedDisplay,
+        annualTax: verifiedAnnualTax,
+        annualTax_display: verifiedAnnualTaxDisplay,
+        daysOnMarket: parseVerifiedNumberLocal(od.daysOnZillow ?? od.daysOnMarket) ?? null,
+        dateListed: verifiedDateListed,
+        // ── Monthly payment (from zillowFinancials.monthlyPayment) ──
+        monthlyPayment: (zillowFinancials as any)?.monthlyPayment?.estimatedMonthlyPayment?.value ?? null,
+        monthlyPayment_display: String(
+          (zillowFinancials as any)?.monthlyPayment?.estimatedMonthlyPayment?.raw ?? ''
+        ),
+        principalAndInterest:
+          (zillowFinancials as any)?.monthlyPayment?.principalAndInterest?.value ?? null,
+        propertyTaxMonthly:
+          (zillowFinancials as any)?.monthlyPayment?.propertyTaxes?.value
+          ?? (verifiedAnnualTax != null ? Math.round(verifiedAnnualTax / 12) : null),
+        homeInsuranceMonthly:
+          (zillowFinancials as any)?.monthlyPayment?.homeInsurance?.value ?? null,
+        hoa: (((zillowFinancials as any)?.monthlyPayment?.hoaFees?.status === 'not_applicable') ? 'no' as const
+          : ((zillowFinancials as any)?.monthlyPayment?.hoaFees?.value != null ? 'yes' : 'unknown')) as 'yes' | 'no' | 'unknown',
+        hoaAmount: (zillowFinancials as any)?.monthlyPayment?.hoaFees?.value ?? null,
+        utilitiesIncluded:
+          ((zillowFinancials as any)?.monthlyPayment?.utilities?.status === 'not_included') ? false
+          : ((zillowFinancials as any)?.monthlyPayment?.utilities?.value != null ? true : null),
+        // ── Legacy aliases ──
         annual_tax: verifiedAnnualTax,
         annual_tax_display: verifiedAnnualTaxDisplay,
         tax_assessed_value: verifiedTaxAssessed,
@@ -6300,9 +6854,60 @@ ${optionalDetails.askingPrice ? `Asking Price: ${optionalDetails.askingPrice}\n`
         price_per_sqft_display: verifiedPricePerSqftDisplay,
         date_listed: verifiedDateListed,
         available_date: verifiedAvailableDate,
+        // ── Property-type classification ──
+        reportProfile,
+        normalizedPropertyCategory,
+        displayType,
+        rawHomeType,
+        rawPropertyType,
+        rawPropertySubtype,
       };
 
-      console.log('[Analyze] verified financial facts', verifiedFacts);
+      // ── P0-5: Annual tax anomaly guard ──────────────────────────────────────────
+      // Zillow/StreetEasy pages sometimes format tax data in ways that parse to
+      // wildly incorrect values (e.g. $656,604 for a $725,000 home — annual tax > 90%
+      // of price). If annual_tax > 5% of price, suppress it and let the frontend
+      // derive effective annual tax from monthlyPayment.propertyTaxes * 12 instead.
+      const priceForTaxGuard = verifiedFacts.price ?? parseVerifiedNumberLocal(od.askingPrice ?? od.price) ?? 0;
+      const isAnnualTaxSuspectedAnomaly = verifiedFacts.annualTax != null
+        && priceForTaxGuard > 0
+        && verifiedFacts.annualTax > priceForTaxGuard * 0.05;
+      if (isAnnualTaxSuspectedAnomaly) {
+        console.warn('[Analyze] suspected_parse_error: annual_tax', verifiedFacts.annualTax,
+          '> 5% of price', priceForTaxGuard, '— suppressing, will use derived monthly tax');
+        // Suppress so downstream code (property_snapshot, Step 6 overrides) all see null
+        verifiedFacts.annualTax = null;
+        verifiedFacts.annualTax_display = null;
+        verifiedFacts.annual_tax = null;
+        verifiedFacts.annual_tax_display = null;
+      }
+
+      console.log('[HS DEBUG][verifiedFacts]', {
+        yearBuilt: verifiedFacts.yearBuilt,
+        zestimate: verifiedFacts.zestimate,
+        rentZestimate: verifiedFacts.rentZestimate,
+        estimatedSalesRange: {
+          min: verifiedFacts.estimatedSalesRangeMin,
+          max: verifiedFacts.estimatedSalesRangeMax,
+        },
+        pricePerSqft: verifiedFacts.pricePerSqft,
+        annualTax: verifiedFacts.annualTax,
+        monthlyPayment: verifiedFacts.monthlyPayment,
+        principalAndInterest: verifiedFacts.principalAndInterest,
+        propertyTaxMonthly: verifiedFacts.propertyTaxMonthly,
+        homeInsuranceMonthly: verifiedFacts.homeInsuranceMonthly,
+        hoa: verifiedFacts.hoa,
+        utilitiesIncluded: verifiedFacts.utilitiesIncluded,
+        beds: verifiedFacts.beds,
+        baths: verifiedFacts.baths,
+        sqft: verifiedFacts.sqft,
+        propertyType: verifiedFacts.propertyType,
+        daysOnMarket: verifiedFacts.daysOnMarket,
+        // show null status for key fields
+        yearBuilt_null: verifiedFacts.yearBuilt == null,
+        zestimate_null: verifiedFacts.zestimate == null,
+        monthlyPayment_null: verifiedFacts.monthlyPayment == null,
+      });
 
       const step2Messages = buildStep2Messages(
         reportMode,
@@ -6322,7 +6927,80 @@ ${optionalDetails.askingPrice ? `Asking Price: ${optionalDetails.askingPrice}\n`
       console.log("[Step 2] raw text preview:", step2RawText.slice(0, 1000));
 
       // Normalize Step2 decision to unified schema (handles US/AU field name differences)
+      // First: inject extracted location data into decision so normalizeStep2Decision can use it
+      // Also save a reference so we can pass it through to the result.listingInfo for the frontend
+      const zfLoc = ((body as any)?.zillowFinancials) || ((optionalDetails as any)?.zillowFinancials) || {};
+      const ldLoc = ((body as any)?.listingData) || {};
+      const extractedLocation = {
+        neighborhood: ldLoc?.neighborhood ?? (optionalDetails as any)?.region ?? (optionalDetails as any)?.neighborhood ?? '',
+        floodZone: (zfLoc as any)?.floodZone ?? (ldLoc as any)?.floodZone ?? (optionalDetails as any)?.floodZone ?? '',
+        walkScore: (zfLoc as any)?.walkScore ?? (ldLoc as any)?.walkScore ?? (optionalDetails as any)?.walkScore ?? '',
+        bikeScore: (zfLoc as any)?.bikeScore ?? (ldLoc as any)?.bikeScore ?? (optionalDetails as any)?.bikeScore ?? '',
+        schoolRatings: (zfLoc as any)?.schoolRatings ?? (ldLoc as any)?.schoolRatings ?? (optionalDetails as any)?.schoolRatings ?? '',
+        transit: (zfLoc as any)?.transit ?? (ldLoc as any)?.transit ?? (optionalDetails as any)?.transit ?? '',
+      };
+      (decision as any)._extractedLocation = extractedLocation;
       const normalizedDecision = normalizeStep2Decision(decision, detectedMarket, optionalDetails);
+  // Basement suppression for multi-family when listing has no basement signal
+  // Even with prompt instructions, the AI may generate basement rental items for
+  // multi-family listings that dont actually mention basement. Strip them here.
+  const normCat = verifiedFacts?.normalizedPropertyCategory ?? '';
+  const basementText = String((optionalDetails as any)?.basement ?? '').toLowerCase();
+  const hasBasementSignal = /basement|finished basement|lower level|cellar|below grade|basement apartment|mother.*daughter/i.test(basementText);
+  if (normCat === 'multi_family' && !hasBasementSignal) {
+    const basementKws = /basement\s*(rental|apartment|legality|income)|basement.*rental/i;
+    // Strip from hidden_risks
+    if (Array.isArray(normalizedDecision.hidden_risks)) {
+      const before = normalizedDecision.hidden_risks.length;
+      normalizedDecision.hidden_risks = normalizedDecision.hidden_risks.filter((r: string) => !basementKws.test(r));
+      console.log('[basement suppression] hidden_risks: removed', before - normalizedDecision.hidden_risks.length);
+    }
+    // Strip from questions_to_ask
+    if (Array.isArray(normalizedDecision.questions_to_ask)) {
+      const before = normalizedDecision.questions_to_ask.length;
+      normalizedDecision.questions_to_ask = normalizedDecision.questions_to_ask.filter((q: any) => {
+        const qText = typeof q === 'string' ? q : (q.question ?? q.text ?? '');
+        return !basementKws.test(qText);
+      });
+      console.log('[basement suppression] questions_to_ask: removed', before - normalizedDecision.questions_to_ask.length);
+    }
+    // Strip from data_gaps
+    if (Array.isArray(normalizedDecision.data_gaps)) {
+      const before = normalizedDecision.data_gaps.length;
+      normalizedDecision.data_gaps = normalizedDecision.data_gaps.filter((g: any) => {
+        const gText = typeof g === 'string' ? g : (g.missing_item ?? g.title ?? '');
+        return !basementKws.test(gText);
+      });
+      console.log('[basement suppression] data_gaps: removed', before - normalizedDecision.data_gaps.length);
+    }
+  }
+
+  // ── Condo suppression: strip multi-family/rental/CO-rental items from hidden_risks, questions_to_ask, and data_gaps ──
+  if (normCat === 'condo') {
+    const condoBadKws = /basement\s*(rental|apartment|legality|income)|legal\s*two.family|two.family\s*status|rent\s*roll|second\s*unit|second\s*unit rent|probate.*title|title.*probate|oil\s*heating|oil\s*tank|co.*as\s*rental|rental.*income.*co|certificate.*rental.*income/i;
+    const beforeHR = normalizedDecision.hidden_risks?.length ?? 0;
+    normalizedDecision.hidden_risks = (normalizedDecision.hidden_risks ?? []).filter((r: string) => !condoBadKws.test(r));
+    normalizedDecision.hidden_risks = (normalizedDecision.hidden_risks ?? []).filter((r: string) => !/certificate of occupancy as rental|income.operational/i.test(r));
+    console.log('[condo suppression] hidden_risks: removed', beforeHR - (normalizedDecision.hidden_risks?.length ?? 0));
+
+    if (Array.isArray(normalizedDecision.questions_to_ask)) {
+      const beforeQ = normalizedDecision.questions_to_ask.length;
+      normalizedDecision.questions_to_ask = normalizedDecision.questions_to_ask.filter((q: any) => {
+        const qText = typeof q === 'string' ? q : (q.question ?? q.text ?? '');
+        return !condoBadKws.test(qText);
+      });
+      console.log('[condo suppression] questions_to_ask: removed', beforeQ - normalizedDecision.questions_to_ask.length);
+    }
+
+    if (Array.isArray(normalizedDecision.data_gaps)) {
+      const beforeD = normalizedDecision.data_gaps.length;
+      normalizedDecision.data_gaps = normalizedDecision.data_gaps.filter((g: any) => {
+        const gText = typeof g === 'string' ? g : (g.missing_item ?? g.title ?? '');
+        return !condoBadKws.test(gText);
+      });
+      console.log('[condo suppression] data_gaps: removed', beforeD - normalizedDecision.data_gaps.length);
+    }
+  }
 
       // Stable Zillow sale check — not just market === 'US'
       const isZillowSale = String((body as any)?.sourceDomain || '').includes('zillow')
@@ -6705,6 +7383,12 @@ ${optionalDetails.askingPrice ? `Asking Price: ${optionalDetails.askingPrice}\n`
         listingUrl: (body as Record<string, unknown>).listingUrl as string | null
           ?? (optionalDetails as Record<string, unknown>).listingUrl as string | null
           ?? null, // listing URL for frontend source detection
+        // reportProfile: property-type classification driving which risk modules and questions are shown
+        // Added by post-processing from verifiedFacts.reportProfile
+        reportProfile: verifiedFacts.reportProfile as string,
+        // normalizedPropertyCategory: canonical property type for display and routing
+        normalizedPropertyCategory: verifiedFacts.normalizedPropertyCategory as string,
+        displayType: verifiedFacts.displayType as string,
         overallScore: overallScoreNum,
         finalRecommendation: normalizedDecision.final_recommendation
           ? {
@@ -6796,13 +7480,388 @@ ${optionalDetails.askingPrice ? `Asking Price: ${optionalDetails.askingPrice}\n`
         analyzed_photo_count: analyzedPhotoCount,
         detected_rooms: detectedRooms,
         room_counts: roomCounts,
-        // listingInfo carries coverImageUrl so normalizeReport's pickFirstImage finds it
+        // listingInfo carries address, title, coverImageUrl, imageUrls, and location data
+        // so normalizeReport's pickFirstImage and buildAddress can find them
         listingInfo: {
+          address: verifiedFacts.address ?? null,
+          title: optionalDetails.title ?? null,
           coverImageUrl,
+          images: imageUrls.length > 0 ? imageUrls : null,
+          neighborhood: extractedLocation.neighborhood || null,
+          floodZone: extractedLocation.floodZone || null,
+          walkScore: extractedLocation.walkScore || null,
+          bikeScore: extractedLocation.bikeScore || null,
+          schoolRatings: extractedLocation.schoolRatings || null,
+          transit: extractedLocation.transit || null,
         },
       };
 
-      // ── Step 5: Post-processing — force-fill financial facts (deterministic) ─────
+      // ── Step 5: validateReportAgainstVerifiedFacts — P0-4 validator ─────────────────────────────
+      // Scans AI output for contradictions with known facts and auto-fixes them.
+      // Runs before any other override logic so all downstream code gets clean data.
+      (function validateReport(vf: NonNullable<typeof verifiedFacts>, res: Record<string, unknown>) {
+        const ps = res.property_snapshot as Record<string, unknown> | undefined;
+        const pa = res.price_assessment as Record<string, unknown> | undefined;
+        const cc = res.carrying_costs as Record<string, unknown> | undefined;
+
+        // ── property_snapshot: yearBuilt — FORCE override if AI wrote a "unknown/not provided" message ──
+        if (vf.yearBuilt != null && ps) {
+          const currentYB = ps.yearBuilt;
+          const currentYBStr = String(currentYB ?? '');
+          const isMissingYB = !currentYB
+            || currentYBStr === 'unknown'
+            || /unknown|not provided|not available|n\/a/i.test(currentYBStr);
+          if (isMissingYB) {
+            ps.yearBuilt = vf.yearBuilt;
+            ps.year_built = vf.yearBuilt;
+          } else if (typeof currentYB === 'number' && currentYB !== vf.yearBuilt) {
+            // Override AI's wrong year
+            ps.yearBuilt = vf.yearBuilt;
+            ps.year_built = vf.yearBuilt;
+          }
+          if (vf.beds != null && (!ps.beds || String(ps.beds) === 'unknown')) ps.beds = vf.beds;
+          if (vf.baths != null && (!ps.baths || String(ps.baths) === 'unknown')) ps.baths = vf.baths;
+          if (vf.sqft != null && (!ps.sqft || String(ps.sqft) === 'unknown')) ps.sqft = vf.sqft;
+          if (vf.propertyType && (!ps.homeType || !ps.propertyType)) {
+            ps.homeType = vf.propertyType; ps.propertyType = vf.propertyType;
+          }
+        }
+
+        // ── yearBuilt narrative guard: remove unauthorized "pre-war" inferences from AI text ──
+        // When yearBuilt is known, the AI may write "pre-war" in narrative text without being
+        // explicitly authorized. Replace it with the verified year so the report stays accurate.
+        if (vf.yearBuilt != null) {
+          const yearStr = String(vf.yearBuilt);
+          const rewrite = (field: Record<string, unknown> | undefined, key: string) => {
+            if (field && typeof field[key] === 'string') {
+              const val = field[key] as string;
+              if (/\bpre-war\b/i.test(val)) {
+                field[key] = val.replace(/\bpre-war\b/gi, `built in ${yearStr}`);
+              }
+            }
+          };
+          rewrite(res, 'bottomLine');
+          rewrite(res, 'bottom_line');
+          rewrite(res, 'summary');
+          rewrite(ps, 'yearBuiltDescription');
+          rewrite(ps, 'year_built_description');
+          const scanArray = (arr: unknown[] | undefined, fields: string[]) => {
+            if (!Array.isArray(arr)) return;
+            for (const item of arr) {
+              if (item && typeof item === 'object') {
+                for (const f of fields) {
+                  rewrite(item as Record<string, unknown>, f);
+                }
+              }
+            }
+          };
+          scanArray((res as any).decision_cards ?? (res as any).decisionCards, ['title', 'explanation', 'description']);
+          scanArray((res as any).what_looks_good ?? (res as any).whatLooksGood, ['title', 'explanation', 'description']);
+          scanArray((res as any).reasons, ['text', 'description']);
+        }
+
+        // ── Property-aware flag (used by multiple post-processing blocks below) ──
+        const isSFOC = vf.reportProfile === 'single_family_owner_occupier';
+
+        // ── price_assessment: asking_price ──
+        if (pa && vf.price != null && (!pa.asking_price || pa.asking_price === 0)) {
+          pa.asking_price = vf.price;
+        }
+
+        // ── price_assessment: zestimate_context — FORCE override if AI wrote a "no data" message ──
+        if (pa && vf.zestimate != null) {
+          const currentZestCtx = String(pa.zestimate_context || '');
+          const isMissingZest = !currentZestCtx
+            || /no zestimate|without zestimate|missing zestimate|zestimate.*not.*avail|not.*zestimate|n\/a.*zestimate|zestimate.*n\/a/i.test(currentZestCtx);
+          if (isMissingZest) {
+            const legalSuffix = isSFOC
+              ? 'Condition, permit status, and older building systems should be verified independently.'
+              : 'Local comps, condition, legal rental status, and renovation needs still need verification.';
+            pa.zestimate_context =
+              `Zillow Zestimate: ${vf.zestimate_display || '$' + vf.zestimate.toLocaleString()}. ` +
+              `Zestimate is not an appraisal. ${legalSuffix}`;
+          }
+          // Also ensure estimated range is set if page provides it
+          if (vf.estimatedSalesRangeMin != null && (!pa.estimated_min)) {
+            pa.estimated_min = vf.estimatedSalesRangeMin;
+          }
+          if (vf.estimatedSalesRangeMax != null && (!pa.estimated_max)) {
+            pa.estimated_max = vf.estimatedSalesRangeMax;
+          }
+        }
+
+        // ── price_assessment: fix asking vs zestimate comparison direction ──
+        // Property-aware: use single-family or multi-family risk factors accordingly
+        // NOTE: riskFactorsSuffix is a standalone sentence fragment — do NOT append
+        // "could materially change value" or "should be verified independently" after it.
+        const riskFactorsSuffix = isSFOC
+          ? 'Condition, permit status, roof age, and older building systems should be verified independently.'
+          : 'Condition, legal two-family use, and renovation needs should be verified independently.';
+
+        if (pa && vf.price != null && vf.zestimate != null) {
+          const ap = Number(pa.asking_price);
+          const z = Number(vf.zestimate);
+          if (!isNaN(ap) && !isNaN(z) && z > 0) {
+            const diff = ap - z;
+            const diffAbs = Math.abs(diff);
+            const verdictRaw = String(pa.verdict ?? '').toLowerCase();
+            const pctDiff = diffAbs / z;
+            const withinRange = vf.estimatedSalesRangeMin != null && vf.estimatedSalesRangeMax != null
+              ? (ap >= Number(vf.estimatedSalesRangeMin) && ap <= Number(vf.estimatedSalesRangeMax))
+              : (pctDiff <= 0.05);
+
+            // Rebuild explanation from scratch when the current one has wrong direction
+            if (!pa.explanation || /below|above.*zestimate|below.*zestimate/i.test(String(pa.explanation ?? ''))) {
+              const rangeNote = withinRange
+                ? 'within Zillow\'s estimated sales range'
+                : 'close to Zillow\'s estimated sales range';
+              if (diff > 0) {
+                pa.explanation = `Asking price is about $${(diffAbs / 1000).toFixed(1)}k above Zillow Zestimate and ${rangeNote}. Zestimate is not an appraisal, and HomeScope has not independently verified comparable sales. ${riskFactorsSuffix}`;
+              } else if (diff < 0) {
+                pa.explanation = `Asking price is about $${(diffAbs / 1000).toFixed(1)}k below Zillow Zestimate and ${rangeNote}. Zestimate is not an appraisal, and HomeScope has not independently verified comparable sales. ${riskFactorsSuffix}`;
+              } else {
+                pa.explanation = `Asking price is roughly in line with Zillow Zestimate. Zestimate is not an appraisal, and HomeScope has not independently verified comparable sales. ${riskFactorsSuffix}`;
+              }
+            }
+
+            // Fix verdict if it contradicts the data (only override clearly wrong verdicts)
+            if (verdictRaw === 'overpriced' && diff <= z * 0.03) {
+              pa.verdict = 'Fair';
+            }
+            if (verdictRaw === 'underpriced' && diff >= -z * 0.03) {
+              pa.verdict = 'Fair';
+            }
+          }
+        }
+
+        // ── price_assessment: price_per_sqft_context — FORCE override if AI wrote a "no data" message ──
+        if (pa && vf.pricePerSqft != null) {
+          const currentPpsCtx = String(pa.price_per_sqft_context || '');
+          const isMissingPps = !currentPpsCtx
+            || /no price.*per.*sqft|missing price.*sqft|price.*sqft.*not.*avail|not.*price.*sqft|n\/a.*price|n\/a.*sqft/i.test(currentPpsCtx);
+          if (isMissingPps) {
+            const legalSuffix = isSFOC
+              ? 'Comparable sales and property condition should be verified independently'
+              : 'Local comps, legal rental status, and property condition should be verified';
+            pa.price_per_sqft_context =
+              `Price per sqft: ${vf.pricePerSqft_display || '$' + vf.pricePerSqft}/sqft. ` +
+              legalSuffix + '.';
+          }
+        }
+
+        // ── price_assessment: rent_context (US rent) ──
+        if (pa && reportMode === 'rent' && vf.rentZestimate != null && !pa.rent_context) {
+          pa.rent_context =
+            `Rent Zestimate: ${vf.rentZestimate_display || '$' + vf.rentZestimate.toLocaleString()}/mo. ` +
+            `Actual rental income must be verified with the owner/agent.`;
+        }
+
+        // ── price_assessment: days_on_market_context ──
+        if (pa && vf.daysOnMarket != null && !pa.days_on_market_context) {
+          pa.days_on_market_context =
+            `${vf.daysOnMarket} days on market. ` +
+            `Extended market time may reflect pricing concerns, condition questions, or buyer due diligence requirements. Verify the reason with the agent.`;
+        }
+
+        // ── carrying_costs: deterministic fill for ALL US sale (not just Zillow sale) ──
+        const isUS = detectedMarket === 'US';
+        const shouldForceCC = isUS && reportMode === 'sale' &&
+          (vf.monthlyPayment != null || vf.annualTax != null || vf.principalAndInterest != null);
+
+        if (shouldForceCC && cc) {
+          if (vf.monthlyPayment != null) {
+            cc.primary_monthly_estimate = vf.monthlyPayment;
+            cc.status = 'available';
+          }
+          if (vf.principalAndInterest != null) {
+            cc.principal_and_interest = vf.principalAndInterest;
+          }
+          if (vf.annualTax != null) {
+            cc.annual_tax = vf.annualTax;
+            if (vf.annualTax_display) cc.annual_tax_display = vf.annualTax_display;
+            cc.monthly_tax_equivalent = Math.round(vf.annualTax / 12);
+          }
+          if (vf.homeInsuranceMonthly != null) {
+            cc.home_insurance = vf.homeInsuranceMonthly;
+          }
+          // HOA
+          if (vf.hoa === 'yes') {
+            cc.hoa = 'Yes';
+            if (vf.hoaAmount != null) cc.hoa_amount = vf.hoaAmount;
+          } else if (vf.hoa === 'no') {
+            cc.hoa = 'No';
+          }
+          // missing_costs: always include these regardless of what AI said
+          const missing: string[] = [];
+          if (vf.hoa !== 'yes' && vf.hoaAmount == null) missing.push('hoa');
+          if (vf.homeInsuranceMonthly == null) missing.push('insurance_actual_quote');
+          if (vf.utilitiesIncluded !== true) missing.push('utilities');
+          missing.push('maintenance_reserve', 'vacancy', 'repairs', 'rental_compliance');
+          if (missing.length > 0) cc.missing_costs = missing;
+          // summary
+          if (cc.primary_monthly_estimate != null && !cc.summary) {
+            cc.summary =
+              `Monthly carrying costs: $${cc.primary_monthly_estimate}/mo. ` +
+              `Missing: ${missing.join(', ')}.`;
+          }
+          if (!cc.cost_pressure || cc.cost_pressure === 'unknown') {
+            cc.cost_pressure = vf.annualTax != null ? 'Known Tax / Partial Costs' : 'Partial Costs';
+          }
+        }
+
+        // ── Error detection: log AI contradictions ──
+        const reportText = JSON.stringify(res).toLowerCase();
+        if (vf.yearBuilt != null && /year.?built.*unknown|unknown.*year.?built/.test(reportText)) {
+          console.warn('[validateReport] AI claimed yearBuilt unknown but vf.yearBuilt =', vf.yearBuilt);
+        }
+        // Fix "Year built unknown" in maintenance_risk.summary when we know the year
+        if (vf.yearBuilt != null && res.maintenance_risk && typeof res.maintenance_risk === 'object') {
+          const mr = res.maintenance_risk as Record<string, unknown>;
+          const yrStr = String(vf.yearBuilt);
+          const yrBuiltUnknownPattern = /year\s*built\s*(is\s*)?(unknown|not\s*provided|not\s*available|n\/a)/gi;
+          if (mr.summary && typeof mr.summary === 'string') {
+            mr.summary = mr.summary.replace(yrBuiltUnknownPattern, `Year built: ${yrStr}`);
+          }
+          // Also fix risk_factors array
+          if (Array.isArray(mr.risk_factors)) {
+            for (const rf of mr.risk_factors) {
+              if (rf && typeof rf === 'object') {
+                const rft = rf as Record<string, unknown>;
+                if (rft.description && typeof rft.description === 'string') {
+                  rft.description = rft.description.replace(yrBuiltUnknownPattern, `Year built: ${yrStr}`);
+                }
+                if (rft.title && typeof rft.title === 'string') {
+                  rft.title = rft.title.replace(yrBuiltUnknownPattern, `Year built: ${yrStr}`);
+                }
+              }
+            }
+          }
+        }
+        if (vf.zestimate != null && /no zestimate|without zestimate|missing zestimate/.test(reportText)) {
+          console.warn('[validateReport] AI claimed no Zestimate but vf.zestimate =', vf.zestimate);
+        }
+        if (vf.pricePerSqft != null && /no price.*per.*sqft|missing price.*sqft/.test(reportText)) {
+          console.warn('[validateReport] AI claimed no pricePerSqft but vf.pricePerSqft =', vf.pricePerSqft);
+        }
+        if (vf.monthlyPayment != null && /monthly.*payment.*unknown|unknown.*monthly.*payment/.test(reportText)) {
+          console.warn('[validateReport] AI claimed unknown monthly payment but vf.monthlyPayment =', vf.monthlyPayment);
+        }
+
+        // ── Spin Decoder: rewrite overly confident language to conservative ──
+        if (res.listing_language_reality_check && Array.isArray(res.listing_language_reality_check)) {
+          const OVERCONFIDENT_PATTERNS: Array<{ from: RegExp; to: string }> = [
+            { from: /registered with (nyc |new york )?hpd/i, to: 'HPD registration should be verified' },
+            { from: /should allow rental use/i, to: 'rental legality should be verified' },
+            { from: /no probate delays expected/i, to: 'probate delays cannot be ruled out without title review' },
+            { from: /has its own (entrance|utilities)/i, to: 'entrance and utility setup should be verified' },
+          ];
+          for (const item of res.listing_language_reality_check) {
+            if (item.what_it_may_mean) {
+              for (const { from, to } of OVERCONFIDENT_PATTERNS) {
+                if (from.test(item.what_it_may_mean)) {
+                  item.what_it_may_mean = item.what_it_may_mean.replace(from, to);
+                }
+              }
+            }
+          }
+        }
+
+        // ── Text-level: scan entire report for "assume pre-1980s" and force replace ──
+        // This catches cases where AI writes unsupported old-system claims without evidence.
+        // Patterns: "assume pre-1980s", "galvanized steel", "knob-and-tube", "fire hazard".
+        // Replacement: a conservative, evidence-free statement.
+        const cleanReplacement = `Built in ${vf.yearBuilt ?? 'the property'}. Older property, so electrical panel, wiring, plumbing, heating, roof age, and basement moisture history should be verified before estimating repair costs.`;
+        const UNSUPPORTED_OLD_SYSTEM_PATTERNS = [
+          // Full pre-1980s assumption phrases (match first to avoid partial matches)
+          { pattern: /year\s*built\s*(?:not\s*)?(?:provided|given|found|known|available).*pre-?1980s|assume\s*pre-?1980s|assuming\s*pre-?1980s/i,
+            clean: cleanReplacement },
+          // Independent galvanized steel claims (not preceded by "assume pre-1980s")
+          { pattern: /galvanized\s*steel(?!\s*(?:\/|:)\s*(?:assume|pre-?1980s|knob))/i,
+            clean: 'older plumbing material' },
+          // Independent knob-and-tube claims
+          { pattern: /knob[\s-]*and[\s-]*tube(?!\s*(?:\/|:)\s*(?:assume|pre-?1980s|galvanized))/i,
+            clean: 'older electrical wiring' },
+          // Fire hazard without evidence (e.g., "may be a fire hazard" / "potential fire hazard")
+          { pattern: /fire\s*hazard(?!\s+(?:from|due to|caused by|as\s+a\s+result))/i,
+            clean: 'older electrical systems' },
+          // "original wiring confirmed" / "original plumbing confirmed" — no evidence
+          { pattern: /original\s*(?:wiring|plumbing)\s*(?:is\s*)?(?:confirmed|present|found|intact)/i,
+            clean: 'original systems' },
+          // "full rewiring may be needed" / "full re-plumbing may be needed"
+          { pattern: /full\s*(?:rewiring|replumb|re-plumb)(?:\s+may\s+be\s+needed|\s+is\s+likely|\s+probably\s+needed)/i,
+            clean: 'electrical updates may be needed' },
+        ];
+        const UNSUPPORTED_OLD_SYSTEM_REPORT_PATTERN = new RegExp(
+          UNSUPPORTED_OLD_SYSTEM_PATTERNS.map(p => p.pattern.source).join('|'),
+          'i'
+        );
+        if (UNSUPPORTED_OLD_SYSTEM_REPORT_PATTERN.test(JSON.stringify(res).toLowerCase())) {
+          (res as any)._validation_fixed = true;
+          const replaceUnsupported = (obj: any, depth = 0) => {
+            if (depth > 10 || !obj || typeof obj !== 'object') return;
+            for (const key of Object.keys(obj)) {
+              const val = obj[key];
+              if (typeof val === 'string') {
+                for (const { pattern, clean } of UNSUPPORTED_OLD_SYSTEM_PATTERNS) {
+                  if (pattern.test(val)) {
+                    obj[key] = val.replace(pattern, clean);
+                    console.log('[validateReport] Replaced unsupported old-system claim matching pattern:', pattern.source, 'in field:', key);
+                  }
+                }
+              } else if (Array.isArray(val)) {
+                for (const item of val) replaceUnsupported(item, depth + 1);
+              } else if (typeof val === 'object') {
+                replaceUnsupported(val, depth + 1);
+              }
+            }
+          };
+          replaceUnsupported(res);
+        }
+
+        // ── Text-level: scan for "missing basic property details" questions and remove if fields are known ──
+        const basicFieldsKnown = vf.beds != null && vf.baths != null && vf.sqft != null && vf.propertyType != null;
+        if (basicFieldsKnown) {
+          const removeBasicPropertyQuestion = (obj: any, depth = 0) => {
+            if (depth > 10 || !obj || typeof obj !== 'object') return;
+            for (const key of Object.keys(obj)) {
+              const val = obj[key];
+              if (typeof val === 'string') {
+                if (/missing\s*basic\s*property\s*details|provide.*beds?\s*[,\/]\s*baths?\s*[,\/]\s*(?:interior\s*)?size|property\s*type.*beds.*baths.*interior.*size/i.test(val)) {
+                  obj[key] = null;
+                  console.log('[validateReport] Removed "missing basic property details" question, field:', key);
+                }
+              } else if (Array.isArray(val)) {
+                // Filter out questions that are entire array items
+                if (key === 'questions' || key === 'questions_to_ask') {
+                  const filtered = val.filter((q: any) => {
+                    const qText = typeof q === 'string' ? q : (q?.question || q?.text || JSON.stringify(q));
+                    return !/missing\s*basic\s*property\s*details|provide.*beds?\s*[,\/]\s*baths?\s*[,\/]\s*(?:interior\s*)?size|property\s*type.*beds.*baths.*interior.*size/i.test(qText);
+                  });
+                  if (filtered.length !== val.length) {
+                    obj[key] = filtered;
+                    console.log('[validateReport] Filtered basic property detail questions, removed:', val.length - filtered.length);
+                  }
+                } else {
+                  for (const item of val) removeBasicPropertyQuestion(item, depth + 1);
+                }
+              } else if (typeof val === 'object') {
+                removeBasicPropertyQuestion(val, depth + 1);
+              }
+            }
+          };
+          removeBasicPropertyQuestion(res);
+        }
+
+        console.log('[validateReport] done', {
+          yearBuilt: vf.yearBuilt,
+          zestimate: vf.zestimate,
+          pricePerSqft: vf.pricePerSqft,
+          monthlyPayment: vf.monthlyPayment,
+          basicFieldsKnown,
+        });
+      })(verifiedFacts, result);
+
+      // ── Step 6: Post-processing — force-fill financial facts (deterministic) ─────
       // If verifiedFacts has annual tax, NEVER let AI output "annual tax unknown"
       const cc = result.carrying_costs as Record<string, unknown> | undefined;
       if (cc && verifiedFacts.annual_tax != null) {
