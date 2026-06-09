@@ -3281,7 +3281,7 @@ function ReportClosingCTA({
   listingAddress?: string;
   reportType?: string;
 }) {
-  const [shareLabel, setShareLabel] = React.useState('Get a second opinion');
+  const [shareLabel, setShareLabel] = React.useState('Share Report');
   const shareTimerRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // ── Feedback state ────────────────────────────────────────────────────────
@@ -3387,7 +3387,7 @@ function ReportClosingCTA({
 
   function resetShareLabel() {
     if (shareTimerRef.current) clearTimeout(shareTimerRef.current);
-    shareTimerRef.current = setTimeout(() => setShareLabel('Get a second opinion'), 2000);
+    shareTimerRef.current = setTimeout(() => setShareLabel('Share Report'), 2000);
   }
 
   async function handleShare() {
