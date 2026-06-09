@@ -9,30 +9,19 @@
  */
 import React from 'react';
 import { useAppState, useActions } from '../store';
+import { getAnalysisProgressSteps } from '../analysisProgressSteps';
 
-const PHASE_STEPS = [
-  { key: 'reading_page', label: 'Reading page data...', icon: '1' },
-  { key: 'extracting_images', label: 'Extracting listing details...', icon: '2' },
-  { key: 'analysing', label: 'Analysing property...', icon: '3' },
-  { key: 'generating_report', label: 'Generating report...', icon: '4' },
-] as const;
-
-function getPhaseIndex(phase: string): number {
-  const idx = PHASE_STEPS.findIndex(s => s.key === phase);
-  return idx >= 0 ? idx : 0;
-}
-
-function PhaseProgress({ phase, progress }: { phase: string; progress: number }) {
+function PhaseProgress({ phase, progress, steps }: { phase: string; progress: number; steps: readonly { key: string; label: string }[] }) {
   if (['idle', 'done', 'error', 'no_credits'].includes(phase)) return null;
-  const currentIndex = getPhaseIndex(phase);
-  const isAnalysing = ['reading_page', 'extracting_images', 'analysing', 'generating_report'].includes(phase);
+  const safeIndex = steps.findIndex(s => s.key === phase);
+  const currentIndex = safeIndex >= 0 ? safeIndex : 0;
 
   return (
     <div className="ext-phase-container">
       <div className="ext-phase-list">
-        {PHASE_STEPS.map((step, index) => {
-          const isDone = index < currentIndex || (phase === 'done' && index === PHASE_STEPS.length - 1);
-          const isActive = index === currentIndex && isAnalysing;
+        {steps.map((step, index) => {
+          const isDone = index < safeIndex;
+          const isActive = index === safeIndex;
           return (
             <div key={step.key} className={`ext-phase-item${isDone ? ' ext-phase-item--done' : ''}${isActive ? ' ext-phase-item--active' : ''}`}>
               <div className="ext-phase-indicator">
@@ -40,9 +29,7 @@ function PhaseProgress({ phase, progress }: { phase: string; progress: number })
                   <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><polyline points="20 6 9 17 4 12"></polyline></svg>
                 ) : isActive ? (
                   <div className="ext-phase-spinner" />
-                ) : (
-                  <span className="ext-phase-number">{step.icon}</span>
-                )}
+                ) : null}
               </div>
               <div className="ext-phase-label">{step.label}</div>
             </div>
@@ -85,9 +72,10 @@ function EmptyState() {
 }
 
 export function AnalysisPage() {
-  const { analysisPhase, analysisProgress, analysisError, listingData } = useAppState();
+  const { analysisPhase, analysisProgress, analysisError, listingData, analysisType } = useAppState();
   const { retryAnalysis, navigateToHome, startAnalysis } = useActions();
   const hasStartedAnalysis = React.useRef(false);
+  const steps = getAnalysisProgressSteps(analysisType);
 
   // Auto-start analysis when in report view and data is available
   React.useEffect(() => {
@@ -106,5 +94,5 @@ export function AnalysisPage() {
   }
 
   // Analysis in progress
-  return <PhaseProgress phase={analysisPhase} progress={analysisProgress} />;
+  return <PhaseProgress phase={analysisPhase} progress={analysisProgress} steps={steps} />;
 }

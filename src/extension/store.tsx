@@ -30,27 +30,35 @@ function isV2Data(data: ListingData | ListingDataV2 | null): data is ListingData
   return false;
 }
 
-function injectListingInfo(result: AnalysisResult, listingData: ListingData | ListingDataV2 | null): AnalysisResult {
+/**
+ * Enrich an analysis result with listing images from listingData.
+ * Writes images to ALL possible field names so pickFirstImage() can find them
+ * regardless of which path the result arrived through:
+ *   - result.images           (top-level array, first-image-only for Hero compat)
+ *   - result.imageUrls        (top-level full array)
+ *   - result.coverImageUrl    (top-level single string)
+ *   - result.listingInfo.images        (nested full array)
+ *   - result.listingInfo.imageUrls     (nested full array)
+ *   - result.listingInfo.coverImageUrl (nested single string)
+ *
+ * All callers (submitAnalysis basic, pollAnalysisStatus full) MUST route
+ * through this function so the image fields are always populated.
+ */
+function enrichResultWithListingData(result: AnalysisResult, listingData: ListingData | ListingDataV2 | null): AnalysisResult {
   if (!listingData) return result;
 
   const isV2 = isV2Data(listingData);
 
-  // Get the first image URL for injection into both listingInfo and top-level images
-  let firstImageUrl: string | null = null;
-  if (isV2) {
-    firstImageUrl = ((listingData as ListingDataV2).imageUrls?.length ?? 0) > 0
-      ? (listingData as ListingDataV2).imageUrls![0]
-      : null;
-  } else {
-    firstImageUrl = ((listingData as ListingData).imageUrls?.length ?? 0) > 0
-      ? (listingData as ListingData).imageUrls![0]
-      : null;
-  }
+  // Canonical imageUrls array — use this as the single source of truth
+  const imageUrls: string[] = isV2
+    ? (((listingData as ListingDataV2).imageUrls?.length ?? 0) > 0 ? (listingData as ListingDataV2).imageUrls! : [])
+    : (((listingData as ListingData).imageUrls?.length ?? 0) > 0 ? (listingData as ListingData).imageUrls! : []);
 
-  // Build listingInfo
+  const firstImageUrl: string | null = imageUrls.length > 0 ? imageUrls[0] : null;
+
+  // Build listingInfo with all image fields
   const listingInfo: ListingInfo = {};
 
-  // Title: prefer title, fallback to address
   if (isV2) {
     const v2 = listingData as ListingDataV2;
     listingInfo.title = v2.title || null;
@@ -61,12 +69,12 @@ function injectListingInfo(result: AnalysisResult, listingData: ListingData | Li
     listingInfo.bathrooms = v2.bathrooms || null;
     listingInfo.parking = v2.parking || null;
     listingInfo.coverImageUrl = firstImageUrl;
+    listingInfo.images = imageUrls.length > 0 ? imageUrls : null;
+    listingInfo.imageUrls = imageUrls.length > 0 ? imageUrls : null;
     // US Sale specific fields
     listingInfo.sqft = (v2 as Record<string, unknown>).sqft ?? (v2 as Record<string, unknown>).floorArea ?? null;
     listingInfo.propertyType = (v2 as Record<string, unknown>).propertyType ?? (v2 as Record<string, unknown>).homeType ?? null;
   } else {
-    // V1 格式: content.js 返回的原始格式
-    // { title, address, priceText, bedrooms, bathrooms, parking, imageUrls, ... }
     const v1 = listingData as ListingData;
     listingInfo.title = v1.title || null;
     listingInfo.address = v1.address || null;
@@ -75,12 +83,14 @@ function injectListingInfo(result: AnalysisResult, listingData: ListingData | Li
     listingInfo.bathrooms = v1.bathrooms ?? null;
     listingInfo.parking = v1.parking ?? null;
     listingInfo.coverImageUrl = firstImageUrl;
+    listingInfo.images = imageUrls.length > 0 ? imageUrls : null;
+    listingInfo.imageUrls = imageUrls.length > 0 ? imageUrls : null;
     // US Sale specific fields
     listingInfo.sqft = (v1 as Record<string, unknown>).sqft ?? null;
     listingInfo.propertyType = (v1 as Record<string, unknown>).propertyType ?? null;
   }
 
-  // Remove null values
+  // Strip null values from listingInfo
   const cleanListingInfo: ListingInfo = {};
   for (const [key, value] of Object.entries(listingInfo)) {
     if (value != null) {
@@ -88,16 +98,21 @@ function injectListingInfo(result: AnalysisResult, listingData: ListingData | Li
     }
   }
 
-  // Inject images array at top level so pickFirstImage() can find it via raw.images fallback
-  const resultWithImages = { ...result } as AnalysisResult & { images?: string[] };
-  if (firstImageUrl) {
-    resultWithImages.images = [firstImageUrl];
-  }
-
+  // Merge into result — write ALL image field variants
   return {
-    ...resultWithImages,
+    ...result,
+    // Top-level image fields
+    images: imageUrls.length > 0 ? imageUrls : (result as any).images ?? null,
+    imageUrls: imageUrls.length > 0 ? imageUrls : (result as any).imageUrls ?? null,
+    coverImageUrl: firstImageUrl ?? (result as any).coverImageUrl ?? null,
+    // Nested listingInfo (covers HeroSection, pickFirstImage fallback, ListingSummary)
     listingInfo: Object.keys(cleanListingInfo).length > 0 ? cleanListingInfo : null,
   };
+}
+
+// Alias for backwards compatibility
+function injectListingInfo(result: AnalysisResult, listingData: ListingData | ListingDataV2 | null): AnalysisResult {
+  return enrichResultWithListingData(result, listingData);
 }
 
 // ===== URL Guard Helpers =====
@@ -290,11 +305,13 @@ const initialState: AppState = {
   analysisProgress: 0,
   analysisError: null,
   analysisResult: null,
+  listingFingerprint: null,
   history: [],
   historyLoading: false,
   viewingHistoryId: null,
   currentView: 'home',
   cooldownEndsAt: null,
+  analysisType: 'full',
   extractionCached: false,
   lastExtractedUrl: null,
   sourceTabId: null,
@@ -349,6 +366,10 @@ function appReducer(state: AppState, action: AppAction): AppState {
     case 'SET_CURRENT_VIEW':
       return { ...state, currentView: action.view };
 
+    case 'SET_ANALYSIS_TYPE':
+      console.log('[DEBUG store reducer] SET_ANALYSIS_TYPE:', action.analysisType);
+      return { ...state, analysisType: action.analysisType };
+
     case 'SET_PAGE_STATE':
       return { ...state, pageState: action.pageState };
 
@@ -381,9 +402,14 @@ function appReducer(state: AppState, action: AppAction): AppState {
         analysisProgress: 0,
         analysisError: null,
         analysisResult: null,
+        listingFingerprint: null,
         viewingHistoryId: null,
+        analysisType: 'full',
         // Do NOT reset cooldownEndsAt, extractionCached, lastExtractedUrl
       };
+
+    case 'SET_LISTING_FINGERPRINT':
+      return { ...state, listingFingerprint: action.fingerprint };
 
     default:
       return state;
@@ -398,7 +424,7 @@ interface AppContextValue {
   actions: {
     refreshPageData: () => Promise<void>;
     refreshAll: () => Promise<void>;
-    startAnalysis: (options?: { bypassCache?: boolean }) => Promise<void>;
+    startAnalysis: (options?: { bypassCache?: boolean; analysisType?: 'basic' | 'full' }) => Promise<void>;
     retryAnalysis: () => Promise<void>;
     refreshPhotos: () => Promise<void>;
     logout: () => Promise<void>;
@@ -410,6 +436,7 @@ interface AppContextValue {
     sendMagicLink: (email: string) => Promise<{ success: boolean; error?: string }>;
     initiateGoogleOAuth: () => Promise<{ success: boolean; error?: string }>;
     shareAnalysis: (analysisId: string) => Promise<{ slug: string; shareUrl: string }>;
+    upgradeToFull: () => Promise<void>;
   };
 }
 
@@ -512,7 +539,7 @@ async function ensureContentScriptThenExtractListing(
     noop('[ExtApp] PING exception:', err);
   }
 
-  // Step 2: Inject if needed (only if PING failed)
+  // Step 2: Inject if needed, then retry PING with backoff until ready
   if (!pingOk) {
     try {
       noop('[ExtApp] Content script not responding, attempting injection...');
@@ -522,34 +549,43 @@ async function ensureContentScriptThenExtractListing(
       });
       noop('[ExtApp] content.js injected successfully');
 
-      // Wait for content script to initialize (retry PING until ready)
+      // Retry PING with exponential backoff: [200, 400, 800, 1200, 2000, 3000]ms
+      const delays = [200, 400, 800, 1200, 2000, 3000];
       let reconnected = false;
-      for (let i = 0; i < 10; i++) {
-        await new Promise(r => setTimeout(r, 100));
+      for (let i = 0; i < delays.length; i++) {
+        await new Promise(r => setTimeout(r, delays[i]));
         try {
           const pongResult = await sendMessageWithTimeout<{ ready: boolean }>(
             { action: 'PONG' },
             tabId,
-            500
+            1500  // generous timeout per attempt
           );
           if (pongResult.success && pongResult.data?.ready === true) {
             reconnected = true;
-            noop(`[ExtApp] Content script ready after ${(i + 1) * 100}ms`);
+            const totalMs = delays.slice(0, i + 1).reduce((a, b) => a + b, 0);
+            noop(`[ExtApp] PING after injection success after ${totalMs}ms (attempt ${i + 1})`);
             break;
+          } else {
+            noop(`[ExtApp] PING attempt ${i + 1} returned but not ready: ${pongResult.error || 'no data'}`);
           }
-        } catch {
-          // Still not ready
+        } catch (err: any) {
+          noop(`[ExtApp] PING attempt ${i + 1} exception: ${err.message}`);
         }
       }
+
+      // CRITICAL: if still not ready, do NOT continue — return error
       if (!reconnected) {
-        noop('[ExtApp] Content script may not be fully loaded after injection');
+        noop('[ExtApp] Content script injected but NOT ready after all retries. Returning error.');
+        return {
+          data: null,
+          error: 'Content script injected but not responding. Please refresh the page and try again.',
+          detection: null,
+        };
       }
     } catch (err: any) {
-      // 仅对可注入页面打印严重错误；chrome:// 等页面预期失败，不打印
       if (isInjectableUrl(tabUrl)) {
         noop('[ExtApp] executeScript failed:', err.message, err);
       }
-      // 注入失败，返回明确错误
       return {
         data: null,
         error: `Failed to inject content script: ${err.message}. Please refresh the page.`,
@@ -642,9 +678,6 @@ async function ensureContentScriptThenExtractListing(
  * Used by startAnalysis (no EXTRACT_LISTING call needed there).
  */
 async function ensureContentScriptLoaded(tabId: number): Promise<boolean> {
-  const PING_TIMEOUT_MS = 3000;  // 3 秒超时，给繁忙页面足够时间
-  const MAX_RETRIES = 3;
-
   // 获取 tab URL 用于错误分类
   let tabUrl: string | undefined;
   try {
@@ -658,67 +691,56 @@ async function ensureContentScriptLoaded(tabId: number): Promise<boolean> {
   if (!isInjectableUrl(tabUrl)) return false;
   if (!isSupportedPropertyUrl(tabUrl)) return false;
 
-  for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
-    let pingOk = false;
-    let lastError = '';
-
-    try {
-      const pongResult = await sendMessageWithTimeout<{ ready: boolean; instanceId?: string }>(
-        { action: 'PONG' },
-        tabId,
-        PING_TIMEOUT_MS
-      );
-      pingOk = pongResult.success && pongResult.data?.ready === true;
-      if (pingOk) {
-        if (attempt > 1) {
-          noop(`[ExtApp] PING succeeded on attempt ${attempt}`);
-        }
-        return true;
-      }
-      lastError = pongResult.error || 'PONG returned !ready';
-    } catch (err: any) {
-      lastError = err?.message || String(err);
-    }
-
-      noop(`[ExtApp] PING attempt ${attempt}/${MAX_RETRIES} failed: ${lastError}`);
-
-    // 最后一次尝试失败后才注入
-    if (attempt === MAX_RETRIES) {
-      try {
-        noop('[ExtApp] Content script not responding, injecting...');
-        await chrome.scripting.executeScript({
-          target: { tabId },
-          files: ['content.js'],
-        });
-        noop('[ExtApp] content.js injected successfully');
-
-        // 注入后验证
-        const verifyResult = await sendMessageWithTimeout<{ ready: boolean }>(
-          { action: 'PONG' },
-          tabId,
-          PING_TIMEOUT_MS
-        );
-        pingOk = verifyResult.success && verifyResult.data?.ready === true;
-
-        if (pingOk) {
-          noop('[ExtApp] Content script ready after injection');
-          return true;
-        }
-        noop('[ExtApp] Content script injected but not ready');
-        return false;
-      } catch (err: any) {
-        // 非可注入页面的 executeScript 失败预期，不需要警告
-        if (isInjectableUrl(tabUrl)) {
-          noop('[ExtApp] executeScript failed:', err?.message || String(err));
-        }
-        return false;
-      }
-    }
-
-    // 短暂等待后再重试
-    await new Promise(resolve => setTimeout(resolve, 500));
+  // Step 1: Quick PING to see if already loaded
+  let pingOk = false;
+  try {
+    const pongResult = await sendMessageWithTimeout<{ ready: boolean; instanceId?: string }>(
+      { action: 'PONG' },
+      tabId,
+      1500
+    );
+    pingOk = pongResult.success && pongResult.data?.ready === true;
+    if (pingOk) return true;
+  } catch (_) {
+    // not ready yet
   }
 
+  // Step 2: Inject immediately
+  try {
+    noop('[ExtApp] Content script not responding, injecting...');
+    await chrome.scripting.executeScript({
+      target: { tabId },
+      files: ['content.js'],
+    });
+    noop('[ExtApp] content.js injected successfully');
+  } catch (err: any) {
+    if (isInjectableUrl(tabUrl)) {
+      noop('[ExtApp] executeScript failed:', err.message);
+    }
+    return false;
+  }
+
+  // Step 3: Retry PING with backoff until ready
+  const delays = [200, 400, 800, 1200, 2000, 3000];
+  for (let i = 0; i < delays.length; i++) {
+    await new Promise(r => setTimeout(r, delays[i]));
+    try {
+      const pongResult = await sendMessageWithTimeout<{ ready: boolean }>(
+        { action: 'PONG' },
+        tabId,
+        1500
+      );
+      if (pongResult.success && pongResult.data?.ready === true) {
+        const totalMs = delays.slice(0, i + 1).reduce((a, b) => a + b, 0);
+        noop(`[ExtApp] PING after injection success after ${totalMs}ms (attempt ${i + 1})`);
+        return true;
+      }
+    } catch (_) {
+      // not ready yet
+    }
+  }
+
+  noop('[ExtApp] Content script injected but NOT ready after all retries');
   return false;
 }
 
@@ -1091,6 +1113,28 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     }).catch(() => {});
   }, [refreshPageData, state.user]);
 
+  // ── listingFingerprint: prevents stale cross-listing data from polluting results ──────────────
+  // Hash of (address + price + beds + baths + sqft + listingUrl).
+  // Any fingerprint change between analysis submission and result arrival triggers a discard.
+  function computeFingerprint(listingData: ListingData | ListingDataV2 | null): string {
+    if (!listingData) return '';
+    const key = [
+      (listingData as any).address || '',
+      (listingData as any).price || (listingData as any).priceText || '',
+      String((listingData as any).bedrooms ?? ''),
+      String((listingData as any).bathrooms ?? ''),
+      String((listingData as any).sqft ?? (listingData as any).floorArea ?? ''),
+      (listingData as any).listingUrl || (listingData as any).url || '',
+    ].join('|');
+    let hash = 0;
+    for (let i = 0; i < key.length; i++) {
+      const char = key.charCodeAt(i);
+      hash = ((hash << 5) - hash) + char;
+      hash = hash & hash;
+    }
+    return String(Math.abs(hash));
+  }
+
   /**
    * User-triggered analysis flow.
    *
@@ -1133,6 +1177,8 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         return;
       }
 
+      console.log('[DEBUG store] about to dispatch SET_ANALYSIS_TYPE:', analysisType);
+      dispatch({ type: 'SET_ANALYSIS_TYPE', analysisType });
       dispatch({ type: 'SET_ANALYSIS_PHASE', phase: 'preparing', error: null });
       dispatch({ type: 'SET_ANALYSIS_RESULT', result: null });
       dispatch({ type: 'SET_VIEWING_HISTORY', id: null });
@@ -1196,6 +1242,9 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
           ? { ...cached, imageUrls: [] }
           : cached;
 
+        // Re-compute fingerprint for cached data — guards against stale cross-listing state
+        dispatch({ type: 'SET_LISTING_FINGERPRINT', fingerprint: computeFingerprint(dataToSubmit) });
+
         await submitAnalysis(dataToSubmit, analysisType);
         return;
       }
@@ -1204,8 +1253,13 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       // Continue to force re-extraction
     }
 
-    // Step 3: Ensure content script is loaded (reuse shared helper)
-    await ensureContentScriptLoaded(tabId);
+    // Step 3: Ensure content script is loaded — bail out if it fails
+    const scriptReady = await ensureContentScriptLoaded(tabId);
+    if (!scriptReady) {
+      noop('[ExtApp] startAnalysis: content script not ready after ensureContentScriptLoaded');
+      dispatch({ type: 'SET_ANALYSIS_PHASE', phase: 'error', error: 'Content script not ready. Please refresh the page and try again.' });
+      return;
+    }
 
     // Step 4: Extract listing data
     // Basic: skip START_USER_EXTRACTION (no gallery, no image collection)
@@ -1253,6 +1307,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       };
 
       dispatch({ type: 'SET_PROPERTY_STATUS', propertyStatus: 'detected', listingData, propertyDetection: response?.detection ?? null });
+      dispatch({ type: 'SET_LISTING_FINGERPRINT', fingerprint: computeFingerprint(listingData) });
       await submitAnalysis(listingData, 'basic');
       return;
     }
@@ -1327,10 +1382,21 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       dataAskingPrice: (listingData as any).askingPrice,
       hasZillowFinancials: !!(listingData as any).zillowFinancials,
       monthlyEstimate: (listingData as any).zillowFinancials?.monthlyPayment?.estimatedMonthlyPayment?.value,
+      // Commercial-grade image extraction metadata
+      imageExtractionStatus: (listingData as any).imageExtractionStatus,
+      imageExtractionExpectedCount: (listingData as any).imageExtractionExpectedCount,
+      imageExtractionCollectedCount: (listingData as any).imageExtractionCollectedCount,
+      imageExtractionGalleryType: (listingData as any).imageExtractionGalleryType,
+      imageExtractionExtractorUsed: (listingData as any).imageExtractionExtractorUsed,
+      imageExtractionFailureReason: (listingData as any).imageExtractionFailureReason,
     });
-    noop('[ExtApp] startAnalysis: extraction successful, images:', (listingData as any).imageUrls?.length || (listingData as any).images?.length || 0);
+    noop('[ExtApp] startAnalysis: extraction successful, images:', (listingData as any).imageUrls?.length || 0, 'status:', (listingData as any).imageExtractionStatus, 'expected:', (listingData as any).imageExtractionExpectedCount);
 
     dispatch({ type: 'SET_PROPERTY_STATUS', propertyStatus: 'detected', listingData, propertyDetection: response.detection ?? null });
+
+    // Compute and store fingerprint immediately after extraction — guards against stale data
+    const fingerprint = computeFingerprint(listingData);
+    dispatch({ type: 'SET_LISTING_FINGERPRINT', fingerprint });
 
     // Mark URL as cached
     dispatch({ type: 'SET_EXTRACTION_CACHED', extractionCached: true, lastExtractedUrl: currentUrl });
@@ -1367,6 +1433,19 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         });
 
         if (statusResponse.status === 'done' && statusResponse.result) {
+          // Fingerprint mismatch guard — discard stale results from a different listing
+          const responseFingerprint = (statusResponse as any).listingFingerprint as string | null | undefined;
+          if (state.listingFingerprint && responseFingerprint && responseFingerprint !== state.listingFingerprint) {
+            console.warn('[ExtApp] pollAnalysisStatus: fingerprint mismatch, discarding stale result',
+              { expected: state.listingFingerprint, got: responseFingerprint });
+            dispatch({
+              type: 'SET_ANALYSIS_PHASE',
+              phase: 'error',
+              error: 'Analysis result is for a different property. Please re-analyse this listing.',
+            });
+            return;
+          }
+
           const resultWithListingInfo = injectListingInfo(statusResponse.result, state.listingData);
           // Override reportMode from API top-level field (source of truth from analyses table)
           const reportMode = (statusResponse as any).report_mode as string | undefined;
@@ -1382,24 +1461,26 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
           // Set 20s cooldown to prevent rapid re-triggers
           dispatch({ type: 'SET_COOLDOWN', cooldownEndsAt: Date.now() + EXTRACTION_COOLDOWN_MS });
 
-          // Refresh credits
-          const userData = await sendMessage<{
-            status: string;
-            data?: { credits_remaining: number };
-          }>({ action: 'get_user_data' });
-          if (userData.status === 'success' && userData.data) {
-            dispatch({ type: 'SET_AUTH_STATUS', authStatus: 'logged_in', credits: userData.data.credits_remaining });
-          }
-
-          // Refresh history so new analysis appears immediately
-          sendMessage<{
-            status: string;
-            analyses?: AnalysisSummary[];
-          }>({ action: 'get_analysis_history', limit: 8, offset: 0 }).then((response) => {
-            if (response.status === 'success' && response.analyses) {
-              dispatch({ type: 'SET_HISTORY', history: response.analyses });
+          // Refresh credits — only for logged-in users
+          if (state.authStatus === 'logged_in') {
+            const userData = await sendMessage<{
+              status: string;
+              data?: { credits_remaining: number };
+            }>({ action: 'get_user_data' });
+            if (userData.status === 'success' && userData.data) {
+              dispatch({ type: 'SET_AUTH_STATUS', authStatus: 'logged_in', credits: userData.data.credits_remaining });
             }
-          }).catch(() => {});
+
+            // Refresh history — only for logged-in users
+            sendMessage<{
+              status: string;
+              analyses?: AnalysisSummary[];
+            }>({ action: 'get_analysis_history', limit: 8, offset: 0 }).then((response) => {
+              if (response.status === 'success' && response.analyses) {
+                dispatch({ type: 'SET_HISTORY', history: response.analyses });
+              }
+            }).catch(() => {});
+          }
 
           return;
         }
@@ -1520,6 +1601,10 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
                 dispatch({ type: 'SET_HISTORY', history: historyResponse.analyses });
               }
             }).catch(() => {});
+          } else {
+            // 未登录 Guest：标记结果为 guest，不写入历史记录
+            noop('[ExtApp] submitAnalysis (basic): guest user — result marked as guest, no history');
+            (fullResult as any).isGuest = true;
           }
 
           // Inject listing info into result
@@ -1527,6 +1612,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
           const resultWithListingInfo = injectListingInfo(fullResult, listingData);
           noop('[ExtApp] submitAnalysis (basic): resultWithListingInfo.listingInfo:', resultWithListingInfo.listingInfo);
           dispatch({ type: 'SET_ANALYSIS_RESULT', result: resultWithListingInfo });
+          dispatch({ type: 'SET_ANALYSIS_PHASE', phase: 'generating_report' });
           dispatch({ type: 'SET_ANALYSIS_PHASE', phase: 'done' });
           dispatch({ type: 'SET_CURRENT_VIEW', view: 'report' });
           noop('[ExtApp] submitAnalysis (basic): dispatched all actions, should navigate to report');
@@ -1556,7 +1642,13 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     return;
   }
 
-  // DIAG: Enhanced logging for debugging
+  // DIAG: Enhanced logging for debugging — include commercial-grade image extraction metadata
+  const imgStatus = (listingData as any).imageExtractionStatus;
+  const imgFailureReason = (listingData as any).imageExtractionFailureReason;
+  const imgExpected = (listingData as any).imageExtractionExpectedCount;
+  const imgCollected = (listingData as any).imageExtractionCollectedCount;
+  const imgGalleryType = (listingData as any).imageExtractionGalleryType;
+  const imgExtractor = (listingData as any).imageExtractionExtractorUsed;
   noop('[Analytics] submitAnalysis called with:', JSON.stringify({
     hasImageUrls: !!listingData.imageUrls,
     imageUrlsLen: (listingData.imageUrls || []).length,
@@ -1571,8 +1663,20 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     hasPrice: !!listingData.price,
     hasReportMode: !!listingData.reportMode,
     reportMode: listingData.reportMode,
+    // Commercial-grade image extraction
+    imageExtractionStatus: imgStatus,
+    imageExtractionExpectedCount: imgExpected,
+    imageExtractionCollectedCount: imgCollected,
+    imageExtractionGalleryType: imgGalleryType,
+    imageExtractionExtractorUsed: imgExtractor,
+    imageExtractionFailureReason: imgFailureReason,
     allKeys: Object.keys(listingData)
   }));
+
+  // Commercial-grade: warn if full analysis was requested but images failed
+  if (analysisType === 'full' && imgStatus === 'failed') {
+    console.warn('[Analytics] Full analysis requested but image extraction FAILED:', imgFailureReason, '| Expected:', imgExpected, '| Collected:', imgCollected);
+  }
 
   // Ensure we have either images OR description (Edge Function validation requirement)
   // Support both field names: imageUrls (from content script) and images (from ListingDataV2)
@@ -1591,13 +1695,20 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     noop('[Analytics] Added fallback description:', listingData.description);
   }
 
-  // DIAG: Log the actual data being sent
+  // DIAG: Log the actual data being sent — include image extraction metadata
   noop('[Analytics] About to send to background:', JSON.stringify({
     action: 'analyze',
     dataKeys: Object.keys(listingData),
     dataImageUrls: listingData.imageUrls,
     dataImages: (listingData as any).images,
-    dataDescription: listingData.description
+    dataDescription: listingData.description,
+    // Commercial-grade image extraction metadata
+    imageExtractionStatus: (listingData as any).imageExtractionStatus,
+    imageExtractionExpectedCount: (listingData as any).imageExtractionExpectedCount,
+    imageExtractionCollectedCount: (listingData as any).imageExtractionCollectedCount,
+    imageExtractionGalleryType: (listingData as any).imageExtractionGalleryType,
+    imageExtractionExtractorUsed: (listingData as any).imageExtractionExtractorUsed,
+    imageExtractionFailureReason: (listingData as any).imageExtractionFailureReason,
   }));
 
   try {
@@ -1688,22 +1799,22 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
 
   const navigateToHome = useCallback(() => {
     dispatch({ type: 'SET_CURRENT_VIEW', view: 'home' });
-    // Refresh user credits when returning to home
-    sendMessage<{
-      status: string;
-      data?: { credits_remaining: number };
-    }>({ action: 'get_user_data' }).then((userData) => {
-      if (userData?.status === 'success' && userData.data) {
-        dispatch({
-          type: 'SET_AUTH_STATUS',
-          authStatus: 'logged_in',
-          credits: userData.data.credits_remaining,
-        });
-      }
-    }).catch(() => {
-      // Silently ignore refresh failures
-    });
-  }, []);
+    // Refresh user credits when returning to home — only for logged-in users
+    if (state.authStatus === 'logged_in') {
+      sendMessage<{
+        status: string;
+        data?: { credits_remaining: number };
+      }>({ action: 'get_user_data' }).then((userData) => {
+        if (userData?.status === 'success' && userData.data) {
+          dispatch({
+            type: 'SET_AUTH_STATUS',
+            authStatus: 'logged_in',
+            credits: userData.data.credits_remaining,
+          });
+        }
+      }).catch(() => {});
+    }
+  }, [state.authStatus]);
 
   const sendMagicLink = useCallback(async (email: string): Promise<{ success: boolean; error?: string }> => {
     try {
@@ -1758,6 +1869,12 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     }
   }, [listingData, analysisResult]);
 
+  // Upgrade from basic to full: switch analysisType to 'full' and restart analysis
+  const upgradeToFull = useCallback(async () => {
+    dispatch({ type: 'SET_ANALYSIS_TYPE', analysisType: 'full' });
+    await startAnalysis({ bypassCache: true, analysisType: 'full' });
+  }, [dispatch, startAnalysis]);
+
   const value: AppContextValue = {
     state,
     dispatch,
@@ -1776,6 +1893,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       sendMagicLink,
       initiateGoogleOAuth,
       shareAnalysis,
+      upgradeToFull,
     },
   };
 

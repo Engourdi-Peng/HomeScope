@@ -224,12 +224,13 @@ function isLikelyValidAddress(value: unknown): boolean {
   if (isListingSummaryString(text)) return false;
 
   // Accept complete US address: "1231 Lydig Avenue, Bronx, NY 10461"
-  if (/^\d+\s+.+,\s*[^,]+,\s*[A-Z]{2}\s*\d{5}(?:-\d{4})?$/i.test(text)) {
+  if (/^\d[\d-]*\s+.+,\s*[^,]+,\s*[A-Z]{2}\s*\d{5}(?:-\d{4})?$/i.test(text)) {
     return true;
   }
 
-  // Accept partial street address: "810 Neill Avenue", "1231 Lydig Avenue", "4218 Herkimer Pl"
-  if (/^\d+\s+[A-Za-z0-9 .'-]+(?:street|st|avenue|ave|road|rd|place|pl|drive|dr|court|ct|lane|ln|boulevard|blvd|terrace|ter|way|circle|cir|floor)\b/i.test(text)) {
+  // Accept partial street address: "810 Neill Avenue", "1231 Lydig Avenue", "119-06 229th St #1"
+  // \d[\d-]* handles hyphenated street numbers like "119-06", "33-30"
+  if (/^\d[\d-]*\s+[A-Za-z0-9 .'-]+(?:street|st|avenue|ave|road|rd|place|pl|drive|dr|court|ct|lane|ln|boulevard|blvd|terrace|ter|way|circle|cir|floor)\b/i.test(text)) {
     return true;
   }
 
@@ -325,7 +326,9 @@ export function normalizeReportResult(result: AnyResult): NormalizedReport {
 
   // Always overwrite — never skip if value is falsy
   normalized.hero.address = canonicalAddress;
-  normalized.hero.title = canonicalTitle || canonicalAddress || 'Property report';
+  // Title: avoid duplicate when title === address (both are the full address string).
+  // If title differs from address, use it; otherwise null → falls back to 'Property report'.
+  normalized.hero.title = canonicalTitle && canonicalTitle !== canonicalAddress ? canonicalTitle : null;
 
   return normalized;
 }

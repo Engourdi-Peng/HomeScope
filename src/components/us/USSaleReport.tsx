@@ -14,7 +14,7 @@ function SectionDivider() {
 function VerdictBadge({ verdict }: { verdict?: string }) {
   const config: Record<string, { cls: string }> = {
     'Strong Buy': { cls: 'bg-green-500/20 text-green-300 border-green-500/50' },
-    'Worth Considering': { cls: 'bg-blue-500/20 text-blue-300 border-blue-500/50' },
+    'Worth Considering': { cls: 'bg-amber-500/20 text-amber-300 border-amber-500/50' },
     'Probably Skip': { cls: 'bg-red-500/20 text-red-300 border-red-500/50' },
     'Deeply Concerning': { cls: 'bg-red-500/30 text-red-400 border-red-500/60' },
   };
@@ -152,9 +152,39 @@ function PropertySnapshotCard({ result }: { result: AnalysisResult }) {
 }
 
 // ── Price Assessment Card ────────────────────────────────────────────────────
-function PriceAssessmentCard({ pa }: { pa?: AnalysisResult['price_assessment'] }) {
+function PriceAssessmentCard({ pa, zestimate }: { pa?: AnalysisResult['price_assessment']; zestimate?: number }) {
   const hasRange = pa?.estimated_min != null && pa?.estimated_max != null;
   const isLowConfidence = pa?.valuation_confidence === 'Low' || pa?.valuation_confidence === 'Unknown';
+
+  // Direction: asking vs zestimate or estimated range
+  let directionLabel = '';
+  let directionClass = '';
+  const askingNum = Number(pa?.asking_price);
+  const zNum = Number(zestimate);
+  if (!isNaN(askingNum) && !isNaN(zNum) && zNum > 0) {
+    const diff = askingNum - zNum;
+    const diffAbs = Math.abs(diff);
+    if (diff > 0) {
+      directionLabel = `$${(diffAbs / 1000).toFixed(1)}k above Zestimate`;
+      directionClass = 'text-amber-700';
+    } else if (diff < 0) {
+      directionLabel = `$${(diffAbs / 1000).toFixed(1)}k below Zestimate`;
+      directionClass = 'text-green-700';
+    } else {
+      directionLabel = 'In line with Zestimate';
+      directionClass = 'text-blue-700';
+    }
+  } else if (!isNaN(askingNum) && hasRange) {
+    const rangeMin = Number(pa!.estimated_min!);
+    const rangeMax = Number(pa!.estimated_max!);
+    if (askingNum > rangeMax) {
+      directionLabel = `$${((askingNum - rangeMax) / 1000).toFixed(1)}k above range`;
+      directionClass = 'text-amber-700';
+    } else if (askingNum < rangeMin) {
+      directionLabel = `$${((rangeMin - askingNum) / 1000).toFixed(1)}k below range`;
+      directionClass = 'text-green-700';
+    }
+  }
 
   return (
     <CardShell icon={<DollarSign size={18} className="text-stone-600" strokeWidth={1.5} />} title="Price Assessment" delay={100}>
@@ -177,6 +207,9 @@ function PriceAssessmentCard({ pa }: { pa?: AnalysisResult['price_assessment'] }
           <div className="text-xl font-semibold text-stone-800">
             {pa?.asking_price ? `$${Number(pa.asking_price).toLocaleString()}` : 'Not disclosed'}
           </div>
+          {directionLabel && (
+            <div className={`text-xs font-medium mt-1 ${directionClass}`}>{directionLabel}</div>
+          )}
         </div>
       </div>
       <div className="flex items-center gap-3 mb-4">
@@ -184,14 +217,16 @@ function PriceAssessmentCard({ pa }: { pa?: AnalysisResult['price_assessment'] }
         <span className={`text-sm font-bold px-2 py-0.5 rounded ${
           pa?.verdict === 'Underpriced' ? 'bg-green-50 text-green-700' :
           pa?.verdict === 'Overpriced' ? 'bg-red-50 text-red-700' :
-          pa?.verdict === 'Fair' ? 'bg-blue-50 text-blue-700' :
+          pa?.verdict === 'Fair' ? 'bg-amber-50 text-amber-700' :
           'bg-stone-50 text-stone-600'
         }`}>{pa?.verdict || 'Needs Verification'}</span>
-      {pa?.valuation_confidence && pa.valuation_confidence !== 'Unknown' && (
-          <span className="text-xs text-stone-400">Confidence: {pa.valuation_confidence}</span>
-      )}
       </div>
       {pa?.explanation && <p className="text-sm text-stone-600 leading-relaxed">{pa.explanation}</p>}
+      {isLowConfidence && (
+        <div className="mt-3 text-xs text-stone-500">
+          Confidence: Limited — price still depends on condition, legal use and comparable sales.
+        </div>
+      )}
       {pa?.tax_context && (
         <div className="mt-3 p-3 bg-amber-50 rounded-xl">
           <span className="text-xs font-medium text-amber-700">Tax Context: </span>
@@ -367,6 +402,30 @@ function CarryingCostsCard({ cc }: { cc?: AnalysisResult['carrying_costs'] }) {
               <span className="text-slate-400">Not included</span>
             </div>
           )}
+
+          {/* Not included reminder */}
+          <div className="mt-3 pt-3 border-t border-slate-200">
+            <div className="text-xs font-medium text-stone-500 mb-2">Not included in Zillow estimate</div>
+            <div className="grid grid-cols-2 gap-1">
+              {[
+                'Utilities',
+                'Maintenance reserve',
+                'Repairs & CapEx',
+                'Vacancy allowance',
+                'Actual insurance quote',
+                'Legal / rental compliance',
+              ].map((item, i) => (
+                <div key={i} className="flex items-center gap-1.5 text-xs text-stone-400">
+                  <span className="shrink-0 text-stone-300">–</span>{item}
+                </div>
+              ))}
+            </div>
+          </div>
+
+          {/* Zillow disclaimer */}
+          <div className="mt-2 text-xs text-stone-400 italic">
+            Zillow estimate only — verify loan terms, insurance, taxes and utilities before budgeting.
+          </div>
         </div>
       )}
 
@@ -578,10 +637,33 @@ function QuestionsToAskCard({ result }: { result: AnalysisResult }) {
     'What are realistic market rents if part of the home is rented out?',
   ];
 
+  // 已知字段（用于过滤冗余问题）
+  const snap = (result as any)?.property_snapshot ?? {};
+  const hasBeds = !!(snap?.beds || snap?.bedrooms);
+  const hasBaths = !!(snap?.baths || snap?.bathrooms);
+  const hasSqft = !!snap?.sqft;
+  const hasPropertyType = !!(snap?.homeType || snap?.propertyType || snap?.home_type || snap?.property_type);
+  const hasBasicFields = hasBeds || hasBaths || hasSqft || hasPropertyType;
+
+  const BASIC_FIELD_PATTERNS = [
+    /missing basic property details/i,
+    /property type[, ]*beds[, ]*baths[, ]*and interior size/i,
+    /provide basic property details/i,
+    /provide\s+(beds|baths|sqft|square\s*footage|interior\s*size|property\s*type)/i,
+    /missing\s+(beds|baths|interior\s*size|property\s*type)/i,
+    /can you provide (the )?(beds?|baths?|sqft|square\s*footage|square\s*feet|interior\s*size|property\s*type|home\s*type)/i,
+    /how many (beds?|baths?)\b/i,
+    /\bbeds?\b.*\?\s*$/i,
+    /\bbaths?\b.*\?\s*$/i,
+    /(beds?|baths?|sqft|square\s*footage)\s+are\s+(listed|confirmed|disclosed|available)/i,
+    /can you (tell me|confirm|give me) (the )?(beds?|baths?|sqft|square\s*footage|property\s*type|home\s*type)/i,
+    /what('s| is) the (beds?|baths?|sqft|square\s*footage|property\s*type|home\s*type)/i,
+  ];
+
   const rawQuestions = (result as any).questions_to_ask as string[] | undefined;
-  
+
   let questions: string[] = [];
-  
+
   if (rawQuestions && rawQuestions.length > 0) {
     // 从原始问题中过滤和去重
     questions = rawQuestions
@@ -618,11 +700,42 @@ function QuestionsToAskCard({ result }: { result: AnalysisResult }) {
       })
       .filter(q => q.length > 10) // 再次过滤太短的问题
       .slice(0, 8);
+
+    // 过滤已知基础字段问题（beds/baths/sqft/propertyType 已在页面上确认时）
+    if (hasBasicFields) {
+      questions = questions.filter(q => {
+        const lowerQ = q.toLowerCase();
+        for (const pattern of BASIC_FIELD_PATTERNS) {
+          if (pattern.test(lowerQ)) return false;
+        }
+        return true;
+      });
+    }
   }
-  
+
   // 如果没有原始问题，使用默认问题
   if (questions.length === 0) {
     questions = defaultQuestions;
+  }
+
+  // 对默认问题也过滤已知基础字段问题
+  if (hasBasicFields) {
+    questions = questions.filter(q => {
+      const lowerQ = q.toLowerCase();
+      for (const pattern of BASIC_FIELD_PATTERNS) {
+        if (pattern.test(lowerQ)) return false;
+      }
+      return true;
+    });
+  }
+
+  // 如果过滤后问题为空，使用不含基础字段的备用列表
+  if (questions.length === 0) {
+    questions = defaultQuestions.filter(q => {
+      const lowerQ = q.toLowerCase();
+      if (/beds?\?|baths?\?|square\s*footage.*\?/i.test(lowerQ)) return false;
+      return true;
+    });
   }
 
   return (
@@ -794,13 +907,13 @@ function RecommendationCard({ rec, decisionScore, scoreConfidence }: {
     : 'Limited data available. Additional verification recommended before proceeding.';
 
   return (
-    <div className="bg-stone-900 text-white rounded-3xl p-5 @container[size>=480px]:p-8 animate-in fade-in slide-in-from-bottom-8 duration-700 ease-out mb-4">
+    <div className="bg-[#282828] text-white rounded-3xl p-5 @container[size>=480px]:p-8 animate-in fade-in slide-in-from-bottom-8 duration-700 ease-out mb-4">
       {/* Header */}
       <div className="flex items-center gap-2 mb-4">
-        <div className="w-7 h-7 rounded-lg bg-stone-800 flex items-center justify-center shrink-0">
+        <div className="w-7 h-7 rounded-lg bg-[#2a2a2a] flex items-center justify-center shrink-0">
           <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="text-stone-400"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
         </div>
-        <div className="text-[10px] font-medium uppercase tracking-widest text-stone-400">Final Verdict</div>
+        <div className="text-[10px] font-medium uppercase tracking-widest text-[#AAAAAA]">Final Verdict</div>
       </div>
       
       {/* Score + Verdict Row */}
@@ -817,7 +930,7 @@ function RecommendationCard({ rec, decisionScore, scoreConfidence }: {
           ) : (
             <span className="text-lg text-stone-400 italic">Score unavailable</span>
           )}
-          <span className="text-[10px] font-medium uppercase tracking-widest text-stone-500 ml-2">Decision Score</span>
+          <span className="text-[10px] font-medium uppercase tracking-widest text-[#BDBDBD] ml-2">Decision Score</span>
         </div>
 
         {/* Right: Verdict Badge + Confidence */}
@@ -846,7 +959,7 @@ function RecommendationCard({ rec, decisionScore, scoreConfidence }: {
       )}
 
       {/* Key Takeaway */}
-      <div className="mb-5 p-4 bg-stone-800/40 rounded-xl border border-stone-700/50">
+      <div className="mb-5 p-4 bg-white/5 rounded-xl border border-white/10">
         <div className="flex items-center gap-1.5 mb-2">
           <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="text-amber-400 shrink-0"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
           <div className="text-[10px] font-medium uppercase tracking-widest text-amber-400">Key Takeaway</div>
@@ -859,11 +972,11 @@ function RecommendationCard({ rec, decisionScore, scoreConfidence }: {
       {/* Main Reasons */}
       {rec.mainReasons && rec.mainReasons.length > 0 && (
         <div className="mb-4">
-          <div className="text-[10px] font-medium uppercase tracking-widest text-stone-400 mb-2">Main reasons</div>
+          <div className="text-[10px] font-medium uppercase tracking-widest text-[#AAAAAA] mb-2">Main reasons</div>
           <div className="space-y-1.5">
             {rec.mainReasons.slice(0, 3).map((r, i) => (
-              <div key={i} className="flex items-start gap-2 text-sm text-stone-300">
-                <span className="text-amber-500 mt-0.5 shrink-0">•</span>
+              <div key={i} className="flex items-start gap-2 text-sm text-white">
+                <span className="text-[#DAA520] mt-0.5 shrink-0">•</span>
                 {r}
               </div>
             ))}
@@ -873,12 +986,12 @@ function RecommendationCard({ rec, decisionScore, scoreConfidence }: {
 
       {/* Next Step */}
       {rec.nextStep && (
-        <div className="p-3 bg-amber-900/30 rounded-xl border border-amber-600/30">
+        <div className="p-3 bg-[rgba(218,165,32,0.12)] rounded-xl border border-[#DAA520]/40">
           <div className="flex items-center gap-1.5 mb-1">
-            <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="text-amber-400 shrink-0"><polyline points="9 18 15 12 9 6"/></svg>
-            <div className="text-[10px] font-medium uppercase tracking-widest text-amber-400">Next step</div>
+            <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="text-[#DAA520] shrink-0"><polyline points="9 18 15 12 9 6"/></svg>
+            <div className="text-[10px] font-medium uppercase tracking-widest text-[#DAA520]">Next step</div>
           </div>
-          <div className="text-sm text-stone-200">{rec.nextStep}</div>
+          <div className="text-sm text-white">{rec.nextStep}</div>
         </div>
       )}
     </div>
@@ -921,7 +1034,7 @@ export function USSaleReport({ result }: { result: AnalysisResult }) {
 
   const mainReasons: string[] = [];
   if (mr?.rating && mr.rating !== 'Low') {
-    mainReasons.push('1955 building with unknown roof, plumbing, electrical and heating condition');
+    mainReasons.push('Built in 1955; major systems may be older or partially updated — electrical panel, wiring, plumbing, heating and roof age should be verified');
   }
   if (lc?.risk_level && lc.risk_level !== 'Low') {
     mainReasons.push('Legal occupancy / multi-family status not verified');
@@ -970,7 +1083,7 @@ export function USSaleReport({ result }: { result: AnalysisResult }) {
       <PropertySnapshotCard result={result} />
 
       {/* ── 7. Price Assessment ── */}
-      <PriceAssessmentCard pa={result.price_assessment} />
+      <PriceAssessmentCard pa={result.price_assessment} zestimate={(result as any).zestimate} />
 
       {/* ── 8. Carrying Costs ── */}
       <CarryingCostsCard cc={(result as any).carrying_costs} />

@@ -1,90 +1,16 @@
 import React from 'react';
-import { ArrowRight, Check, Camera, Zap } from 'lucide-react';
+import { ArrowRight, Check } from 'lucide-react';
 import { useAppState, useActions } from '../store';
-import type { ListingSource } from '../../../shared/types/analysis';
+import { getAnalysisProgressSteps } from '../analysisProgressSteps';
 
-// ========== 网站来源配置 ==========
-const SOURCE_CONFIG: Record<ListingSource, {
-  label: string;
-  flag: string;
-  color: string;
-  upgradeFeatures: string[];
-}> = {
-  'realestate-au': {
-    label: 'realestate.com.au',
-    flag: '🇦🇺',
-    color: 'bg-green-100 text-green-800',
-    upgradeFeatures: [
-      'Detailed space analysis',
-      'Hidden defect detection',
-      'Auction strategy tips',
-    ],
-  },
-  'zillow': {
-    label: 'Zillow.com',
-    flag: '🇺🇸',
-    color: 'bg-blue-100 text-blue-800',
-    upgradeFeatures: [
-      'Zestimate vs Price comparison',
-      'Tax & HOA deep dive',
-      'School district analysis',
-    ],
-  },
-  'future-site': {
-    label: 'Property Site',
-    flag: '🏠',
-    color: 'bg-gray-100 text-gray-800',
-    upgradeFeatures: [],
-  },
-};
-
-// Analysis phases in order
-const ANALYSIS_PHASES = [
-  'reading_page',
-  'opening_gallery',
-  'collecting_photos',
-  'sending_data',
-  'analysing',
-  'generating_report',
-] as const;
-
-type AnalysisPhaseType = typeof ANALYSIS_PHASES[number];
-
-const PHASE_DISPLAY: Record<AnalysisPhaseType, { label: string }> = {
-  reading_page: { label: 'Reading page data' },
-  opening_gallery: { label: 'Opening gallery' },
-  collecting_photos: { label: 'Collecting photos' },
-  sending_data: { label: 'Sending data' },
-  analysing: { label: 'Analysing property' },
-  generating_report: { label: 'Generating report' },
-};
-
-// ========== SourceBadge 组件 ==========
-interface SourceBadgeProps {
-  source: ListingSource;
-}
-
-function SourceBadge({ source }: SourceBadgeProps) {
-  const config = SOURCE_CONFIG[source] ?? SOURCE_CONFIG['future-site'];
-  return (
-    <span className={`inline-flex items-center gap-1 px-2 py-1 rounded-full text-xs font-medium ${config.color}`}>
-      <span>{config.flag}</span>
-      <span>{config.label}</span>
-    </span>
-  );
-}
-
-// ========== PhaseItem 组件 ==========
+// ========== PhaseItem ==========
 interface PhaseItemProps {
-  phase: AnalysisPhaseType;
-  index: number;
+  label: string;
   isDone: boolean;
   isActive: boolean;
 }
 
-function PhaseItem({ phase, index, isDone, isActive }: PhaseItemProps) {
-  const display = PHASE_DISPLAY[phase];
-
+function PhaseItem({ label, isDone, isActive }: PhaseItemProps) {
   return (
     <div className={`ext-phase-item ${isDone ? 'ext-phase-item--done' : ''} ${isActive ? 'ext-phase-item--active' : ''}`}>
       <div className="ext-phase-indicator">
@@ -92,35 +18,36 @@ function PhaseItem({ phase, index, isDone, isActive }: PhaseItemProps) {
           <Check size={12} strokeWidth={3} />
         ) : isActive ? (
           <div className="ext-phase-spinner" />
-        ) : (
-          <span className="ext-phase-number">{index + 1}</span>
-        )}
+        ) : null}
       </div>
-      <span className="ext-phase-label">{display.label}</span>
+      <span className="ext-phase-label">{label}</span>
     </div>
   );
 }
 
+// ========== AnalysisProgressPanel ==========
 interface AnalysisProgressPanelProps {
   phase: string;
   progress: number;
+  isBasic: boolean;
 }
 
-function AnalysisProgressPanel({ phase, progress }: AnalysisProgressPanelProps) {
+function AnalysisProgressPanel({ phase, progress, isBasic }: AnalysisProgressPanelProps) {
+  const steps = getAnalysisProgressSteps(isBasic ? 'basic' : 'full');
+
+  const currentIndex = steps.findIndex(s => s.key === phase);
+  const safeIndex = currentIndex >= 0 ? currentIndex : 0;
+
   return (
     <div className="ext-analysis-progress-panel ext-panel">
       <div className="ext-phase-list">
-        {ANALYSIS_PHASES.map((p, idx) => {
-          const phaseIdx = ANALYSIS_PHASES.indexOf(p as AnalysisPhaseType);
-          const currentIdx = ANALYSIS_PHASES.indexOf(phase as AnalysisPhaseType);
-          const isDone = phaseIdx < currentIdx;
-          const isActive = p === phase;
-
+        {steps.map((step, index) => {
+          const isDone = index < safeIndex;
+          const isActive = index === safeIndex;
           return (
             <PhaseItem
-              key={p}
-              phase={p as AnalysisPhaseType}
-              index={idx}
+              key={step.key}
+              label={step.label}
               isDone={isDone}
               isActive={isActive}
             />
@@ -130,86 +57,70 @@ function AnalysisProgressPanel({ phase, progress }: AnalysisProgressPanelProps) 
       <div className="ext-phase-progress-bar">
         <div className="ext-phase-progress-fill" style={{ width: `${progress}%` }} />
       </div>
-      <div className="ext-phase-hint">
-        <Camera size={12} />
-        <span>We&apos;ll open the photo gallery to collect all images for a more accurate analysis.</span>
-      </div>
+      {!isBasic && (
+        <div className="ext-phase-hint">
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"></path>
+            <circle cx="12" cy="13" r="4"></circle>
+          </svg>
+          <span>Unlock Full Analysis for AI photo review and hidden risk detection.</span>
+        </div>
+      )}
     </div>
   );
 }
 
+// ========== useCooldownRemaining ==========
 function useCooldownRemaining() {
   const { cooldownEndsAt } = useAppState();
   const [remaining, setRemaining] = React.useState<number>(0);
-
   React.useEffect(() => {
-    if (cooldownEndsAt === null) {
-      setRemaining(0);
-      return;
-    }
-    const tick = () => {
-      const r = Math.max(0, cooldownEndsAt - Date.now());
-      setRemaining(r);
-    };
+    if (cooldownEndsAt === null) { setRemaining(0); return; }
+    const tick = () => { const r = Math.max(0, cooldownEndsAt - Date.now()); setRemaining(r); };
     tick();
     const id = setInterval(tick, 500);
     return () => clearInterval(id);
   }, [cooldownEndsAt]);
-
   return remaining;
 }
 
-const PRIMARY_CTA_MAIN = 'See potential risks';
-
-const PHASE_LABELS: Record<string, { main: string; sub?: string }> = {
-  idle: { main: PRIMARY_CTA_MAIN, sub: 'Know before you visit' },
-  preparing: { main: 'Preparing extraction...', sub: 'Checking page state' },
-  reading_page: { main: 'Reading page data...', sub: 'Extracting listing info' },
-  opening_gallery: { main: 'Opening photo gallery...', sub: 'Launching PhotoSwipe' },
-  collecting_photos: { main: 'Collecting photos...', sub: 'Scanning all images' },
-  sending_data: { main: 'Sending to analysis...', sub: 'Uploading property data' },
-  analysing: { main: 'Analysing property...', sub: 'AI evaluation in progress' },
-  generating_report: { main: 'Generating report...', sub: 'Building your report' },
-  done: { main: PRIMARY_CTA_MAIN, sub: 'Know before you visit' },
-  no_credits: { main: 'No credits remaining', sub: 'Get more credits' },
-  error: { main: 'Analysis failed · Tap to retry' },
-};
-
+// ========== AnalyseSection ==========
+/**
+ * Handles Deep Analysis CTA for logged-in users.
+ *
+ * - Shows "Start Deep Analysis" primary button when logged in + has credits
+ * - Shows analysis progress panel during any analysis (basic or full)
+ * - Shows credits-unavailable state with muted "Get more deep analyses" button
+ *
+ * Note:
+ *   - Basic Analysis entry for ALL users is in GateView (primary for logged-out, secondary for logged-in)
+ *   - Logged-out conversion entry is in FreemiumEntry
+ */
 export function AnalyseSection() {
-  const { analysisPhase, analysisProgress, listingData, propertyDetection, credits } = useAppState();
+  const { analysisPhase, analysisProgress, credits, authStatus, propertyDetection, analysisType } = useAppState();
   const { retryAnalysis, startAnalysis } = useActions();
   const cooldownRemaining = useCooldownRemaining();
   const cooldownSecs = Math.ceil(cooldownRemaining / 1000);
 
-  // 获取网站来源
-  const source = (listingData as any)?.source as ListingSource || 'realestate-au';
-  const sourceConfig = SOURCE_CONFIG[source] ?? SOURCE_CONFIG['realestate-au'];
-
+  const isLoggedIn = authStatus === 'logged_in';
   const isAnalysing = ['preparing', 'reading_page', 'opening_gallery', 'collecting_photos', 'sending_data', 'analysing', 'generating_report'].includes(analysisPhase);
   const isInCooldown = cooldownRemaining > 0;
   const isNoCredits = credits <= 0;
   const isError = analysisPhase === 'error';
   const isDone = analysisPhase === 'done';
   const hasCredits = credits > 0;
+  const isBasic = analysisType === 'basic';
 
-  // Button is always enabled unless: already analysing, in cooldown, or no credits
   const isDisabled = isAnalysing || isInCooldown;
 
-  const getButtonLabel = () => {
-    if (isInCooldown) return { main: `Please wait ${cooldownSecs}s`, sub: 'Cooldown active' };
+  const getDeepLabel = (): { main: string; sub1?: string; sub2?: string } => {
+    if (isInCooldown) return { main: `Please wait ${cooldownSecs}s` };
     if (isError) return { main: 'Analysis failed · Tap to retry' };
-    if (isNoCredits) return { main: 'No deep analyses remaining', sub: 'Try Basic Analysis for free' };
-    if (isAnalysing) return { main: PHASE_LABELS[analysisPhase]?.main ?? 'Working...', sub: PHASE_LABELS[analysisPhase]?.sub };
-    if (isDone) return { main: PRIMARY_CTA_MAIN, sub: 'Know before you visit' };
+    if (isNoCredits && isLoggedIn) return { main: 'No deep analyses remaining · Get more credits' };
+    if (isDone) return { main: 'Deep Analysis', sub1: `Uses 1 credit · ${credits} deep analyses left`, sub2: 'Includes photos, hidden risks, costs and investment context' };
     const tier = propertyDetection?.tier;
-    if (tier === 'partial') {
-      return { main: PRIMARY_CTA_MAIN, sub: 'Partial analysis · Uses 1 credit' };
-    }
-    if (listingData) {
-      return { main: PRIMARY_CTA_MAIN, sub: 'Know before you visit' };
-    }
-    // No listing data yet — button still enabled, will trigger extraction first
-    return { main: PRIMARY_CTA_MAIN, sub: 'Reads listing page first' };
+    if (tier === 'partial') return { main: 'Deep Analysis', sub1: 'Uses 1 credit · Partial analysis', sub2: 'Includes photos, hidden risks, costs and investment context' };
+    return { main: 'Deep Analysis', sub1: `Uses 1 credit · ${credits} deep analyses left`, sub2: 'Includes photos, hidden risks, costs and investment context' };
   };
 
   const handleDeepClick = () => {
@@ -217,102 +128,76 @@ export function AnalyseSection() {
     if (isError) {
       retryAnalysis();
     } else {
-      // Start deep analysis (requires credits)
       startAnalysis({ bypassCache: true, analysisType: 'full' });
     }
   };
 
-  const handleBasicClick = () => {
-    if (isDisabled) return;
-    if (isError) {
-      retryAnalysis();
-    } else {
-      // Start basic analysis (free, no credits needed)
-      startAnalysis({ bypassCache: true, analysisType: 'basic' });
-    }
-  };
-
-  const label = getButtonLabel();
-
-  const showPrimaryArrow =
-    (isDone || !!listingData) && !isAnalysing && !isInCooldown && !isError;
+  const deepLabel = getDeepLabel();
+  const showArrow = isDone && !isAnalysing && !isInCooldown && !isError;
 
   const btnClass = [
     'ext-cta',
     isAnalysing && 'ext-cta--loading',
     isError && 'ext-cta--error',
-  ]
-    .filter(Boolean)
-    .join(' ');
+  ].filter(Boolean).join(' ');
+
+  const showPrimaryBtn = isLoggedIn && hasCredits && !isAnalysing && !isError;
+  const showMutedBtn = isNoCredits && isLoggedIn && !isAnalysing && !isError;
 
   return (
     <div className="ext-cta-block">
-      {/* 网站来源标识 */}
-      <div className="mb-3">
-        <SourceBadge source={source} />
-      </div>
+      {/* Primary: Start Deep Analysis — shown only when credits available */}
+      {showPrimaryBtn && (
+        <>
+          <button
+            type="button"
+            className={`${btnClass} ext-cta--primary`}
+            onClick={handleDeepClick}
+            disabled={isDisabled}
+          >
+            <span className="ext-cta-label">Start Deep Analysis</span>
+            {showArrow && <ArrowRight size={18} strokeWidth={2.25} className="ext-cta-icon" aria-hidden />}
+          </button>
+          {deepLabel.sub1 && <p className="ext-cta-sub">{deepLabel.sub1}</p>}
+          {deepLabel.sub2 && <p className="ext-cta-sub-2">{deepLabel.sub2}</p>}
+        </>
+      )}
 
-      {/* Deep Analysis Button (requires credits) */}
-      {hasCredits && !isAnalysing && (
+      {/* Muted: Get more credits when exhausted */}
+      {showMutedBtn && (
         <button
           type="button"
-          className={`${btnClass} ${(isDone || !!listingData) && !isInCooldown && !isError ? 'ext-cta--primary' : 'ext-cta--muted'}`}
-          onClick={handleDeepClick}
-          disabled={isDisabled}
+          className="ext-cta ext-cta--muted"
+          onClick={() => window.open('https://www.tryhomescope.com/pricing', '_blank')}
         >
-          <span className="ext-cta-label">
-            Use Deep Analysis ({credits} left)
-          </span>
-          {showPrimaryArrow && <ArrowRight size={18} strokeWidth={2.25} className="ext-cta-icon" aria-hidden />}
+          <span className="ext-cta-label">Get more deep analyses</span>
+          <span className="ext-cta-sub-label">No analyses remaining</span>
         </button>
       )}
 
-      {/* Basic Analysis Button (free, unlimited) */}
-      {!isAnalysing && (
-        <button
-          type="button"
-          className={`ext-cta ext-cta--basic ${isNoCredits || isAnalysing ? 'ext-cta--disabled' : ''}`}
-          onClick={handleBasicClick}
-          disabled={isDisabled}
-        >
-          <Zap size={16} className="ext-cta-icon" />
-          <span className="ext-cta-label">Try Basic Analysis</span>
-          <span className="ext-cta-sub-label">Free, Unlimited</span>
-        </button>
-      )}
-
-      {/* Single button for loading/error states */}
-      {(isAnalysing || isError) && (
-        <button type="button" className={btnClass} onClick={handleDeepClick} disabled={isDisabled}>
-          {isAnalysing && <div className="ext-spinner ext-spinner-sm ext-spinner-on-dark" />}
-          <span className="ext-cta-label">{label.main}</span>
-        </button>
-      )}
-
+      {/* Analysis progress — shown for BOTH basic and full */}
       {isAnalysing && (
-        <p className="ext-deep-audit-hint">Deep audit in progress. Trust us, it's better than trekking to a dud inspection in the rain.</p>
+        <>
+          <p className="ext-deep-audit-hint">
+            {isBasic
+              ? 'Free analysis in progress. No sign-in required.'
+              : "Deep audit in progress. Trust us, it's better than trekking to a dud inspection in the rain."}
+          </p>
+          <AnalysisProgressPanel phase={analysisPhase} progress={analysisProgress} isBasic={isBasic} />
+        </>
       )}
 
-      {isAnalysing && (
-        <AnalysisProgressPanel
-          phase={analysisPhase}
-          progress={analysisProgress}
-        />
+      {/* Analysis error */}
+      {isError && (
+        <button type="button" className={btnClass} onClick={handleDeepClick}>
+          {deepLabel.main}
+        </button>
       )}
 
-      {label.sub && !isAnalysing && (
+      {/* Not logged in — secondary prompt */}
+      {!isLoggedIn && !isAnalysing && (
         <p className="ext-cta-sub">
-          {isNoCredits ? (
-            <button
-              type="button"
-              className="ext-link-btn"
-              onClick={() => window.open('https://www.tryhomescope.com/pricing', '_blank')}
-            >
-              {label.sub} →
-            </button>
-          ) : (
-            label.sub
-          )}
+          <span>Sign in for full analysis with photo review and hidden risk detection</span>
         </p>
       )}
     </div>

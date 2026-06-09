@@ -12,7 +12,7 @@ export function ExtensionHeader() {
       case 'not_listing':
         return 'ext-status-dot--muted';
       case 'error':
-        return 'ext-status-dot--error';
+        return 'ext-status-dot--muted';
       default:
         return 'ext-status-dot--muted';
     }
@@ -21,11 +21,11 @@ export function ExtensionHeader() {
   const getStatusText = () => {
     switch (propertyStatus) {
       case 'detected':
-        return 'Property detected';
+        return 'Ready to analyse';
       case 'not_listing':
-        return 'Not a property page';
+        return 'Page not detected';
       case 'error':
-        return 'Error detecting page';
+        return 'Page not detected';
       default:
         return 'Scanning...';
     }

@@ -4,6 +4,7 @@
 //   monthly-cost-snapshot, basic-questions, basic-cta
 
 import type { NormalizedReport, HeroData, HighlightsData, QuickFact, ReportSection, SectionItem } from './types';
+import { computeReportProfile } from './usSale';
 
 type AnyResult = any;
 
@@ -49,6 +50,27 @@ function objectItems(arr: unknown[], opts?: { badge?: string; severity?: 'low' |
 
 // ── hero ─────────────────────────────────────────────────────────────────────
 
+// ── Listing summary / dirty data filters ──────────────────────────────────────
+
+function isListingSummaryString(value: unknown): boolean {
+  if (!value) return true;
+  const text = String(value).trim();
+  if (!text) return true;
+  return (
+    /\b\d+\s*bds\b/i.test(text) ||
+    /\b\d+\s*beds?\b/i.test(text) ||
+    /\b\d+\s*ba\b/i.test(text) ||
+    /\b\d+[,.\d]*\s*sqft\b/i.test(text) ||
+    /\b\d+\s*sq\s*ft\b/i.test(text) ||
+    /home\s+for\s+sale\b/i.test(text) ||
+    /\bactive\b/i.test(text) ||
+    /\bmulti\.?family\s+home\s+for\s+sale\b/i.test(text) ||
+    /\bsingle\s+family\s+home\s+for\s+sale\b/i.test(text) ||
+    /\bcondo\s+for\s+sale\b/i.test(text) ||
+    /\btownhouse\s+for\s+sale\b/i.test(text)
+  );
+}
+
 function buildHero(result: AnyResult, isBasic: boolean): HeroData {
   if (isBasic || result.analysisType === 'basic') {
     const evidenceScore = (() => {
@@ -60,8 +82,11 @@ function buildHero(result: AnyResult, isBasic: boolean): HeroData {
       result.listingOverview?.address ??
       result.address ?? ''
     );
+    // Filter listing summary from title
+    const rawTitle = result.listingInfo?.title ?? result.listingOverview?.title ?? result.title ?? '';
+    const title = isListingSummaryString(rawTitle) ? '' : toText(rawTitle);
     return {
-      title: toText(result.listingInfo?.title ?? result.listingOverview?.title ?? result.title ?? 'Quick Property Check'),
+      title: title || 'Quick Property Check',
       address: address || undefined,
       score: evidenceScore,
       verdict: toText(result.verdict ?? 'Need More Evidence'),
@@ -75,8 +100,11 @@ function buildHero(result: AnyResult, isBasic: boolean): HeroData {
     const v = result.overallScore ?? result.overall_score;
     return v != null && v !== '' ? Number(v) || null : null;
   })();
+  // Filter listing summary from title
+  const rawTitle = result.listingInfo?.title ?? result.title ?? '';
+  const title = isListingSummaryString(rawTitle) ? '' : toText(rawTitle);
   return {
-    title: toText(result.listingInfo?.title ?? result.title ?? ''),
+    title: title || '',
     address: toText(result.listingInfo?.address ?? result.address ?? ''),
     score,
     verdict: toText(result.verdict ?? result.overall_verdict ?? 'Not enough data'),
@@ -302,15 +330,21 @@ function buildBasicDecisionCards(result: AnyResult, hasZillowMonthly: boolean): 
     result.quick_summary ?? '',
     result.listingInfo?.propertyType ?? '',
     result.propertyType ?? '',
-  ].join(' ');
+  ].join(' ').toLowerCase();
+
+  // Detect SFOC profile
+  const profileText = ((result as any).property_snapshot?.homeType ?? (result as any).property_snapshot?.home_type ?? '').toLowerCase();
+  const isSingleFamilyProfile = /single\s*family|singlefamily|single\s*family\s*residence|single\s*family\s*home/i.test(profileText) || (/single/i.test(profileText) && !/multi/i.test(profileText));
+  const hasRentalSignal = /rental\s*unit|basement\s*apartment|income\s*unit|legal\s*two.family|2.family|multi.family|duplex|separate\s*unit|tenant|walk.in\s*apartment|mother.daughter/i.test(listingText);
+  const isSFOC = isSingleFamilyProfile && !hasRentalSignal;
 
   const isRentalMentioned = /legal 2-family|two.family|multi.family|rental|second unit|income|tenant/i.test(listingText);
   const hasConditionSignal = /TLC|needs work|needs updating|needs renovation|needs repair|vacant|as.is|sold/i.test(listingText);
 
   const cards: DecisionCard[] = [];
 
-  // 1. Legal Use Verification — only if listing mentions rental/multi-family use
-  if (isRentalMentioned) {
+  // 1. Legal Use Verification — only if listing mentions rental/multi-family use (NOT for SFOC)
+  if (isRentalMentioned && !isSFOC) {
     cards.push({
       title: 'Legal Use Verification',
       whyMatters: 'You should not rely on the 2-family or rental setup until the Certificate of Occupancy is confirmed.',
@@ -320,26 +354,32 @@ function buildBasicDecisionCards(result: AnyResult, hasZillowMonthly: boolean): 
     });
   }
 
-  // 2. Carrying Costs — always, but文案 varies by available data
+  // 2. Carrying Costs — always, but SFOC uses more specific action
   if (hasZillowMonthly) {
     cards.push({
       title: 'Carrying Costs',
       whyMatters: "Zillow provides a monthly estimate, but actual taxes, insurance, HOA, utilities, loan terms, and maintenance may differ from the estimate.",
-      action: 'Confirm whether Zillow\'s estimated taxes, insurance, HOA fees, and monthly payment are accurate for this specific property.',
+      action: isSFOC
+        ? 'Confirm whether Zillow\'s estimated taxes, insurance, HOA fees, and monthly payment are accurate, and ask for actual insurance quotes and average utility costs.'
+        : 'Confirm whether Zillow\'s estimated taxes, insurance, HOA fees, and monthly payment are accurate for this specific property.',
     });
   } else {
     cards.push({
       title: 'Carrying Costs',
       whyMatters: 'Monthly affordability cannot be judged from the asking price alone.',
-      action: 'Confirm property taxes, insurance, HOA, utilities, and maintenance expectations before booking a viewing.',
+      action: isSFOC
+        ? 'Confirm property taxes, insurance, HOA, utilities, and maintenance expectations before booking a viewing.'
+        : 'Confirm property taxes, insurance, HOA, utilities, and maintenance expectations before booking a viewing.',
     });
   }
 
-  // 3. Comparable Sales / Rent Context — always
+  // 3. Comparable Sales Context — SFOC vs multi-family
   cards.push({
-    title: 'Comparable Sales / Rent Context',
+    title: isSFOC ? 'Comparable Sales Context' : 'Comparable Sales / Rent Context',
     whyMatters: 'The asking price has no visible market support from the listing alone.',
-    action: 'Ask for recent comparable sales or actual rental history to support the asking price.',
+    action: isSFOC
+      ? 'Ask for recent comparable single-family sales to support the asking price.'
+      : 'Ask for recent comparable sales or actual rental history to support the asking price.',
   });
 
   // 4. Condition / Title Verification — only if listing mentions condition signals
@@ -347,7 +387,9 @@ function buildBasicDecisionCards(result: AnyResult, hasZillowMonthly: boolean): 
     cards.push({
       title: 'Condition / Title Verification',
       whyMatters: 'Properties described as needing TLC, vacant, or sold as-is may have hidden condition or title concerns.',
-      action: 'Ask for repair history, maintenance records, and any open permits, violations, liens, or title issues.',
+      action: isSFOC
+        ? 'Ask for permits for recent updates, roof age, electrical panel details, and any open violations.'
+        : 'Ask for repair history, maintenance records, and any open permits, violations, liens, or title issues.',
     });
   }
 
@@ -525,6 +567,7 @@ function buildSections(result: AnyResult, isBasic: boolean): ReportSection[] {
 
 export function normalizeGenericReport(result: AnyResult): NormalizedReport {
   const isBasic = result.analysisType === 'basic' || ('decision' in result && result.decision !== undefined);
+  const reportProfile = computeReportProfile(result);
 
   return {
     meta: {
@@ -536,6 +579,7 @@ export function normalizeGenericReport(result: AnyResult): NormalizedReport {
       source: toText(result.source ?? ''),
       sourceDomain: toText(result.sourceDomain ?? result.source_domain ?? ''),
       isBasic,
+      reportProfile,
     },
     hero: buildHero(result, isBasic),
     highlights: buildHighlights(result),

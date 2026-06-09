@@ -32,19 +32,129 @@ export interface OptionalDetails {
   weeklyRent?: string;
   askingPrice?: string;
   suburb?: string;
-  bedrooms?: string;
-  bathrooms?: string;
-  parking?: string;
+  bedrooms?: string | number;
+  bathrooms?: string | number;
+  parking?: string | number;
   /** 土地面积 (sqm) - 用于土地价值分析 */
   landSize?: string;
   /** 房产类型 - 用于区分 House/Apartment */
   propertyType?: string;
   /** 美国特有字段 - Zillow */
-  sqft?: string;
-  zestimate?: string;
-  yearBuilt?: string;
-  hoaFee?: string;
-  propertyTax?: string;
+  sqft?: string | number;
+  zestimate?: string | number;
+  yearBuilt?: string | number;
+  hoaFee?: string | number;
+  propertyTax?: string | number;
+}
+
+export type FactSource = 'bodyText' | 'dom' | 'jsonld' | 'script' | 'structured' | 'fallback';
+
+export interface FactEvidence<T = unknown> {
+  value: T;
+  source: FactSource;
+  rawText?: string;
+  confidence: number;
+}
+
+export interface ListingFactConflict {
+  field: string;
+  values: unknown[];
+  winner?: unknown;
+  reason?: string;
+  note?: string;
+}
+
+export interface ListingSchoolFact {
+  name: string;
+  grades?: string;
+  distance?: string;
+  rating?: number;
+}
+
+export interface RawSourcesSummary {
+  bodyTextSample?: string;
+  title?: string;
+  url?: string;
+  jsonLdCount?: number;
+  scriptTagCount?: number;
+  domSnapshots?: Record<string, string>;
+}
+
+export interface ListingFacts {
+  sourceDomain: string;
+  url: string;
+  capturedAt: string;
+  address?: string | null;
+  priceValue?: number | null;
+  priceDisplay?: string | null;
+  beds?: number | null;
+  baths?: number | null;
+  sqft?: number | null;
+  lotSizeSqft?: number | null;
+  lotSizeDisplay?: string | null;
+  yearBuilt?: number | null;
+  propertyType?: string | null;
+  pricePerSqft?: number | null;
+  estimatedMonthlyPayment?: number | null;
+  principalAndInterest?: number | null;
+  propertyTaxesMonthly?: number | null;
+  homeInsuranceMonthly?: number | null;
+  hoaAmount?: number | null;
+  annualTax?: number | null;
+  floodZone?: string | null;
+  description?: string | null;
+  specialFeatures?: string[];
+  schools?: ListingSchoolFact[];
+  evidence?: Record<string, FactEvidence | null>;
+  conflicts?: ListingFactConflict[];
+  rawSourcesSummary?: RawSourcesSummary;
+}
+
+export interface VerifiedFactsPayload {
+  address: string | null;
+  price: number | null;
+  price_display: string | null;
+  beds: number | null;
+  baths: number | null;
+  sqft: number | null;
+  propertyType: string | null;
+  yearBuilt: number | null;
+  pricePerSqft: number | null;
+  pricePerSqft_display?: string | null;
+  annualTax: number | null;
+  annualTax_display?: string | null;
+  monthlyPayment: number | null;
+  monthlyPayment_display?: string | null;
+  principalAndInterest: number | null;
+  propertyTaxMonthly: number | null;
+  homeInsuranceMonthly: number | null;
+  hoa: 'yes' | 'no' | 'unknown';
+  hoaAmount: number | null;
+  floodZone?: string | null;
+  zestimate?: number | null;
+  zestimate_display?: string | null;
+  rentZestimate?: number | null;
+  rentZestimate_display?: string | null;
+  estimatedSalesRangeMin?: number | null;
+  estimatedSalesRangeMax?: number | null;
+  taxAssessedValue?: number | null;
+  taxAssessedValue_display?: string | null;
+  daysOnMarket?: number | null;
+  dateListed?: string | null;
+  annual_tax?: number | null;
+  annual_tax_display?: string | null;
+  tax_assessed_value?: number | null;
+  tax_assessed_value_display?: string | null;
+  price_per_sqft?: number | null;
+  price_per_sqft_display?: string | null;
+  date_listed?: string | null;
+  available_date?: string | null;
+  normalizedPropertyCategory?: string;
+  displayType?: string;
+  rawHomeType?: string;
+  rawPropertyType?: string;
+  rawPropertySubtype?: string;
+  fieldEvidence?: Record<string, FactEvidence | null>;
 }
 
 // ===== 6a. 售价评估 (Sale 专用) =====

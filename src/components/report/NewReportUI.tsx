@@ -222,13 +222,16 @@ function HeroSection({ report, isBasic }: { report: NormalizedReport; isBasic?: 
     return text;
   }
 
-  // Address: structured hero.address first, then property_snapshot section.
+  // Address: structured hero.address first, then property_snapshot section, then raw listingInfo.
   // NEVER fall back to hero.title — it may contain "4 bds2 ba1,824 sqftMulti-family home for sale"
   // which is a beds/baths/sqft/title string, not an address.
+  const raw = (report as any).raw ?? {};
   const address = safeDisplayText(
     renderValue(hero.address ?? '') ||
     renderValue(sections.find((s) => s.id === 'property-snapshot')
-      ?.items.find((i) => /address|location/i.test(renderValue(i.title)))?.value ?? '')
+      ?.items.find((i) => /address|location/i.test(renderValue(i.title)))?.value ?? '') ||
+    renderValue(raw.listingInfo?.address ?? '') ||
+    renderValue(raw.address ?? '')
   );
 
   const identityText = address || 'Address not detected';
@@ -356,13 +359,17 @@ function HeroSection({ report, isBasic }: { report: NormalizedReport; isBasic?: 
     const hasNoInterior = !hasInteriorPhotos;
     const hasLongDOM = /\d{3,}\s+days?\s+on\s+market|listed.*\d{3,}\s+days|over\s+\d{3,}\s+days/i.test(allRiskText);
 
-    if (hasProbate || hasTLC || hasNoInterior || hasOilHeat) {
-      return 'High-verification two-family opportunity. Verify the CO, probate/title status, renovation scope, oil heating condition, and actual rent potential before spending serious time.';
+    const hasExplicitRentalSignal = /two.family|two family|2.family|second unit|legal apartment|rental unit|income unit|duplex|multi.family|mother.daughter|tenant|rent roll/i.test(listingTextMF);
+
+    if (!hasExplicitRentalSignal && (hasProbate || hasTLC || hasNoInterior || hasOilHeat)) {
+      return 'Worth a closer look, but verify roof age, major systems, basement permits/egress, and comparable sales before spending serious time.';
     }
     if (hasLongDOM) {
-      return 'Price appears close to Zillow\'s value range, but long market time, condition signals, and unverified rent roll mean the income case still needs proof.';
+      return 'Confidence is still limited because local comps, inspection details, and permit status have not been verified.';
     }
-    return 'Worth a closer look, but verify the Certificate of Occupancy, legal unit count, rent roll, utility metering, and renovation permits before relying on the rental income.';
+    return !hasExplicitRentalSignal
+      ? 'Worth a closer look, but verify roof age, major systems, finished-basement permits/egress, and comparable sales before spending serious time.'
+      : 'Worth a closer look, but verify the Certificate of Occupancy, legal unit count, rent roll, utility metering, and renovation permits before relying on the rental income.';
   }, [highlights, sections, sanitizedSummary, isBasic, rawSummary, report]);
 
   // Next Best Move — NYC-aware, actionable, property-type-aware
@@ -378,39 +385,44 @@ function HeroSection({ report, isBasic }: { report: NormalizedReport; isBasic?: 
       ?? '';
     const effectiveProfile = normCat;
 
+    let nextBestMoveText = '';
+
     if (isBasic) {
       if (effectiveProfile === 'single_family_owner_occupier' || effectiveProfile === 'single_family') {
-        return 'Ask for permits for recent updates, roof age, electrical panel details, and any open violations before booking a viewing, or unlock the full report.';
+        nextBestMoveText = 'Ask for permits for recent updates, roof age, electrical panel details, and any open violations before booking a viewing, or unlock the full report.';
+      } else if (effectiveProfile === 'co_op') {
+        nextBestMoveText = 'Ask for the monthly maintenance fee, board approval requirements, sublet policy, flip tax, and any upcoming assessments before booking a viewing, or unlock the full report.';
+      } else if (effectiveProfile === 'condo') {
+        nextBestMoveText = 'Ask for the HOA budget, reserve fund balance, special assessments, rental restrictions, and master insurance policy before booking a viewing, or unlock the full report.';
+      } else {
+        nextBestMoveText = isNYC
+          ? 'Ask for the Certificate of Occupancy, open violation records, and actual rental history before booking a viewing, or unlock the full report.'
+          : 'Ask the agent for legal use, repair history, and comparable sales before booking a viewing, or unlock the full report.';
       }
-      if (effectiveProfile === 'co_op') {
-        return 'Ask for the monthly maintenance fee, board approval requirements, sublet policy, flip tax, and any upcoming assessments before booking a viewing, or unlock the full report.';
-      }
-      if (effectiveProfile === 'condo') {
-        return 'Ask for the HOA budget, reserve fund balance, special assessments, rental restrictions, and master insurance policy before booking a viewing, or unlock the full report.';
-      }
-      return isNYC
-        ? 'Ask for the Certificate of Occupancy, open violation records, and actual rental history before booking a viewing, or unlock the full report.'
-        : 'Ask the agent for legal use, repair history, and comparable sales before booking a viewing, or unlock the full report.';
+    } else if (effectiveProfile === 'single_family_owner_occupier' || effectiveProfile === 'single_family') {
+      nextBestMoveText = 'Keep this property on your shortlist, but do not rely on the 4-bedroom marketing claim or the asking price until basement legality, roof condition, major systems, and nearby comps are verified.';
+    } else if (effectiveProfile === 'co_op') {
+      nextBestMoveText = 'Ask for the monthly maintenance fee and what it includes, board approval requirements, sublet policy and flip tax details, any upcoming assessments, and the building\'s reserve fund before booking a viewing.';
+    } else if (effectiveProfile === 'multi_family') {
+      nextBestMoveText = 'Ask for the Certificate of Occupancy, full rent roll, lease terms, and any open violations before booking a viewing.';
+    } else if (effectiveProfile === 'condo') {
+      nextBestMoveText = 'Ask for the HOA budget, reserve fund balance, special assessment history, rental restrictions, master insurance policy, owner-occupancy ratio, any pending litigation, and deeded parking documentation before booking a viewing.';
+    } else if (effectiveProfile === 'land') {
+      nextBestMoveText = 'Ask for the zoning confirmation, survey, utility availability, and FEMA flood zone designation before booking a viewing.';
+    } else if (isNYC) {
+      nextBestMoveText = 'Do not rely on basement use assumptions or the price signal until legal use, condition, major systems, and comparable sales are verified.';
+    } else {
+      nextBestMoveText = 'Ask the agent for legal use, repair history, open permits, and comparable sales before booking a viewing.';
     }
-    if (effectiveProfile === 'single_family_owner_occupier' || effectiveProfile === 'single_family') {
-      return 'Ask for roof age, permits for recent renovations, boiler/water heater installation records, electrical panel details, and any open DOB violations before booking a viewing.';
-    }
-    if (effectiveProfile === 'co_op') {
-      return 'Ask for the monthly maintenance fee and what it includes, board approval requirements, sublet policy and flip tax details, any upcoming assessments, and the building\'s reserve fund before booking a viewing.';
-    }
-    if (effectiveProfile === 'multi_family') {
-      return 'Ask for the Certificate of Occupancy, full rent roll, lease terms, and any open violations before booking a viewing.';
-    }
-    if (effectiveProfile === 'condo') {
-      return 'Ask for the HOA budget, reserve fund balance, special assessment history, rental restrictions, master insurance policy, owner-occupancy ratio, any pending litigation, and deeded parking documentation before booking a viewing.';
-    }
-    if (effectiveProfile === 'land') {
-      return 'Ask for the zoning confirmation, survey, utility availability, and FEMA flood zone designation before booking a viewing.';
-    }
-    if (isNYC) {
-      return 'Ask for the Certificate of Occupancy, open violation records, roof age, and actual rental history before booking a viewing.';
-    }
-    return 'Ask the agent for legal use, repair history, open permits, and comparable sales before booking a viewing.';
+
+    console.log('[TRACE_RENDER_NEXT_BEST_MOVE_SOURCE]', {
+      vmNextBestMove: raw?.nextBestMove ?? raw?.next_step,
+      rawNextBestMove: raw?.nextBestMove,
+      rawNextStep: raw?.next_step,
+      actuallyRenderedText: nextBestMoveText,
+    });
+
+    return nextBestMoveText;
   }, [hero.address, hero.title, isBasic, report]);
 
   const mainReasons: string[] = [];
@@ -451,20 +463,27 @@ function HeroSection({ report, isBasic }: { report: NormalizedReport; isBasic?: 
           </div>
         )}
 
-        {/* Hero image */}
-        {hero.imageUrl && (
-          <div className="overflow-hidden rounded-xl border border-white/10 bg-white/5 mb-6">
-            <img
-              src={hero.imageUrl}
-              alt={address || 'Property photo'}
-              className="w-full aspect-[16/10] object-cover"
-              loading="lazy"
-              onError={(event) => {
-                event.currentTarget.style.display = 'none';
-              }}
-            />
-          </div>
-        )}
+        {/* Hero image — fallback chain: hero.imageUrl → raw.listingInfo.coverImageUrl → raw.coverImageUrl → raw.images[0] */}
+        {(() => {
+          const heroImg = hero.imageUrl
+            || raw.listingInfo?.coverImageUrl
+            || raw.coverImageUrl
+            || (Array.isArray(raw.images) ? raw.images[0] : undefined);
+          if (!heroImg) return null;
+          return (
+            <div className="overflow-hidden rounded-xl border border-white/10 bg-white/5 mb-6">
+              <img
+                src={heroImg}
+                alt={address || 'Property photo'}
+                className="w-full aspect-[16/10] object-cover"
+                loading="lazy"
+                onError={(event) => {
+                  event.currentTarget.style.display = 'none';
+                }}
+              />
+            </div>
+          );
+        })()}
 
         {/* Score + /100 — Evidence Score style for basic, amber gold style for deep */}
         {isBasic ? (
@@ -583,6 +602,8 @@ const RISK_TITLES: Array<{ keywords: RegExp; title: string }> = [
   // Market Time — must be BEFORE generic rental/legal and price (digit + "days on market")
   { keywords: /\d{2,}\s+days?\s+on\s+market|listed\s+\d{2,}\s+days|over\s+\d{2,}\s+days\s+on\s+market/i, title: 'Market Time / Pricing Risk' },
   { keywords: /long market time|listed.*\d{3,}.*days|hasn't sold|hasnt sold|unsold.*listing|listing.*age.*\d{3,}|very slow.*market|over \d{3,} days/i, title: 'Long Market Time' },
+  // Basement permit / legal-use risk — keep above generic rental and moisture
+  { keywords: /finished basement.*(permit|permitted|legal|legality|egress|ceiling height|certificate|occupancy)|basement.*(permit|permitted|legal use|legality|egress|ceiling height|certificate of occupancy)|unverified permits?.*basement|permits?.*finished basement/i, title: 'Basement Permit Risk' },
   // Basement + rental/legal keywords → NOT moisture
   { keywords: /basement.*(rental|legal|co |certificate|occupancy|lease|rental.?income|unapproved|illegal|registered)|(rental|legal|co |certificate|occupancy|lease|rental.?income|unapproved|illegal|registered).*basement/i, title: 'Rental Legality Risk' },
   // Probate / title risk
@@ -593,8 +614,10 @@ const RISK_TITLES: Array<{ keywords: RegExp; title: string }> = [
   // Does NOT match questions/requests about permits/DOB (those → CO Verification Risk).
   // Requires "open" + "violation" or "open" + DOB or "has violations" / "with violations".
   { keywords: /\bopen\s+(dob\s+)?(violations?|complaints?)|(has|with)\s+(open\s+)?(dob\s+)?violations?|\bdob\s+(violations?|complaints?)\s+on\s+(this|the)\s+property|\bopen\s+(dob|hpd)\s+(violations?|complaints?)\b/i, title: 'Open Violations Risk' },
-  // Older building systems risk — electrical/plumbing/heating/roof age
-  { keywords: /electrical|plumb|heating|boiler|roof.*age|boiler.*age|heating.*age|plumbing.*age|electrical.*panel/i, title: 'Older Building Systems Risk' },
+  // Older building systems risk — electrical/plumbing/heating/boiler only (NOT roof — see below)
+  { keywords: /electrical|plumb|heating|boiler|system.*age|panel.*replace|service.*amp|hvac|major systems?/i, title: 'Roof / Major Systems Risk' },
+  // Roof age risk — must be separate from general systems risk and checked BEFORE the generic basement
+  { keywords: /roof.*age|roof.*condition|roof.*replace|roof.*leak|drainage.*roof|flat roof.*age/i, title: 'Roof / Major Systems Risk' },
   // Missing interior photos — only when text genuinely says photos are missing/unavailable/insufficient.
   { keywords: /no interior photo|without interior photo|photo.*not avail|no photo avail|insufficient photo|limited photo coverage|more photo|additional photo|ask for photo|request photo|photo missing|missing photo|photo not provided|photo not shown/i, title: 'Missing Interior Photos' },
   // Price confidence
@@ -605,13 +628,13 @@ const RISK_TITLES: Array<{ keywords: RegExp; title: string }> = [
   // These don't confirm violations exist; they ask to verify compliance.
   { keywords: /certificate of occupancy|ask for.*certificate|ask.*dob.*records|ask.*permits?\s+pull|what permits.*pulled|building\s+records?\s+verify|verify.*certificate/i, title: 'CO Verification Risk' },
   { keywords: /ask.*(dob|hpd|building\s+dept)|(dob|hpd|building\s+dept)\s+records?\s+verify|open\s+records?\s+request|request.*(dob|hpd)\s+records?/i, title: 'CO Verification Risk' },
-  // Neighbourhood concern
-  { keywords: /noise|neighbor|neighbourhood|neighborhood|community|vibration|odor|smell/i, title: 'Neighbourhood Concern' },
+  // Window security feature — barred windows may indicate security concerns or NYC safety design; verify intent and egress
+  { keywords: /barred window|security bar|window.*bar|security.*window|grated window|window.*grate|iron bar.*window/i, title: 'Window Security Feature' },
   // Renovation cost
   { keywords: /kitchen|bathroom|renovation|update|cosmetic|\$\d+.*k|\d+.*k.*renov/i, title: 'Renovation Cost Risk' },
   // Basement legal & egress risk — must come BEFORE generic basement moisture to catch
   // "finished basement second apartment" / "egress windows" / "ceiling height" cases
-  { keywords: /basement.*(egress|ceiling height|single family|sfr|owner.occup|not legal|unapproved|second apartment|apartment setup)|(egress|ceiling height|single family|sfr|owner.occup|not legal|unapproved|second apartment|apartment setup).*basement/i, title: 'Basement Legal & Egress Risk' },
+  { keywords: /basement.*(egress|ceiling height|single family|sfr|owner.occup|not legal|unapproved|second apartment|apartment setup)|(egress|ceiling height|single family|sfr|owner.occup|not legal|unapproved|second apartment|apartment setup).*basement/i, title: 'Basement Permit / Egress Risk' },
   // Basement moisture — ONLY if no rental/legal/egress keywords present
   { keywords: /basement|moisture|water.*intrusion|drainage|foundation|crack|foundation movement|seepage/i, title: 'Basement Moisture Risk' },
 ];
@@ -625,11 +648,17 @@ function getRiskTitle(text: string): string {
 
 function _getRiskShortExplanation(risk: string): string {
   const t = risk.toLowerCase();
+  if (/roof.*age|roof.*condition|roof.*replace|roof.*leak|drainage.*roof|flat roof.*age/i.test(t)) {
+    return 'Roof age unknown — critical for older home. Replacement could be imminent and costly. Ask the seller or agent for the roof age and condition report.';
+  }
   if (/roof|drainage|leak/i.test(t)) {
     return 'Roof type and age are not shown in the listing. Verify roof condition, any leak history, and drainage before estimating repair costs.';
   }
   if (/electrical|plumb|heating|boiler|system/i.test(t)) {
-    return 'For older homes, electrical panel, plumbing, heating, and roof condition should be verified before estimating repair costs. Bring a licensed inspector if still interested.';
+    return 'For older homes, electrical panel, plumbing, heating, and boiler condition should be verified before estimating repair costs. Bring a licensed inspector if still interested.';
+  }
+  if (/window.*bar|security.*bar|barred.*window|grated.*window/i.test(t)) {
+    return 'Some bedroom windows appear to have security bars. Verify whether they are fixed or removable, whether they meet fire egress requirements, and whether they reflect owner preference or local security concerns.';
   }
   if (/rental|legal|co |certificate|occupancy|lease/i.test(t)) {
     return 'Legal use must be confirmed against the Certificate of Occupancy. Unverified legal status can affect financing and future resale.';
@@ -1152,11 +1181,17 @@ function PropertySnapshotSection({ report }: { report: NormalizedReport }) {
     return text;
   }
 
+  const raw = (report as any).raw ?? {};
+
+  // Address: hero.address first, then property-snapshot Address item, then raw.listingInfo.address.
   const address = safeDisplayText(
     renderValue(hero.address ?? '') ||
     renderValue(sections.find((s) => s.id === 'property-snapshot')?.items.find((i) =>
-      /address|location/i.test(renderValue(i.title))
-    )?.value ?? ''));
+      /address/i.test(renderValue(i.title))
+    )?.value ?? '') ||
+    renderValue(raw.listingInfo?.address ?? '') ||
+    renderValue(raw.address ?? '')
+  );
 
   const qfItems = quickFacts
     .map((f) => ({
@@ -1228,33 +1263,51 @@ function PropertySnapshotSection({ report }: { report: NormalizedReport }) {
   );
   const verdictIsOverpriced = /overpriced|over|too high|above|high/i.test(verdictText);
   const verdictIsFair = /fair|reasonable|good.*value|undervalued|below/i.test(verdictText) && !/not fair|unfair/i.test(verdictText);
+  const pricePerSqftText = priceData.find((i) => /price\/?sqft|\$\/sqft|price\/sqft/i.test(i.label))?.value ?? '';
+  const pricePerSqftValue = Number(String(pricePerSqftText).replace(/[^0-9.]/g, '')) || 0;
+  const highPricePerSqft = pricePerSqftValue >= 800;
 
   // Verdict-aware confidence copy — prevents contradictions like "appears fair" when verdict is Overpriced
   function getPriceConfidenceCopy(): string {
+    const isMultiFamilyLike = /multi|two.?family|duplex|triplex|fourplex|income|rental/i.test(String((report as any)?.raw?.normalizedPropertyCategory ?? (report as any)?.raw?.reportProfile ?? ''))
+      || /two.?family|duplex|multi.?family|rental unit|income unit/i.test(String((report as any)?.raw?.property_snapshot?.homeType ?? (report as any)?.raw?.property_snapshot?.home_type ?? ''));
+    const hasRentZestimate = !!(report as any)?.raw?.investment_potential?.estimated_monthly_rent
+      || !!(report as any)?.raw?.investmentPotential?.estimated_monthly_rent
+      || !!(report as any)?.raw?.investmentPotential?.estimatedMonthlyRent
+      || !!(report as any)?.raw?.rent_zestimate
+      || !!(report as any)?.raw?.rentZestimate;
+
     if (isCoop) {
       // Co-op: focus on maintenance cost verification, not interior condition
       if (verdictIsOverpriced) {
         return 'The asking price may look attractive, but do not rely on it without confirming the monthly maintenance fee — it can significantly change the real cost of ownership.';
       }
       if (verdictIsFair) {
-        return 'The asking price appears reasonable, but verify the monthly maintenance, upcoming assessments, board rules, and building financials before treating it as a fair deal.';
+        return 'Asking price may be within a plausible range, but verify the monthly maintenance, upcoming assessments, board rules, and building financials before treating it as a fair deal.';
       }
       if (verdictIsUnknown || !hasComps) {
         return 'Price cannot be judged confidently without the monthly maintenance cost. Verify board financials, assessments, and flip tax before estimating the true cost.';
       }
-      return 'The asking price may be attractive, but verify the monthly maintenance, assessments, and building financials before treating it as a bargain.';
+      return 'Do not treat the asking price as a bargain until maintenance, assessments, and building financials are verified.';
+    }
+    if (isMultiFamilyLike && (verdictIsUnknown || !hasComps || !hasRentZestimate)) {
+      const psfText = pricePerSqftText || (pricePerSqftValue ? `$${pricePerSqftValue.toLocaleString()}/sqft` : 'the asking price per sqft');
+      return `Price confidence is limited because there is no Zestimate, no estimated sales range, no Rent Zestimate, and the ${psfText} asking price depends heavily on verified legal two-family use, rental income, condition, and nearby comparable sales.`;
+    }
+    if (isSFOC && (highPricePerSqft || verdictIsOverpriced || verdictIsUnknown || !hasComps)) {
+      return 'Price confidence is limited because there is no Zestimate, no sales range, and the asking price needs nearby Cape / single-family comps to support it.';
     }
     if (verdictIsOverpriced) {
       if (isSFOC) {
-        return 'The asking price appears high relative to visible condition and extended market time. Confidence is still limited because local comps, full inspection details, and permit status have not been verified.';
+        return 'The asking price appears high relative to visible condition. Confidence is still limited because local comps, full inspection details, and permit status have not been verified.';
       }
       return 'The asking price appears high relative to visible condition and extended market time. Confidence is still limited because local comps, full inspection details, and permit status have not been verified.';
     }
     if (verdictIsFair) {
       if (isSFOC) {
-        return 'The asking price appears reasonable based on available signals, but confidence is limited until condition, permits, and comparable single-family sales are verified.';
+        return 'Asking price may be within a plausible range based on available signals, but confidence is limited until condition, permits, and comparable single-family sales are verified.';
       }
-      return 'The asking price appears reasonable based on available signals, but confidence is limited until condition, legal use, and comparable sales are verified.';
+      return 'Asking price may be within a plausible range based on available signals, but confidence is limited until condition, legal use, and comparable sales are verified.';
     }
     if (verdictIsUnknown || !hasComps) {
       if (isSFOC) {
@@ -1263,9 +1316,9 @@ function PropertySnapshotSection({ report }: { report: NormalizedReport }) {
       return 'Price cannot be judged confidently from the available data. The price per sqft is only a starting point — condition, permits, comparable sales, and renovation needs could materially change value and should be verified independently.';
     }
     if (isSFOC) {
-      return 'The asking price may be attractive based on available signals, but verify condition, permits, and comparable single-family sales before treating it as a bargain.';
+      return 'Do not treat the asking price as a bargain until condition, permits, and comparable single-family sales are verified.';
     }
-    return 'The asking price may be attractive based on available signals, but verify condition, title/legal use, and comparable sales before treating it as a bargain.';
+    return 'Do not treat the asking price as a bargain until legal use, condition, and comparable sales are verified.';
   }
 
   return (
@@ -1278,13 +1331,7 @@ function PropertySnapshotSection({ report }: { report: NormalizedReport }) {
         <h2 className="text-2xl font-bold text-white">PROPERTY SNAPSHOT</h2>
       </div>
 
-      {/* Address */}
-      {hasAddress && (
-        <div className="mb-8">
-          <div className="text-slate-400 uppercase text-xs tracking-wider mb-2">Address</div>
-          <div className="text-2xl text-white">{address}</div>
-        </div>
-      )}
+      {/* Address intentionally omitted here to avoid duplicating the Hero address */}
 
       {/* Price Fairness Section */}
       {hasPriceData && (
@@ -1350,14 +1397,27 @@ function PropertySnapshotSection({ report }: { report: NormalizedReport }) {
             );
           })()}
 
-          {/* Analysis paragraph — rewritten to be more advisory */}
-          {analysisText ? (
-            <p className="text-slate-200 text-base leading-relaxed mb-6">{analysisText}</p>
-          ) : confIsLow ? (
-            <p className="text-slate-300 text-sm leading-relaxed mb-6">
-              Low confidence means the price may look reasonable on paper, but missing condition details could change the real value.
-            </p>
-          ) : null}
+          {/* Analysis paragraph — verdict-aware rewrite for "Unknown" verdicts */}
+          {(() => {
+            if (verdictIsUnknown && analysisText && /reasonable|appears.*fair|good.*value|undervalued/i.test(analysisText)) {
+              return (
+                <p className="text-slate-200 text-base leading-relaxed mb-6">
+                  Asking price may be within a plausible range based on partial signals, but confidence is low without nearby comparable sales, legal-use verification, rental support, and inspection results.
+                </p>
+              );
+            }
+            if (analysisText) {
+              return <p className="text-slate-200 text-base leading-relaxed mb-6">{analysisText}</p>;
+            }
+            if (confIsLow) {
+              return (
+                <p className="text-slate-300 text-sm leading-relaxed mb-6">
+                  Low confidence means the price may look reasonable on paper, but missing condition details could change the real value.
+                </p>
+              );
+            }
+            return null;
+          })()}
 
           {/* Low confidence explanation box — verdict-aware, never contradicts the verdict */}
           {confIsLow && (
@@ -1907,7 +1967,7 @@ function normalizeFitSection(report: NormalizedReport): {
   }
 
   const defaultWhyItMatters = isSFOC
-    ? 'Built in 1935 — electrical panel, plumbing, heating, roof age, and basement moisture history should be verified. Recent boiler and tankless water heater updates may reduce some near-term risk, but installation dates, permits, and warranties should be confirmed.'
+    ? 'Built in 1935 — electrical panel, plumbing, heating, roof age, basement moisture history, and possible lead-based paint risk due to pre-1978 construction should be verified. Recent boiler and tankless water heater updates may reduce some near-term risk, but installation dates, permits, and warranties should be confirmed.'
     : 'This layout may support owner-occupy plus rental or multi-generational living, but legal use, unit separation, and renovation needs should be verified first.';
 
   return {
@@ -2005,15 +2065,15 @@ function fieldToQuestion(fieldText: string, reportProfile?: string): string {
     ? 'Can you provide recent comparable single-family sales for similar homes in the area?'
     : 'Can you provide recent comparable sales for similar properties in the area?';
   if (/legal|two.?family|occupancy|certificate/i.test(t)) return isSFOC
-    ? 'Can you provide the Certificate of Occupancy to confirm the legal use?'
-    : 'Can you confirm the legal use and provide the Certificate of Occupancy?';
+    ? 'Can you confirm the basement’s current use, condition, access, permits, and whether any basement area is included in legal rentable space?'
+    : 'Can you provide the Certificate of Occupancy confirming legal two-family use?';
   if (/rent|income|lease|tenant/i.test(t)) return isSFOC
-    ? 'Are there any rental units, basement apartments, or income units on this property?'
-    : 'What actual rent has the second unit achieved, not just estimated rent?';
+    ? 'Can you confirm the basement’s current use, condition, access, permits, and whether any basement area is included in legal rentable space?'
+    : 'Can you provide the current rent roll, leases, security deposits, and vacancy status?';
   if (/price|asking|list/i.test(t)) return 'Has the price been reduced since listing, and what is the seller\'s motivation?';
   if (/days on market|262|listed|how long/i.test(t)) return 'Why has the property been on market for this long? Were there any price reductions, failed offers, or buyer concerns?';
   if (/violation|dob|hpd|complaint|permit/i.test(t)) return isSFOC
-    ? 'Are there any open DOB violations, permits, complaints, or unresolved building issues? What permits were pulled for recent updates?'
+    ? 'Are there any local building department records, permits, complaints, or open violations? What permits were pulled for recent updates?'
     : 'Are there any open DOB or HPD violations, permits, complaints, or unresolved building issues?';
   if (/basement|foundation|water|intrusion|drainage/i.test(t)) return 'Has the basement had water intrusion, foundation repairs, or drainage issues?';
   if (/insurance|flood|zone/i.test(t)) return 'Is the property in a flood zone, and what does insurance typically cost for this property?';
@@ -2067,33 +2127,32 @@ function getFallbackQuestions(isNYC: boolean, reportProfile?: string): Array<{ q
 
   if (isSFOC) {
     return [
-      { q: 'Can you provide the Certificate of Occupancy to confirm the legal use?', tag: 'Legal', color: 'bg-violet-100 text-violet-700' },
-      { q: 'Are there any open DOB violations, permits, complaints, or unresolved building issues? What permits were pulled for recent updates?', tag: 'Legal', color: 'bg-violet-100 text-violet-700' },
+      { q: 'Can you confirm the basement’s current use, condition, access, permits, and whether any basement area is included in legal rentable space?', tag: 'Legal', color: 'bg-violet-100 text-violet-700' },
+      { q: 'Are there any local building department records, permits, complaints, or open violations? What permits were pulled for recent updates?', tag: 'Legal', color: 'bg-violet-100 text-violet-700' },
       { q: 'How old is the roof, and what is the electrical panel capacity?', tag: 'Roof', color: 'bg-amber-100 text-amber-700' },
       { q: 'Has the basement had water intrusion, foundation repairs, or drainage issues?', tag: 'Basement', color: 'bg-blue-100 text-blue-700' },
-      { q: 'Can you provide recent comparable single-family sales for similar homes in the area?', tag: 'Price', color: 'bg-amber-100 text-amber-700' },
+      { q: 'Can you provide recent comparable two-family sales to support the asking price?', tag: 'Price', color: 'bg-amber-100 text-amber-700' },
       { q: 'Can you provide the actual insurance quote, average utility costs, and any owner-paid expenses?', tag: 'Costs', color: 'bg-teal-100 text-teal-700' },
       { q: 'What plumbing materials are currently used, and have they been updated?', tag: 'Systems', color: 'bg-orange-100 text-orange-700' },
       { q: 'Why has the property been on market for so long? Were there any price reductions or buyer concerns?', tag: 'Market Time', color: 'bg-indigo-100 text-indigo-700' },
     ];
   }
 
-  // Multi-family / unknown profile — show CO/rental questions
   return [
-    { q: 'Can you confirm the legal two-family status and provide the Certificate of Occupancy?', tag: 'Legal', color: 'bg-violet-100 text-violet-700' },
-    { q: 'Are there any open DOB or HPD violations, permits, complaints, or unresolved building issues?', tag: 'Legal', color: 'bg-violet-100 text-violet-700' },
-    { q: 'How old are the roof, boiler, electrical panel, plumbing, and HVAC systems?', tag: 'Systems', color: 'bg-orange-100 text-orange-700' },
-    { q: 'Has the basement had water intrusion, leaks, foundation issues, or drainage problems?', tag: 'Basement', color: 'bg-blue-100 text-blue-700' },
-    { q: 'What actual rent has the second unit achieved, not just estimated rent?', tag: 'Rent', color: 'bg-green-100 text-green-700' },
-    { q: 'Can you provide recent comparable sales for similar two-family homes in the area?', tag: 'Price', color: 'bg-amber-100 text-amber-700' },
-    { q: 'What are the real monthly costs including insurance, utilities, repairs, vacancy, and maintenance reserve?', tag: 'Costs', color: 'bg-teal-100 text-teal-700' },
-    { q: 'Why has the property been on market for so long? Were there price reductions, failed inspections, or buyer concerns?', tag: 'Market Time', color: 'bg-indigo-100 text-indigo-700' },
+    { q: 'Can you provide the Certificate of Occupancy confirming legal two-family use?', tag: 'Legal', color: 'bg-violet-100 text-violet-700' },
+    { q: 'Can you provide recent comparable two-family sales to support the asking price?', tag: 'Price', color: 'bg-amber-100 text-amber-700' },
+    { q: 'Can you provide the current rent roll, leases, security deposits, and vacancy status?', tag: 'Rent', color: 'bg-green-100 text-green-700' },
+    { q: 'Are there any open DOB permits, ECB/OATH violations, HPD issues, complaints, or unresolved building records?', tag: 'Legal', color: 'bg-violet-100 text-violet-700' },
+    { q: 'Are gas, electric, heat, and water separately metered or owner-paid? Can you provide recent utility bills?', tag: 'Costs', color: 'bg-teal-100 text-teal-700' },
+    { q: 'How old are the roof, boiler/heating system, electrical panels, plumbing, and water heater?', tag: 'Systems', color: 'bg-orange-100 text-orange-700' },
+    { q: 'What is the basement’s current condition, access, permitted use, and water-intrusion history?', tag: 'Basement', color: 'bg-blue-100 text-blue-700' },
   ];
 }
 
 function QuestionsToAskSection({ report, viewModel, isBasic }: { report: NormalizedReport; viewModel?: ReportViewModel; isBasic?: boolean }) {
   const { sections, hero } = report;
   const maxQuestions = isBasic ? 5 : 8;
+  const rawResultForTrace = (report as any)?.raw ?? {};
 
   const isNYC = viewModel?.meta?.isNYC
     ?? /nyc|new york city|brooklyn|queens|bronx|manhattan|staten/i.test(
@@ -2135,7 +2194,7 @@ function QuestionsToAskSection({ report, viewModel, isBasic }: { report: Normali
     // ── Property-aware filtering ───────────────────────────────────────────────
     // For single-family owner-occupier profiles, skip multi-family/rental questions
     if (effectiveProfile === 'single_family_owner_occupier') {
-      if (/two.family|2.family|legal two.family|legal 2.family|second unit rent|actual rent history|rental income cannot be assumed|owner.occupy \+ rental|HPD registration for rental|legally rentable|comparable two.family rentals/i.test(lower)) {
+      if (/two.family|2.family|legal two.family|legal 2.family|second unit rent|actual rent history|rental income cannot be assumed|owner.occupy \+ rental|hpd registration for rental|legally rentable|comparable two.family rentals|rent roll|income unit|actual rent achieved/i.test(lower)) {
         return true;
       }
     }
@@ -2444,6 +2503,13 @@ function QuestionsToAskSection({ report, viewModel, isBasic }: { report: Normali
   // Skips questions about already-known fields to avoid redundant/untrustworthy questions
   finalQuestions = finalQuestions.filter(q => !shouldSkipQuestion(q.question));
 
+  console.log('[TRACE_RENDER_QUESTIONS_SOURCE]', {
+    questionsFromViewModel: viewModel?.questions?.map(q => q.text),
+    rawQuestionsToAsk: rawResultForTrace?.questions_to_ask,
+    rawQuestionsToAskCamel: rawResultForTrace?.questionsToAsk,
+    actuallyRenderedQuestions: finalQuestions.map(q => q.question),
+  });
+
   if (finalQuestions.length === 0) return null;
 
   const [copied, setCopied] = React.useState(false);
@@ -2553,7 +2619,7 @@ function NextBestMoveSection({ report }: { report: NormalizedReport }) {
     message = 'This property may be worth viewing, but confirm the key assumptions before making an offer.';
   } else if (/caution|proceed|caution|uncertain|more.?evidence/i.test(verdict)) {
     if (isSFOC) {
-      message = 'Keep this property on your shortlist, but verify recent renovation permits, roof age, older systems, and comparable single-family sales before relying on the price signal.';
+      message = 'Keep this property on your shortlist, but do not rely on the finished basement value or price signal until permits, roof condition, major systems, and comparable sales are verified.';
     } else {
       message = 'Keep this property on your shortlist, but do not rely on the rental income or price signal until the legal status, roof condition, and major systems are verified.';
     }
@@ -2875,14 +2941,38 @@ function LocationRealityCheckSection({ report }: { report: NormalizedReport }) {
   };
   const hasExtractedLocation = Object.values(extractedLocation).some(v => v && String(v).length > 0);
 
+  // Filter neighborhood: skip listing status values (e.g. "Active", "For Sale", "Pending")
+  function isLikelyNeighborhood(val: string): boolean {
+    const v = val.toLowerCase().trim();
+    if (/^(active|for sale|pending|sold|off market|coming soon)$/i.test(v)) return false;
+    if (/^\d[\d-]*\s+[A-Za-z].*,.*[A-Z]{2}\s*\d{5}/.test(val)) return false; // full address
+    if (/^\d[\d-]*\s+[A-Za-z][A-Za-z\s]*\s*(avenue|street|ave|st|road|rd|drive|dr|place|pl|boulevard|blvd)/i.test(val)) return false;
+    return true;
+  }
+
+  // Normalize schoolRatings once so it's available in both extractedClaims injection
+  // and the "whatItMeans" generation below.
+  const rawRatings = extractedLocation.schoolRatings;
+  const ratingsArr: unknown[] = Array.isArray(rawRatings) ? rawRatings : String(rawRatings || '').split(/[,\s]+/);
+  const normalizedRatings: number[] = ratingsArr
+    .map((r: unknown) => parseFloat(String(r).trim()))
+    .filter((r: number) => r >= 1 && r <= 10 && !isNaN(r))
+    .filter((v: number, i: number, arr: number[]) => arr.indexOf(v) === i)
+    .slice(0, 3);
+
   // Inject extracted Zillow claims when AI-generated claims are absent or sparse
   if (hasExtractedLocation) {
     const extractedClaims: string[] = [];
-    if (extractedLocation.neighborhood) extractedClaims.push(`Neighborhood: ${extractedLocation.neighborhood}`);
+    // Only add neighborhood if it looks like a real neighborhood name (not listing status)
+    if (extractedLocation.neighborhood && isLikelyNeighborhood(extractedLocation.neighborhood)) {
+      extractedClaims.push(`Neighborhood: ${extractedLocation.neighborhood}`);
+    }
     if (extractedLocation.floodZone) extractedClaims.push(`Flood Zone: ${extractedLocation.floodZone}`);
     if (extractedLocation.walkScore) extractedClaims.push(`Walk Score: ${extractedLocation.walkScore}`);
     if (extractedLocation.bikeScore) extractedClaims.push(`Bike Score: ${extractedLocation.bikeScore}`);
-    if (extractedLocation.schoolRatings) extractedClaims.push(`School Ratings: ${extractedLocation.schoolRatings}`);
+    if (normalizedRatings.length > 0) {
+      extractedClaims.push(`School Ratings: ${normalizedRatings.join(', ')}/10`);
+    }
     if (extractedLocation.transit) extractedClaims.push(`Transit Score: ${extractedLocation.transit}`);
     // Merge: prepend extracted claims, then AI claims
     for (const c of extractedClaims) {
@@ -2944,15 +3034,17 @@ function LocationRealityCheckSection({ report }: { report: NormalizedReport }) {
       if (extractedLocation.floodZone) {
         const fz = String(extractedLocation.floodZone).toLowerCase();
         if (fz.includes('zone x') || fz === 'minimal' || fz === 'none') {
-          parts.push(`FEMA Flood Zone ${extractedLocation.floodZone} indicates minimal flood risk.`);
+          parts.push(`Flood risk appears low based on listing-provided FEMA Zone X information. Still verify local flood maps, basement water history, drainage, and insurance requirements.`);
         } else if (fz.includes('zone a') || fz.includes('zone v')) {
           parts.push(`FEMA Flood Zone ${extractedLocation.floodZone} indicates elevated flood risk — verify flood insurance cost.`);
         } else {
           parts.push(`Flood Zone ${extractedLocation.floodZone} should be verified with local FEMA maps.`);
         }
       }
-      if (extractedLocation.schoolRatings) {
-        parts.push(`School ratings (${extractedLocation.schoolRatings}) are listed. Verify against GreatSchools or Niche for the most current block-level data.`);
+      // Only reference school ratings if they were successfully parsed (normalizedRatings.length > 0)
+      // schoolRatings that failed parsing will be empty array — skip the "ratings are listed" claim
+      if (normalizedRatings && normalizedRatings.length > 0) {
+        parts.push(`School ratings (${normalizedRatings.join(', ')}/10) are listed. Verify against GreatSchools or Niche for the most current block-level data.`);
       }
       if (parts.length > 0) {
         whatItMeans = parts.join(' ');
@@ -3961,8 +4053,9 @@ function VerifiedFromListingSection({ report, viewModel: _viewModel }: {
   // Zestimate from hero (populated by usSale adapter from price_assessment)
   if (hero?.zestimate) verified.push({ label: 'Zestimate', value: hero.zestimate });
 
-  // Monthly payment from hero (populated by usSale adapter from Zillow financials)
-  if (hero?.monthlyPayment) verified.push({ label: 'Est. Monthly Payment', value: hero.monthlyPayment });
+  // Monthly payment from hero intentionally omitted here.
+  // Use the detailed Zillow monthly payment breakdown below as the single source of truth
+  // to avoid showing conflicting summary vs detailed payment figures in the same report.
 
   // ── Still needs verification — property-aware list ─────────────────────────
   const needsList = isSFOC ? [
@@ -3975,10 +4068,10 @@ function VerifiedFromListingSection({ report, viewModel: _viewModel }: {
     'Insurance and utility costs',
   ] : [
     'Certificate of Occupancy',
-    'Basement rental legality',
-    'DOB / HPD violations',
+    'Basement condition and permitted use',
+    'DOB / HPD / ECB records',
     'Roof / boiler / electrical age',
-    'Actual rental history',
+    'Rent roll and lease documents',
     'Insurance and utility costs',
   ];
 

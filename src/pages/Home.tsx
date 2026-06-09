@@ -246,14 +246,31 @@ export function Home() {
         listingInfo,
       };
 
+      const address = resultWithListingInfo?.listingInfo?.address
+        ?? (resultWithListingInfo as any)?.address
+        ?? '';
+      const resultVersion = address
+        ? `${Date.now()}-${address.toLowerCase().trim()}`
+        : String(Date.now());
+
       sessionStorage.setItem('analysisResult', JSON.stringify(resultWithListingInfo));
+      sessionStorage.setItem('analysisResultVersion', resultVersion);
+
+      console.log('[HS RESULT SAVE]', {
+        resultVersion,
+        address,
+        title: resultWithListingInfo?.listingInfo?.title,
+      });
+
+      window.dispatchEvent(new CustomEvent('homescope:analysis-result-updated', {
+        detail: { resultVersion, address },
+      }));
 
       setIsLoading(false);
       setIsComplete(true);
 
-      // 5. 跳转到结果页
       setTimeout(() => {
-        navigate('/result');
+        navigate(`/result?rid=${encodeURIComponent(resultVersion)}`);
       }, 300);
 
     } catch (err) {
@@ -399,15 +416,32 @@ export function Home() {
               ...progress.result,
               listingInfo,
             };
+            const address = resultWithListingInfo?.listingInfo?.address
+              ?? (resultWithListingInfo as any)?.address
+              ?? '';
+            const resultVersion = address
+              ? `${Date.now()}-${address.toLowerCase().trim()}`
+              : String(Date.now());
             sessionStorage.setItem('analysisResult', JSON.stringify(resultWithListingInfo));
+            sessionStorage.setItem('analysisResultVersion', resultVersion);
+
+            console.log('[HS RESULT SAVE]', {
+              resultVersion,
+              address,
+              title: resultWithListingInfo?.listingInfo?.title,
+            });
+
+            window.dispatchEvent(new CustomEvent('homescope:analysis-result-updated', {
+              detail: { resultVersion, address },
+            }));
+
             setIsComplete(true);
             setProgressPct(100);
             setProgressLabel('Analysis complete');
             clearPollTimer();
-            // Refresh user profile to update credits display
             refreshProfile();
             setTimeout(() => {
-              navigate('/result');
+              navigate(`/result?rid=${encodeURIComponent(resultVersion)}`);
             }, 500);
             return;
           }

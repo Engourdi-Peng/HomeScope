@@ -33,9 +33,11 @@ type ReportScreenProps = {
   shareState?: ShareStateProps;
   /** 外部拦截分享点击（extension 模式用于触发父组件的分享逻辑并自动复制） */
   onShareClick?: () => void;
+  /** 当前登录用户的 ID（从 AuthContext 传入；extension 模式传 undefined） */
+  userId?: string;
 };
 
-export function ReportScreen({ mode, result, onBack, onShare, onUpgrade, analysisId, noShell, shareState, onShareClick }: ReportScreenProps) {
+export function ReportScreen({ mode, result, onBack, onShare, onUpgrade, analysisId, noShell, shareState, onShareClick, userId }: ReportScreenProps) {
   const isExtension = mode === 'extension';
 
   // Detect share page to suppress back button
@@ -44,6 +46,21 @@ export function ReportScreen({ mode, result, onBack, onShare, onUpgrade, analysi
     !!window.location.pathname.includes('/share/');
 
   const showBackButton = mode !== 'extension' && !isSharePage;
+
+  // ── Derive feedback props ─────────────────────────────────────────────────
+  const raw = (result as any)?.raw ?? result;
+  const listingAddress =
+    (result as any)?.listingInfo?.address ??
+    raw?.listingInfo?.address ??
+    raw?.property_snapshot?.address ??
+    undefined;
+  // Stable fingerprint: use address as fingerprint (trimmed, lowercased)
+  const listingFingerprint = listingAddress
+    ? listingAddress.toLowerCase().trim()
+    : undefined;
+  const reportType = (result as any)?.meta?.reportMode ??
+    (result as any)?.reportMode ??
+    undefined;
 
   // ── New unified path: normalize → buildReportViewModel → NewReportUI ──────────
   try {
@@ -63,6 +80,10 @@ export function ReportScreen({ mode, result, onBack, onShare, onUpgrade, analysi
         shareState={shareState}
         onShareClick={onShareClick}
         onUpgrade={onUpgrade}
+        userId={userId}
+        listingFingerprint={listingFingerprint}
+        listingAddress={listingAddress}
+        reportType={reportType}
       />
     );
 

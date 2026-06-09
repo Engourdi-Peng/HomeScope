@@ -15,7 +15,7 @@ export const MODULE_FALLBACKS = {
   HERO_NEXT_BEST_MOVE_DEFAULT: 'Request additional details and verify key risks before your next step.',
   PRICE_ANALYSIS_UNKNOWN: 'Price cannot be judged confidently from the available data.',
   PRICE_ANALYSIS_OVERPRICED: 'The asking price appears high relative to visible condition, market time, or unverified assumptions.',
-  PRICE_ANALYSIS_FAIR: 'The asking price appears reasonable relative to available market data, but always verify with comps.',
+  PRICE_ANALYSIS_FAIR: 'Asking price may be within a plausible range for this property type and location, but verify with comparable sales before treating it as a fair deal.',
   PRICE_ANALYSIS_GOOD_VALUE: 'The asking price may be attractive relative to visible condition and market data, but confirm with comps.',
   CARRYING_COSTS_NO_DATA: 'Monthly cost estimate is not available from the current listing data. Ask the agent or listing agent for Zillow estimated monthly payment, property tax amount, HOA fees, and insurance estimate.',
   CARRYING_COSTS_WARNING: 'Full cost assumptions are not available. Treat this as a rough planning number only. Financing terms, insurance, repairs, utilities, vacancy, and maintenance reserves may not be included.',

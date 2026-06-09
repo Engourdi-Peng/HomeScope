@@ -10,17 +10,23 @@
  * All states share the same ReportShell container for layout consistency.
  * The NavBar is rendered here (not inside ResultCard) to match the web layout.
  */
-import React, { useState } from 'react';
+import { useState } from 'react';
 import { ArrowLeft, Share2, Copy, CheckCircle } from 'lucide-react';
 
 const noop = (..._args: unknown[]) => {};
 import { useAppState, useActions } from '../store';
 import { ReportScreen } from '../../shared/report/ReportScreen';
 import { ReportShell } from '../../shared/report/ReportShell';
+import { getAnalysisProgressSteps } from '../analysisProgressSteps';
 
 export function ExtensionResultView() {
-  const { analysisPhase, analysisProgress, analysisError, analysisResult, authStatus } = useAppState();
-  const { retryAnalysis, navigateToHome, shareAnalysis } = useActions();
+  const { analysisPhase, analysisProgress, analysisError, analysisResult, authStatus, analysisType } = useAppState();
+  const { retryAnalysis, navigateToHome, shareAnalysis, upgradeToFull } = useActions();
+
+  const isBasic = analysisType === 'basic';
+  const steps = getAnalysisProgressSteps(analysisType);
+
+  console.log('[DEBUG ExtensionResultView] analysisType:', analysisType, 'isBasic:', isBasic, 'steps count:', steps.length);
 
   // Top bar share state — same logic as ResultCard bottom share
   const [isSharing, setIsSharing] = useState(false);
@@ -78,39 +84,41 @@ export function ExtensionResultView() {
         <span className="text-xs font-medium">Back</span>
       </button>
 
-      {!shareResult ? (
-        <button
-          type="button"
-          onClick={handleTopBarShare}
-          disabled={isSharing}
-          className="flex items-center gap-1.5 px-3 py-1.5 text-stone-500 hover:text-stone-900 transition-colors cursor-pointer disabled:opacity-50"
-        >
-          <Share2 size={14} strokeWidth={1.5} />
-          <span className="text-xs font-medium">
-            {isSharing ? 'Sharing...' : 'Share'}
-          </span>
-        </button>
-      ) : (
-        <div className="flex items-center gap-1.5 bg-green-50 text-green-700 px-2.5 py-1 rounded-full">
-          {copied ? (
-            <>
-              <CheckCircle size={12} />
-              <span className="text-xs font-medium">Copied!</span>
-            </>
-          ) : (
-            <>
-              <CheckCircle size={12} />
-              <span className="text-xs font-medium">Copied</span>
-              <button
-                onClick={handleCopyShareLink}
-                className="ml-0.5 p-0.5 hover:bg-green-100 rounded transition-colors cursor-pointer"
-                title="Copy link again"
-              >
-                <Copy size={11} />
-              </button>
-            </>
-          )}
-        </div>
+      {authStatus === 'logged_in' && (
+        !shareResult ? (
+          <button
+            type="button"
+            onClick={handleTopBarShare}
+            disabled={isSharing}
+            className="flex items-center gap-1.5 px-3 py-1.5 text-stone-500 hover:text-stone-900 transition-colors cursor-pointer disabled:opacity-50"
+          >
+            <Share2 size={14} strokeWidth={1.5} />
+            <span className="text-xs font-medium">
+              {isSharing ? 'Sharing...' : 'Share'}
+            </span>
+          </button>
+        ) : (
+          <div className="flex items-center gap-1.5 bg-green-50 text-green-700 px-2.5 py-1 rounded-full">
+            {copied ? (
+              <>
+                <CheckCircle size={12} />
+                <span className="text-xs font-medium">Copied!</span>
+              </>
+            ) : (
+              <>
+                <CheckCircle size={12} />
+                <span className="text-xs font-medium">Copied</span>
+                <button
+                  onClick={handleCopyShareLink}
+                  className="ml-0.5 p-0.5 hover:bg-green-100 rounded transition-colors cursor-pointer"
+                  title="Copy link again"
+                >
+                  <Copy size={11} />
+                </button>
+              </>
+            )}
+          </div>
+        )
       )}
     </div>
   );
@@ -120,7 +128,7 @@ export function ExtensionResultView() {
     return (
       <ReportShell mode="extension">
         {NavBar}
-        <PhaseProgressInline phase={analysisPhase} progress={analysisProgress} />
+        <PhaseProgressInline phase={analysisPhase} progress={analysisProgress} steps={steps} isBasic={isBasic} />
       </ReportShell>
     );
   }
@@ -178,6 +186,7 @@ export function ExtensionResultView() {
         result={analysisResult}
         onBack={navigateToHome}
         onShare={authStatus === 'logged_in' ? handleShare : undefined}
+        onUpgrade={authStatus === 'logged_in' ? upgradeToFull : undefined}
         analysisId={analysisResult?.id}
         noShell
         shareState={{
@@ -193,28 +202,23 @@ export function ExtensionResultView() {
 
 // ===== Inline analysis state components =====
 
-const PHASE_STEPS = [
-  { key: 'preparing', label: 'Preparing...', icon: '1' },
-  { key: 'reading_page', label: 'Reading page data...', icon: '2' },
-  { key: 'opening_gallery', label: 'Opening gallery...', icon: '3' },
-  { key: 'collecting_photos', label: 'Collecting photos...', icon: '4' },
-  { key: 'sending_data', label: 'Sending data...', icon: '5' },
-  { key: 'analysing', label: 'Analysing property...', icon: '6' },
-  { key: 'generating_report', label: 'Generating report...', icon: '7' },
-] as const;
-
-function getPhaseIndex(phase: string): number {
-  const idx = PHASE_STEPS.findIndex(s => s.key === phase);
+function getPhaseIndex(phase: string, steps: readonly { key: string }[]): number {
+  const idx = steps.findIndex(s => s.key === phase);
   return idx >= 0 ? idx : 0;
 }
 
-function PhaseProgressInline({ phase, progress }: { phase: string; progress: number }) {
-  const currentIndex = getPhaseIndex(phase);
+function PhaseProgressInline({ phase, progress, steps, isBasic }: {
+  phase: string;
+  progress: number;
+  steps: readonly { key: string; label: string }[];
+  isBasic: boolean;
+}) {
+  const currentIndex = getPhaseIndex(phase, steps);
 
   return (
     <div className="ext-phase-container">
       <div className="ext-phase-list">
-        {PHASE_STEPS.map((step, index) => {
+        {steps.map((step, index) => {
           const isDone = index < currentIndex;
           const isActive = index === currentIndex;
           return (
@@ -224,9 +228,7 @@ function PhaseProgressInline({ phase, progress }: { phase: string; progress: num
                   <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><polyline points="20 6 9 17 4 12"></polyline></svg>
                 ) : isActive ? (
                   <div className="ext-phase-spinner" />
-                ) : (
-                  <span className="ext-phase-number">{step.icon}</span>
-                )}
+                ) : null}
               </div>
               <div className="ext-phase-label">{step.label}</div>
             </div>
@@ -237,6 +239,9 @@ function PhaseProgressInline({ phase, progress }: { phase: string; progress: num
         <div className="ext-phase-progress-bar">
           <div className="ext-phase-progress-fill" style={{ width: `${progress}%` }} />
         </div>
+      )}
+      {isBasic && (
+        <p className="ext-phase-basic-note">No photos collected — basic report only</p>
       )}
     </div>
   );

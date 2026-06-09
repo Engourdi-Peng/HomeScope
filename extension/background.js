@@ -41,6 +41,25 @@ let _authListeners = [];
 let _migrationAttempted = false;
 // Refresh lock: prevents concurrent token refresh (race condition fix)
 let _refreshLock = null;
+
+// ── listingFingerprint: prevents stale cross-listing data from reaching the API ────────────
+function createListingFingerprint(listingData) {
+  const key = [
+    listingData?.address || '',
+    listingData?.price || listingData?.priceText || '',
+    String(listingData?.bedrooms ?? ''),
+    String(listingData?.bathrooms ?? ''),
+    String(listingData?.sqft ?? listingData?.floorArea ?? ''),
+    listingData?.listingUrl || listingData?.url || '',
+  ].join('|');
+  let hash = 0;
+  for (let i = 0; i < key.length; i++) {
+    const char = key.charCodeAt(i);
+    hash = ((hash << 5) - hash) + char;
+    hash = hash & hash;
+  }
+  return String(Math.abs(hash));
+}
 // ── Helper: normalise Supabase user object to ExtUser ──
 function toExtUser(supabaseUser) {
   if (!supabaseUser) return null;
@@ -54,21 +73,30 @@ function toExtUser(supabaseUser) {
 
 // ── Unified Edge Function request headers ──
 // All /functions/v1/* calls MUST use this helper.
-// - apikey: SUPABASE_ANON_KEY (AU server) or serverConfig.anonKey (US server)
-// - Authorization: always Bearer <user access token>
-function buildSupabaseFunctionHeaders(accessToken, serverConfig) {
+//
+// Options:
+//   - allowAnonymous: if true, permits calls without a user access token (uses anon key instead).
+//     Full analysis / history / credits calls should NOT pass this flag.
+function buildSupabaseFunctionHeaders(accessToken, serverConfig, options = {}) {
   const anonKey = serverConfig?.anonKey || SUPABASE_ANON_KEY;
   if (!anonKey) {
     throw new Error('Missing SUPABASE_ANON_KEY');
   }
-  if (!accessToken) {
+  const allowAnonymous = options.allowAnonymous === true;
+  if (!accessToken && !allowAnonymous) {
     throw new Error('Missing access token');
   }
-  return {
+  const headers = {
     'Content-Type': 'application/json',
     'apikey': anonKey,
-    'Authorization': `Bearer ${accessToken}`,
   };
+  if (accessToken) {
+    headers['Authorization'] = `Bearer ${accessToken}`;
+  } else if (allowAnonymous) {
+    // Supabase Edge Functions accept the anon key as a Bearer token for anonymous access.
+    headers['Authorization'] = `Bearer ${anonKey}`;
+  }
+  return headers;
 }
 
 // ── Helper: Determine API URL based on source domain ──
@@ -190,6 +218,124 @@ async function migrateLegacySession() {
     // No legacy session found — just mark migration complete
     await chrome.storage.local.set({ [HS_AUTH_MIGRATED_KEY]: true });
   }
+}
+
+function buildVerifiedFactsFromListing(listingData) {
+  const listingFacts = listingData?.listingFacts || {};
+  const evidence = listingFacts?.evidence || {};
+  const zf = listingData?.zillowFinancials || {};
+  const derivedYearBuilt = deriveYearBuilt(listingData);
+  const priceValue = listingFacts?.priceValue ?? listingData?.priceValue ?? null;
+  const priceDisplay = listingFacts?.priceDisplay ?? listingData?.price ?? listingData?.askingPrice ?? null;
+  const annualTax = listingFacts?.annualTax ?? listingData?.annualTaxAmount ?? null;
+  const annualTaxDisplay = annualTax != null ? `$${Number(annualTax).toLocaleString()}/yr` : (listingData?.propertyTax || null);
+  const pricePerSqft = listingFacts?.pricePerSqft ?? listingData?.pricePerSqftAmount ?? null;
+  const pricePerSqftDisplay = pricePerSqft != null ? `$${Number(pricePerSqft).toLocaleString()}/sqft` : (listingData?.pricePerSqft || null);
+  const taxAssessedValue = listingData?.taxAssessedValueAmount ?? null;
+  const taxAssessedValueDisplay = listingData?.taxAssessedValue || (taxAssessedValue != null ? `$${Number(taxAssessedValue).toLocaleString()}` : null);
+  const monthlyPayment = listingFacts?.estimatedMonthlyPayment ?? zf?.monthlyPayment?.estimatedMonthlyPayment?.value ?? zf?.topEstimatedPayment?.value ?? null;
+  const monthlyPaymentDisplay = monthlyPayment != null ? `$${Number(monthlyPayment).toLocaleString()}/mo` : null;
+  const principalAndInterest = listingFacts?.principalAndInterest ?? zf?.monthlyPayment?.principalAndInterest?.value ?? null;
+  const propertyTaxMonthly = listingFacts?.propertyTaxesMonthly ?? zf?.monthlyPayment?.propertyTaxes?.value ?? zf?.derived?.propertyTaxMonthlyFromAnnual?.value ?? null;
+  const homeInsuranceMonthly = listingFacts?.homeInsuranceMonthly ?? zf?.monthlyPayment?.homeInsurance?.value ?? null;
+  const hoaAmount = listingFacts?.hoaAmount ?? zf?.monthlyPayment?.hoaFees?.value ?? null;
+  const hoa = hoaAmount != null ? 'yes' : (listingData?.hoaFee ? 'yes' : 'unknown');
+  return {
+    address: listingFacts?.address ?? listingData?.address ?? null,
+    price: priceValue,
+    price_display: priceDisplay,
+    beds: listingFacts?.beds ?? listingData?.beds ?? listingData?.bedrooms ?? null,
+    baths: listingFacts?.baths ?? listingData?.baths ?? listingData?.bathrooms ?? null,
+    sqft: listingFacts?.sqft ?? listingData?.sqft ?? null,
+    propertyType: listingFacts?.propertyType ?? listingData?.propertyType ?? null,
+    yearBuilt: derivedYearBuilt,
+    zestimate: parseFiniteNumber(listingData?.zestimate),
+    zestimate_display: typeof listingData?.zestimate === 'string' ? listingData.zestimate : (parseFiniteNumber(listingData?.zestimate) != null ? `$${Number(listingData.zestimate).toLocaleString()}` : null),
+    rentZestimate: parseFiniteNumber(listingData?.rentZestimate),
+    rentZestimate_display: typeof listingData?.rentZestimate === 'string' ? listingData.rentZestimate : (parseFiniteNumber(listingData?.rentZestimate) != null ? `$${Number(listingData.rentZestimate).toLocaleString()}` : null),
+    estimatedSalesRangeMin: parseFiniteNumber(listingData?.estimatedSalesRange?.min),
+    estimatedSalesRangeMax: parseFiniteNumber(listingData?.estimatedSalesRange?.max),
+    pricePerSqft,
+    pricePerSqft_display: pricePerSqftDisplay,
+    taxAssessedValue,
+    taxAssessedValue_display: taxAssessedValueDisplay,
+    annualTax,
+    annualTax_display: annualTaxDisplay,
+    daysOnMarket: parseFiniteNumber(listingData?.daysOnZillow),
+    dateListed: listingData?.dateListed ?? listingData?.dateOnMarket ?? null,
+    monthlyPayment,
+    monthlyPayment_display: monthlyPaymentDisplay,
+    principalAndInterest,
+    propertyTaxMonthly,
+    homeInsuranceMonthly,
+    hoa,
+    hoaAmount,
+    utilitiesIncluded: null,
+    annual_tax: annualTax,
+    annual_tax_display: annualTaxDisplay,
+    tax_assessed_value: taxAssessedValue,
+    tax_assessed_value_display: taxAssessedValueDisplay,
+    price_per_sqft: pricePerSqft,
+    price_per_sqft_display: pricePerSqftDisplay,
+    date_listed: listingData?.dateListed ?? listingData?.dateOnMarket ?? null,
+    available_date: listingData?.availableDate ?? null,
+    normalizedPropertyCategory: listingData?.normalizedPropertyCategory || 'unknown',
+    displayType: listingData?.displayType || listingFacts?.propertyType || listingData?.propertyType || '',
+    rawHomeType: listingData?.rawHomeType || '',
+    rawPropertyType: listingData?.rawPropertyType || listingData?.propertyType || '',
+    rawPropertySubtype: listingData?.rawPropertySubtype || '',
+    floodZone: listingFacts?.floodZone ?? listingData?.zillowFinancials?.floodZone ?? null,
+    fieldEvidence: evidence
+  };
+}
+
+function parseFiniteNumber(value) {
+  if (typeof value === 'number' && Number.isFinite(value)) return value;
+  if (typeof value === 'string') {
+    const match = value.match(/[\d,]+(?:\.\d+)?/);
+    if (!match) return null;
+    const parsed = Number(match[0].replace(/,/g, ''));
+    return Number.isFinite(parsed) ? parsed : null;
+  }
+  return null;
+}
+
+function extractYearBuiltFromText(text) {
+  const bodyText = String(text || '')
+    .replace(/[\u00a0\u202f]+/g, ' ')
+    .replace(/[ \t]+/g, ' ')
+    .trim();
+  if (!bodyText) return null;
+  const patterns = [
+    /Built in\s+(\d{4})/i,
+    /Year built\s*:?\s*(\d{4})/i,
+    /Year\s+built\s+(\d{4})/i,
+    /Built\s*:?\s*(\d{4})/i,
+    /Condition\s*Year built\s*:?\s*(\d{4})/i
+  ];
+  const currentYear = new Date().getFullYear() + 1;
+  for (const pattern of patterns) {
+    const match = bodyText.match(pattern);
+    if (!match?.[1]) continue;
+    const year = Number(match[1]);
+    if (Number.isInteger(year) && year >= 1700 && year <= currentYear) {
+      return year;
+    }
+  }
+  return null;
+}
+
+function deriveYearBuilt(listingData) {
+  return parseFiniteNumber(listingData?.listingFacts?.yearBuilt)
+    ?? parseFiniteNumber(listingData?.listingFacts?.evidence?.yearBuilt?.value)
+    ?? parseFiniteNumber(listingData?.yearBuilt)
+    ?? extractYearBuiltFromText([
+      listingData?.rawText,
+      listingData?.description,
+      listingData?.title,
+      listingData?.address
+    ].filter(Boolean).join(' \n '))
+    ?? null;
 }
 
 // ----- Primary session getter (cache → migrated storage only) -----
@@ -613,30 +759,13 @@ async function handleMessage(message, sender, sendResponse) {
       // ── Unified source/market derivation ────────────────────────────────────────────
       const tabUrl = listingData?.tabUrl || listingData?.url || '';
       const { source, sourceDomain, market, listingUrl } = deriveListingSourceInfo(listingData, tabUrl);
-      console.log('[DIAG] plugin market routing', {
-        listingDataSource: listingData?.source,
-        tabUrl,
-        source,
-        sourceDomain,
-        market,
-        listingUrl,
-        serverUrl: (() => {
-          // compute serverConfig inline so we can log it
-          const sd = sourceDomain;
-          if (sd && (sd.includes('zillow') || sd.includes('realtor'))) {
-            return SUPABASE_US_URL || 'AU-fallback';
-          }
-          return SUPABASE_URL;
-        })(),
-        isUSServer: !!(sourceDomain && (sourceDomain.includes('zillow') || sourceDomain.includes('realtor'))),
-      });
-
       const description = listingData?.description || listingData?.rawText || listingData?.title || 'Property listing information';
       const reportMode = listingData?.reportMode || 'rent';
 
       // Build optionalDetails: pass ALL property info for comprehensive analysis
       const priceText = listingData?.priceText || listingData?.price || null;
       const optionalDetails = {};
+      const extractedYearBuilt = deriveYearBuilt(listingData);
       if (priceText) {
         if (reportMode === 'rent') {
           optionalDetails.weeklyRent = priceText;
@@ -652,7 +781,7 @@ async function handleMessage(message, sender, sendResponse) {
 
       // Zillow/US specific property details
       if (listingData?.sqft != null) optionalDetails.sqft = listingData.sqft;
-      if (listingData?.yearBuilt != null) optionalDetails.yearBuilt = listingData.yearBuilt;
+      if (extractedYearBuilt != null) optionalDetails.yearBuilt = extractedYearBuilt;
       if (listingData?.propertyType) optionalDetails.propertyType = listingData.propertyType;
       if (listingData?.lotSize) optionalDetails.lotSize = listingData.lotSize;
       if (listingData?.hoaFee) optionalDetails.hoaFee = listingData.hoaFee;
@@ -663,6 +792,16 @@ async function handleMessage(message, sender, sendResponse) {
       if (listingData?.daysOnZillow != null) optionalDetails.daysOnZillow = listingData.daysOnZillow;
       if (listingData?.dateOnMarket) optionalDetails.dateOnMarket = listingData.dateOnMarket;
       if (listingData?.region) optionalDetails.region = listingData.region;
+      if (listingData?.neighborhood) optionalDetails.region = listingData.neighborhood;
+
+      // Location data from V2 extractor (nested in zillowFinancials)
+      const zfFromListing = listingData?.zillowFinancials;
+      if (zfFromListing?.neighborhood) optionalDetails.neighborhood = zfFromListing.neighborhood;
+      if (zfFromListing?.floodZone) optionalDetails.floodZone = zfFromListing.floodZone;
+      if (zfFromListing?.walkScore) optionalDetails.walkScore = zfFromListing.walkScore;
+      if (zfFromListing?.bikeScore) optionalDetails.bikeScore = zfFromListing.bikeScore;
+      if (zfFromListing?.transit) optionalDetails.transit = zfFromListing.transit;
+      if (zfFromListing?.schoolRatings?.length) optionalDetails.schoolRatings = zfFromListing.schoolRatings;
 
       // Property features
       if (listingData?.heating) optionalDetails.heating = listingData.heating;
@@ -697,6 +836,11 @@ async function handleMessage(message, sender, sendResponse) {
         optionalDetails.facts = listingData.facts;
       }
 
+      // Estimated sales range (from Zillow V2 extractor)
+      if (listingData?.estimatedSalesRange && typeof listingData.estimatedSalesRange === 'object') {
+        optionalDetails.estimatedSalesRange = listingData.estimatedSalesRange;
+      }
+
       // ── Enrich optionalDetails with source info for backend fallback ─────────────────
       optionalDetails.source = source;
       optionalDetails.sourceDomain = sourceDomain;
@@ -706,6 +850,8 @@ async function handleMessage(message, sender, sendResponse) {
       // ── Zillow financials: deterministic monthly payment breakdown ─────────────────
       console.log('[HomeScope][ZillowFinancials] extracted', listingData?.zillowFinancials);
 
+      const verifiedFacts = buildVerifiedFactsFromListing(listingData);
+      const rawSourcesSummary = listingData?.rawSourcesSummary || listingData?.listingFacts?.rawSourcesSummary || null;
       // ── Determine server ───────────────────────────────────────────────────────────
       const serverConfig = getAnalyzeApiUrl(sourceDomain);
 
@@ -715,26 +861,19 @@ async function handleMessage(message, sender, sendResponse) {
         const auth = await getAuth();
         const accessToken = auth?.session?.access_token || null;
         const url = `${serverConfig.url}/functions/v1/analyze?action=basic-sync`;
-        console.log('[AnalyzeRequest-basic] optionalDetails financial fields', {
-          propertyTax: optionalDetails.propertyTax,
-          annualTaxAmount: optionalDetails.annualTaxAmount,
-          taxAssessedValue: optionalDetails.taxAssessedValue,
-          taxAssessedValueAmount: optionalDetails.taxAssessedValueAmount,
-          pricePerSqft: optionalDetails.pricePerSqft,
-          pricePerSqftAmount: optionalDetails.pricePerSqftAmount,
-          dateListed: optionalDetails.dateListed,
-          availableDate: optionalDetails.availableDate,
-          financialDetails: optionalDetails.financialDetails,
-        });
         const requestBody = {
           description,
           reportMode,
           optionalDetails,
+          listingFacts: listingData?.listingFacts || null,
+          verifiedFacts,
+          rawSourcesSummary,
           source,
           sourceDomain,
           market,
           listingUrl,
           zillowFinancials: listingData?.zillowFinancials || null,
+          listingFingerprint: createListingFingerprint(listingData),
         };
         console.log('[HomeScope][AnalyzeRequest] has zillowFinancials', !!requestBody.zillowFinancials);
         console.log('[Edge Function Request Debug]', {
@@ -752,7 +891,7 @@ async function handleMessage(message, sender, sendResponse) {
         });
         const response = await fetch(url, {
           method: 'POST',
-          headers: buildSupabaseFunctionHeaders(accessToken, serverConfig),
+          headers: buildSupabaseFunctionHeaders(accessToken, serverConfig, { allowAnonymous: true }),
           body: JSON.stringify(requestBody),
         });
 
@@ -804,28 +943,13 @@ async function handleMessage(message, sender, sendResponse) {
       // ── Unified source/market derivation ────────────────────────────────────────────
       const tabUrl = listingData?.tabUrl || listingData?.url || '';
       const { source, sourceDomain, market, listingUrl } = deriveListingSourceInfo(listingData, tabUrl);
-      console.log('[DIAG] plugin market routing', {
-        listingDataSource: listingData?.source,
-        tabUrl,
-        source,
-        sourceDomain,
-        market,
-        listingUrl,
-        serverUrl: (() => {
-          if (sourceDomain && (sourceDomain.includes('zillow') || sourceDomain.includes('realtor'))) {
-            return SUPABASE_US_URL || 'AU-fallback';
-          }
-          return SUPABASE_URL;
-        })(),
-        isUSServer: !!(sourceDomain && (sourceDomain.includes('zillow') || sourceDomain.includes('realtor'))),
-      });
-
       const serverConfig = getAnalyzeApiUrl(sourceDomain);
 
       // Build optionalDetails: pass ALL property info to AI for accurate analysis
       const priceText = listingData?.priceText || listingData?.price || null;
       const priceHidden = listingData?.priceHidden || false;
       const optionalDetails = {};
+      const extractedYearBuilt = deriveYearBuilt(listingData);
       if (priceText) {
         if (reportMode === 'rent') {
           optionalDetails.weeklyRent = priceText;
@@ -844,7 +968,7 @@ async function handleMessage(message, sender, sendResponse) {
 
       // Zillow/US specific property details
       if (listingData?.sqft != null) optionalDetails.sqft = listingData.sqft;
-      if (listingData?.yearBuilt != null) optionalDetails.yearBuilt = listingData.yearBuilt;
+      if (extractedYearBuilt != null) optionalDetails.yearBuilt = extractedYearBuilt;
       if (listingData?.propertyType) optionalDetails.propertyType = listingData.propertyType;
       if (listingData?.lotSize) optionalDetails.lotSize = listingData.lotSize;
       if (listingData?.hoaFee) optionalDetails.hoaFee = listingData.hoaFee;
@@ -855,6 +979,16 @@ async function handleMessage(message, sender, sendResponse) {
       if (listingData?.daysOnZillow != null) optionalDetails.daysOnZillow = listingData.daysOnZillow;
       if (listingData?.dateOnMarket) optionalDetails.dateOnMarket = listingData.dateOnMarket;
       if (listingData?.region) optionalDetails.region = listingData.region;
+      if (listingData?.neighborhood) optionalDetails.region = listingData.neighborhood;
+
+      // Location data from V2 extractor (nested in zillowFinancials)
+      const zfFromListing = listingData?.zillowFinancials;
+      if (zfFromListing?.neighborhood) optionalDetails.neighborhood = zfFromListing.neighborhood;
+      if (zfFromListing?.floodZone) optionalDetails.floodZone = zfFromListing.floodZone;
+      if (zfFromListing?.walkScore) optionalDetails.walkScore = zfFromListing.walkScore;
+      if (zfFromListing?.bikeScore) optionalDetails.bikeScore = zfFromListing.bikeScore;
+      if (zfFromListing?.transit) optionalDetails.transit = zfFromListing.transit;
+      if (zfFromListing?.schoolRatings?.length) optionalDetails.schoolRatings = zfFromListing.schoolRatings;
 
       // Property features
       if (listingData?.heating) optionalDetails.heating = listingData.heating;
@@ -889,12 +1023,19 @@ async function handleMessage(message, sender, sendResponse) {
         optionalDetails.facts = listingData.facts;
       }
 
+      // Estimated sales range (from Zillow V2 extractor)
+      if (listingData?.estimatedSalesRange && typeof listingData.estimatedSalesRange === 'object') {
+        optionalDetails.estimatedSalesRange = listingData.estimatedSalesRange;
+      }
+
       // ── Enrich optionalDetails with source info for backend fallback ─────────────────
       optionalDetails.source = source;
       optionalDetails.sourceDomain = sourceDomain;
       optionalDetails.market = market;
       optionalDetails.listingUrl = listingUrl;
 
+      const verifiedFacts = buildVerifiedFactsFromListing(listingData);
+      const rawSourcesSummary = listingData?.rawSourcesSummary || listingData?.listingFacts?.rawSourcesSummary || null;
       // Build request body for analyze function
       console.log('[AnalyzeRequest] optionalDetails financial fields', {
         propertyTax: optionalDetails.propertyTax,
@@ -915,11 +1056,15 @@ async function handleMessage(message, sender, sendResponse) {
         reportMode,
         price: priceText,
         optionalDetails,
+        listingFacts: listingData?.listingFacts || null,
+        verifiedFacts,
+        rawSourcesSummary,
         source,
         sourceDomain,
         market,
         listingUrl,
         zillowFinancials: listingData?.zillowFinancials || null,
+        listingFingerprint: createListingFingerprint(listingData),
       };
       console.log('[BG][SUBMIT_URL_FINAL]', `${serverConfig.url}/functions/v1/analyze?action=submit`);
       console.log('[BG][SUBMIT_BODY_FINAL]', {

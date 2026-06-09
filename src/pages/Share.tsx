@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import type { AnalysisResult, AnalysisSummary, ListingInfo } from '../types';
-import { ResultCard } from '../components/ResultCard';
+import { ReportScreen } from '../shared/report/ReportScreen';
 import { useNavigate, useParams } from 'react-router-dom';
 import { getPublicAnalysis } from '../lib/api';
 import { usePublicPageSEO } from '../hooks/useSEOMeta';
@@ -223,10 +223,11 @@ export function SharePage() {
         </div>
 
         <div className="relative z-10 w-full max-w-[56rem]">
-          <ResultCard 
-            result={result} 
+          <ReportScreen
+            mode="web"
+            result={result}
             onBack={() => navigate('/')}
-            isPublicShare={true}
+            noShell={true}
           />
 
           {/* SEO Content Block - 仅在公开分享页显示 */}

@@ -1,7 +1,7 @@
 // ===== US Sale Adapter =====
 // 转换 US Sale 报告原始字段 → NormalizedReport
 
-import type { NormalizedReport, HeroData, HighlightsData, QuickFact, ReportSection, SectionItem } from './types';
+import type { NormalizedReport, HeroData, HighlightsData, QuickFact, ReportSection, SectionItem, ReportProfile } from './types';
 
 type USSaleResult = any;
 
@@ -107,18 +107,199 @@ function severityOf(level: string | undefined): 'low' | 'medium' | 'high' | unde
   return undefined;
 }
 
+// ── Listing summary / dirty data filters ──────────────────────────────────────
+
+function isListingSummaryString(value: unknown): boolean {
+  if (!value) return true;
+  const text = String(value).trim();
+  if (!text) return true;
+  return (
+    /\b\d+\s*bds\b/i.test(text) ||
+    /\b\d+\s*beds?\b/i.test(text) ||
+    /\b\d+\s*ba\b/i.test(text) ||
+    /\b\d+[,.\d]*\s*sqft\b/i.test(text) ||
+    /\b\d+\s*sq\s*ft\b/i.test(text) ||
+    /home\s+for\s+sale\b/i.test(text) ||
+    /\bactive\b/i.test(text) ||
+    /\bmulti\.?family\s+home\s+for\s+sale\b/i.test(text) ||
+    /\bsingle\s+family\s+home\s+for\s+sale\b/i.test(text) ||
+    /\bcondo\s+for\s+sale\b/i.test(text) ||
+    /\btownhouse\s+for\s+sale\b/i.test(text)
+  );
+}
+
+function isLikelyValidAddress(value: unknown): boolean {
+  if (!value) return false;
+  const text = String(value).trim();
+  if (!text) return false;
+
+  if (isListingSummaryString(text)) return false;
+
+  // Accept complete US address: "1231 Lydig Avenue, Bronx, NY 10461"
+  if (/^\d+\s+.+,\s*[^,]+,\s*[A-Z]{2}\s*\d{5}(?:-\d{4})?$/i.test(text)) {
+    return true;
+  }
+
+  // Accept partial street address: "810 Neill Avenue", "1231 Lydig Avenue", "4218 Herkimer Pl"
+  if (/^\d+\s+[A-Za-z0-9 .'-]+(?:street|st|avenue|ave|road|rd|place|pl|drive|dr|court|ct|lane|ln|boulevard|blvd|terrace|ter|way|circle|cir|floor)\b/i.test(text)) {
+    return true;
+  }
+
+  return false;
+}
+
+function firstValidAddress(...values: unknown[]): string {
+  for (const v of values) {
+    const text = String(v ?? '').trim();
+    if (isLikelyValidAddress(text)) return text;
+  }
+  return '';
+}
+
+function firstValidTitle(...values: unknown[]): string {
+  for (const v of values) {
+    const text = String(v ?? '').trim();
+    if (text && !isListingSummaryString(text)) return text;
+  }
+  return '';
+}
+
+// ── report profile (property-type routing) ───────────────────────────────────
+
+/**
+ * Map the backend's NormalizedPropertyCategory to the legacy ReportProfile.
+ * Priority: use normalizedPropertyCategory from backend if available.
+ * Fall back to local re-detection only for legacy/forward compat.
+ *
+ * Backend normalized categories → legacy ReportProfile:
+ * co_op          → 'coop'
+ * condo          → 'condo'
+ * single_family  → 'single_family_owner_occupier'
+ * townhouse      → 'townhouse'
+ * multi_family   → 'multi_family'
+ * manufactured  → 'unknown'
+ * land           → 'land'
+ * apartment      → 'unknown'
+ * unknown        → 'unknown'
+ */
+const NORMALIZED_TO_PROFILE: Record<string, ReportProfile> = {
+  co_op: 'coop',
+  condo: 'condo',
+  single_family: 'single_family_owner_occupier',
+  townhouse: 'townhouse',
+  multi_family: 'multi_family',
+  manufactured: 'unknown',
+  land: 'land',
+  apartment: 'unknown',
+  unknown: 'unknown',
+};
+
+export function computeReportProfile(result: USSaleResult): ReportProfile {
+  // Prefer backend's normalizedPropertyCategory if available
+  const normCat = result.normalizedPropertyCategory ?? (result as any).reportProfile;
+  if (normCat && NORMALIZED_TO_PROFILE[normCat]) {
+    return NORMALIZED_TO_PROFILE[normCat];
+  }
+
+  // Fallback: re-detect from raw listing data (for legacy or forward compat)
+  const snap = result.property_snapshot ?? {};
+
+  // Gather listing text for signal detection
+  const listingText = [
+    snap.homeType ?? snap.home_type ?? '',
+    (result as any).listingInfo?.description ?? '',
+    (result as any).listingOverview?.description ?? '',
+    (result as any).description ?? '',
+    (result as any).listingInfo?.propertyType ?? '',
+    (result as any).propertyType ?? '',
+  ].join(' ').toLowerCase();
+
+  const propertyType = (snap.homeType ?? snap.home_type ?? '').toLowerCase();
+
+  // Explicit rental/multi-family signals in listing text
+  // Must be explicit — basement/storage alone is NOT a rental signal
+  const hasRentalSignal = /rental\s*unit|basement\s*apartment|income\s*unit|legal\s*two.family|2.family|multi.family|duplex|separate\s*unit|tenant\s*occupied|walk.in\s*apartment|mother.daughter|backyard\s*entrance|separate\s*street\s*entrance|income.generat/i.test(listingText);
+
+  // Explicit property type checks
+  const isSingleFamily = /single\s*family|singlefamily|single\s*family\s*residence|single\s*family\s*home/i.test(propertyType);
+  const isMultiFamily = /multi\s*family|multi.family|duplex/i.test(propertyType);
+
+  // ── Property type priority (co_op MUST be first to prevent "house"/"residence"
+  // in "Stock Cooperative, Residential" from matching single_family first) ─────
+  if (/coop|co-op/i.test(propertyType)) return 'coop';
+  if (isSingleFamily && !hasRentalSignal) {
+    return 'single_family_owner_occupier';
+  }
+  if (isMultiFamily || hasRentalSignal) {
+    return 'multi_family';
+  }
+  if (/condo/i.test(propertyType)) return 'condo';
+  if (/townhouse|town\s*home/i.test(propertyType)) return 'townhouse';
+  if (/land|lot/i.test(propertyType)) return 'land';
+  return 'unknown';
+}
+
 // ── hero ─────────────────────────────────────────────────────────────────────
 
 function buildHero(result: USSaleResult): HeroData {
-  const address = toText(
-    result.listingInfo?.address ??
-    result.property_snapshot?.address ??
-    result.address ??
+  // Filter listing summary strings from title
+  const rawTitle = result.listingInfo?.title ?? result.title ?? '';
+  const title = isListingSummaryString(rawTitle) ? '' : toText(rawTitle);
+
+  // Filter bad address strings
+  const addressValues = [
+    result.verifiedFacts?.address,
+    result.listingInfo?.address,
+    result.property_snapshot?.address,
+    result.address,
+  ];
+  const address = firstValidAddress(...addressValues);
+
+  const price = toText(
+    result.listingInfo?.priceAmount ??
+    result.price ??
+    (result as any).askingPrice ??
+    (result as any).asking_price ??
     ''
   );
+  const beds = toText(result.listingInfo?.bedrooms ?? result.bedrooms ?? result.property_snapshot?.beds ?? result.property_snapshot?.bedrooms ?? '');
+  const baths = toText(result.listingInfo?.bathrooms ?? result.bathrooms ?? result.property_snapshot?.baths ?? result.property_snapshot?.bathrooms ?? '');
+  const sqft = toText(result.sqft ?? result.property_snapshot?.sqft ?? '');
+
+  // Zestimate from price_assessment or property_snapshot
+  const priceAsmt = result.price_assessment ?? result.priceAssessment ?? {};
+  const zestimate = toText(
+    priceAsmt?.zestimate ??
+    priceAsmt?.zillow_estimate ??
+    (result as any).zestimate ??
+    result.property_snapshot?.zestimate ??
+    ''
+  );
+
+  // Monthly payment from Zillow financials
+  const zf = (result as any).zillowFinancials ?? {};
+  const monthlyPayment = (() => {
+    const mp = zf.monthlyPayment?.estimatedPayment?.value
+      ?? zf.monthlyPayment?.estimatedMonthlyPayment?.value
+      ?? zf.estimatedMonthlyPayment?.value
+      ?? (result as any).monthly_payment
+      ?? (result as any).monthlyPayment
+      ?? (result as any).carrying_costs?.monthly_breakdown?.estimatedMonthlyPayment?.value;
+    if (mp != null && mp > 100 && mp < 50000) {
+      return '$' + Number(mp).toLocaleString() + '/mo';
+    }
+    return '';
+  })();
+
   return {
-    title: toText(result.listingInfo?.title ?? result.title ?? ''),
+    title: title || '',  // normalizeReportResult will override; can be empty
     address: address || undefined,
+    price: price || undefined,
+    bedrooms: beds || undefined,
+    bathrooms: baths || undefined,
+    sqft: sqft || undefined,
+    zestimate: zestimate || undefined,
+    monthlyPayment: monthlyPayment || undefined,
     score: (() => {
       const v = result.overall_score ?? result.overallScore;
       return v != null && v !== '' ? Number(v) || null : null;
@@ -133,9 +314,39 @@ function buildHero(result: USSaleResult): HeroData {
 
 // ── quick facts ───────────────────────────────────────────────────────────────
 
+/** Extract normalized property category and display type from result */
+function getPropertyCategoryInfo(result: USSaleResult): { normCat: string; displayType: string } {
+  const normCat = result.normalizedPropertyCategory
+    ?? (result as any).reportProfile
+    ?? 'unknown';
+  const displayType = result.displayType ?? normCat;
+  return { normCat, displayType };
+}
+
+/** Format bathroom value as "X full + Y half bath" when half baths are present */
+function formatBaths(baths: unknown): string {
+  const text = toText(baths);
+  if (!text) return '';
+  // If it already looks human-readable (e.g., "1.5" or "1 half"), pass through
+  if (text.includes('full') || text.includes('half') || text.includes('+' )) return text;
+  const num = parseFloat(text);
+  if (isNaN(num)) return text;
+  const full = Math.floor(num);
+  const half = num - full;
+  if (half > 0.25 && half <= 0.75) {
+    return half === 0.5
+      ? (full > 0 ? `${full} full + 1 half bath` : '1 half bath')
+      : `${full} full + ${Math.round(half * 2)} half bath`;
+  }
+  return text;
+}
+
 function buildQuickFacts(result: USSaleResult): QuickFact[] {
   const snap = result.property_snapshot ?? {};
   const facts: QuickFact[] = [];
+  const { normCat, displayType } = getPropertyCategoryInfo(result);
+  const isCoop = normCat === 'co_op';
+
   const add = (label: string, val: unknown) => {
     const t = toText(val);
     if (t) facts.push({ label, value: t });
@@ -152,21 +363,66 @@ function buildQuickFacts(result: USSaleResult): QuickFact[] {
     const t = fmtPerSqft(val);
     if (t && t !== '/sqft') facts.push({ label, value: t });
   };
+  const zf = (result as any).zillowFinancials ?? {};
+
+  addMoney('Price', snap.price ?? result.asking_price ?? result.askingPrice ?? result.price);
   add('Beds', snap.beds ?? snap.bedrooms);
-  add('Baths', snap.baths ?? snap.bathrooms);
+  // Format baths with full/half detail when available
+  const bathsVal = snap.baths ?? snap.bathrooms;
+  if (bathsVal != null) add('Baths', formatBaths(bathsVal));
   add('Sqft', snap.sqft);
   add('Built', snap.yearBuilt ?? snap.year_built);
-  const usHomeTypeRaw = snap.homeType ?? snap.home_type ?? '';
-  const usHomeTypeDisplay = usHomeTypeRaw && /legal|approved|compliant|certified/i.test(usHomeTypeRaw)
-    ? `${usHomeTypeRaw.trim()} (listing-stated)`
-    : usHomeTypeRaw;
-  add('Type', usHomeTypeDisplay);
+
+  // Type: prefer backend displayType, then raw homeType
+  const rawHomeType = snap.homeType ?? snap.home_type ?? '';
+  const typeDisplay = displayType && displayType !== 'unknown'
+    ? displayType
+    : (rawHomeType || 'Not disclosed');
+  if (typeDisplay) add('Type', typeDisplay);
+
   add('Lot', snap.lotSize ?? snap.lot_size);
   addMoney('Assessed', snap.tax_assessed_value_display ?? snap.taxAssessedValue ?? snap.tax_assessed_value);
   addTaxYr('Tax/yr', snap.annual_tax_display ?? snap.annualTax ?? snap.annual_tax);
-  add('HOA', snap.hoa);
+
+  // Co-op: show "Monthly maintenance" instead of "HOA"
+  if (isCoop) {
+    const hoaAmount = snap.hoaAmount ?? (result as any).hoaAmount;
+    const hoaStatus = snap.hoa ?? (result as any).hoa;
+    if (hoaAmount != null) {
+      addMoney('Monthly maintenance', hoaAmount);
+    } else if (hoaStatus && hoaStatus !== 'N/A' && hoaStatus !== 'unknown') {
+      add('Monthly maintenance', 'Not disclosed');
+    }
+  } else {
+    add('HOA', snap.hoa);
+  }
+
   addPerSqft('$/sqft', snap.price_per_sqft_display ?? snap.pricePerSqft ?? snap.price_per_sqft);
-  add('Region', snap.region);
+
+  // Region: prefer neighborhood first, then region. Never let a full address appear here.
+  const region = snap.region ?? (result as any).region;
+  const listingNeighborhood = (result as any).listingInfo?.neighborhood
+    ?? (result as any).listingData?.neighborhood
+    ?? (result as any).listingData?.neighbourhood
+    ?? (result as any).neighborhood
+    ?? null;
+  const chosenRegion = listingNeighborhood ?? region;
+  if (chosenRegion) {
+    const regionText = String(chosenRegion);
+    // Skip if region looks like a full street address (has street num + state + ZIP)
+    const isFullAddress = /^\d[\d-]*\s+[A-Za-z].*,.*[A-Z]{2}\s*\d{5}/.test(regionText)
+      || /^\d[\d-]*\s+[A-Za-z][A-Za-z\s]*\s*(avenue|street|ave|st|road|rd|drive|dr|place|pl|boulevard|blvd|terrace|ter|court|ct|lane|ln)\b/i.test(regionText);
+    if (!isFullAddress) {
+      add('Region', chosenRegion);
+    }
+  }
+
+  // Zillow monthly payment breakdown
+  const monthlyPayment = zf.monthlyPayment?.estimatedPayment?.value ?? zf.monthlyPayment?.estimatedMonthlyPayment?.value
+    ?? (result as any).monthly_payment ?? (result as any).monthlyPayment ?? (result as any).carrying_costs?.monthly_breakdown?.estimatedMonthlyPayment?.value;
+  if (monthlyPayment != null && monthlyPayment > 100 && monthlyPayment < 50000) {
+    facts.push({ label: 'Monthly Payment', value: '$' + Number(monthlyPayment).toLocaleString() + '/mo' });
+  }
   return facts;
 }
 
@@ -191,32 +447,65 @@ function buildHighlights(result: USSaleResult): HighlightsData {
 function buildSections(result: USSaleResult): ReportSection[] {
   const sections: ReportSection[] = [];
   const snap = result.property_snapshot ?? {};
+  const { normCat, displayType } = getPropertyCategoryInfo(result);
+  const isCoop = normCat === 'co_op';
 
   // ── property_snapshot ──────────────────────────────────────────────────────
   const snapItems: SectionItem[] = [];
   if (snap.beds ?? snap.bedrooms) snapItems.push({ title: 'Beds', value: toText(snap.beds ?? snap.bedrooms) });
-  if (snap.baths ?? snap.bathrooms) snapItems.push({ title: 'Baths', value: toText(snap.baths ?? snap.bathrooms) });
+  if (snap.baths ?? snap.bathrooms) snapItems.push({ title: 'Baths', value: formatBaths(snap.baths ?? snap.bathrooms) });
   if (snap.sqft) snapItems.push({ title: 'Sqft', value: toText(snap.sqft) });
   if (snap.yearBuilt ?? snap.year_built) snapItems.push({ title: 'Year Built', value: toText(snap.yearBuilt ?? snap.year_built) });
-  if (snap.homeType ?? snap.home_type) {
-    const snapHomeTypeRaw = snap.homeType ?? snap.home_type;
-    const snapHomeTypeDisplay = /legal|approved|compliant|certified/i.test(snapHomeTypeRaw)
-      ? `${snapHomeTypeRaw.trim()} (listing-stated, not independently verified)`
-      : snapHomeTypeRaw;
-    snapItems.push({ title: 'Home Type', value: toText(snapHomeTypeDisplay) });
+
+  // Home Type: prefer normalized displayType, fallback to raw homeType
+  const rawHomeType = snap.homeType ?? snap.home_type ?? '';
+  const typeDisplay = displayType && displayType !== 'unknown'
+    ? displayType
+    : rawHomeType;
+  if (typeDisplay) {
+    const isListingStated = /legal|approved|compliant|certified/i.test(rawHomeType);
+    snapItems.push({
+      title: 'Home Type',
+      value: isListingStated
+        ? `${typeDisplay.trim()} (listing-stated, not independently verified)`
+        : typeDisplay,
+    });
   }
+
   if (snap.roof) snapItems.push({ title: 'Roof', value: toText(snap.roof) });
   if (snap.lotSize ?? snap.lot_size) snapItems.push({ title: 'Lot Size', value: toText(snap.lotSize ?? snap.lot_size) });
   if (snap.taxAssessedValue ?? snap.tax_assessed_value) snapItems.push({ title: 'Tax Assessed Value', value: fmtMoney(snap.taxAssessedValue ?? snap.tax_assessed_value) });
   if (snap.tax_assessed_value_display) snapItems.push({ title: 'Tax Assessed Value', value: toText(snap.tax_assessed_value_display) });
   if (snap.annualTax ?? snap.annual_tax) snapItems.push({ title: 'Annual Tax', value: fmtAnnualTax(snap.annualTax ?? snap.annual_tax) });
   if (snap.annual_tax_display) snapItems.push({ title: 'Annual Tax', value: toText(snap.annual_tax_display) });
-  if (snap.hoa) snapItems.push({ title: 'HOA', value: toText(snap.hoa) });
+
+  // Co-op: show "Monthly maintenance" instead of "HOA"
+  if (isCoop) {
+    const hoaAmount = snap.hoaAmount ?? (result as any).hoaAmount;
+    const hoaStatus = snap.hoa ?? (result as any).hoa;
+    if (hoaAmount != null) {
+      snapItems.push({ title: 'Monthly Maintenance', value: fmtMoney(hoaAmount) });
+    } else if (hoaStatus && hoaStatus !== 'N/A' && hoaStatus !== 'unknown') {
+      snapItems.push({ title: 'Monthly Maintenance', value: 'Not disclosed' });
+    }
+  } else {
+    if (snap.hoa) snapItems.push({ title: 'HOA', value: toText(snap.hoa) });
+  }
+
   if (snap.pricePerSqft ?? snap.price_per_sqft) snapItems.push({ title: 'Price/Sqft', value: fmtPerSqft(snap.pricePerSqft ?? snap.price_per_sqft) });
   if (snap.price_per_sqft_display) snapItems.push({ title: 'Price/Sqft', value: toText(snap.price_per_sqft_display) });
   if (snap.date_listed) snapItems.push({ title: 'Date Listed', value: toText(snap.date_listed) });
   if (snap.available_date) snapItems.push({ title: 'Available', value: toText(snap.available_date) });
-  if (snap.region) snapItems.push({ title: 'Region', value: toText(snap.region) });
+  // Region: prefer neighborhood first, then region. Skip anything that looks like a full address.
+  const regionSectionText = String((result as any).listingInfo?.neighborhood
+    ?? (result as any).listingData?.neighborhood
+    ?? (result as any).listingData?.neighbourhood
+    ?? (result as any).neighborhood
+    ?? snap.region
+    ?? '');
+  const isRegionFullAddress = /^\d+\s+[A-Za-z].*,.*[A-Z]{2}\s*\d{5}/.test(regionSectionText)
+    || /^\d+\s+[A-Za-z][A-Za-z\s]*\s*(avenue|street|ave|st|road|rd|drive|dr|place|pl|boulevard|blvd|terrace|ter|court|ct|lane|ln)\b/i.test(regionSectionText);
+  if (regionSectionText && !isRegionFullAddress) snapItems.push({ title: 'Region', value: toText(regionSectionText) });
   if (snapItems.length > 0) sections.push({ id: 'property-snapshot', title: 'Property Snapshot', items: snapItems });
 
   // ── price_assessment ───────────────────────────────────────────────────────
@@ -241,12 +530,50 @@ function buildSections(result: USSaleResult): ReportSection[] {
   if (costs.annual_tax ?? costs.annualTax) costItems.push({ title: 'Annual Tax', value: fmtAnnualTax(costs.annual_tax ?? costs.annualTax) });
   if (costs.annual_tax_display) costItems.push({ title: 'Annual Tax', value: toText(costs.annual_tax_display) });
   if (costs.monthly_tax_equivalent ?? costs.monthlyTaxEquivalent) costItems.push({ title: 'Monthly Tax', value: toText(costs.monthly_tax_equivalent ?? costs.monthlyTaxEquivalent) });
-  if (costs.hoa) costItems.push({ title: 'HOA', value: toText(costs.hoa) });
+
+  // Co-op: show "Monthly maintenance" instead of "HOA"
+  if (isCoop) {
+    if (costs.hoa && costs.hoa !== 'N/A' && costs.hoa !== 'unknown') {
+      costItems.push({ title: 'Monthly Maintenance', value: toText(costs.hoa) });
+    } else if (!costs.hoa) {
+      costItems.push({ title: 'Monthly Maintenance', value: 'Not disclosed' });
+    }
+  } else {
+    if (costs.hoa) costItems.push({ title: 'HOA', value: toText(costs.hoa) });
+  }
+
   const pressure = costs.cost_pressure ?? costs.costPressure;
   if (pressure) costItems.push({ title: 'Cost Pressure', value: toText(pressure), badge: toText(pressure) });
   if (costs.summary) costItems.push({ title: 'Summary', description: toText(costs.summary) });
   const missingCosts = Array.isArray(costs.missing_costs) ? costs.missing_costs.filter((x: unknown) => toText(x)) : [];
   if (missingCosts.length) costItems.push({ title: 'Missing Costs', description: toText(missingCosts) });
+
+  // Monthly breakdown from Zillow financials — key for "What It May Really Cost Monthly" section
+  const mb = (costs as any).monthly_breakdown;
+  if (mb) {
+    if (mb.estimatedMonthlyPayment?.value != null)
+      costItems.push({ title: 'Estimated Monthly', value: fmtMoney(mb.estimatedMonthlyPayment.value) });
+    if (mb.principalAndInterest?.value != null)
+      costItems.push({ title: 'Principal & Interest', value: fmtMoney(mb.principalAndInterest.value) });
+    if (mb.mortgageInsurance?.value != null)
+      costItems.push({ title: 'Mortgage Insurance', value: fmtMoney(mb.mortgageInsurance.value) });
+    if (mb.propertyTaxes?.value != null)
+      costItems.push({ title: 'Property Taxes', value: fmtMoney(mb.propertyTaxes.value) });
+    if (mb.homeInsurance?.value != null)
+      costItems.push({ title: 'Home Insurance', value: fmtMoney(mb.homeInsurance.value) });
+    // Co-op: show "Monthly Maintenance" instead of "HOA Fees"
+    if (mb.hoaFees?.value != null) {
+      costItems.push({ title: isCoop ? 'Monthly Maintenance' : 'HOA Fees', value: fmtMoney(mb.hoaFees.value) });
+    } else if ((mb.hoaFees as any)?.status === 'not_applicable') {
+      costItems.push({ title: isCoop ? 'Monthly Maintenance' : 'HOA Fees', value: 'N/A' });
+    } else if (isCoop && (mb.hoaFees as any)?.status !== 'not_applicable' && mb.hoaFees?.value == null) {
+      // Co-op with no maintenance disclosed
+      costItems.push({ title: 'Monthly Maintenance', value: 'Not disclosed' });
+    }
+    if ((mb.utilities as any)?.status === 'not_included')
+      costItems.push({ title: 'Utilities', value: 'Not included' });
+  }
+
   if (costItems.length > 0) sections.push({ id: 'carrying-costs', title: 'Carrying Costs', subtitle: 'Tax, HOA, and ongoing costs', items: costItems });
 
   // ── investment_potential ────────────────────────────────────────────────────
@@ -394,6 +721,8 @@ function buildSections(result: USSaleResult): ReportSection[] {
 // ── main adapter ──────────────────────────────────────────────────────────────
 
 export function normalizeUSSaleReport(result: USSaleResult): NormalizedReport {
+  const reportProfile = computeReportProfile(result);
+  const normalizedPropertyCategory = result.normalizedPropertyCategory ?? reportProfile;
   return {
     meta: {
       market: 'US',
@@ -402,6 +731,8 @@ export function normalizeUSSaleReport(result: USSaleResult): NormalizedReport {
       sourceDomain: toText(result.sourceDomain ?? result.source_domain ?? ''),
       isBasic: false,
       usedSectionIds: [],
+      reportProfile,
+      normalizedPropertyCategory: normalizedPropertyCategory as any,
     },
     hero: buildHero(result),
     highlights: buildHighlights(result),

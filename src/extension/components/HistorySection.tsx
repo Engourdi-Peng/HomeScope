@@ -31,16 +31,25 @@ function getScoreColor(score?: number) {
 
 /** Inject listingInfo into full_result using AnalysisSummary metadata, matching Share/Account logic */
 function enrichWithListingInfo(result: AnalysisResult, summary: AnalysisSummary): AnalysisResult {
+  const coverImageUrl = summary.cover_image_url || undefined;
   const listingInfo: ListingInfo = {
     title: summary.title || undefined,
     address: summary.address || undefined,
-    coverImageUrl: summary.cover_image_url || undefined,
+    coverImageUrl,
     priceAmount: summary.weekly_rent || undefined,
     bedrooms: summary.bedrooms || undefined,
     bathrooms: summary.bathrooms || undefined,
     parking: summary.car_spaces || undefined,
+    images: coverImageUrl ? [coverImageUrl] : undefined,
+    imageUrls: coverImageUrl ? [coverImageUrl] : undefined,
   };
-  return { ...result, listingInfo };
+  return {
+    ...result,
+    coverImageUrl,
+    images: coverImageUrl ? [coverImageUrl] : undefined,
+    imageUrls: coverImageUrl ? [coverImageUrl] : undefined,
+    listingInfo,
+  };
 }
 
 export function HistorySection() {
