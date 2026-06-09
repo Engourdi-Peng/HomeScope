@@ -3509,7 +3509,6 @@ function ReportClosingCTA({
 
       {/* Share section */}
       <div className="border-t border-slate-200 pt-6">
-        <div className="font-semibold text-slate-800 mb-1">Not sure yet? Get a second opinion.</div>
         <p className="text-slate-600 text-sm mb-4">Share this report with someone you trust before you make a call.</p>
         <div className="flex flex-col sm:flex-row gap-3">
           {effectiveShareResult === null ? (
