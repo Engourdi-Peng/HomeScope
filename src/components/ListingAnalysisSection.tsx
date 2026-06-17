@@ -6,10 +6,10 @@ interface ListingAnalysisSectionProps {
 
 export function ListingAnalysisSection({ className = '' }: ListingAnalysisSectionProps) {
   const analysisPoints = [
-    'Signs of cheap cosmetic renovation',
-    'Lighting and angles hide actual space size',
-    'Potential wear and aging materials',
-    'Likely overpriced for its actual condition',
+    'Cosmetic updates may hide older systems',
+    'Photos may not show roof, basement, or mechanical issues',
+    'Finished spaces may need permit or egress verification',
+    'Asking price still needs comparable sales',
   ];
 
   return (
@@ -17,10 +17,10 @@ export function ListingAnalysisSection({ className = '' }: ListingAnalysisSectio
       {/* 标题区域 */}
       <div className="text-center mb-8">
         <h2 className="text-center text-sm font-semibold uppercase tracking-widest text-stone-500 mb-4">
-          Don't Trust Listing Photos
+          Listing Photos Don't Tell the Whole Story
         </h2>
         <p className="text-center text-stone-400 font-light mb-8">
-          Most rental problems only show up after you visit — or worse, after you move in.
+          Photos can make a home look better than it is. HomeScope helps you spot what still needs verification before you visit.
         </p>
       </div>
 
@@ -29,7 +29,7 @@ export function ListingAnalysisSection({ className = '' }: ListingAnalysisSectio
         {/* 左侧 - 房源展示 */}
         <div className="flex-1 bg-white rounded-2xl p-8 shadow-[0_8px_40px_-12px_rgba(0,0,0,0.08)]">
           <p className="text-xs text-stone-500 uppercase tracking-[0.3px] mb-4">
-            Looks clean, modern, and "ready to move in"
+            Looks clean, bright, and "move-in ready"
           </p>
           
           {/* 房源照片 */}
@@ -66,13 +66,13 @@ export function ListingAnalysisSection({ className = '' }: ListingAnalysisSectio
           {/* 评分区域 */}
           <div className="border-t border-stone-200 pt-4 flex items-center justify-between">
             <div>
-              <p className="text-xs text-stone-500 mb-1">Deal Score</p>
+              <p className="text-xs text-stone-500 mb-1">Property Score</p>
               <p className="text-2xl font-semibold text-stone-900">
                 78 <span className="text-base font-normal text-stone-400">/ 100</span>
               </p>
             </div>
             <div className="bg-[#ffedd4] px-3 py-1.5 rounded-full">
-              <span className="text-xs font-medium text-[#ca3500]">Caution</span>
+              <span className="text-xs font-medium text-[#ca3500]">Proceed With Caution</span>
             </div>
           </div>
         </div>

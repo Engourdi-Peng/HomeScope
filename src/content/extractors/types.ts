@@ -23,6 +23,7 @@ export interface StandardizedListingData {
   bathrooms: number | null;
   propertyType: string;
   description: string;
+  whatsSpecialText?: string;
   images: string[];
 
   // === 澳洲特有字段 ===
@@ -40,6 +41,15 @@ export interface StandardizedListingData {
   daysOnZillow?: number | null;
 
   // === DOM 提取扩展字段 ===
+  homeType?: string;
+  propertySubtype?: string;
+  walkScore?: string;
+  bikeScore?: string;
+  neighborhood?: string;
+  architecturalStyle?: string;
+  stories?: string;
+  hoaStatus?: string;
+  floodZone?: string | null;
   highlights?: string[];
   heating?: string;
   cooling?: string;

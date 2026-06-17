@@ -48,16 +48,17 @@ export function ExtensionPromo() {
               Browser Extension
             </div>
             <h2 className="text-2xl md:text-3xl font-semibold text-stone-900 mb-3 leading-tight">
-              Smart AI Insights for Realestate.com.au
+              AI Property Risk Reports for Zillow Listings
             </h2>
             <p className="text-stone-600 leading-relaxed mb-6 text-sm md:text-base">
-              Get the full picture of any rental listing with one click. No more screenshots or manual digging — HomeScope does the heavy lifting for you.
+              Open a supported Zillow listing, click Analyze, and get a clearer picture before you book a showing. HomeScope helps surface pricing questions, photo-based condition signals, missing details, and buyer questions to ask the agent.
             </p>
             <ul className="space-y-3 mb-6">
               {[
-                { icon: Zap, text: 'One-click AI property analysis' },
-                { icon: MapPin, text: 'Deep insights on location & value' },
-                { icon: Shield, text: '100% Private & Secure' },
+                { icon: Zap, text: 'One-click property analysis' },
+                { icon: MapPin, text: 'Price, condition, and risk signals' },
+                { icon: Shield, text: 'Basic Checks are free' },
+                { icon: Shield, text: 'Full Reports include photos and carrying costs' },
               ].map(({ icon: Icon, text }, i) => (
                 <li key={i} className="flex items-center gap-3 text-sm text-stone-600">
                   <div className="w-6 h-6 rounded-full bg-amber-100 flex items-center justify-center shrink-0">
@@ -81,8 +82,6 @@ export function ExtensionPromo() {
                 <span>Add to Chrome</span>
               </button>
             )}
-
-            {/* 信任背书已移除：插件需积分购买 */}
           </div>
 
           {/* 右侧：真实插件 UI 模拟 */}
@@ -112,10 +111,10 @@ export function ExtensionPromo() {
                       </div>
                       <div className="flex-1 min-w-0">
                         <div className="text-[11px] font-semibold text-stone-800 leading-tight mb-0.5">
-                          1/45 Broad St, Sydney NSW 2000
+                          123 Oak Street, Austin, TX 78701
                         </div>
-                        <div className="text-[11px] font-bold text-stone-900 mb-0.5">$580/wk</div>
-                        <div className="text-[10px] text-stone-400">2 bed · 1 bath · 1 parking</div>
+                        <div className="text-[11px] font-bold text-stone-900 mb-0.5">$425,000</div>
+                        <div className="text-[10px] text-stone-400">3 bed · 2 bath · 1,850 sqft</div>
                       </div>
                     </div>
                   </div>
@@ -151,7 +150,7 @@ export function ExtensionPromo() {
                     <div className="mb-2">
                       <div className="text-[9px] font-medium uppercase tracking-widest text-[#AAAAAA] mb-1">Verdict</div>
                       <p className="text-[11px] text-white leading-snug">
-                        Solid rental with genuine appeal — worth inspecting soon if the location works for you.
+                        Solid property with genuine appeal — worth viewing if the location works for you.
                       </p>
                     </div>
 

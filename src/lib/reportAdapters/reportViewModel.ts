@@ -8,7 +8,6 @@ import {
   MODULE_FALLBACKS,
   RISK_ACTION_FALLBACKS,
   QUESTION_FALLBACKS,
-  buildBasicQuestionFallbacks,
   QUESTIONS_TO_SUPPRESS_BY_CATEGORY,
 } from './Fallbacks';
 
@@ -39,6 +38,20 @@ function toText(value: unknown): string {
 function fmtMoney(val: unknown): string {
   if (typeof val === 'number' && Number.isFinite(val)) {
     return '$' + val.toLocaleString();
+  }
+  return toText(val);
+}
+
+function fmtSqft(val: unknown): string {
+  // Already formatted — pass through
+  if (typeof val === 'string') {
+    if (val.startsWith('$') || /sqft/i.test(val)) return val;
+    const num = parseFloat(val.replace(/[^0-9.]/g, ''));
+    if (Number.isFinite(num)) return num.toLocaleString() + ' sqft';
+    return val;
+  }
+  if (typeof val === 'number' && Number.isFinite(val)) {
+    return val.toLocaleString() + ' sqft';
   }
   return toText(val);
 }
@@ -705,9 +718,9 @@ export function normalizePriceCopy(priceAssessment: any): PriceVM {
   }
 
   return {
-    askingPrice: priceAssessment?.asking_price ?? priceAssessment?.askingPrice ?? priceAssessment?.listPrice ?? null,
-    estimatedMin: priceAssessment?.estimated_min ?? priceAssessment?.estimatedMin ?? null,
-    estimatedMax: priceAssessment?.estimated_max ?? priceAssessment?.estimatedMax ?? null,
+    askingPrice: fmtMoney(priceAssessment?.asking_price ?? priceAssessment?.askingPrice ?? priceAssessment?.listPrice),
+    estimatedMin: fmtMoney(priceAssessment?.estimated_min ?? priceAssessment?.estimatedMin),
+    estimatedMax: fmtMoney(priceAssessment?.estimated_max ?? priceAssessment?.estimatedMax),
     verdict,
     confidence,
     analysis,
@@ -1041,7 +1054,23 @@ export interface QuestionVM {
   tagColor: string;
 }
 
-/** 从 result 中提取 what_we_know 和 whats_missing，识别已知字段和缺失维度 */
+/**
+ * 字段兼容映射：从 raw 中读取所有可能的 questions 字段。
+ * 不返回任何 fallback，只透传 AI 返回的真实数据。
+ * 数组元素可能是 string 或 object。
+ */
+function getRawQuestions(raw: any): any[] {
+  const rawArr =
+    raw?.questions_to_ask ??
+    raw?.questionsToAsk ??
+    raw?.agentQuestions ??
+    raw?.agent_questions ??
+    [];
+  return Array.isArray(rawArr) ? rawArr : [];
+}
+
+/**
+ * 从 result 中提取 what_we_know 和 whats_missing，识别已知字段和缺失维度 */
 function extractQuestionContext(result: any): {
   hasPrice: boolean;
   hasBeds: boolean;
@@ -1117,7 +1146,7 @@ export function normalizeQuestions(
 ): QuestionVM[] {
   console.log('[TRACE_Q_INPUT]', questions);
 
-  const { maxQuestions = 8, result: rawResult } = context;
+  const { maxQuestions = 6, result: rawResult } = context;
   const results: QuestionVM[] = [];
   const seen = new Set<string>();
   const seenSemanticKeys = new Set<string>();
@@ -1249,10 +1278,15 @@ export function normalizeQuestions(
   }
 
   for (const q of questions) {
-    // Support both new backend format ({ category, question }) and legacy ({ title, description })
-    const title = toText(q.question ?? q.title ?? q.text ?? q.q ?? '');
-    const desc = toText(q.description ?? '');
-    const fullText = (desc.length > title.length ? desc : title).trim();
+    let fullText: string;
+    if (typeof q === 'string') {
+      fullText = q.trim();
+    } else {
+      // Support both new backend format ({ category, question }) and legacy ({ title, description })
+      const title = toText(q.question ?? q.title ?? q.text ?? q.q ?? '');
+      const desc = toText(q.description ?? '');
+      fullText = (desc.length > title.length ? desc : title).trim();
+    }
     if (!fullText) continue;
     if (/missing data|summary|overview|where to verify|things to verify|questions to ask/i.test(fullText)) continue;
     addQuestion(fullText);
@@ -1283,39 +1317,7 @@ export function normalizeQuestions(
     suppressPatternsExists: !!suppressPatterns,
   });
 
-  // ── Fallback injection: use DYNAMIC generation for Basic mode ──────────────────
-  // Basic mode fallback must know which fields are already known.
-  // Build fallback questions per-topic based on what is missing.
-  // Only inject when deduped questions are fewer than maxQuestions.
-  if (deduped.length < maxQuestions) {
-    if (basicFieldContext) {
-      // Dynamic fallback generation: knows which fields are already confirmed
-      const dynamicFallbacks = buildBasicQuestionFallbacks(basicFieldContext);
-      for (const fq of dynamicFallbacks) {
-        if (deduped.length >= maxQuestions) break;
-        if (isSuppressed(fq.text)) continue;
-        if (!seen.has(fq.text)) {
-          seen.add(fq.text);
-          deduped.push({ text: fq.text, category: fq.category, tagColor: fq.tagColor });
-        }
-      }
-      console.log('[TRACE_Q_AFTER_DYNAMIC_FALLBACK]', deduped.map(q => q.text));
-    } else {
-      // Legacy: non-Basic or no result context — use static fallbacks
-      const staticFallbacks = context?.fallbackQuestions ?? FALLBACKS;
-      for (const qText of staticFallbacks) {
-        if (deduped.length >= maxQuestions) break;
-        if (!seen.has(qText)) {
-          seen.add(qText);
-          const { label, color } = getTag(qText);
-          deduped.push({ text: qText, category: label, tagColor: color });
-        }
-      }
-      console.log('[TRACE_Q_AFTER_STATIC_FALLBACK]', deduped.map(q => q.text));
-    }
-  }
-
-  console.log('[TRACE_Q_BEFORE_RETURN]', deduped.map(q => q.text));
+  // ── No template fallback: return only AI questions, deduplicated and capped ─────────
   return deduped.slice(0, maxQuestions);
 }
 
@@ -1425,10 +1427,10 @@ export function buildReportViewModel(
 
   const fitVM = normalizeFitSection(raw?.layout_fit ?? raw?.layoutFit ?? {});
 
-  const questionsRaw = raw?.questions_to_ask ?? raw?.questionsToAsk ?? [];
+  const questionsRaw = getRawQuestions(raw);
   const questionsVM = normalizeQuestions(
-    Array.isArray(questionsRaw) ? questionsRaw : [],
-    { isNYC, maxQuestions: isBasic ? 5 : 8, result: raw },
+    questionsRaw,
+    { isNYC, maxQuestions: isBasic ? 5 : 6, result: raw },
   );
   let finalQuestionsVM = questionsVM;
 
@@ -1463,15 +1465,29 @@ export function buildReportViewModel(
     ? (raw?.verdict ?? evidenceVerdict(effectiveScore as number))
     : (raw?.verdict ?? raw?.overallVerdict ?? 'Review');
 
-  const heroBottomLineFromAI = toText(raw?.quickSummary ?? raw?.quick_summary ?? raw?.summary);
-  const shouldForceFactBottomLine = (
-    effectiveNormCat === 'single_family' || effectiveNormCat === 'single_family_owner_occupier'
-  ) && (
-    !heroBottomLineFromAI || aiSummaryConflictsWithFacts(heroBottomLineFromAI, coreFacts)
-  );
-  const heroBottomLine = shouldForceFactBottomLine
-    ? buildSingleFamilyBottomLine(raw, coreFacts)
-    : (heroBottomLineFromAI || MODULE_FALLBACKS.HERO_BOTTOM_LINE);
+  const rawBottomLine = toText(raw?.bottom_line ?? raw?.bottomLine ?? raw?.quickSummary ?? raw?.quick_summary ?? raw?.summary);
+  // Sanitize "and but" / "including, but" artefacts that can slip through the prompt.
+  const sanitizeAndBut = (text: string): string => {
+    if (/including,\s*but|and\s+but/i.test(text)) {
+      return 'This listing has limited verified information. Key facts about condition, comparable sales, and carrying costs are still missing.';
+    }
+    return text;
+  };
+
+  // For basic reports, trust the AI bottom_line completely; for full reports, use
+  // the existing single-family fact-based bottom line logic.
+  const heroBottomLine = isBasic
+    ? (sanitizeAndBut(rawBottomLine) || MODULE_FALLBACKS.HERO_BOTTOM_LINE)
+    : (() => {
+        const shouldForceFactBottomLine = (
+          effectiveNormCat === 'single_family' || effectiveNormCat === 'single_family_owner_occupier'
+        ) && (
+          !rawBottomLine || aiSummaryConflictsWithFacts(rawBottomLine, coreFacts)
+        );
+        return shouldForceFactBottomLine
+          ? sanitizeAndBut(buildSingleFamilyBottomLine(raw, coreFacts))
+          : (sanitizeAndBut(rawBottomLine) || MODULE_FALLBACKS.HERO_BOTTOM_LINE);
+      })();
 
   const hero: HeroVM = {
     address: heroAddr,
@@ -1488,7 +1504,7 @@ export function buildReportViewModel(
   const snapshot: SnapshotVM = {
     beds: preferRawFact(listingInfo?.bedrooms, snap?.beds),
     baths: preferRawFact(listingInfo?.bathrooms, snap?.baths),
-    sqft: preferRawFact(snap?.sqft, snap?.squareFeet, snap?.sqft ?? snap?.square_feet),
+    sqft: fmtSqft(preferRawFact(snap?.sqft, snap?.squareFeet, snap?.sqft ?? snap?.square_feet)),
     yearBuilt: snap?.yearBuilt ?? snap?.year_built ?? '',
     homeType: (effectiveDisplayType || snap?.homeType) ?? snap?.home_type ?? '',
     tax: snap?.annualTax ?? snap?.annual_tax
@@ -1533,7 +1549,9 @@ export function buildReportViewModel(
     /single family|singlefamily|single-family|single family residence/i.test(String(snapshot.homeType || ''));
 
   const hasExplicitRentalEvidence =
-    /two-family|2-family|multi-family|duplex|second unit|legal apartment|rental unit|income unit|mother-daughter|rent roll/i.test(listingEvidenceText);
+    // Require explicit legal / rental signals — NOT marketing language like "duplex home" or "two-family layout"
+    // Must match actual legal-use, rental, or multi-unit evidence
+    /legal 2-?family|legal two-?family|multi-?family|legal apartment|legal unit|rent roll|tenant occupied|unit 1|unit 2|separate meters.*(unit|tenant)|current lease|rental income disclosed/i.test(listingEvidenceText);
 
   const shouldApplyFinalSingleFamilySanitizer = isSingleFamilyLike && !hasExplicitRentalEvidence;
 
@@ -1547,7 +1565,7 @@ export function buildReportViewModel(
 
     if (mode === 'question') {
       if (/legal two-family|two-family status|second unit|actual rent|rental income|rent roll|income unit/i.test(input)) {
-        return 'Can you provide the Certificate of Occupancy confirming legal two-family use?';
+        return 'Can you provide the Certificate of Occupancy or legal-use documents confirming the permitted use of this property?';
       }
       if (/\bDOB\b|\bHPD\b|\bECB\b|\bOATH\b/i.test(input)) {
         return 'Are there any open DOB permits, ECB/OATH violations, complaints, or unresolved building issues for this address?';
@@ -1645,13 +1663,10 @@ export function buildReportViewModel(
     viewModel.hero.bottomLine = sanitizeSingleFamilyDisplayText(viewModel.hero.bottomLine ?? '', 'generic');
     viewModel.hero.nextBestMove = sanitizeSingleFamilyDisplayText(viewModel.hero.nextBestMove ?? '', 'nextBestMove');
 
-    viewModel.questions = ensureSingleFamilySafetyQuestions(
-      viewModel.questions.map(q => ({
-        ...q,
-        text: sanitizeSingleFamilyDisplayText(q.text, 'question'),
-      })),
-      isBasic ? 5 : 8,
-    );
+    // Only retain AI questions — no template fallback, no padding
+    viewModel.questions = (viewModel.questions ?? [])
+      .filter((q: QuestionVM) => q?.text && q.text.trim().length > 0)
+      .slice(0, isBasic ? 5 : 6);
 
     for (const card of viewModel.decisionCards) {
       if (shouldRetitleRentalLegalityCard(card)) {
@@ -1713,6 +1728,11 @@ export function buildReportViewModel(
   if (shouldApplyFinalSingleFamilySanitizer) {
     applySingleFamilyFinalSanitizer(viewModel);
   }
+
+  console.log('[HomeScope Questions Source]', {
+    usedSingleFamilySafetyFallback: false,
+    questions: viewModel.questions.map((q: QuestionVM) => q.text),
+  });
 
   console.log('[FINAL_SANITIZED_VM]', {
     isSingleFamilyLike,

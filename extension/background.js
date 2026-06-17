@@ -26,7 +26,33 @@ const HS_ANALYSIS_SERVER_PREFIX = 'hs_analysis_server_';
 // OAuth flow tracking
 const _oauthFlows = new Map();
 
+// Dedupes in-flight analyze_basic requests by dedupeKey to avoid duplicate LLM calls
+const _basicDedupeSet = new Set();
+
 const LOG_PREFIX = '[HomeScope BG]';
+
+// ── SW keep-alive via chrome.alarms ────────────────────────────────────────
+// Prevents MV3 service worker from being killed during long-running analyze requests.
+// Alarm fires every ~50s; if SW is already active it has no effect.
+const HS_ALIVE_ALARM = 'hs_keep_alive';
+
+chrome.alarms.onAlarm.addListener((alarm) => {
+  if (alarm.name === HS_ALIVE_ALARM) {
+    // No-op ping — just keeps SW alive
+    console.debug(`${LOG_PREFIX} [ALIVE] keep-alive tick`);
+  }
+});
+
+function ensureAlive() {
+  // Creates (or updates) the alarm. periodInMinutes=1 means it fires every ~1 min.
+  // The SW lifecycle extends for at least 30s past the last event, so this
+  // effectively keeps SW alive as long as the alarm exists.
+  chrome.alarms.create(HS_ALIVE_ALARM, { periodInMinutes: 1 });
+}
+
+function clearAlive() {
+  chrome.alarms.clear(HS_ALIVE_ALARM);
+}
 
 // Canonical storage keys (ONLY these are used for persistent session)
 const HS_SESSION_KEY = 'hs_session';
@@ -41,25 +67,11 @@ let _authListeners = [];
 let _migrationAttempted = false;
 // Refresh lock: prevents concurrent token refresh (race condition fix)
 let _refreshLock = null;
-
-// ── listingFingerprint: prevents stale cross-listing data from reaching the API ────────────
-function createListingFingerprint(listingData) {
-  const key = [
-    listingData?.address || '',
-    listingData?.price || listingData?.priceText || '',
-    String(listingData?.bedrooms ?? ''),
-    String(listingData?.bathrooms ?? ''),
-    String(listingData?.sqft ?? listingData?.floorArea ?? ''),
-    listingData?.listingUrl || listingData?.url || '',
-  ].join('|');
-  let hash = 0;
-  for (let i = 0; i < key.length; i++) {
-    const char = key.charCodeAt(i);
-    hash = ((hash << 5) - hash) + char;
-    hash = hash & hash;
-  }
-  return String(Math.abs(hash));
-}
+// Once refresh token is invalid (invalid_grant), permanently stop refresh attempts
+let _refreshTokenInvalid = false;
+// Guard: when syncing a new session from site, clearSession must NOT wipe it
+// (prevents race where refresh failure clears session right before sync_session_from_site saves it)
+let _syncingSession = false;
 // ── Helper: normalise Supabase user object to ExtUser ──
 function toExtUser(supabaseUser) {
   if (!supabaseUser) return null;
@@ -73,30 +85,20 @@ function toExtUser(supabaseUser) {
 
 // ── Unified Edge Function request headers ──
 // All /functions/v1/* calls MUST use this helper.
-//
-// Options:
-//   - allowAnonymous: if true, permits calls without a user access token (uses anon key instead).
-//     Full analysis / history / credits calls should NOT pass this flag.
-function buildSupabaseFunctionHeaders(accessToken, serverConfig, options = {}) {
+// - apikey: SUPABASE_ANON_KEY (AU server) or serverConfig.anonKey (US server) — required for all requests
+// - Authorization: Bearer <user access token> if logged in, otherwise Bearer <anon key> for anonymous access
+function buildSupabaseFunctionHeaders(accessToken, serverConfig) {
   const anonKey = serverConfig?.anonKey || SUPABASE_ANON_KEY;
   if (!anonKey) {
     throw new Error('Missing SUPABASE_ANON_KEY');
   }
-  const allowAnonymous = options.allowAnonymous === true;
-  if (!accessToken && !allowAnonymous) {
-    throw new Error('Missing access token');
-  }
-  const headers = {
+  // Prefer user token if available; fall back to anon key for anonymous requests
+  const bearer = accessToken || anonKey;
+  return {
     'Content-Type': 'application/json',
     'apikey': anonKey,
+    'Authorization': `Bearer ${bearer}`,
   };
-  if (accessToken) {
-    headers['Authorization'] = `Bearer ${accessToken}`;
-  } else if (allowAnonymous) {
-    // Supabase Edge Functions accept the anon key as a Bearer token for anonymous access.
-    headers['Authorization'] = `Bearer ${anonKey}`;
-  }
-  return headers;
 }
 
 // ── Helper: Determine API URL based on source domain ──
@@ -220,122 +222,33 @@ async function migrateLegacySession() {
   }
 }
 
-function buildVerifiedFactsFromListing(listingData) {
-  const listingFacts = listingData?.listingFacts || {};
-  const evidence = listingFacts?.evidence || {};
-  const zf = listingData?.zillowFinancials || {};
-  const derivedYearBuilt = deriveYearBuilt(listingData);
-  const priceValue = listingFacts?.priceValue ?? listingData?.priceValue ?? null;
-  const priceDisplay = listingFacts?.priceDisplay ?? listingData?.price ?? listingData?.askingPrice ?? null;
-  const annualTax = listingFacts?.annualTax ?? listingData?.annualTaxAmount ?? null;
-  const annualTaxDisplay = annualTax != null ? `$${Number(annualTax).toLocaleString()}/yr` : (listingData?.propertyTax || null);
-  const pricePerSqft = listingFacts?.pricePerSqft ?? listingData?.pricePerSqftAmount ?? null;
-  const pricePerSqftDisplay = pricePerSqft != null ? `$${Number(pricePerSqft).toLocaleString()}/sqft` : (listingData?.pricePerSqft || null);
-  const taxAssessedValue = listingData?.taxAssessedValueAmount ?? null;
-  const taxAssessedValueDisplay = listingData?.taxAssessedValue || (taxAssessedValue != null ? `$${Number(taxAssessedValue).toLocaleString()}` : null);
-  const monthlyPayment = listingFacts?.estimatedMonthlyPayment ?? zf?.monthlyPayment?.estimatedMonthlyPayment?.value ?? zf?.topEstimatedPayment?.value ?? null;
-  const monthlyPaymentDisplay = monthlyPayment != null ? `$${Number(monthlyPayment).toLocaleString()}/mo` : null;
-  const principalAndInterest = listingFacts?.principalAndInterest ?? zf?.monthlyPayment?.principalAndInterest?.value ?? null;
-  const propertyTaxMonthly = listingFacts?.propertyTaxesMonthly ?? zf?.monthlyPayment?.propertyTaxes?.value ?? zf?.derived?.propertyTaxMonthlyFromAnnual?.value ?? null;
-  const homeInsuranceMonthly = listingFacts?.homeInsuranceMonthly ?? zf?.monthlyPayment?.homeInsurance?.value ?? null;
-  const hoaAmount = listingFacts?.hoaAmount ?? zf?.monthlyPayment?.hoaFees?.value ?? null;
-  const hoa = hoaAmount != null ? 'yes' : (listingData?.hoaFee ? 'yes' : 'unknown');
-  return {
-    address: listingFacts?.address ?? listingData?.address ?? null,
-    price: priceValue,
-    price_display: priceDisplay,
-    beds: listingFacts?.beds ?? listingData?.beds ?? listingData?.bedrooms ?? null,
-    baths: listingFacts?.baths ?? listingData?.baths ?? listingData?.bathrooms ?? null,
-    sqft: listingFacts?.sqft ?? listingData?.sqft ?? null,
-    propertyType: listingFacts?.propertyType ?? listingData?.propertyType ?? null,
-    yearBuilt: derivedYearBuilt,
-    zestimate: parseFiniteNumber(listingData?.zestimate),
-    zestimate_display: typeof listingData?.zestimate === 'string' ? listingData.zestimate : (parseFiniteNumber(listingData?.zestimate) != null ? `$${Number(listingData.zestimate).toLocaleString()}` : null),
-    rentZestimate: parseFiniteNumber(listingData?.rentZestimate),
-    rentZestimate_display: typeof listingData?.rentZestimate === 'string' ? listingData.rentZestimate : (parseFiniteNumber(listingData?.rentZestimate) != null ? `$${Number(listingData.rentZestimate).toLocaleString()}` : null),
-    estimatedSalesRangeMin: parseFiniteNumber(listingData?.estimatedSalesRange?.min),
-    estimatedSalesRangeMax: parseFiniteNumber(listingData?.estimatedSalesRange?.max),
-    pricePerSqft,
-    pricePerSqft_display: pricePerSqftDisplay,
-    taxAssessedValue,
-    taxAssessedValue_display: taxAssessedValueDisplay,
-    annualTax,
-    annualTax_display: annualTaxDisplay,
-    daysOnMarket: parseFiniteNumber(listingData?.daysOnZillow),
-    dateListed: listingData?.dateListed ?? listingData?.dateOnMarket ?? null,
-    monthlyPayment,
-    monthlyPayment_display: monthlyPaymentDisplay,
-    principalAndInterest,
-    propertyTaxMonthly,
-    homeInsuranceMonthly,
-    hoa,
-    hoaAmount,
-    utilitiesIncluded: null,
-    annual_tax: annualTax,
-    annual_tax_display: annualTaxDisplay,
-    tax_assessed_value: taxAssessedValue,
-    tax_assessed_value_display: taxAssessedValueDisplay,
-    price_per_sqft: pricePerSqft,
-    price_per_sqft_display: pricePerSqftDisplay,
-    date_listed: listingData?.dateListed ?? listingData?.dateOnMarket ?? null,
-    available_date: listingData?.availableDate ?? null,
-    normalizedPropertyCategory: listingData?.normalizedPropertyCategory || 'unknown',
-    displayType: listingData?.displayType || listingFacts?.propertyType || listingData?.propertyType || '',
-    rawHomeType: listingData?.rawHomeType || '',
-    rawPropertyType: listingData?.rawPropertyType || listingData?.propertyType || '',
-    rawPropertySubtype: listingData?.rawPropertySubtype || '',
-    floodZone: listingFacts?.floodZone ?? listingData?.zillowFinancials?.floodZone ?? null,
-    fieldEvidence: evidence
-  };
-}
-
-function parseFiniteNumber(value) {
-  if (typeof value === 'number' && Number.isFinite(value)) return value;
-  if (typeof value === 'string') {
-    const match = value.match(/[\d,]+(?:\.\d+)?/);
-    if (!match) return null;
-    const parsed = Number(match[0].replace(/,/g, ''));
-    return Number.isFinite(parsed) ? parsed : null;
+// ----- JWT helpers: extract `exp` claim from Supabase access_token -----
+// Supabase access_token is a JWT. We decode the payload (base64url) WITHOUT
+// verifying signature — the server already verified it on issue. We only need
+// the `exp` claim to decide whether to refresh.
+//
+// Returns the expiry timestamp in seconds, or null if it can't be extracted.
+function _getAccessTokenExpirySeconds(accessToken) {
+  if (!accessToken || typeof accessToken !== 'string') return null;
+  const parts = accessToken.split('.');
+  if (parts.length < 2) return null;
+  try {
+    // base64url → base64
+    const b64 = parts[1].replace(/-/g, '+').replace(/_/g, '/');
+    const padded = b64 + '='.repeat((4 - (b64.length % 4)) % 4);
+    // atob is available in MV3 service workers
+    const json = decodeURIComponent(
+      atob(padded)
+        .split('')
+        .map((c) => '%' + ('00' + c.charCodeAt(0).toString(16)).slice(-2))
+        .join('')
+    );
+    const payload = JSON.parse(json);
+    if (typeof payload.exp === 'number') return payload.exp;
+    return null;
+  } catch (_) {
+    return null;
   }
-  return null;
-}
-
-function extractYearBuiltFromText(text) {
-  const bodyText = String(text || '')
-    .replace(/[\u00a0\u202f]+/g, ' ')
-    .replace(/[ \t]+/g, ' ')
-    .trim();
-  if (!bodyText) return null;
-  const patterns = [
-    /Built in\s+(\d{4})/i,
-    /Year built\s*:?\s*(\d{4})/i,
-    /Year\s+built\s+(\d{4})/i,
-    /Built\s*:?\s*(\d{4})/i,
-    /Condition\s*Year built\s*:?\s*(\d{4})/i
-  ];
-  const currentYear = new Date().getFullYear() + 1;
-  for (const pattern of patterns) {
-    const match = bodyText.match(pattern);
-    if (!match?.[1]) continue;
-    const year = Number(match[1]);
-    if (Number.isInteger(year) && year >= 1700 && year <= currentYear) {
-      return year;
-    }
-  }
-  return null;
-}
-
-function deriveYearBuilt(listingData) {
-  return parseFiniteNumber(listingData?.listingFacts?.yearBuilt)
-    ?? parseFiniteNumber(listingData?.listingFacts?.evidence?.yearBuilt?.value)
-    ?? parseFiniteNumber(listingData?.yearBuilt)
-    ?? extractYearBuiltFromText([
-      listingData?.rawText,
-      listingData?.description,
-      listingData?.title,
-      listingData?.address
-    ].filter(Boolean).join(' \n '))
-    ?? null;
 }
 
 // ----- Primary session getter (cache → migrated storage only) -----
@@ -362,15 +275,21 @@ async function getSession() {
 
 // ----- Auth getter for API calls: refreshes token if needed, then returns session -----
 // Use this instead of getSession() for any handler that makes API calls.
+// After refresh, re-reads from storage to get the new tokens (not from in-memory cache).
 async function getAuth() {
-  const refreshResult = await refreshSessionIfNeeded();
-  const session = getSession();
-  console.log(`${LOG_PREFIX} getAuth: refreshResult=${!!refreshResult}, cachedAuth=${!!_cachedAuth}, cachedToken=${_cachedAuth?.session?.access_token?.substring(0, 20)}...`);
+  await refreshSessionIfNeeded();
+  // Re-read from storage after refresh so we get the new tokens
+  const session = await getSession();
+  console.log(`${LOG_PREFIX} getAuth: cachedAuth=${!!_cachedAuth}, cachedToken=${_cachedAuth?.session?.access_token?.substring(0, 20)}...`);
   return session;
 }
 
 // ----- Save session to canonical storage -----
-async function saveSession(session, user, source = 'unknown') {
+// silent: when true, skip broadcasting to sidepanel. Use for background
+// housekeeping like token refresh — those should NOT cause the sidepanel
+// to re-render or refetch user data. For real login events (oauth callback),
+// pass silent=false (default) to notify the sidepanel.
+async function saveSession(session, user, source = 'unknown', silent = false) {
   try {
     await chrome.storage.local.set({
       [HS_SESSION_KEY]: session,
@@ -383,6 +302,13 @@ async function saveSession(session, user, source = 'unknown') {
 
     _cachedAuth = { user, session };
     _authListeners.forEach((cb) => cb(user));
+
+    // Only broadcast for real auth events (login/logout), not for background
+    // token refresh. Broadcasting on refresh was causing the sidepanel to
+    // re-fetch user data, which triggered another refresh, creating a loop.
+    if (!silent) {
+      broadcastAuthChanged(true, user);
+    }
   } catch (err) {
     console.error(`${LOG_PREFIX} saveSession: FAILED — ${err.message}`);
     throw err;
@@ -391,6 +317,14 @@ async function saveSession(session, user, source = 'unknown') {
 
 // ----- Clear session -----
 async function clearSession(reason = 'unknown') {
+  // Guard: if a new session is being synced in, skip storage clear
+  // to avoid wiping the session right before saveSession writes it
+  if (_syncingSession) {
+    console.log(`${LOG_PREFIX} clearSession: skipped (session sync in progress, reason=${reason})`);
+    _cachedAuth = null;
+    _authListeners.forEach((cb) => cb(null));
+    return;
+  }
   await chrome.storage.local.remove([HS_SESSION_KEY, HS_USER_KEY]);
   _cachedAuth = null;
   _authListeners.forEach((cb) => cb(null));
@@ -431,29 +365,58 @@ async function rpcSendMagicLink(email) {
   return data;
 }
 
-// ----- Token refresh -----
-// Note: getSession() is called INSIDE the lock to prevent concurrent requests
-// from reading the same stale refresh_token before the lock is acquired.
-// Without this, two simultaneous requests would both read the old token,
-// both hit "Already Used", and the second one would wrongly clear the session.
+// ----- Token refresh (SINGLE-FLIGHT: only background.js calls this) -----
+// Rules:
+// - Only background.js calls this; sidepanel/store.tsx MUST NOT call refresh directly
+// - Only one in-flight refresh at a time (_refreshLock)
+// - On invalid_grant / "Already Used": set _refreshTokenInvalid = true, clear session, STOP
+// - On success: atomically save full new session (access_token + refresh_token + expires_at)
+// - On no refresh_token: return null immediately (do NOT call endpoint)
+// - After _refreshTokenInvalid = true: all subsequent refresh attempts return null
+// Refresh the access token ONLY IF it is expired or about to expire.
+// Supabase access_token lifetime is 1 hour by default. We refresh when there
+// is < 5 minutes remaining — this prevents per-request token churn (which was
+// causing infinite refresh/data-fetch loops in the sidepanel).
+const TOKEN_REFRESH_BUFFER_SEC = 5 * 60;
+
 async function refreshSessionIfNeeded() {
-  // 如果已有刷新在进行中，等待它完成
-  if (_refreshLock) {
-    const result = await _refreshLock;
-    if (result) {
-      return result;
-    }
-    // 如果等待的结果是失败，清空锁让当前请求继续尝试
-    _refreshLock = null;
+  // 1. Permanent stop flag — set after invalid_grant
+  if (_refreshTokenInvalid) {
+    return null;
   }
 
-  // 加锁后立即获取 session（避免并发请求读取到相同的旧 token）
+  // 2. If another refresh is already in flight, wait for it
+  if (_refreshLock) {
+    return _refreshLock;
+  }
+
+  // 3. Start refresh
   _refreshLock = (async () => {
     const stored = await getSession();
-    if (!stored?.session?.refresh_token) {
-      console.log(`${LOG_PREFIX} refreshSessionIfNeeded: no refresh_token available`);
-      return stored;
+
+    // 4. No session at all — return null
+    if (!stored?.session) {
+      return null;
     }
+
+    // 5. No refresh_token — return null immediately (do NOT call endpoint)
+    if (!stored.session.refresh_token) {
+      console.log(`${LOG_PREFIX} refreshSessionIfNeeded: no refresh_token available`);
+      return null;
+    }
+
+    // 6. Skip refresh if access_token still has plenty of life left.
+    //    This is the critical fix for the per-request refresh churn loop.
+    const expSec = _getAccessTokenExpirySeconds(stored.session.access_token);
+    if (expSec != null) {
+      const nowSec = Math.floor(Date.now() / 1000);
+      const remainingSec = expSec - nowSec;
+      if (remainingSec > TOKEN_REFRESH_BUFFER_SEC) {
+        console.log(`${LOG_PREFIX} refreshSessionIfNeeded: access_token still valid for ${remainingSec}s, skipping refresh`);
+        return { session: stored.session, user: stored.user };
+      }
+    }
+    // If we can't read exp (no exp claim or decode error), fall through to refresh.
 
     try {
       console.log(`${LOG_PREFIX} refreshSessionIfNeeded: attempting refresh with token preview: ${stored.session.refresh_token.substring(0, 20)}...`);
@@ -472,41 +435,38 @@ async function refreshSessionIfNeeded() {
       if (res.ok) {
         const data = await res.json();
         console.log(`${LOG_PREFIX} refreshSessionIfNeeded: success, new token preview: ${data.access_token?.substring(0, 20)}...`);
-        await saveSession(data, stored.user);
+
+        // Atomically save the FULL new session (access_token + refresh_token + user)
+        // CRITICAL: must save the new refresh_token, not the old one.
+        // Use silent=true so we DON'T broadcast to sidepanel — token refresh is a
+        // background housekeeping operation, not a login event. Broadcasting here
+        // was triggering sidepanel to re-fetch user data, which in turn triggered
+        // another getAuth() → refreshSessionIfNeeded() call, creating an infinite
+        // refresh loop on every page load.
+        await saveSession(data, stored.user, 'refresh', true);
         return { session: data, user: stored.user };
       } else {
-        // 读取错误响应体
         let errBody = {};
         try { errBody = await res.json(); } catch (_) {}
         const errMsg = errBody?.error_description || errBody?.msg || errBody?.message || '';
         const errCode = errBody?.error || '';
         console.error(`${LOG_PREFIX} refreshSessionIfNeeded: refresh failed - status=${res.status}, code=${errCode}, msg=${errMsg}`);
 
-        // 区分错误类型
         const isReuseError = errMsg.toLowerCase().includes('already used');
         const isInvalidGrant = errCode === 'invalid_grant' || res.status === 400;
 
         if (isInvalidGrant) {
-          if (isReuseError) {
-            // Token 已被使用（另一个地方已刷新，或重复请求）
-            // 安全起见：清除 session，强制重新登录
-            console.warn(`${LOG_PREFIX} refreshSessionIfNeeded: refresh token already used, clearing session`);
-            await clearSession('refresh_failure');
-            broadcastAuthChanged(false, null);
-          } else {
-            // 其他 invalid_grant（真正过期、被撤销等）
-            console.warn(`${LOG_PREFIX} refreshSessionIfNeeded: invalid_grant, clearing session`);
-            await clearSession('refresh_failure');
-            broadcastAuthChanged(false, null);
-          }
-        } else {
-          // 网络问题、服务器错误 — 暂时保留旧 session
-          console.warn(`${LOG_PREFIX} refreshSessionIfNeeded: non-retryable error, keeping session`);
+          // CRITICAL: permanent stop flag — prevents infinite retry loops
+          _refreshTokenInvalid = true;
+          console.warn(`${LOG_PREFIX} refreshSessionIfNeeded: refresh token invalid (${isReuseError ? 'already used' : 'invalid grant'}), clearing session permanently`);
+          await clearSession('refresh_failure');
+          broadcastAuthChanged(false, null);
         }
+        // Non-retryable errors (network/server): return null but keep old session for now
         return null;
       }
     } catch (err) {
-      console.warn(`${LOG_PREFIX} refreshSessionIfNeeded: FAILED (network exception) — ${err.message} — keeping session, will retry later`);
+      console.warn(`${LOG_PREFIX} refreshSessionIfNeeded: network exception — ${err.message} — keeping session`);
       return null;
     } finally {
       _refreshLock = null;
@@ -679,6 +639,7 @@ async function handleMessage(message, sender, sendResponse) {
 
     case 'logout': {
       try {
+        _refreshTokenInvalid = false;
         await clearSession('user_action');
         broadcastAuthChanged(false, null);
         sendResponse({ success: true });
@@ -692,7 +653,11 @@ async function handleMessage(message, sender, sendResponse) {
     // Canonical bridge: website AuthCallback forwards session here via injected <script>
     // 双重校验：只有"扩展发起" + "当前 tab 就是那个被扩展打开的 callback tab"时才允许关闭
     case 'sync_session_from_site': {
+      _syncingSession = true;
       try {
+        // New login — reset the invalid token flag so future refresh works
+        _refreshTokenInvalid = false;
+
         const p = message.payload;
         const flowId = p?.flowId;
 
@@ -706,9 +671,9 @@ async function handleMessage(message, sender, sendResponse) {
         const extUser = toExtUser(p.user);
         const session = { access_token: p.access_token, refresh_token: p.refresh_token || '' };
 
-        // Always save to AU session — there's only one HomeScope account per user
+        // Always save to AU session — broadcastAuthChanged is now called inside saveSession
+        // after storage write is confirmed (prevents stale-read in sidepanel).
         await saveSession(session, extUser, 'oauth_callback');
-        broadcastAuthChanged(true, extUser);
 
         // 双重校验：验证 flowId 和 sender.tab.id
         if (flowId) {
@@ -738,17 +703,30 @@ async function handleMessage(message, sender, sendResponse) {
 
         sendResponse({ success: true, user: extUser });
       } catch (err) {
-        console.error(`${LOG_PREFIX} sync_session_from_site: EXCEPTION — ${err.message}`);
+        console.error(`${LOG_PREFIX} sync_session_from_store: EXCEPTION — ${err.message}`);
         sendResponse({ success: false, error: err.message });
+      } finally {
+        _syncingSession = false;
       }
       break;
     }
 
     // ===== Lightweight Basic Analysis (Anonymous, no images, sync) =====
     case 'analyze_basic': {
-      // Basic analysis: 无需登录、无需图片、同步返回结果
-      // 如果用户已登录，会录入历史记录
       const listingData = message.data;
+
+      // ── Dedup: suppress duplicate in-flight requests ─────────────────────────
+      const dedupeKey = message._dedupeKey;
+      if (dedupeKey && _basicDedupeSet.has(dedupeKey)) {
+        console.log(`${LOG_PREFIX} analyze_basic: suppressed duplicate request for key`, dedupeKey);
+        sendResponse({ status: 'error', error: 'Duplicate request suppressed. The previous analysis is still in progress.' });
+        return;
+      }
+      if (dedupeKey) {
+        _basicDedupeSet.add(dedupeKey);
+        setTimeout(() => { _basicDedupeSet.delete(dedupeKey); }, 45000);
+      }
+
       console.log(`${LOG_PREFIX} analyze_basic: received message`, {
         hasDescription: !!listingData?.description,
         descriptionLen: listingData?.description?.length || 0,
@@ -759,13 +737,35 @@ async function handleMessage(message, sender, sendResponse) {
       // ── Unified source/market derivation ────────────────────────────────────────────
       const tabUrl = listingData?.tabUrl || listingData?.url || '';
       const { source, sourceDomain, market, listingUrl } = deriveListingSourceInfo(listingData, tabUrl);
+      console.log('[DIAG] plugin market routing', {
+        listingDataSource: listingData?.source,
+        tabUrl,
+        source,
+        sourceDomain,
+        market,
+        listingUrl,
+        serverUrl: (() => {
+          // compute serverConfig inline so we can log it
+          const sd = sourceDomain;
+          if (sd && (sd.includes('zillow') || sd.includes('realtor'))) {
+            return SUPABASE_US_URL || 'AU-fallback';
+          }
+          return SUPABASE_URL;
+        })(),
+        isUSServer: !!(sourceDomain && (sourceDomain.includes('zillow') || sourceDomain.includes('realtor'))),
+      });
+
       const description = listingData?.description || listingData?.rawText || listingData?.title || 'Property listing information';
+      // === LAYER 3a ===
+      console.log('[background] listingData.whatsSpecialText length:', (listingData?.whatsSpecialText || '').length);
+      console.log('[background] listingData.whatsSpecialText preview:', (listingData?.whatsSpecialText || '').slice(0, 120));
+      console.log('[background] listingData.description length:', (listingData?.description || '').length);
+      console.log('[background] listingData.description preview:', (listingData?.description || '').slice(0, 120));
       const reportMode = listingData?.reportMode || 'rent';
 
       // Build optionalDetails: pass ALL property info for comprehensive analysis
       const priceText = listingData?.priceText || listingData?.price || null;
       const optionalDetails = {};
-      const extractedYearBuilt = deriveYearBuilt(listingData);
       if (priceText) {
         if (reportMode === 'rent') {
           optionalDetails.weeklyRent = priceText;
@@ -774,34 +774,105 @@ async function handleMessage(message, sender, sendResponse) {
         }
       }
 
+      // Parse region/neighborhood from full address string.
+      // US format: "123 Street, City, ST ZIP" → region = "City"
+      function parseRegionFromAddress(address) {
+        if (!address) return null;
+        const full = String(address).trim();
+        if (/source[:.]|mls|onekey|as distributed by/i.test(full)) return null;
+        const usMatch = full.match(/,\s*([^,]+),\s*[A-Z]{2}\s*\d{5}(?:-\d{4})?\s*$/);
+        if (usMatch) return usMatch[1].trim();
+        const usShortMatch = full.match(/,\s*([^,]+)\s*$/);
+        if (usShortMatch) return usShortMatch[1].trim();
+        return null;
+      }
+
+      const fullAddress = listingData?.address || listingData?.suburb || null;
+      const parsedRegion = parseRegionFromAddress(fullAddress);
+
       // Basic property details
       if (listingData?.bedrooms != null) optionalDetails.bedrooms = listingData.bedrooms;
       if (listingData?.bathrooms != null) optionalDetails.bathrooms = listingData.bathrooms;
-      if (listingData?.address || listingData?.suburb) optionalDetails.suburb = listingData.address || listingData.suburb;
+      // Send full address so backend has it for hero.displayAddress
+      if (listingData?.address) optionalDetails.address = listingData.address;
+      // suburb = neighborhood/city (parsed from full address)
+      if (parsedRegion) optionalDetails.suburb = parsedRegion;
+      else if (listingData?.suburb && !listingData?.address) optionalDetails.suburb = listingData.suburb;
 
       // Zillow/US specific property details
+      // Extract propertyFactsV2.identity for fallback field access.
+      // content.js extracts homeType/propertyType/propertySubtype into identity but not
+      // as top-level listingData fields — so we need this fallback.
+      const identity = listingData?.propertyFactsV2?.identity ?? {};
       if (listingData?.sqft != null) optionalDetails.sqft = listingData.sqft;
-      if (extractedYearBuilt != null) optionalDetails.yearBuilt = extractedYearBuilt;
+      if (listingData?.yearBuilt != null) optionalDetails.yearBuilt = listingData.yearBuilt;
       if (listingData?.propertyType) optionalDetails.propertyType = listingData.propertyType;
+      else if (identity?.propertyType) optionalDetails.propertyType = identity.propertyType;
+      if (listingData?.homeType) optionalDetails.homeType = listingData.homeType;
+      else if (identity?.homeType) optionalDetails.homeType = identity.homeType;
+      if (listingData?.propertySubtype) optionalDetails.propertySubtype = listingData.propertySubtype;
+      else if (identity?.propertySubtype) optionalDetails.propertySubtype = identity.propertySubtype;
+      console.log('[HomeScope][identity fallback] propertyFactsV2 identity fields:', {
+        fromTopLevel: {
+          propertyType: listingData?.propertyType,
+          homeType: listingData?.homeType,
+          propertySubtype: listingData?.propertySubtype,
+        },
+        fromIdentity: {
+          propertyType: identity?.propertyType,
+          homeType: identity?.homeType,
+          propertySubtype: identity?.propertySubtype,
+        },
+        optionalDetailsFields: {
+          propertyType: optionalDetails.propertyType,
+          homeType: optionalDetails.homeType,
+          propertySubtype: optionalDetails.propertySubtype,
+        },
+      });
       if (listingData?.lotSize) optionalDetails.lotSize = listingData.lotSize;
       if (listingData?.hoaFee) optionalDetails.hoaFee = listingData.hoaFee;
       if (listingData?.propertyTax) optionalDetails.propertyTax = listingData.propertyTax;
       if (listingData?.annualTaxAmount != null) optionalDetails.annualTaxAmount = listingData.annualTaxAmount;
       if (listingData?.zestimate) optionalDetails.zestimate = listingData.zestimate;
       if (listingData?.rentZestimate) optionalDetails.rentZestimate = listingData.rentZestimate;
+      // normalizedPropertyCategory: authoritative category for Basic profile detection.
+      // Derive in priority order: normalizedPropertyCategory > propertyType > propertySubtype > homeType.
+      if (listingData?.normalizedPropertyCategory) {
+        optionalDetails.normalizedPropertyCategory = listingData.normalizedPropertyCategory;
+      } else {
+        const pt = (listingData?.propertyType ?? '').toLowerCase().replace(/[_-]/g, ' ').trim();
+        const ps = (listingData?.propertySubtype ?? '').toLowerCase().replace(/[_-]/g, ' ').trim();
+        const ht = (listingData?.homeType ?? '').toLowerCase().replace(/[_-]/g, ' ').trim();
+        const normalized =
+          /single family|single-family|singlefamily/i.test(pt) ? 'single_family' :
+          /condo|condominium/i.test(pt) ? 'condo' :
+          /coop|co.op|co-operative|co operative/i.test(pt) ? 'co_op' :
+          /duplex|triplex|multi.family|2.family|two.family/i.test(pt) ? 'multi_family' :
+          /townhouse/i.test(pt) ? 'townhouse' :
+          /land|lot|vacant/i.test(pt) ? 'land' :
+          /single family|single-family|singlefamily/i.test(ps) ? 'single_family' :
+          /condo|condominium/i.test(ps) ? 'condo' :
+          /townhouse/i.test(ps) ? 'townhouse' :
+          /single family|single-family|singlefamily/i.test(ht) ? 'single_family' :
+          /condo|condominium/i.test(ht) ? 'condo' :
+          /townhouse/i.test(ht) ? 'townhouse' :
+          null;
+        if (normalized) optionalDetails.normalizedPropertyCategory = normalized;
+      }
+      console.log('[HomeScope][normalizedPropertyCategory] set:', optionalDetails.normalizedPropertyCategory, {
+        fromExplicit: !!listingData?.normalizedPropertyCategory,
+        fromPropertyType: listingData?.propertyType,
+        fromPropertySubtype: listingData?.propertySubtype,
+        fromHomeType: listingData?.homeType,
+      });
       if (listingData?.daysOnZillow != null) optionalDetails.daysOnZillow = listingData.daysOnZillow;
       if (listingData?.dateOnMarket) optionalDetails.dateOnMarket = listingData.dateOnMarket;
-      if (listingData?.region) optionalDetails.region = listingData.region;
-      if (listingData?.neighborhood) optionalDetails.region = listingData.neighborhood;
-
-      // Location data from V2 extractor (nested in zillowFinancials)
-      const zfFromListing = listingData?.zillowFinancials;
-      if (zfFromListing?.neighborhood) optionalDetails.neighborhood = zfFromListing.neighborhood;
-      if (zfFromListing?.floodZone) optionalDetails.floodZone = zfFromListing.floodZone;
-      if (zfFromListing?.walkScore) optionalDetails.walkScore = zfFromListing.walkScore;
-      if (zfFromListing?.bikeScore) optionalDetails.bikeScore = zfFromListing.bikeScore;
-      if (zfFromListing?.transit) optionalDetails.transit = zfFromListing.transit;
-      if (zfFromListing?.schoolRatings?.length) optionalDetails.schoolRatings = zfFromListing.schoolRatings;
+      // region: prefer explicit neighborhood, fallback to parsed city
+      if (listingData?.region && !/source[:.]|mls|onekey/i.test(listingData.region)) {
+        optionalDetails.region = listingData.region;
+      } else if (parsedRegion) {
+        optionalDetails.region = parsedRegion;
+      }
 
       // Property features
       if (listingData?.heating) optionalDetails.heating = listingData.heating;
@@ -826,19 +897,51 @@ async function handleMessage(message, sender, sendResponse) {
         optionalDetails.highlights = listingData.highlights;
       }
 
+      // Listing description — 用于 Agent Spin Decoder（优先使用 agentMarketingText）
+      const agentMarketingText =
+        listingData?.propertyFactsV2?.listingText?.agentMarketingText ||
+        listingData?.whatsSpecialText ||
+        '';
+
+      const cleanListingDesc =
+        agentMarketingText ||
+        listingData?.description ||
+        '';
+
+      console.log('[HomeScope] listing text selected for AI', {
+        hasPropertyFactsV2: !!listingData?.propertyFactsV2,
+        agentMarketingTextLength: agentMarketingText?.length || 0,
+        fallbackDescriptionLength: listingData?.description?.length || 0,
+        selectedPreview: (agentMarketingText || cleanListingDesc || '').slice(0, 300),
+      });
+
+      if (agentMarketingText && agentMarketingText.trim().length > 20) {
+        optionalDetails.whatsSpecialText = agentMarketingText.trim();
+        optionalDetails.listingDescription = agentMarketingText.trim();
+      } else if (cleanListingDesc && cleanListingDesc.trim().length > 20) {
+        optionalDetails.listingDescription = cleanListingDesc.trim();
+      }
+      // === LAYER 3b ===
+      console.log('[background] optionalDetails.listingDescription length:', (optionalDetails?.listingDescription || '').length);
+      console.log('[background] optionalDetails.listingDescription preview:', (optionalDetails?.listingDescription || '').slice(0, 120));
+
       // School ratings
       if (listingData?.schoolRatings && Array.isArray(listingData.schoolRatings)) {
         optionalDetails.schoolRatings = listingData.schoolRatings;
       }
 
+      // Walk Score / Bike Score / Neighborhood / Architectural Style / Flood Zone (from Zillow Facts & Features)
+      if (listingData?.walkScore) optionalDetails.walkScore = listingData.walkScore;
+      if (listingData?.bikeScore) optionalDetails.bikeScore = listingData.bikeScore;
+      if (listingData?.neighborhood) optionalDetails.neighborhood = listingData.neighborhood;
+      if (listingData?.architecturalStyle) optionalDetails.architecturalStyle = listingData.architecturalStyle;
+      if (listingData?.stories) optionalDetails.stories = listingData.stories;
+      if (listingData?.hoaStatus) optionalDetails.hoaStatus = listingData.hoaStatus;
+      if (listingData?.floodZone) optionalDetails.floodZone = listingData.floodZone;
+
       // Additional raw facts for fallback analysis
       if (listingData?.facts && typeof listingData.facts === 'object') {
         optionalDetails.facts = listingData.facts;
-      }
-
-      // Estimated sales range (from Zillow V2 extractor)
-      if (listingData?.estimatedSalesRange && typeof listingData.estimatedSalesRange === 'object') {
-        optionalDetails.estimatedSalesRange = listingData.estimatedSalesRange;
       }
 
       // ── Enrich optionalDetails with source info for backend fallback ─────────────────
@@ -850,31 +953,42 @@ async function handleMessage(message, sender, sendResponse) {
       // ── Zillow financials: deterministic monthly payment breakdown ─────────────────
       console.log('[HomeScope][ZillowFinancials] extracted', listingData?.zillowFinancials);
 
-      const verifiedFacts = buildVerifiedFactsFromListing(listingData);
-      const rawSourcesSummary = listingData?.rawSourcesSummary || listingData?.listingFacts?.rawSourcesSummary || null;
       // ── Determine server ───────────────────────────────────────────────────────────
       const serverConfig = getAnalyzeApiUrl(sourceDomain);
 
-      // Always include Authorization header (required by Supabase gateway even for anonymous)
-      // If user is logged in, use their JWT; otherwise use anon key
+      // Get auth token if user is logged in (needed for saving basic analysis to history)
+      const auth = await getAuth();
+      const accessToken = auth?.session?.access_token || null;
+      
+      const LOG_BASIC_START = Date.now();
       try {
-        const auth = await getAuth();
-        const accessToken = auth?.session?.access_token || null;
         const url = `${serverConfig.url}/functions/v1/analyze?action=basic-sync`;
+        console.log('[AnalyzeRequest-basic] optionalDetails financial fields', {
+          propertyTax: optionalDetails.propertyTax,
+          annualTaxAmount: optionalDetails.annualTaxAmount,
+          taxAssessedValue: optionalDetails.taxAssessedValue,
+          taxAssessedValueAmount: optionalDetails.taxAssessedValueAmount,
+          pricePerSqft: optionalDetails.pricePerSqft,
+          pricePerSqftAmount: optionalDetails.pricePerSqftAmount,
+          dateListed: optionalDetails.dateListed,
+          availableDate: optionalDetails.availableDate,
+          financialDetails: optionalDetails.financialDetails,
+        });
         const requestBody = {
           description,
           reportMode,
           optionalDetails,
-          listingFacts: listingData?.listingFacts || null,
-          verifiedFacts,
-          rawSourcesSummary,
           source,
           sourceDomain,
           market,
           listingUrl,
           zillowFinancials: listingData?.zillowFinancials || null,
-          listingFingerprint: createListingFingerprint(listingData),
         };
+        // === LAYER 4 ===
+        console.log('[background] requestBody.description length:', (description || '').length);
+        console.log('[background] requestBody.description preview:', (description || '').slice(0, 120));
+        console.log('[background] requestBody.optionalDetails.listingDescription length:', (optionalDetails?.listingDescription || '').length);
+        console.log('[background] requestBody.optionalDetails.listingDescription preview:', (optionalDetails?.listingDescription || '').slice(0, 120));
         console.log('[HomeScope][AnalyzeRequest] has zillowFinancials', !!requestBody.zillowFinancials);
         console.log('[Edge Function Request Debug]', {
           action: 'basic-sync',
@@ -891,29 +1005,33 @@ async function handleMessage(message, sender, sendResponse) {
         });
         const response = await fetch(url, {
           method: 'POST',
-          headers: buildSupabaseFunctionHeaders(accessToken, serverConfig, { allowAnonymous: true }),
+          headers: buildSupabaseFunctionHeaders(accessToken, serverConfig),
           body: JSON.stringify(requestBody),
         });
 
         if (!response.ok) {
           const err = await response.json().catch(() => ({ message: 'Basic analysis failed' }));
-          console.error(`${LOG_PREFIX} analyze_basic: API error —`, err);
+          console.error(`${LOG_PREFIX} analyze_basic: API error in ${Date.now() - LOG_BASIC_START}ms —`, err);
           sendResponse({ status: 'error', error: err.message || 'Basic analysis failed' });
           return;
         }
 
         const data = await response.json();
-        console.log(`${LOG_PREFIX} analyze_basic: success, result keys:`, Object.keys(data.result || {}));
+        const durationMs = Date.now() - LOG_BASIC_START;
+        console.log(`${LOG_PREFIX} analyze_basic: success in ${durationMs}ms, result keys:`, Object.keys(data.result || {}));
         console.log(`${LOG_PREFIX} analyze_basic: analysisId:`, data.analysisId || 'none');
         sendResponse({ status: 'success', result: data.result, analysisId: data.analysisId || null });
       } catch (err) {
-        console.error(`${LOG_PREFIX} analyze_basic: error —`, err.message);
+        console.error(`${LOG_PREFIX} analyze_basic: error in ${Date.now() - LOG_BASIC_START}ms —`, err.message);
         sendResponse({ status: 'error', error: err.message || 'Basic analysis failed' });
       }
       break;
     }
 
     case 'analyze': {
+      // Prevent SW from being killed during the full submit+run request cycle
+      ensureAlive();
+
       // ── DIAG LOG ──
       const listingDataRaw = message.data;
       console.log(`${LOG_PREFIX} [DIAG] analyze: received. keys=`, Object.keys(listingDataRaw || {}));
@@ -930,6 +1048,7 @@ async function handleMessage(message, sender, sendResponse) {
 
       if (!auth?.session?.access_token) {
         console.error(`${LOG_PREFIX} [DIAG] analyze: ❌ NO TOKEN — returning "sign in" error`);
+        clearAlive();
         sendResponse({ status: 'error', error: 'Please sign in first to analyze listings.' });
         return;
       }
@@ -943,13 +1062,28 @@ async function handleMessage(message, sender, sendResponse) {
       // ── Unified source/market derivation ────────────────────────────────────────────
       const tabUrl = listingData?.tabUrl || listingData?.url || '';
       const { source, sourceDomain, market, listingUrl } = deriveListingSourceInfo(listingData, tabUrl);
+      console.log('[DIAG] plugin market routing', {
+        listingDataSource: listingData?.source,
+        tabUrl,
+        source,
+        sourceDomain,
+        market,
+        listingUrl,
+        serverUrl: (() => {
+          if (sourceDomain && (sourceDomain.includes('zillow') || sourceDomain.includes('realtor'))) {
+            return SUPABASE_US_URL || 'AU-fallback';
+          }
+          return SUPABASE_URL;
+        })(),
+        isUSServer: !!(sourceDomain && (sourceDomain.includes('zillow') || sourceDomain.includes('realtor'))),
+      });
+
       const serverConfig = getAnalyzeApiUrl(sourceDomain);
 
       // Build optionalDetails: pass ALL property info to AI for accurate analysis
       const priceText = listingData?.priceText || listingData?.price || null;
       const priceHidden = listingData?.priceHidden || false;
       const optionalDetails = {};
-      const extractedYearBuilt = deriveYearBuilt(listingData);
       if (priceText) {
         if (reportMode === 'rent') {
           optionalDetails.weeklyRent = priceText;
@@ -961,34 +1095,105 @@ async function handleMessage(message, sender, sendResponse) {
         optionalDetails.priceStatus = 'hidden';
       }
 
+      // Parse region/neighborhood from full address string.
+      // US format: "123 Street, City, ST ZIP" → region = "City"
+      function parseRegionFromAddress(address) {
+        if (!address) return null;
+        const full = String(address).trim();
+        if (/source[:.]|mls|onekey|as distributed by/i.test(full)) return null;
+        const usMatch = full.match(/,\s*([^,]+),\s*[A-Z]{2}\s*\d{5}(?:-\d{4})?\s*$/);
+        if (usMatch) return usMatch[1].trim();
+        const usShortMatch = full.match(/,\s*([^,]+)\s*$/);
+        if (usShortMatch) return usShortMatch[1].trim();
+        return null;
+      }
+
+      const fullAddress = listingData?.address || listingData?.suburb || null;
+      const parsedRegion = parseRegionFromAddress(fullAddress);
+
       // Basic property details
       if (listingData?.bedrooms != null) optionalDetails.bedrooms = listingData.bedrooms;
       if (listingData?.bathrooms != null) optionalDetails.bathrooms = listingData.bathrooms;
-      if (listingData?.address || listingData?.suburb) optionalDetails.suburb = listingData.address || listingData.suburb;
+      // Send full address so backend has it for hero.displayAddress
+      if (listingData?.address) optionalDetails.address = listingData.address;
+      // suburb = neighborhood/city (parsed from full address)
+      if (parsedRegion) optionalDetails.suburb = parsedRegion;
+      else if (listingData?.suburb && !listingData?.address) optionalDetails.suburb = listingData.suburb;
 
       // Zillow/US specific property details
+      // Extract propertyFactsV2.identity for fallback field access.
+      // content.js extracts homeType/propertyType/propertySubtype into identity but not
+      // as top-level listingData fields — so we need this fallback.
+      const identity = listingData?.propertyFactsV2?.identity ?? {};
       if (listingData?.sqft != null) optionalDetails.sqft = listingData.sqft;
-      if (extractedYearBuilt != null) optionalDetails.yearBuilt = extractedYearBuilt;
+      if (listingData?.yearBuilt != null) optionalDetails.yearBuilt = listingData.yearBuilt;
       if (listingData?.propertyType) optionalDetails.propertyType = listingData.propertyType;
+      else if (identity?.propertyType) optionalDetails.propertyType = identity.propertyType;
+      if (listingData?.homeType) optionalDetails.homeType = listingData.homeType;
+      else if (identity?.homeType) optionalDetails.homeType = identity.homeType;
+      if (listingData?.propertySubtype) optionalDetails.propertySubtype = listingData.propertySubtype;
+      else if (identity?.propertySubtype) optionalDetails.propertySubtype = identity.propertySubtype;
+      console.log('[HomeScope][identity fallback] propertyFactsV2 identity fields:', {
+        fromTopLevel: {
+          propertyType: listingData?.propertyType,
+          homeType: listingData?.homeType,
+          propertySubtype: listingData?.propertySubtype,
+        },
+        fromIdentity: {
+          propertyType: identity?.propertyType,
+          homeType: identity?.homeType,
+          propertySubtype: identity?.propertySubtype,
+        },
+        optionalDetailsFields: {
+          propertyType: optionalDetails.propertyType,
+          homeType: optionalDetails.homeType,
+          propertySubtype: optionalDetails.propertySubtype,
+        },
+      });
       if (listingData?.lotSize) optionalDetails.lotSize = listingData.lotSize;
       if (listingData?.hoaFee) optionalDetails.hoaFee = listingData.hoaFee;
       if (listingData?.propertyTax) optionalDetails.propertyTax = listingData.propertyTax;
       if (listingData?.annualTaxAmount != null) optionalDetails.annualTaxAmount = listingData.annualTaxAmount;
       if (listingData?.zestimate) optionalDetails.zestimate = listingData.zestimate;
       if (listingData?.rentZestimate) optionalDetails.rentZestimate = listingData.rentZestimate;
+      // normalizedPropertyCategory: authoritative category for Basic profile detection.
+      // Derive in priority order: normalizedPropertyCategory > propertyType > propertySubtype > homeType.
+      if (listingData?.normalizedPropertyCategory) {
+        optionalDetails.normalizedPropertyCategory = listingData.normalizedPropertyCategory;
+      } else {
+        const pt = (listingData?.propertyType ?? '').toLowerCase().replace(/[_-]/g, ' ').trim();
+        const ps = (listingData?.propertySubtype ?? '').toLowerCase().replace(/[_-]/g, ' ').trim();
+        const ht = (listingData?.homeType ?? '').toLowerCase().replace(/[_-]/g, ' ').trim();
+        const normalized =
+          /single family|single-family|singlefamily/i.test(pt) ? 'single_family' :
+          /condo|condominium/i.test(pt) ? 'condo' :
+          /coop|co.op|co-operative|co operative/i.test(pt) ? 'co_op' :
+          /duplex|triplex|multi.family|2.family|two.family/i.test(pt) ? 'multi_family' :
+          /townhouse/i.test(pt) ? 'townhouse' :
+          /land|lot|vacant/i.test(pt) ? 'land' :
+          /single family|single-family|singlefamily/i.test(ps) ? 'single_family' :
+          /condo|condominium/i.test(ps) ? 'condo' :
+          /townhouse/i.test(ps) ? 'townhouse' :
+          /single family|single-family|singlefamily/i.test(ht) ? 'single_family' :
+          /condo|condominium/i.test(ht) ? 'condo' :
+          /townhouse/i.test(ht) ? 'townhouse' :
+          null;
+        if (normalized) optionalDetails.normalizedPropertyCategory = normalized;
+      }
+      console.log('[HomeScope][normalizedPropertyCategory] set:', optionalDetails.normalizedPropertyCategory, {
+        fromExplicit: !!listingData?.normalizedPropertyCategory,
+        fromPropertyType: listingData?.propertyType,
+        fromPropertySubtype: listingData?.propertySubtype,
+        fromHomeType: listingData?.homeType,
+      });
       if (listingData?.daysOnZillow != null) optionalDetails.daysOnZillow = listingData.daysOnZillow;
       if (listingData?.dateOnMarket) optionalDetails.dateOnMarket = listingData.dateOnMarket;
-      if (listingData?.region) optionalDetails.region = listingData.region;
-      if (listingData?.neighborhood) optionalDetails.region = listingData.neighborhood;
-
-      // Location data from V2 extractor (nested in zillowFinancials)
-      const zfFromListing = listingData?.zillowFinancials;
-      if (zfFromListing?.neighborhood) optionalDetails.neighborhood = zfFromListing.neighborhood;
-      if (zfFromListing?.floodZone) optionalDetails.floodZone = zfFromListing.floodZone;
-      if (zfFromListing?.walkScore) optionalDetails.walkScore = zfFromListing.walkScore;
-      if (zfFromListing?.bikeScore) optionalDetails.bikeScore = zfFromListing.bikeScore;
-      if (zfFromListing?.transit) optionalDetails.transit = zfFromListing.transit;
-      if (zfFromListing?.schoolRatings?.length) optionalDetails.schoolRatings = zfFromListing.schoolRatings;
+      // region: prefer explicit neighborhood, fallback to parsed city
+      if (listingData?.region && !/source[:.]|mls|onekey/i.test(listingData.region)) {
+        optionalDetails.region = listingData.region;
+      } else if (parsedRegion) {
+        optionalDetails.region = parsedRegion;
+      }
 
       // Property features
       if (listingData?.heating) optionalDetails.heating = listingData.heating;
@@ -1013,19 +1218,51 @@ async function handleMessage(message, sender, sendResponse) {
         optionalDetails.highlights = listingData.highlights;
       }
 
+      // Listing description — 用于 Agent Spin Decoder（优先使用 agentMarketingText）
+      const agentMarketingText =
+        listingData?.propertyFactsV2?.listingText?.agentMarketingText ||
+        listingData?.whatsSpecialText ||
+        '';
+
+      const cleanListingDesc =
+        agentMarketingText ||
+        listingData?.description ||
+        '';
+
+      console.log('[HomeScope] listing text selected for AI', {
+        hasPropertyFactsV2: !!listingData?.propertyFactsV2,
+        agentMarketingTextLength: agentMarketingText?.length || 0,
+        fallbackDescriptionLength: listingData?.description?.length || 0,
+        selectedPreview: (agentMarketingText || cleanListingDesc || '').slice(0, 300),
+      });
+
+      if (agentMarketingText && agentMarketingText.trim().length > 20) {
+        optionalDetails.whatsSpecialText = agentMarketingText.trim();
+        optionalDetails.listingDescription = agentMarketingText.trim();
+      } else if (cleanListingDesc && cleanListingDesc.trim().length > 20) {
+        optionalDetails.listingDescription = cleanListingDesc.trim();
+      }
+      // === LAYER 3b ===
+      console.log('[background] optionalDetails.listingDescription length:', (optionalDetails?.listingDescription || '').length);
+      console.log('[background] optionalDetails.listingDescription preview:', (optionalDetails?.listingDescription || '').slice(0, 120));
+
       // School ratings
       if (listingData?.schoolRatings && Array.isArray(listingData.schoolRatings)) {
         optionalDetails.schoolRatings = listingData.schoolRatings;
       }
 
+      // Walk Score / Bike Score / Neighborhood / Architectural Style (from Zillow Facts & Features)
+      if (listingData?.walkScore) optionalDetails.walkScore = listingData.walkScore;
+      if (listingData?.bikeScore) optionalDetails.bikeScore = listingData.bikeScore;
+      if (listingData?.neighborhood) optionalDetails.neighborhood = listingData.neighborhood;
+      if (listingData?.architecturalStyle) optionalDetails.architecturalStyle = listingData.architecturalStyle;
+      if (listingData?.stories) optionalDetails.stories = listingData.stories;
+      if (listingData?.hoaStatus) optionalDetails.hoaStatus = listingData.hoaStatus;
+      if (listingData?.floodZone) optionalDetails.floodZone = listingData.floodZone;
+
       // Additional raw facts for fallback analysis
       if (listingData?.facts && typeof listingData.facts === 'object') {
         optionalDetails.facts = listingData.facts;
-      }
-
-      // Estimated sales range (from Zillow V2 extractor)
-      if (listingData?.estimatedSalesRange && typeof listingData.estimatedSalesRange === 'object') {
-        optionalDetails.estimatedSalesRange = listingData.estimatedSalesRange;
       }
 
       // ── Enrich optionalDetails with source info for backend fallback ─────────────────
@@ -1034,8 +1271,6 @@ async function handleMessage(message, sender, sendResponse) {
       optionalDetails.market = market;
       optionalDetails.listingUrl = listingUrl;
 
-      const verifiedFacts = buildVerifiedFactsFromListing(listingData);
-      const rawSourcesSummary = listingData?.rawSourcesSummary || listingData?.listingFacts?.rawSourcesSummary || null;
       // Build request body for analyze function
       console.log('[AnalyzeRequest] optionalDetails financial fields', {
         propertyTax: optionalDetails.propertyTax,
@@ -1050,32 +1285,16 @@ async function handleMessage(message, sender, sendResponse) {
       });
       console.log('[HomeScope][ZillowFinancials] extracted', listingData?.zillowFinancials);
       const requestBody = {
-        action: 'submit',
         imageUrls,
         description,
         reportMode,
-        price: priceText,
         optionalDetails,
-        listingFacts: listingData?.listingFacts || null,
-        verifiedFacts,
-        rawSourcesSummary,
         source,
         sourceDomain,
         market,
         listingUrl,
         zillowFinancials: listingData?.zillowFinancials || null,
-        listingFingerprint: createListingFingerprint(listingData),
       };
-      console.log('[BG][SUBMIT_URL_FINAL]', `${serverConfig.url}/functions/v1/analyze?action=submit`);
-      console.log('[BG][SUBMIT_BODY_FINAL]', {
-        action: 'submit',
-        hasZillowFinancials: !!requestBody.zillowFinancials,
-        price: requestBody.price,
-        askingPrice: requestBody.optionalDetails?.askingPrice,
-        monthlyEstimate: requestBody.zillowFinancials?.monthlyPayment?.estimatedMonthlyPayment?.value,
-        reportMode: requestBody.reportMode,
-        sourceDomain: requestBody.sourceDomain,
-      });
       console.log('[HomeScope][AnalyzeRequest] has zillowFinancials', !!requestBody.zillowFinancials);
 
       // Step 3: action=submit
@@ -1113,6 +1332,7 @@ async function handleMessage(message, sender, sendResponse) {
             console.error(`${LOG_PREFIX} [DIAG] analyze: API_ERROR — message=${err.message || 'Failed to submit analysis'}`);
             sendResponse({ status: 'error', error: err.message || 'Failed to submit analysis' });
           }
+          clearAlive();
           return;
         }
 
@@ -1140,27 +1360,17 @@ async function handleMessage(message, sender, sendResponse) {
           tokenPrefix: runAccessToken?.slice(0, 16),
           server: serverConfig.isUS ? 'US' : 'AU',
         });
-        console.log('[BG][RUN_REQUEST_BODY_FINAL]', {
-          action: 'run',
-          hasZillowFinancials: !!requestBody.zillowFinancials,
-          monthlyEstimate: requestBody.zillowFinancials?.monthlyPayment?.estimatedMonthlyPayment?.value,
-          propertyTaxes: requestBody.zillowFinancials?.monthlyPayment?.propertyTaxes?.value,
-          principalAndInterest: requestBody.zillowFinancials?.monthlyPayment?.principalAndInterest?.value,
-          homeInsurance: requestBody.zillowFinancials?.monthlyPayment?.homeInsurance?.value,
-          sourceDomain: requestBody.sourceDomain,
-          market: requestBody.market,
-          reportMode: requestBody.reportMode,
-        });
-        console.log('[BG][RUN_URL_FINAL]', runUrl);
         fetch(runUrl, {
           method: 'POST',
           headers: buildSupabaseFunctionHeaders(runAccessToken, serverConfig),
-          body: JSON.stringify({ ...requestBody, id: analysisId, action: 'run' }),
+          body: JSON.stringify({ id: analysisId, ...requestBody }),
         }).catch((err) => console.error(`${LOG_PREFIX} analyze: run error —`, err.message));
 
         // Return analysisId immediately — frontend will poll for status
         sendResponse({ status: 'submitted', analysisId });
+        clearAlive(); // SW no longer needs to stay awake — polling handles the rest
       } catch (err) {
+        clearAlive();
         console.error(`${LOG_PREFIX} [DIAG] analyze: ❌ OUTER CATCH —`, err.message);
         sendResponse({ status: 'error', error: err.message });
       }
@@ -1168,8 +1378,6 @@ async function handleMessage(message, sender, sendResponse) {
     }
 
     case 'get_analysis_status': {
-      // Always uses PRIMARY/AU server — all analyses and analysis_states live there.
-      // US Worker is a pure compute engine; all data is stored in PRIMARY.
       const { analysisId } = message;
       if (!analysisId) {
         sendResponse({ status: 'error', error: 'Missing analysisId' });
@@ -1182,33 +1390,47 @@ async function handleMessage(message, sender, sendResponse) {
         return;
       }
 
-      const accessToken = auth.session.access_token;
-      const targetUrl = `${SUPABASE_URL}/functions/v1/analyze?id=${analysisId}`;
+      // 两层查找 serverConfig：内存 Map → session storage
+      let serverConfig = _analysisServerMap.get(analysisId);
 
-      console.log('[get_analysis_status] using PRIMARY server only', {
-        action: 'get_status',
-        analysisId,
-        targetUrl,
-        forcePrimary: true,
-      });
+      if (!serverConfig) {
+        const stored = await chrome.storage.session.get(`${HS_ANALYSIS_SERVER_PREFIX}${analysisId}`);
+        serverConfig = stored[`${HS_ANALYSIS_SERVER_PREFIX}${analysisId}`] || null;
+        if (serverConfig) {
+          _analysisServerMap.set(analysisId, serverConfig); // 回填内存 Map
+        }
+      }
+
+      if (!serverConfig) {
+        console.error(`${LOG_PREFIX} get_analysis_status: serverConfig not found for analysisId=${analysisId} — SW may have restarted`);
+        sendResponse({ status: 'error', error: 'Analysis server not found. Please restart the analysis.' });
+        return;
+      }
 
       try {
-        const res = await fetch(targetUrl, {
+        const accessToken = auth.session.access_token;
+        const url = `${serverConfig.url}/functions/v1/analyze?id=${analysisId}`;
+        console.log('[Edge Function Request Debug]', {
+          action: 'get_status',
           method: 'GET',
-          headers: buildSupabaseFunctionHeaders(accessToken, {
-            anonKey: SUPABASE_ANON_KEY,
-          }),
+          url,
+          server: serverConfig.isUS ? 'US' : 'AU',
+          hasAnonKey: !!serverConfig.anonKey,
+          hasAccessToken: !!accessToken,
+        });
+        const res = await fetch(url, {
+          method: 'GET',
+          headers: buildSupabaseFunctionHeaders(accessToken, serverConfig),
         });
 
         if (!res.ok) {
-          const errBody = await res.json().catch(() => ({}));
-          sendResponse({ status: 'error', error: errBody.message || 'Failed to get analysis status' });
+          sendResponse({ status: 'error', error: 'Failed to get analysis status' });
           return;
         }
 
         const data = await res.json();
 
-        // Clean up server config cache after terminal states
+        // 分析完成或失败后清理
         if (data.status === 'done' || data.status === 'failed') {
           _analysisServerMap.delete(analysisId);
           await chrome.storage.session.remove(`${HS_ANALYSIS_SERVER_PREFIX}${analysisId}`);
@@ -1269,64 +1491,72 @@ async function handleMessage(message, sender, sendResponse) {
     }
 
     case 'share_analysis': {
-      // Share ALWAYS uses PRIMARY/AU server — all user data lives there.
-      // US Worker does not have share action logic and cannot access AU data.
-      const { analysisId } = message;
-
-      if (!analysisId) {
-        sendResponse({ success: false, error: 'Missing analysisId' });
-        return;
-      }
-
       const auth = await getAuth();
       if (!auth?.session?.access_token) {
-        sendResponse({ success: false, error: 'Please sign in first.' });
+        sendResponse({ status: 'error', error: 'Please sign in first.' });
         return;
       }
 
-      const accessToken = auth.session.access_token;
-      const targetUrl = `${SUPABASE_URL}/functions/v1/analyze?action=share`;
+      const { analysisId, sourceDomain } = message;
+      if (!analysisId) {
+        sendResponse({ status: 'error', error: 'Missing analysisId' });
+        return;
+      }
 
-      console.log('[share_analysis] using PRIMARY server only', {
-        action: 'share',
-        analysisId,
-        targetUrl,
-        forcePrimary: true,
-      });
+      // ── Resolve serverConfig: memory Map → session storage → URL fallback ──
+      let serverConfig = _analysisServerMap.get(analysisId);
+
+      if (!serverConfig) {
+        const stored = await chrome.storage.session.get(`${HS_ANALYSIS_SERVER_PREFIX}${analysisId}`);
+        serverConfig = stored[`${HS_ANALYSIS_SERVER_PREFIX}${analysisId}`] || null;
+        if (serverConfig) {
+          _analysisServerMap.set(analysisId, serverConfig);
+        }
+      }
+
+      // URL-based fallback: derive server from sourceDomain
+      if (!serverConfig) {
+        const sd = sourceDomain || '';
+        const isUS = sd.includes('zillow') || sd.includes('realtor');
+        serverConfig = {
+          url: isUS ? (SUPABASE_US_URL || SUPABASE_URL) : SUPABASE_URL,
+          anonKey: isUS ? (SUPABASE_US_ANON_KEY || SUPABASE_ANON_KEY) : SUPABASE_ANON_KEY,
+          isUS,
+        };
+      }
+
+      console.log('[share_analysis] analysisId', analysisId);
+      console.log('[share_analysis] resolved server', serverConfig.url);
+      console.log('[share_analysis] share response');
 
       try {
-        const res = await fetch(targetUrl, {
+        const accessToken = auth.session.access_token;
+        const url = `${serverConfig.url}/functions/v1/analyze?action=share`;
+        console.log('[Edge Function Request Debug]', {
+          action: 'share',
           method: 'POST',
-          headers: buildSupabaseFunctionHeaders(accessToken, {
-            anonKey: SUPABASE_ANON_KEY,
-          }),
-          body: JSON.stringify({ action: "share", analysisId }),
+          url,
+          server: serverConfig.isUS ? 'US' : 'AU',
+          hasAnonKey: !!serverConfig.anonKey,
+          hasAccessToken: !!accessToken,
+        });
+        const res = await fetch(url, {
+          method: 'POST',
+          headers: buildSupabaseFunctionHeaders(accessToken, serverConfig),
+          body: JSON.stringify({ analysisId }),
         });
 
-        const data = await res.json().catch(() => null);
-
         if (!res.ok) {
-          console.error('[share_analysis] failed', {
-            status: res.status,
-            data,
-          });
-          sendResponse({
-            success: false,
-            error: data?.message || `Share failed: ${res.status}`,
-            details: data,
-          });
+          const err = await res.json().catch(() => ({ message: 'Failed to share analysis' }));
+          sendResponse({ status: 'error', error: err.message || 'Failed to share analysis' });
           return;
         }
 
-        sendResponse({
-          success: true,
-          slug: data.slug,
-          shareUrl: data.shareUrl,
-          alreadyShared: data.alreadyShared,
-        });
+        const data = await res.json();
+        sendResponse({ status: 'success', slug: data.slug, shareUrl: data.shareUrl });
       } catch (err) {
         console.error(`${LOG_PREFIX} share_analysis: error —`, err.message);
-        sendResponse({ success: false, error: err.message });
+        sendResponse({ status: 'error', error: err.message });
       }
       break;
     }
@@ -1376,33 +1606,8 @@ async function handleMessage(message, sender, sendResponse) {
           return;
         }
 
-        // Keep SW alive: prime the session on every PING so it's ready for analyze
-        // This runs even on cold-start, preventing the 30s timeout gap
-        await migrateLegacySession();
-        const auth = await getSession();
-
         const response = await chrome.tabs.sendMessage(tabId, { action: 'PONG' });
-        sendResponse({ ok: true, url: response?.url, title: response?.title, readyState: response?.readyState, swAwake: true });
-      } catch (err) {
-        sendResponse({ ok: false, error: err.message });
-      }
-      break;
-    }
-
-    // KEEPALIVE: lightweight no-op that wakes the SW and primes auth cache.
-    // The side panel calls this on mount and before critical operations to
-    // prevent the 30s cold-start window where messages time out.
-    case 'KEEPALIVE': {
-      try {
-        // Trigger one-shot auth priming (migrate + read session, no network)
-        await migrateLegacySession();
-        const auth = await getSession();
-        sendResponse({
-          ok: true,
-          swAwake: true,
-          hasAuth: !!auth,
-          userId: auth?.user?.id,
-        });
+        sendResponse({ ok: true, url: response?.url, title: response?.title, readyState: response?.readyState });
       } catch (err) {
         sendResponse({ ok: false, error: err.message });
       }
@@ -1540,8 +1745,11 @@ function validateOAuthFlow(flowId, callbackTabId) {
   if (flow.used) {
     return { valid: false, reason: 'flow_already_used' };
   }
+  // Supabase OAuth uses in-tab redirect (login → callback in same tab).
+  // callbackTabId matching loginTabId is NORMAL, not an error.
+  // Log it for visibility but do NOT fail validation.
   if (callbackTabId != null && flow.loginTabId === callbackTabId) {
-    return { valid: false, reason: 'callback_is_login_tab' };
+    console.log(`${LOG_PREFIX} validateOAuthFlow: callback_tab_id=${callbackTabId} matches login_tab — in-tab redirect detected, allowing`);
   }
   flow.used = true;
   return { valid: true };
@@ -1610,40 +1818,22 @@ chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
   handleCallbackTab(tabId, tab.url || '');
 });
 
-// Token refresh scheduler using chrome.alarms (survives SW termination unlike setTimeout)
+// Token refresh scheduler (prevents 7-day Supabase expiry)
 const REFRESH_INTERVAL_MS = 6 * 60 * 60 * 1000;
-const REFRESH_ALARM_NAME = 'hs_token_refresh';
-let _refreshAlarmListener = null;
+let _refreshTimer = null;
 
 async function scheduleTokenRefresh() {
-  try {
-    // Cancel any existing alarm first
-    await chrome.alarms.clear(REFRESH_ALARM_NAME);
-  } catch (_) {}
+  if (_refreshTimer) {
+    clearTimeout(_refreshTimer);
+    _refreshTimer = null;
+  }
 
-  _refreshAlarmListener = async (alarm) => {
-    if (alarm.name !== REFRESH_ALARM_NAME) return;
-    console.log(`${LOG_PREFIX} [alarm] Token refresh triggered`);
+  _refreshTimer = setTimeout(async () => {
     const result = await refreshSessionIfNeeded();
     if (result) {
-      scheduleTokenRefresh(); // re-schedule
+      scheduleTokenRefresh();
     }
-  };
-
-  try {
-    chrome.alarms.onAlarm.addListener(_refreshAlarmListener);
-    await chrome.alarms.create(REFRESH_ALARM_NAME, {
-      delayInMinutes: REFRESH_INTERVAL_MS / 60000,
-    });
-    console.log(`${LOG_PREFIX} [alarm] Token refresh scheduled in ${REFRESH_INTERVAL_MS / 60000} minutes`);
-  } catch (err) {
-    console.warn(`${LOG_PREFIX} [alarm] chrome.alarms not available, falling back to setTimeout:`, err.message);
-    // Fallback: setTimeout (won't survive SW termination, but better than nothing)
-    setTimeout(async () => {
-      const result = await refreshSessionIfNeeded();
-      if (result) scheduleTokenRefresh();
-    }, REFRESH_INTERVAL_MS);
-  }
+  }, REFRESH_INTERVAL_MS);
 }
 
 // Kick off on every service worker startup

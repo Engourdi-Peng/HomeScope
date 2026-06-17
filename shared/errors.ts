@@ -59,7 +59,7 @@ export const ERROR_MESSAGES: Record<ExtractionErrorCode, { user: string; dev: st
     dev: 'Content script cannot be injected into chrome:// or about: pages',
   },
   [ExtractionErrorCode.UNSUPPORTED_SITE]: {
-    user: 'Navigate to a property listing page (realestate.com.au or zillow.com)',
+    user: 'This page is not supported. Open a Zillow or realestate.com.au property listing, then run analysis again.',
     dev: 'URL is not a supported property site',
   },
   [ExtractionErrorCode.NO_IMAGES_FOUND]: {

@@ -78,17 +78,18 @@ export interface AppState {
   analysisProgress: number;
   analysisError: string | null;
   analysisResult: AnalysisResult | null;
-  listingFingerprint: string | null;   // hash of (address+price+beds+baths+sqft+url) — prevents stale cross-listing data
   history: import('../types/index').AnalysisSummary[];
   historyLoading: boolean;
   viewingHistoryId: string | null;
   currentView: CurrentView;
-  analysisType: 'basic' | 'full';
   cooldownEndsAt: number | null;      // timestamp (ms) when cooldown ends; null if not cooling down
   extractionCached: boolean;           // true if current URL has a cached extraction result
   lastExtractedUrl: string | null;     // URL of the most recently cached extraction
   sourceTabId: number | null;          // tab ID of the source page (Zillow/realestate) — preserved across sidepanel focus
+  currentAnalysisType: 'basic' | 'full';  // tracks the currently running analysis type (for UI step display)
 }
+
+export type CurrentAnalysisType = 'basic' | 'full';
 
 // ── Actions ──
 export type PageReadErrorCode =
@@ -111,11 +112,10 @@ export type AppAction =
   | { type: 'SET_HISTORY_LOADING'; loading: boolean }
   | { type: 'SET_VIEWING_HISTORY'; id: string | null }
   | { type: 'SET_CURRENT_VIEW'; view: CurrentView }
-  | { type: 'SET_ANALYSIS_TYPE'; analysisType: 'basic' | 'full' }
   | { type: 'SET_PAGE_STATE'; pageState: PageStateInfo }
   | { type: 'SET_READ_ERROR'; errorCode: PageReadErrorCode; errorMessage: string }
   | { type: 'SET_COOLDOWN'; cooldownEndsAt: number | null }
   | { type: 'SET_EXTRACTION_CACHED'; extractionCached: boolean; lastExtractedUrl: string | null }
   | { type: 'SET_SOURCE_TAB_ID'; sourceTabId: number | null }
-  | { type: 'RESET_ANALYSIS' }
-  | { type: 'SET_LISTING_FINGERPRINT'; fingerprint: string | null };
+  | { type: 'SET_CURRENT_ANALYSIS_TYPE'; analysisType: 'basic' | 'full' }
+  | { type: 'RESET_ANALYSIS' };

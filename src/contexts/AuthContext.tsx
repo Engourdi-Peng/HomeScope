@@ -2,6 +2,9 @@ import { createContext, useContext, useEffect, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
 import type { User } from '@supabase/supabase-js';
 import { supabase, type Profile } from '../lib/supabase';
+import { syncSessionToExtension } from '../lib/extensionAuthSync';
+
+const AUTH_SYNC_DEBUG = import.meta.env.DEV;
 
 interface AuthContextType {
   user: User | null;
@@ -98,18 +101,10 @@ export function AuthProvider({ children }: AuthProviderProps) {
           if (extFlowRaw) {
             const extFlow = JSON.parse(extFlowRaw) as { flowId?: string };
             const flowId = extFlow?.flowId || null;
-            const message = {
-              source: 'homescope-auth-bridge',
-              type: 'HOMESCOPE_SYNC_SESSION',
-              payload: {
-                access_token: session.access_token,
-                refresh_token: session.refresh_token,
-                user: session.user,
-                flowId,
-              },
-            };
-            console.log('[AuthContext] onAuthStateChange: extension flow detected, pushing session via postMessage, flowId=', flowId);
-            window.postMessage(message, window.location.origin);
+            // Wrap in async IIFE because onAuthStateChange callback is not async
+            (async () => {
+              await syncSessionToExtension(session as Session, { flowId, debug: AUTH_SYNC_DEBUG });
+            })();
             sessionStorage.removeItem('hs_ext_flow');
           }
         } catch {

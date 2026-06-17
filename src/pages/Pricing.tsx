@@ -13,46 +13,46 @@ const PRODUCTS = [
   {
     id: 'starter',
     title: 'Starter',
-    price: 'AU$6.99',
-    reportCount: '3 REPORTS',
-    description: 'Perfect for trying the tool',
+    price: 'US$9.99',
+    reportCount: '1 FULL REPORT',
+    description: 'Best for checking one property before booking a showing.',
     features: [
-      'AI rental analysis',
-      'Price fairness check',
-      'Risk detection',
-      'Condition analysis',
+      'Full property risk analysis',
+      'Photo & space analysis',
+      'Price confidence check',
+      'Questions to ask the agent',
     ],
-    buttonText: 'Buy Starter',
+    buttonText: 'Buy 1 Report',
     isPopular: false,
   },
   {
     id: 'standard',
     title: 'Standard',
-    price: 'AU$14.99',
-    reportCount: '10 REPORTS',
-    description: 'Most popular - enough for a full house search',
+    price: 'US$19.99',
+    reportCount: '3 FULL REPORTS',
+    description: 'Best for buyers with a few homes on their shortlist.',
     features: [
       'Everything in Starter',
-      'Best value per report',
-      'Priority support',
-      'Detailed competition analysis',
+      'Lower cost per report',
+      'Saved report access',
+      'Shareable report link',
     ],
-    buttonText: 'Buy Standard',
+    buttonText: 'Buy 3 Reports',
     isPopular: true,
   },
   {
     id: 'pro',
     title: 'Pro',
-    price: 'AU$39',
-    reportCount: '40 REPORTS',
-    description: 'For heavy users and professionals',
+    price: 'US$49.99',
+    reportCount: '10 FULL REPORTS',
+    description: 'Best for active buyers searching across multiple listings.',
     features: [
       'Everything in Standard',
+      'Best value per report',
       'Lowest cost per report',
-      'API access',
-      'Bulk analysis',
+      'Useful for serious home searches',
     ],
-    buttonText: 'Buy Pro',
+    buttonText: 'Buy 10 Reports',
     isPopular: false,
   },
 ];
@@ -163,11 +163,10 @@ export function PricingPage() {
             Simple pricing
           </h1>
           <p className="text-[18px] text-[#57534e] max-w-2xl mx-auto leading-relaxed font-light">
-            Pay only for the reports you use
+            Pay only for the Full Reports you use.
           </p>
           <p className="text-[14px] text-[#a8a29e] max-w-lg mx-auto mt-3">
-            Upload screenshots or listing descriptions.
-            Get an AI analysis of rental risks, pricing and property condition.
+            Run a free Basic Check first. Unlock a Full Report when a property is worth a closer look.
           </p>
         </div>
 
@@ -193,10 +192,10 @@ export function PricingPage() {
         {/* What does a report include? */}
         <div className="bg-[rgba(250,250,249,0.4)] border-[0.667px] border-solid border-[rgba(231,229,228,0.8)] rounded-[24px] p-8 md:p-10 mb-16 max-w-5xl mx-auto">
           <h2 className="text-center text-[22px] md:text-[24px] font-semibold text-[#292524] mb-2">
-            What does a report include?
+            What does a Full Report include?
           </h2>
           <p className="text-center text-[15px] text-[#78716c] font-light mb-8">
-            Each report analyzes the rental listing and provides:
+            Each Full Report analyzes the listing, available photos, and property details to help you decide what to verify before spending time on a home.
           </p>
           <div className="grid grid-cols-1 md:grid-cols-2 gap-x-12 gap-y-3 max-w-2xl mx-auto">
             <ul className="space-y-3 text-[14px] text-[#292524]">
@@ -206,29 +205,33 @@ export function PricingPage() {
               </li>
               <li className="flex items-start gap-3">
                 <span className="w-1.5 h-1.5 rounded-full bg-[#292524] mt-1.5 shrink-0" />
-                <span>Space analysis from photos</span>
+                <span>Price confidence check</span>
               </li>
               <li className="flex items-start gap-3">
                 <span className="w-1.5 h-1.5 rounded-full bg-[#292524] mt-1.5 shrink-0" />
-                <span>Rent fairness estimate</span>
+                <span>Photo & space analysis</span>
               </li>
               <li className="flex items-start gap-3">
                 <span className="w-1.5 h-1.5 rounded-full bg-[#292524] mt-1.5 shrink-0" />
-                <span>Questions you should ask the agent</span>
+                <span>Monthly cost breakdown</span>
               </li>
             </ul>
             <ul className="space-y-3 text-[14px] text-[#292524]">
               <li className="flex items-start gap-3">
                 <span className="w-1.5 h-1.5 rounded-full bg-[#292524] mt-1.5 shrink-0" />
-                <span>Pros and cons of the listing</span>
+                <span>Potential risks and hidden issues</span>
               </li>
               <li className="flex items-start gap-3">
                 <span className="w-1.5 h-1.5 rounded-full bg-[#292524] mt-1.5 shrink-0" />
-                <span>Potential risks and issues</span>
+                <span>Agent language decoder</span>
               </li>
               <li className="flex items-start gap-3">
                 <span className="w-1.5 h-1.5 rounded-full bg-[#292524] mt-1.5 shrink-0" />
-                <span>Recommendation for renters</span>
+                <span>Questions to ask before viewing</span>
+              </li>
+              <li className="flex items-start gap-3">
+                <span className="w-1.5 h-1.5 rounded-full bg-[#292524] mt-1.5 shrink-0" />
+                <span>Next best move for buyers</span>
               </li>
             </ul>
           </div>
@@ -250,22 +253,22 @@ export function PricingPage() {
             <FAQItem
               value="how-it-works"
               question="How does a report work?"
-              answer={`Each analysis uses 1 report credit.\n\nUpload screenshots of a rental listing or paste the property description.\nHomeScope analyzes the listing and generates a report including:\n\n· Overall property score\n\n· Pros and cons of the listing\n\n· Space analysis from photos\n\n· Potential issues and risks\n\n· Rent fairness estimate\n\n· Competition risk for renters\n\n· A final recommendation and questions to ask the agent`}
+              answer="Open a supported property listing, click Analyze, and start with a free Basic Check. If the property looks worth a closer look, unlock a Full Report for deeper risk analysis, photo review, price confidence, carrying costs, and agent questions. Full Reports usually take 1–3 minutes to generate."
             />
             <FAQItem
               value="expiration"
               question="Do reports expire?"
-              answer="No. Your report credits never expire and remain available in your account until you use them."
+              answer="Purchased report credits do not expire unless otherwise stated. Reports you generate while signed in are saved to your account so you can review them later."
             />
             <FAQItem
               value="payment"
               question="What payment methods are supported?"
-              answer="Secure checkout powered by Vendors. We accept all major credit cards including Visa, Mastercard, and American Express."
+              answer="We support major credit and debit cards through our secure checkout provider. Available payment methods may vary by country and device."
             />
             <FAQItem
               value="refund"
               question="Can I get a refund?"
-              answer="Payments are processed by Paddle as the Merchant of Record. Refunds and cancellation rights are handled in accordance with Paddle’s consumer terms, including the 14-day consumer cancellation period where applicable. For details, see https://www.paddle.com/legal/invoiced-consumer-terms. If you need help, contact our support and we’ll assist with submitting your request to Paddle."
+              answer="Because Full Reports use AI processing immediately, used report credits are generally not refundable. If a report fails to generate or you were charged by mistake, contact support and we'll help."
             />
           </Accordion.Root>
         </div>
@@ -280,7 +283,7 @@ export function PricingPage() {
               Terms of Service
             </Link>
           </div>
-          <p className="text-[13px] text-[#a8a29e] font-medium">AI Rental Decision Assistant</p>
+          <p className="text-[13px] text-[#a8a29e] font-medium">AI Home Buying Decision Assistant</p>
         </div>
 
         {/* 登录弹窗 */}

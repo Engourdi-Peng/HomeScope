@@ -15,7 +15,7 @@ export const MODULE_FALLBACKS = {
   HERO_NEXT_BEST_MOVE_DEFAULT: 'Request additional details and verify key risks before your next step.',
   PRICE_ANALYSIS_UNKNOWN: 'Price cannot be judged confidently from the available data.',
   PRICE_ANALYSIS_OVERPRICED: 'The asking price appears high relative to visible condition, market time, or unverified assumptions.',
-  PRICE_ANALYSIS_FAIR: 'Asking price may be within a plausible range for this property type and location, but verify with comparable sales before treating it as a fair deal.',
+  PRICE_ANALYSIS_FAIR: 'Asking price may be within a plausible range for this property and location, but verify with comparable sales before treating it as a fair deal.',
   PRICE_ANALYSIS_GOOD_VALUE: 'The asking price may be attractive relative to visible condition and market data, but confirm with comps.',
   CARRYING_COSTS_NO_DATA: 'Monthly cost estimate is not available from the current listing data. Ask the agent or listing agent for Zillow estimated monthly payment, property tax amount, HOA fees, and insurance estimate.',
   CARRYING_COSTS_WARNING: 'Full cost assumptions are not available. Treat this as a rough planning number only. Financing terms, insurance, repairs, utilities, vacancy, and maintenance reserves may not be included.',
@@ -30,13 +30,13 @@ export const MODULE_FALLBACKS = {
 // ── B. Deal-Changing Risk Action Fallback ─────────────────────────────────────
 
 export const RISK_ACTION_FALLBACKS = {
-  maintenance: 'Ask for the roof age, boiler age, electrical panel details, plumbing history, HVAC condition, and recent repair records before viewing. Also inspect basement cracks, drainage, moisture intrusion, and foundation condition.',
+  maintenance: 'Ask for roof age, boiler/HVAC service records, electrical panel amperage, plumbing material, and basement moisture history before scheduling inspection.',
   // SFOC variant — for single-family owner-occupier profiles
   legal_sfoc_nyc: 'Ask for the Certificate of Occupancy and check NYC DOB records and permits for recent renovations before making an offer.',
   legal_sfoc_general: 'Ask for legal-use documents, permits for recent updates, and check local building department or county records before making an offer.',
   // Multi-family / rental variant — includes rental income verification
-  legal_nyc: 'Ask for the Certificate of Occupancy and check NYC DOB, HPD, and ACRIS records before relying on rental income or making an offer.',
-  legal_general: 'Ask for the Certificate of Occupancy and check local building department and county records before relying on rental income or making an offer.',
+  legal_nyc: 'Ask for the Certificate of Occupancy and check NYC DOB, HPD, and ACRIS records before relying on legal use, renovation claims, or investment assumptions.',
+  legal_general: 'Ask for the Certificate of Occupancy and check local building department and county records before relying on legal use, renovation claims, or investment assumptions.',
   environmental_nyc: 'Check FEMA flood maps, NYC flood maps, basement water history, and insurance quotes before estimating monthly costs.',
   environmental_general: 'Check local flood maps, FEMA flood maps, and basement water history before estimating monthly costs.',
   price: 'Request recent comparable sales and active listings within 0.5 miles to justify the asking price.',
@@ -238,48 +238,62 @@ export const QUESTION_FALLBACKS = [
   'Can you provide the Certificate of Occupancy or legal-use documents?',
 ] as const;
 
-// ── D. Listing Claims Fallbacks ─────────────────────────────────────────────────
-// 用于 Basic Report 的 "Listing Claims to Verify" 模块。
-// 每个条目包含关键词模式（匹配 listing 文本）和对应的解码文案。
-// Basic 模式不依赖图片，只基于 listing 文本提取 claims。
+// ── D. Locked Modules (US Basic v2 "Unlock Full Report" 卡) ─────────────────────
+// 用于 Basic Report 的 LockedModulesSection。6 张卡，每张 3-4 个 "Unlock to see" bullet。
+// 这些是 Full Report 才有的核心模块。
 
-export const LISTING_CLAIM_FALLBACKS: Array<{
-  keyword: RegExp;
-  phrase: string;
-  homeScopeCheck: string;
-  askBeforeViewing: string;
-}> = [
-  {
-    keyword: /legal 2-family|two.family|multi.family|rental.approved/i,
-    phrase: 'LEGAL 2-FAMILY',
-    homeScopeCheck: 'Listing-stated only. Confirm through Certificate of Occupancy and public records.',
-    askBeforeViewing: 'Can you provide the Certificate of Occupancy or legal-use documents?',
-  },
-  {
-    keyword: /\bTLC\b|needs work|needs updating|needs renovation|needs repair/i,
-    phrase: 'Needs TLC',
-    homeScopeCheck: 'This may mean repairs, renovations, or system updates are needed.',
-    askBeforeViewing: 'Are any repairs, renovations, or major system updates needed?',
-  },
-  {
-    keyword: /\svacant\b|delivered vacant|tenant vacated/i,
-    phrase: 'Delivered Vacant',
-    homeScopeCheck: 'Vacant properties can have maintenance, security, insurance, or deterioration concerns.',
-    askBeforeViewing: 'How long has it been vacant, and have utilities, heating, plumbing, and security been maintained?',
-  },
-  {
-    keyword: /sold as.is|as.is\b|as is\b/i,
-    phrase: 'Sold As-Is',
-    homeScopeCheck: 'As-is sales typically indicate the seller will not make repairs or provide credits.',
-    askBeforeViewing: 'Is the asking price reflective of the as-is condition, and are repairs needed before financing?',
-  },
-  {
-    keyword: /motivated seller|price reduced|price drop|price adjustment/i,
-    phrase: 'Motivated Seller / Price Reduced',
-    homeScopeCheck: 'Price reductions may signal pricing concerns, condition issues, or weak demand.',
-    askBeforeViewing: "Why has the price been reduced, and what is the seller's motivation?",
-  },
+export const MODULE_LOCK_FALLBACKS: Record<string, string[]> = {
+  'Photo & Space Analysis': [
+    'Dated bathrooms or kitchen signals',
+    'Basement condition clues',
+    'Layout and liveability issues',
+    'Exterior, garage, yard, and maintenance concerns',
+  ],
+  'Price Fairness': [
+    'Estimated value range vs. asking',
+    'Verdict (fair / over / under)',
+    'Valuation confidence',
+    'Missing data context',
+  ],
+  'Carrying Cost Breakdown': [
+    'Principal & Interest',
+    'Property tax detail',
+    'Insurance estimate',
+    'HOA + utilities split',
+  ],
+  'Agent Spin Decoder': [
+    'Listing language reality check',
+    'Phrase-by-phrase risk flags',
+    'Suggested follow-up questions',
+  ],
+  'Detailed Risk Analysis': [
+    'Maintenance risk severity',
+    'Legal & compliance risk',
+    'Environmental risk',
+    'Investment potential',
+  ],
+  'Who This Property Works For': [
+    'Buyer profile fit',
+    'Use case fit (primary / rental / multi-gen)',
+    'Not ideal for',
+  ],
+};
+
+/** Canonical order for the 6 locked modules. */
+export const LOCKED_MODULE_ORDER: ReadonlyArray<keyof typeof MODULE_LOCK_FALLBACKS> = [
+  'Photo & Space Analysis',
+  'Price Fairness',
+  'Carrying Cost Breakdown',
+  'Agent Spin Decoder',
+  'Detailed Risk Analysis',
+  'Who This Property Works For',
 ];
+
+/** Default upsell copy if AI did not provide one. */
+export const UPSELL_CTA_FALLBACK = {
+  title: 'Unlock Full Report',
+  body: 'Want the full picture? Full Report includes photo-based condition analysis, price confidence verdict, carrying-cost breakdown, agent language decoding, detailed risk analysis, and whether this property fits your buyer profile.',
+};
 
 // ── E. Property-Type-Specific Risk Action Fallbacks ─────────────────────────────
 

@@ -68,8 +68,6 @@ export function buildTopRiskCards(result: AnalysisResult): RiskCardProps[] {
   
   const mr = (result as any).maintenance_risk;
   const lc = (result as any).legal_compliance;
-  const er = (result as any).environmental_risk;
-
   // 1. Maintenance Risk
   if (mr?.rating && mr.rating !== 'Low') {
     const severity = mr.rating === 'High' ? 'High' : 'Medium';
@@ -91,18 +89,6 @@ export function buildTopRiskCards(result: AnalysisResult): RiskCardProps[] {
       severity,
       summary: lc.summary || 'Legal occupancy status and Certificate of Occupancy not verified.',
       action: 'Check DOB / ACRIS / Certificate of Occupancy.',
-    });
-  }
-
-  // 3. Insurance / Environmental Risk
-  if (er?.risk_level && er.risk_level !== 'Low') {
-    const severity = er.risk_level === 'High' ? 'High' : 'Medium';
-    cards.push({
-      icon: <Droplets size={18} strokeWidth={1.5} />,
-      title: 'Insurance / Flood',
-      severity,
-      summary: er.summary || 'Flood zone and hurricane exposure need verification.',
-      action: 'Verify FEMA flood zone and get insurance quote.',
     });
   }
 

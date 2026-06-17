@@ -76,6 +76,894 @@ const corsHeaders: Record<string, string> = {
   "Access-Control-Max-Age": "86400",
 };
 
+// ========== Property Intelligence Profile Builder ==========
+
+type PropertyIntelligenceCategory =
+  | 'single_family' | 'multi_family' | 'condo' | 'co_op'
+  | 'townhouse' | 'land' | 'manufactured' | 'unknown';
+type OwnershipModel = 'fee_simple' | 'condominium' | 'cooperative' | 'unknown';
+type ProfileConfidence = 'high' | 'medium' | 'low';
+
+interface PropertyIntelligenceProfile {
+  propertyCategory: PropertyIntelligenceCategory;
+  ownershipModel: OwnershipModel;
+  likelyBuyerUseCase: 'primary_residence' | 'investment' | 'mixed' | 'unknown';
+  primaryDecisionAxis: string[];
+  decisiveListingSignals: string[];
+  irrelevantGenericRisksToAvoid: string[];
+  confidence: ProfileConfidence;
+  hasZestimate: boolean;
+  hasRentZestimate: boolean;
+}
+
+interface BuildProfileInput {
+  normalizedPropertyCategory?: string | null;
+  propertyType?: string | null;
+  propertySubtype?: string | null;
+  homeType?: string | null;
+  listingText?: string | null;
+  yearBuilt?: number | null;
+  pricePerSqft?: number | null;
+  daysOnMarket?: number | null;
+  hoaAmount?: number | null;
+  taxHistory?: string | null;
+  zestimateAvailable?: boolean;
+  rentZestimateAvailable?: boolean;
+}
+
+// ── Category detection ─────────────────────────────────────────────────────────
+// Priority: normalizedPropertyCategory > structured fields (homeType/propertySubtype/propertyType) > listingText
+// Structured fields NEVER overridden by listingText keywords.
+// Use SINGLE patterns for all matching (no /i flag — pass pre-lowercased values).
+
+const PROPERTY_CATEGORY_PATTERNS: Array<[PropertyIntelligenceCategory, string[]]> = [
+  ['co_op',        ['co_op', 'coop', 'co op', 'stock cooperative', 'cooperative']],
+  ['condo',        ['condo', 'condominium', 'condop']],
+  ['multi_family', ['multi_family', 'multi family', 'duplex', 'triplex', '2 family', '2-family', 'legal 2 family', 'income unit', 'two family', 'two-family', 'three family', 'three-family', 'four family', 'four-family']],
+  ['townhouse',    ['townhouse', 'townhome', 'rowhouse', 'row house']],
+  ['land',         ['land', 'lot', 'vacant', 'development site', 'acreage']],
+  ['manufactured', ['manufactured', 'mobile home', 'double wide', 'double-wide', 'trailer']],
+  ['single_family', ['single family', 'single-family', 'single family residence', 'single-family residence', 'singlefamily', 'single_family', 'detached house', 'detached', 'house']],
+];
+
+function normalizeCategoryToken(raw: string): string {
+  return raw
+    // Split camelCase: "SingleFamily" → "Single Family"
+    .replace(/([a-z])([A-Z])/g, '$1 $2')
+    .replace(/([A-Z]+)([A-Z][a-z])/g, '$1 $2')
+    .toLowerCase()
+    .replace(/[_\-]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function detectPropertyCategory(input: BuildProfileInput): { category: PropertyIntelligenceCategory; source: string } {
+  // ── Priority 1: normalizedPropertyCategory (authoritative canonical value from UI/extractor) ──
+  if (input.normalizedPropertyCategory) {
+    const nc = normalizeCategoryToken(input.normalizedPropertyCategory);
+    for (const [cat, patterns] of PROPERTY_CATEGORY_PATTERNS) {
+      if (patterns.some(p => p === nc || nc === p)) return { category: cat, source: 'normalizedPropertyCategory' };
+    }
+    // normalizedPropertyCategory is set but didn't match any known category → treat as authoritative unknown
+    return { category: 'unknown', source: 'normalizedPropertyCategory' };
+  }
+
+  // ── Priority 2: structured fields (homeType, propertySubtype, propertyType) ──
+  // These are Zillow/API structured fields — more reliable than free-text listing description.
+  const structuredFields: Array<{ value: string | null | undefined; name: string }> = [
+    { value: input.homeType,         name: 'homeType' },
+    { value: input.propertySubtype,  name: 'propertySubtype' },
+    { value: input.propertyType,     name: 'propertyType' },
+  ];
+
+  for (const { value, name } of structuredFields) {
+    if (!value) continue;
+    const token = normalizeCategoryToken(value);
+    for (const [cat, patterns] of PROPERTY_CATEGORY_PATTERNS) {
+      if (patterns.some(p => p === token || token === p)) {
+        return { category: cat, source: name };
+      }
+    }
+  }
+
+  // ── Priority 3: listingText (last resort — never override structured fields) ──
+  // Only used when no structured fields are available.
+  const text = (input.listingText ?? '').toLowerCase();
+  for (const [cat, patterns] of PROPERTY_CATEGORY_PATTERNS) {
+    if (patterns.some(p => text.includes(p))) {
+      return { category: cat, source: 'listingText' };
+    }
+  }
+
+  return { category: 'unknown', source: 'none' };
+}
+
+function detectOwnershipModel(category: PropertyIntelligenceCategory): OwnershipModel {
+  if (category === 'co_op') return 'cooperative';
+  if (category === 'condo') return 'condominium';
+  if (category !== 'unknown') return 'fee_simple';
+  return 'unknown';
+}
+
+const DECISION_AXIS: Record<PropertyIntelligenceCategory, string[]> = {
+  co_op: [
+    'Board approval requirements and timeline',
+    'Monthly maintenance: total cost, what it includes, and any planned increases',
+    'Subletting rules and owner-occupancy requirements',
+    'Transfer/flip tax and acquisition fees if applicable',
+    'Building financial health: reserves, assessments, and capital expenditure plan',
+    'Financing restrictions and minimum down payment',
+  ],
+  condo: [
+    'HOA common charges and what they cover',
+    'Reserve fund balance and any pending special assessments',
+    'Rental restrictions, pet policies, and owner-occupancy ratio',
+    'Master insurance coverage and unit-owner insurance requirements',
+    'Litigation or pending legal issues with the HOA',
+  ],
+  multi_family: [
+    'Certificate of Occupancy: legal unit count and approved use for each unit',
+    'Current rent roll: actual rents, lease terms, and tenant status',
+    'Separate metering for utilities',
+    'Open violations: DOB, HPD, ECB, fire department',
+    'Rent stabilization or rent control status',
+    'Cap rate and NOI based on actual (not estimated) rents',
+  ],
+  single_family: [
+    'Roof, HVAC, electrical, and plumbing age and condition',
+    'Basement: permits, egress, legal use, and moisture history',
+    'Comparable sales for price confidence',
+    'Drainage, grading, and flood zone',
+  ],
+  townhouse: [
+    'HOA fees, what they cover, and exterior maintenance responsibility',
+    'HOA reserves, special assessments, and rules',
+    'Parking arrangements and deeded vs. rented spots',
+    'Comparable sales for price confidence',
+  ],
+  land: [
+    'Zoning: permitted uses, setbacks, FAR limits',
+    'Utilities: water, sewer, gas, electric at lot line',
+    'Flood zone and insurance requirements',
+    'Survey: easements, encroachments, lot dimensions',
+  ],
+  manufactured: [
+    'Land ownership: own the lot or rent in a park',
+    'Park rules, age restrictions, and pet policies',
+    'Financing options and title verification (HUD tag)',
+    'Foundation, anchoring, and skirting condition',
+  ],
+  unknown: [],
+};
+
+const IRRELEVANT_RISKS: Record<PropertyIntelligenceCategory, string[]> = {
+  co_op:        ['roof age', 'hvac age', 'electrical panel', 'plumbing material', 'boiler age', 'furnace age', 'heating system'],
+  condo:        ['roof age', 'hvac age', 'electrical panel', 'plumbing material', 'boiler age', 'furnace age', 'heating system'],
+  multi_family: ['roof age', 'hvac age', 'electrical panel'],
+  single_family: [],
+  townhouse:    ['roof age'],
+  land:         ['roof', 'hvac', 'electrical', 'plumbing', 'basement', 'boiler', 'furnace', 'heating'],
+  manufactured: ['roof', 'hvac', 'electrical', 'plumbing', 'basement', 'boiler', 'furnace', 'heating'],
+  unknown:      [],
+};
+
+function extractDecisiveSignals(text: string, category: PropertyIntelligenceCategory): string[] {
+  const signals: string[] = [];
+  const lower = text.toLowerCase();
+
+  if (category === 'co_op') {
+    const coopKeywords = [
+      ['subletting prohibited', 'no subletting', 'sublet not allowed'],
+      ['board approval', 'board package', 'board interview'],
+      ['flip tax', 'transfer fee', 'acquisition fee'],
+      ['maintenance includes', 'maintenance covers'],
+      ['share certificate'],
+      ['parking waitlist', 'no parking'],
+      ['no pets', 'pet policy'],
+    ];
+    for (const [primary, ...aliases] of coopKeywords) {
+      const all = [primary, ...aliases];
+      if (all.some(k => lower.includes(k))) signals.push(primary);
+    }
+  }
+
+  if (category === 'condo') {
+    const condoKeywords = [
+      ['hoa fee', 'monthly hoa', 'association fee'],
+      ['flip tax', 'transfer fee'],
+      ['rental restriction', 'no rentals', 'rentals not allowed'],
+      ['pet policy', 'no pets'],
+      ['litigation', 'pending lawsuit'],
+      ['reserve fund', 'underfunded reserves'],
+    ];
+    for (const [primary, ...aliases] of condoKeywords) {
+      const all = [primary, ...aliases];
+      if (all.some(k => lower.includes(k))) signals.push(primary);
+    }
+  }
+
+  if (category === 'multi_family') {
+    const mfKeywords = [
+      ['legal 2 family', 'legal two family', 'legal two-family'],
+      ['walk-in apartment', 'walk in apartment'],
+      ['mother-daughter', 'mother daughter'],
+      ['separate entrance', 'separate street entrance'],
+      ['income unit'],
+      ['rent stabilized', 'rent-controlled', 'rent controlled'],
+    ];
+    for (const [primary, ...aliases] of mfKeywords) {
+      const all = [primary, ...aliases];
+      if (all.some(k => lower.includes(k))) signals.push(primary);
+    }
+  }
+
+  return signals;
+}
+
+function computeProfileConfidence(
+  input: BuildProfileInput,
+  category: PropertyIntelligenceCategory,
+  signalCount: number,
+): ProfileConfidence {
+  if (
+    category !== 'unknown' &&
+    signalCount >= 2 &&
+    (input.zestimateAvailable || input.taxHistory)
+  ) {
+    return 'high';
+  }
+  if (category !== 'unknown' && (input.propertyType || signalCount >= 1)) {
+    return 'medium';
+  }
+  return 'low';
+}
+
+function buildPropertyIntelligenceProfile(input: BuildProfileInput): PropertyIntelligenceProfile & { categorySource: string } {
+  const { category, source } = detectPropertyCategory(input);
+  const ownershipModel = detectOwnershipModel(category);
+  const listingText = input.listingText ?? '';
+  const signals = extractDecisiveSignals(listingText, category);
+  const irrelevantRisks = IRRELEVANT_RISKS[category];
+
+  let likelyBuyerUseCase: 'primary_residence' | 'investment' | 'mixed' | 'unknown' = 'unknown';
+  if (category === 'multi_family') {
+    likelyBuyerUseCase = 'investment';
+  } else {
+    const isInvestment = /(?:investment|rental|income|cash flow)/i.test(listingText);
+    likelyBuyerUseCase = isInvestment ? 'investment' : 'primary_residence';
+  }
+
+  return {
+    propertyCategory: category,
+    ownershipModel,
+    likelyBuyerUseCase,
+    primaryDecisionAxis: DECISION_AXIS[category] ?? [],
+    decisiveListingSignals: signals,
+    irrelevantGenericRisksToAvoid: irrelevantRisks,
+    confidence: computeProfileConfidence(input, category, signals.length),
+    categorySource: source,
+    hasZestimate: input.zestimateAvailable ?? false,
+    hasRentZestimate: input.rentZestimateAvailable ?? false,
+  };
+}
+
+// ── Property-type-specific fallback pools (for normalize + guardrail) ──────────
+
+type CheckItem = { title: string; why_it_matters: string; action: string };
+
+const PROPERTY_TYPE_CHECK_POOL: Record<PropertyIntelligenceCategory, CheckItem[]> = {
+  co_op: [
+    { title: 'Board Approval & Timeline', why_it_matters: 'A co-op board can reject any buyer even after offer acceptance.', action: 'Ask about board package requirements, typical approval timeline, and any rejection history.' },
+    { title: 'Total Monthly Cost', why_it_matters: 'Monthly maintenance + flip tax can significantly affect true carrying cost.', action: 'Ask for the full maintenance breakdown, what it includes, and flip tax calculation.' },
+    { title: 'Subletting Rules', why_it_matters: 'Subletting restrictions affect resale liquidity and future flexibility.', action: 'Confirm subletting policy, duration limits, and any fees.' },
+    { title: 'Building Financial Health', why_it_matters: 'Underfunded reserves mean future special assessments — a hidden cost to all unit owners.', action: 'Ask for 2 years of financial statements and reserve fund balance.' },
+  ],
+  condo: [
+    { title: 'HOA Reserves & Assessments', why_it_matters: 'HOA fees are visible, but reserve fund health and pending special assessments are not.', action: 'Ask for the reserve fund balance, last reserve study, and any upcoming assessments.' },
+    { title: 'Rental Restrictions', why_it_matters: 'Rental restrictions affect resale liquidity and future flexibility.', action: 'Confirm rental limits, pet policies, and any right-of-first-refusal on resales.' },
+    { title: 'Master Insurance & Owner Coverage', why_it_matters: 'Building insurance coverage affects what unit owners must insure separately.', action: 'Confirm master policy coverage and any required unit-owner insurance.' },
+    { title: 'Owner-Occupancy Ratio', why_it_matters: 'Low owner-occupancy affects financing options and building management quality.', action: 'Ask about the current owner-occupancy ratio and financing restrictions.' },
+  ],
+  multi_family: [
+    { title: 'Legal Unit Count & CO', why_it_matters: 'The listing claims multi-family use, but CO must confirm legal unit count.', action: 'Ask for the Certificate of Occupancy to confirm legal unit count and approved use.' },
+    { title: 'Actual Rent Roll', why_it_matters: 'Rental income assumptions need verified rent rolls and lease copies.', action: 'Ask for the current rent roll and actual leases for each unit.' },
+    { title: 'Separate Metering', why_it_matters: 'Shared utilities affect operating expenses and net income.', action: 'Confirm whether utilities are separately metered for each unit.' },
+    { title: 'Open Violations', why_it_matters: 'Open violations can block financing and indicate deferred maintenance.', action: 'Ask about DOB, HPD, ECB, or fire department violations.' },
+  ],
+  single_family: [
+    { title: 'Roof and Major Systems', why_it_matters: 'Roof, HVAC, electrical, and plumbing are top repair costs in years 1–5.', action: 'Ask for roof age, HVAC age, electrical panel type, and recent system updates.' },
+    { title: 'Comparable Sales', why_it_matters: 'Without comparable sales, price confidence is low.', action: 'Ask for 3–5 recent nearby comparable sales.' },
+    { title: 'Basement Permits and Legal Use', why_it_matters: 'Unpermitted basement space can block financing and insurance.', action: 'Ask whether the basement is permitted, has proper egress, and is in legal sqft.' },
+  ],
+  townhouse: [
+    { title: 'HOA Fees & Exterior Responsibility', why_it_matters: 'Townhouse HOA covers exterior but scope varies — know what you\'re responsible for.', action: 'Ask for HOA documents and clarify exterior maintenance responsibilities.' },
+    { title: 'Comparable Sales', why_it_matters: 'Without comparable sales, price confidence is low.', action: 'Ask for 3–5 recent comparable townhouse sales in this HOA or neighborhood.' },
+    { title: 'Parking Arrangements', why_it_matters: 'Parking rights affect livability and resale value.', action: 'Confirm parking: deeded, assigned, or unassigned — and any guest rules.' },
+  ],
+  land: [
+    { title: 'Zoning & Permitted Uses', why_it_matters: 'Zoning determines what you can build or use the land for.', action: 'Verify zoning with the local planning department.' },
+    { title: 'Utilities at Lot Line', why_it_matters: 'Connecting utilities can cost tens of thousands.', action: 'Confirm availability and cost of water, sewer, gas, and electric.' },
+    { title: 'Flood Zone & Survey', why_it_matters: 'Flood zone affects insurance; survey confirms buildability.', action: 'Check FEMA flood maps and request a current survey.' },
+  ],
+  manufactured: [
+    { title: 'Land Ownership & Lot Rent', why_it_matters: 'If the lot is rented, lot rent is a non-negotiable ongoing cost.', action: 'Confirm whether the land is owned or rented and what the monthly lot rent is.' },
+    { title: 'Park Rules & Lot Rent Increases', why_it_matters: 'Park rules and pending lot rent increases affect total cost of ownership.', action: 'Ask for the park\'s rules, any pending rent increases, and recent park sales.' },
+    { title: 'HUD Tag & Title', why_it_matters: 'Without the HUD tag, resale may be difficult and financing options are limited.', action: 'Confirm the HUD tag number and whether title is clear.' },
+  ],
+  unknown: [],
+};
+
+const PROPERTY_TYPE_MISSING_POOL: Record<PropertyIntelligenceCategory, string[]> = {
+  co_op: [
+    'Monthly maintenance total cost and what it covers',
+    'Board approval requirements and timeline',
+    'Flip tax or transfer fee calculation',
+    'Subletting and owner-occupancy rules',
+    'Reserve fund balance and building financials',
+    'Financing restrictions and minimum down payment',
+  ],
+  condo: [
+    'HOA reserves, pending assessments, and special fees',
+    'Rental restrictions and pet policies',
+    'Master insurance coverage',
+    'Owner-occupancy ratio and financing restrictions',
+    'Litigation or pending legal issues',
+  ],
+  multi_family: [
+    'Certificate of Occupancy and legal unit count',
+    'Current rent roll and actual leases',
+    'Rent stabilization or rent control status',
+    'Open DOB/HPD/ECB violations',
+    'Separate utility metering',
+  ],
+  single_family: [
+    'Major systems age: roof / HVAC / electrical / plumbing',
+    'Basement permits, egress, and legal use',
+    'Comparable sales',
+    'Open permits or violations',
+    'Actual insurance and utility costs',
+  ],
+  townhouse: [
+    'HOA fees, what they cover, and exterior responsibility',
+    'HOA reserves and special assessment history',
+    'Parking arrangements and deeded vs. rented spots',
+    'Comparable sales',
+  ],
+  land: [
+    'Zoning and permitted uses',
+    'Utilities availability and connection cost',
+    'Flood zone and survey',
+    'Easements and deed restrictions',
+  ],
+  manufactured: [
+    'Land ownership and monthly lot rent',
+    'Park rules and lot rent increase history',
+    'HUD tag and title verification',
+    'Financing options available',
+  ],
+  unknown: [],
+};
+
+/**
+ * Signals specific to each property type that should be surfaced when AI returns
+ * empty or filtered-out listing_signals.  These are decision-axis signals that
+ * co-op/condo/multi-family buyers must know — not generic SF warnings.
+ */
+const PROPERTY_TYPE_SIGNAL_POOL: Record<string, Array<{ signal: string; reason: string }>> = {
+  co_op: [
+    { signal: 'Stock Cooperative Ownership', reason: 'This is a co-op — monthly maintenance, board approval, and subletting rules govern the transaction.' },
+    { signal: 'Subletting Prohibited or Restricted', reason: 'Subletting restrictions affect resale liquidity and future flexibility.' },
+    { signal: 'Maintenance May Include Utilities', reason: 'Monthly fee may cover utilities, but total carrying cost must still be verified.' },
+    { signal: 'Parking Waitlist May Apply', reason: 'Parking may not be available immediately — ask about waitlist length and fees.' },
+    { signal: 'No Zestimate or Tax History Available', reason: 'Co-ops often lack Zestimate and public tax records — verify all financials independently.' },
+  ],
+  condo: [
+    { signal: 'HOA Property', reason: 'HOA fees are listed, but reserve fund health and special assessments are not.' },
+    { signal: 'Rental Restrictions May Apply', reason: 'Rental limits affect resale liquidity and investment potential.' },
+    { signal: 'Owner-Occupancy Ratio Unknown', reason: 'Low owner-occupancy affects building management quality and financing options.' },
+  ],
+  multi_family: [
+    { signal: 'Multi-Family Claim', reason: 'Listing suggests multi-family use — Certificate of Occupancy must confirm legal unit count.' },
+    { signal: 'Basement: See Remarks', reason: 'Basement legality and permits must be verified before relying on that space.' },
+    { signal: 'No Zestimate or Rent Zestimate', reason: 'Investment metrics cannot be calculated without verified rent rolls.' },
+  ],
+  single_family: [],
+  townhouse: [],
+  land: [],
+  manufactured: [],
+  unknown: [],
+};
+
+/**
+ * Single-family dynamic backfill candidates for applySingleFamilyFinalGuard.
+ * Used to fill gaps after stripping multi-family content.
+ * NOT used for filtering — only for adding missing items.
+ */
+const SF_CANDIDATE_MISSING: string[] = [
+  'Comparable sales',
+  'Major systems age: roof / HVAC / electrical / plumbing',
+  'Basement permits, egress, and legal use',
+  'Open permits or violations',
+  'Actual insurance and utility costs',
+];
+
+const SF_CANDIDATE_CHECKS: Array<{ title: string; why_it_matters: string; action: string }> = [
+  {
+    title: 'Comparable Sales',
+    why_it_matters: 'Without comparable sales, price confidence is low — the listing price or Zestimate is not enough to judge fairness.',
+    action: 'Ask for 3–5 recent nearby comparable sales before relying on the asking price.',
+  },
+  {
+    title: 'Built in {{YEAR}}: Major Systems Age',
+    why_it_matters: 'A home from {{YEAR}} likely has aging roof, HVAC, electrical, or plumbing — all significant repair costs.',
+    action: 'Ask for roof age, HVAC age, electrical panel type, and any recent system updates.',
+  },
+  {
+    title: 'Basement: Permits, Egress, and Legal Use',
+    why_it_matters: 'Unpermitted basement space can block financing and insurance — permits and proper egress must be verified.',
+    action: 'Confirm whether the basement is permitted, legally finished, and has proper egress.',
+  },
+];
+
+const SF_CANDIDATE_QUESTIONS: Array<{ category: string; question: string }> = [
+  {
+    category: 'Condition',
+    question: 'What is the current condition and age of the roof, HVAC, electrical panel, plumbing, and water heater? Are there any known issues or recent repairs?',
+  },
+  {
+    category: 'Market',
+    question: 'Can you provide 3–5 recent comparable sales in the area to help assess whether the asking price is justified?',
+  },
+  {
+    category: 'Legal',
+    question: 'The listing mentions a basement — can you confirm whether it is permitted, legally finished, and has proper egress?',
+  },
+  {
+    category: 'Legal',
+    question: 'Are there any open permits, building violations, or unresolved DOB/HPD complaints on this property?',
+  },
+  {
+    category: 'Costs',
+    question: 'Can you confirm the annual property taxes, estimated insurance costs, and any HOA or community fees?',
+  },
+];
+
+/**
+ * Questions specific to each property type that should be asked when AI returns fewer
+ * than 5 questions or returns generic residential questions (roof/HVAC/plumbing).
+ * These questions are asked in the fallback pipeline — the AI may have already produced
+ * good questions, which are kept via dedup.  Pool items supplement, not replace.
+ */
+const PROPERTY_TYPE_QUESTION_POOL: Record<string, string[]> = {
+  co_op: [
+    'What is the current monthly maintenance, and exactly what does it include — utilities, property tax, underlying mortgage?',
+    'What are the board approval requirements, financing restrictions, and typical approval timeline?',
+    'What is the exact subletting policy — duration limits, fees, and board consent requirements?',
+    'Can you provide building financials, reserve fund balance, any recent assessments, and planned capital projects?',
+    'How long is the parking waitlist and what is the monthly parking fee?',
+    'Is there a flip tax or transfer fee, and if so, how is it calculated?',
+  ],
+  condo: [
+    'What are the HOA fees, what do they cover, and what is the reserve fund balance?',
+    'Are there any pending special assessments or recent reserve study findings?',
+    'What are the rental restrictions and pet policies?',
+    'What does the master insurance policy cover and what unit-owner insurance is required?',
+    'What is the current owner-occupancy ratio and are there financing restrictions?',
+  ],
+  multi_family: [
+    'Can you provide the Certificate of Occupancy confirming the legal unit count and approved use?',
+    'Can you provide the current rent roll and actual leases for each unit?',
+    'Are utilities separately metered for each unit, or does the owner pay for any utilities?',
+    'Are there any open DOB, HPD, ECB, or fire department violations on this property?',
+    'Are any units rent-stabilized or rent-controlled?',
+  ],
+  single_family: [],
+  townhouse: [],
+  land: [],
+  manufactured: [],
+  unknown: [],
+};
+
+/**
+ * Required decision-axis keywords per property type.  Used to determine whether the
+ * AI's top-3-things-to-check has adequate coverage before falling back to the pool.
+ * Coverage is satisfied when ≥ half the required keywords are matched.
+ */
+const REQUIRED_DECISION_KEYWORDS: Record<string, string[]> = {
+  co_op: ['board', 'maintenance', 'subletting', 'building financial', 'flip tax', 'monthly cost'],
+  condo: ['hoa', 'reserve', 'assessment', 'rental', 'insurance', 'owner-occupancy'],
+  multi_family: ['legal', 'co', 'certificate', 'rent roll', 'meter', 'violation'],
+  single_family: ['roof', 'hvac', 'comparable', 'basement', 'permit'],
+  townhouse: ['hoa', 'exterior', 'comparable', 'parking'],
+  land: [],
+  manufactured: [],
+  unknown: [],
+};
+
+/**
+ * Post-LLM guardrail: remove generic risks that should not appear for this propertyCategory.
+ * Falls back to property-type-specific pool if AI returned too few relevant items.
+ * Also filters signals based on available financial data (Zestimate/RentZestimate).
+ */
+function validateBasicReportAgainstProfile(
+  result: any,
+  profile: PropertyIntelligenceProfile & { hasZestimate?: boolean; hasRentZestimate?: boolean; categorySource?: string },
+  opts?: Record<string, unknown>,
+): any {
+  const avoid = profile.irrelevantGenericRisksToAvoid ?? [];
+  const hasZ = profile.hasZestimate ?? false;
+  const hasRentZ = profile.hasRentZestimate ?? false;
+
+  const avoidPatterns = avoid.map(r => new RegExp(r.replace(/\s+/g, '\\s*'), 'i'));
+
+  const isForbidden = (text: string) =>
+    avoidPatterns.some(p => p.test(text));
+
+  // Filter top_3_things_to_check
+  const existing = Array.isArray(result.top_3_things_to_check) ? result.top_3_things_to_check : [];
+  const filtered = existing.filter((item: any) => {
+    const combined = `${item.title ?? ''} ${item.why_it_matters ?? ''} ${item.action ?? ''}`;
+    return !isForbidden(combined);
+  });
+
+  // Supplement from type-specific pool if < 2 items
+  if (filtered.length < 2) {
+    const pool = PROPERTY_TYPE_CHECK_POOL[profile.propertyCategory] ?? [];
+    for (const sup of pool) {
+      if (filtered.length >= 3) break;
+      const supText = `${sup.title} ${sup.action}`;
+      if (!isForbidden(supText) && !filtered.some((f: any) => f.title === sup.title)) {
+        filtered.push(sup);
+      }
+    }
+  }
+
+  result.top_3_things_to_check = filtered.slice(0, 4);
+
+  // Filter whats_missing
+  if (Array.isArray(result.whats_missing)) {
+    result.whats_missing = result.whats_missing.filter((item: string) => {
+      if (isForbidden(item)) return false;
+      const lower = item.toLowerCase();
+      if (hasZ && /no zestimate|zestimate.*not available/i.test(lower)) return false;
+      if (hasRentZ && /no rent zestimate|rent zestimate.*not available/i.test(lower)) return false;
+      return true;
+    });
+
+    if (result.whats_missing.length < 4) {
+      const pool = PROPERTY_TYPE_MISSING_POOL[profile.propertyCategory] ?? [];
+      for (const gap of pool) {
+        if (result.whats_missing.length >= 6) break;
+        if (!isForbidden(gap) && !result.whats_missing.includes(gap)) {
+          result.whats_missing.push(gap);
+        }
+      }
+    }
+  }
+
+  // ── Repair listing_signals: filter forbidden + backfill from type-specific pool ──
+  if (Array.isArray(result.listing_signals)) {
+    result.listing_signals = result.listing_signals.filter((s: any) => {
+      const text = `${s.signal ?? ''} ${s.reason ?? ''}`.toLowerCase();
+      if (isForbidden(text)) return false;
+      // If Zestimate exists, filter out "No Zestimate" signals
+      if (hasZ && /no zestimate|zestimate.*not available|zestimate.*unavailable/i.test(text)) return false;
+      // If Rent Zestimate exists, filter out "No Rent Zestimate" signals
+      if (hasRentZ && /no rent zestimate|rent zestimate.*not available|rent zestimate.*unavailable/i.test(text)) return false;
+      return true;
+    });
+
+    // Backfill when AI returned empty or all forbidden signals
+    if (result.listing_signals.length === 0) {
+      const pool = PROPERTY_TYPE_SIGNAL_POOL[profile.propertyCategory] ?? [];
+      for (const sig of pool) {
+        if (result.listing_signals.length >= 4) break;
+        if (!isForbidden(`${sig.signal} ${sig.reason}`)) {
+          result.listing_signals.push(sig);
+        }
+      }
+    }
+
+    // ── Dynamic Zestimate signal injection ─────────────────────────────────────
+    // Prompt instructs AI to emit this, but it sometimes omits it.
+    // Inject directly when hasZestimate/hasRentZestimate is true and no signals generated.
+    if (result.listing_signals.length === 0 && (profile.hasZestimate || profile.hasRentZestimate)) {
+      const zVal = profile.hasZestimate ? (opts as any)?.zestimate ?? (result.what_we_know as any)?.zestimate : null;
+      const rzVal = profile.hasRentZestimate ? (opts as any)?.rentZestimate ?? (result.what_we_know as any)?.rentZestimate : null;
+      const zStr = zVal ? `Zestimate of $${Number(zVal).toLocaleString()}` : '';
+      const rzStr = rzVal ? `Rent Zestimate of $${Number(rzVal).toLocaleString()}/mo` : '';
+      const hasBoth = zStr && rzStr;
+      const suffix = hasBoth
+        ? `${zStr} and ${rzStr}`
+        : (zStr || rzStr);
+      result.listing_signals.push({
+        signal: 'Zillow Value Available',
+        reason: `Zillow shows ${suffix} — but comparable sales and actual assumptions still need verification.`,
+      });
+    }
+  }
+
+  // ── Repair bottom_line: only overwrite when truly forbidden content is present ──
+  const bl = (result.bottom_line ?? '').toString();
+  // Only rebuild when bottom_line contains genuinely wrong property-type content:
+  // multi-family terms in a single-family report, or Zestimate stated as missing when it exists
+  const FORBIDDEN_BL_PATTERNS = [
+    /rent roll|lease.*each.*unit|legal unit count|separate utility metering/i,
+    /multi.family|rental income|each.*unit.*legal/i,
+    /duplex.home|duplex.style/i,
+  ];
+  const hasForbiddenBL = FORBIDDEN_BL_PATTERNS.some(re => re.test(bl));
+  const trulyForbidden = hasForbiddenBL ||
+    (hasZ && /no zestimate|zestimate.*not available|zestimate.*unavailable/i.test(bl.toLowerCase()));
+  if (trulyForbidden) {
+    const wwKnow = result.what_we_know ?? {};
+    const price = wwKnow.asking_price ?? wwKnow.askingPrice ?? wwKnow.price ?? null;
+    const parts: string[] = [];
+    if (price) parts.push(typeof price === 'string' ? price : `$${Number(price).toLocaleString()}`);
+    const missingStr = (result.whats_missing ?? []).slice(0, 3).join(', ');
+    if (parts.length > 0 && missingStr) {
+      const typeLabel = profile.propertyCategory === 'co_op' ? 'co-op' :
+                        profile.propertyCategory === 'condo' ? 'condo' :
+                        profile.propertyCategory === 'multi_family' ? 'multi-family' : 'property';
+      result.bottom_line = `This ${typeLabel} at ${parts.join(', ')} is listed — but ${missingStr} still need verification.`;
+    }
+  }
+
+  // ── Supplement questions_to_ask from PROPERTY_TYPE_QUESTION_POOL ───────────────
+  if (Array.isArray(result.questions_to_ask)) {
+    const existingQ = (result.questions_to_ask as any[]).map((q: any) =>
+      (typeof q === 'string' ? q : (q.question ?? '')).toLowerCase()
+    );
+    const pool = PROPERTY_TYPE_QUESTION_POOL[profile.propertyCategory] ?? [];
+    for (const q of pool) {
+      if (result.questions_to_ask.length >= 5) break;
+      // #region agent log H1
+      fetch('http://127.0.0.1:7551/ingest/acb963f0-2502-480f-a2cb-a3edc4af3b03',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'05ad70'},body:JSON.stringify({sessionId:'05ad70',location:'analyze.ts:579',message:'PROPERTY_TYPE_QUESTION_POOL q type',data:{qType:typeof q,qValue:String(q).slice(0,50)},timestamp:Date.now()})}).catch(()=>{});
+      // #endregion
+      const qText = q;
+      const key = qText.toLowerCase().slice(0, 30);
+      const isDup = existingQ.some((eq: string) => eq.slice(0, 30) === key);
+      if (!isDup && !isForbidden(qText)) {
+        result.questions_to_ask.push(qText);
+        existingQ.push(key);
+      }
+    }
+  }
+
+  return result;
+}
+
+/**
+ * Final guard: strips multi-family/mixed-use content from single_family reports
+ * when category was determined from a structured field (homeType/propertySubtype/
+ * propertyType/normalizedPropertyCategory).
+ *
+ * Only activated when:
+ *   profile.propertyCategory === 'single_family'
+ *   AND categorySource is one of the structured field sources
+ *
+ * Stripped items are replaced by SF_CANDIDATE_* items based on available listing facts.
+ */
+function applySingleFamilyFinalGuard(
+  result: any,
+  profile: PropertyIntelligenceProfile & { categorySource?: string },
+  optionalDetails?: Record<string, unknown>,
+): any {
+  const isStructuredSingleFamily =
+    profile.propertyCategory === 'single_family' &&
+    profile.categorySource != null &&
+    ['homeType', 'propertySubtype', 'propertyType', 'normalizedPropertyCategory'].includes(profile.categorySource);
+
+  // ── Diagnostic logs ──────────────────────────────────────────────────────────
+  console.log('[SingleFamilyGuard] entered', {
+    propertyCategory: profile.propertyCategory,
+    categorySource: (profile as any).categorySource,
+    isStructuredSingleFamily,
+  });
+
+  if (!isStructuredSingleFamily) {
+    // Explain why guard was skipped
+    console.log('[SingleFamilyGuard] skipped', {
+      reason: profile.propertyCategory !== 'single_family'
+        ? `propertyCategory=${profile.propertyCategory} (not single_family)`
+        : `categorySource=${(profile as any).categorySource ?? 'null'} (not a structured field)`,
+    });
+    return result;
+  }
+
+  const opts = optionalDetails ?? {};
+  const wwKnow = result.what_we_know ?? {};
+  const listingText = String(opts.description ?? opts.listingDescription ?? '').toLowerCase();
+  const yearBuilt = opts.yearBuilt ?? wwKnow.year_built ?? null;
+  const hasPrice = !!(opts.askingPrice ?? wwKnow.asking_price ?? wwKnow.price);
+  const hasBasementMention = /basement|cellar|below.?grade|walk.?out/i.test(listingText);
+  const hasRenovationMention = /renovation|updated|remodel|newly.?done/i.test(listingText);
+
+  // ── Patterns that indicate multi-family / mixed-use — must be stripped ──────────
+  const FORBIDDEN_MULTIFAMILY_PATTERNS: RegExp[] = [
+    /rent roll|rentroll/i,
+    /lease[^s\b]|leases for each unit|unit lease|lease for each/i,
+    /separate utility metering|utility metering per unit|separate meter.*unit/i,
+    /legal unit count|unit count.*legal|how many units/i,
+    /multi.family claim/i,
+    /rental income reliance|rental income as|rely on rental income/i,
+    /two.unit|two-unit|two unit|2.unit|2-unit|2 unit/i,
+    /mother.daughter|motherdaughter|mother daughter/i,
+    /walk.in apartment|walk.in basement/i,
+    /approved use for each unit|legal.*each.*unit|each.*unit.*legal/i,
+    /separate entrance.*rental|rental.*separate entrance|income unit/i,
+  ];
+
+  const hasForbidden = (text: string) =>
+    FORBIDDEN_MULTIFAMILY_PATTERNS.some(re => re.test(text));
+
+  // ── Strip from bottom_line ───────────────────────────────────────────────────
+  const origBottomLine = result.bottom_line ?? '';
+  let finalBottomLine = origBottomLine;
+  if (hasForbidden(origBottomLine)) {
+    // Rebuild bottom_line from known listing facts (safe SF content)
+    const parts: string[] = [];
+    if (hasPrice) {
+      const p = opts.askingPrice ?? wwKnow.asking_price ?? wwKnow.price;
+      parts.push(typeof p === 'string' ? p : `$${Number(p).toLocaleString()}`);
+    }
+    if (wwKnow.beds || wwKnow.bedrooms) parts.push(`${wwKnow.beds ?? wwKnow.bedrooms} bed`);
+    if (wwKnow.baths || wwKnow.bathrooms) parts.push(`${wwKnow.baths ?? wwKnow.bathrooms} bath`);
+    if (wwKnow.sqft || wwKnow.square_feet) parts.push(`${wwKnow.sqft ?? wwKnow.square_feet} sqft`);
+    if (yearBuilt) parts.push(`built ${yearBuilt}`);
+    if (opts.propertyType) parts.push(opts.propertyType as string);
+
+    const knownFacts = parts.join(', ');
+    const sfMissing: string[] = [];
+    const hasMajorSystems = yearBuilt && Number(yearBuilt) <= new Date().getFullYear() - 40;
+    if (!wwKnow.comparable_sales && !wwKnow.comparableSales) sfMissing.push('comparable sales');
+    if (hasBasementMention) sfMissing.push('basement permits, egress, and legal use');
+    if (hasMajorSystems) sfMissing.push('major systems age: roof / HVAC / electrical / plumbing');
+    if (!wwKnow.home_condition && !wwKnow.condition && !hasMajorSystems) {
+      sfMissing.push('major systems age: roof / HVAC / electrical / plumbing');
+    }
+    sfMissing.push('open permits or violations');
+    if (!wwKnow.taxes && !wwKnow.annual_tax && !opts.annualTax && !opts.taxAnnual) {
+      sfMissing.push('actual insurance and utility costs');
+    }
+    const missingStr = sfMissing.length > 0 ? sfMissing.slice(0, 4).join(', ') : 'key facts';
+
+    if (knownFacts) {
+      finalBottomLine = `This ${opts.propertyType ?? 'property'} at ${knownFacts} — but ${missingStr} still need verification before committing.`;
+    } else {
+      finalBottomLine = `Key basics such as ${missingStr} are missing or unclear for this listing.`;
+    }
+    result.bottom_line = finalBottomLine;
+  }
+
+  // ── Strip from listing_signals ───────────────────────────────────────────────
+  const origSignalCount = Array.isArray(result.listing_signals) ? result.listing_signals.length : 0;
+  if (Array.isArray(result.listing_signals)) {
+    const rewritten: any[] = [];
+    for (const s of result.listing_signals) {
+      const signalText = `${s.signal ?? ''} ${s.reason ?? ''}`;
+      if (hasForbidden(signalText)) continue; // drop forbidden signals
+      if (/duplex.home|duplex.style|duplex.layout|duplex.description/i.test(signalText)) {
+        rewritten.push({
+          signal: 'Listing Wording Differs from Structured Facts',
+          reason: 'The listing description uses "duplex" wording, but Zillow structured facts list this as Single Family Residence. Clarify whether "duplex" refers to layout or style only, not legal multi-unit use.',
+        });
+        continue;
+      }
+      rewritten.push(s);
+    }
+    result.listing_signals = rewritten;
+  }
+
+  // ── Strip from whats_missing ────────────────────────────────────────────────
+  const origMissing = Array.isArray(result.whats_missing) ? [...result.whats_missing] : [];
+  if (Array.isArray(result.whats_missing)) {
+    result.whats_missing = (result.whats_missing as string[]).filter(item => !hasForbidden(item));
+  }
+
+  // ── Strip from top_3_things_to_check ────────────────────────────────────────
+  const origTop3 = Array.isArray(result.top_3_things_to_check) ? [...result.top_3_things_to_check] : [];
+  if (Array.isArray(result.top_3_things_to_check)) {
+    result.top_3_things_to_check = (result.top_3_things_to_check as any[]).filter(item => {
+      const combined = `${item.title ?? ''} ${item.why_it_matters ?? ''} ${item.action ?? ''}`;
+      return !hasForbidden(combined);
+    });
+  }
+
+  // ── Strip from questions_to_ask ──────────────────────────────────────────────
+  const origQuestions = Array.isArray(result.questions_to_ask) ? [...result.questions_to_ask] : [];
+  if (Array.isArray(result.questions_to_ask)) {
+    result.questions_to_ask = (result.questions_to_ask as any[]).filter(q => {
+      const text = typeof q === 'string' ? q : (q.question ?? '');
+      return !hasForbidden(text);
+    });
+  }
+
+  // ── Dynamic backfill from SF_CANDIDATE_POOL ────────────────────────────────
+  if (Array.isArray(result.whats_missing)) {
+    const existingMissing = new Set((result.whats_missing as string[]).map(m => m.toLowerCase()));
+    // Concept dedup: check for semantic overlap, not just exact match
+    const hasMajorSystemsConcept = existingMissing.has('major systems age: roof / hvac / electrical / plumbing') ||
+      existingMissing.has('major systems age') ||
+      /major system|roof age|roof.*hvac|roof.*electrical|roof.*plumb/i.test(Array.from(existingMissing).join(' '));
+    const candidates: string[] = [];
+    if (!existingMissing.has('comparable sales') && hasPrice) candidates.push('Comparable sales');
+    if (!hasMajorSystemsConcept && yearBuilt) candidates.push('Major systems age: roof / HVAC / electrical / plumbing');
+    if (!existingMissing.has('basement permits, egress, and legal use') && hasBasementMention) candidates.push('Basement permits, egress, and legal use');
+    if (!existingMissing.has('open permits or violations')) candidates.push('Open permits or violations');
+    if (!existingMissing.has('actual insurance and utility costs') && hasPrice) candidates.push('Actual insurance and utility costs');
+    if (hasRenovationMention && !existingMissing.has('renovation permits and inspection history')) {
+      candidates.push('Renovation permits and inspection history');
+    }
+    for (const c of candidates) {
+      if ((result.whats_missing as string[]).length >= 6) break;
+      if (!existingMissing.has(c.toLowerCase())) {
+        (result.whats_missing as string[]).push(c);
+        existingMissing.add(c.toLowerCase());
+      }
+    }
+  }
+
+  if (Array.isArray(result.top_3_things_to_check)) {
+    const existingTitles = new Set((result.top_3_things_to_check as any[]).map(i => (i.title ?? '').toLowerCase()));
+    if ((result.top_3_things_to_check as any[]).length < 3) {
+      if (!existingTitles.has('comparable sales') && hasPrice) {
+        (result.top_3_things_to_check as any[]).push({
+          title: 'Comparable Sales',
+          why_it_matters: 'Without comparable sales, price confidence is low — the listing price or Zestimate is not enough to judge fairness.',
+          action: 'Ask for 3–5 recent nearby comparable sales before relying on the asking price.',
+        });
+      }
+      if (!existingTitles.has(`built in ${yearBuilt ?? ''}: major systems age`) && yearBuilt) {
+        (result.top_3_things_to_check as any[]).push({
+          title: `Built in ${yearBuilt}: Major Systems Age`,
+          why_it_matters: `A home from ${yearBuilt} likely has aging roof, HVAC, electrical, or plumbing — all significant repair costs before year one.`,
+          action: 'Ask for roof age, HVAC age, electrical panel type, and any recent system updates.',
+        });
+      }
+      if (!existingTitles.has('basement: permits, egress, and legal use') && hasBasementMention) {
+        (result.top_3_things_to_check as any[]).push({
+          title: 'Basement: Permits, Egress, and Legal Use',
+          why_it_matters: 'Unpermitted basement space can block financing and insurance — permits and proper egress must be verified.',
+          action: 'Confirm whether the basement is permitted, legally finished, and has proper egress.',
+        });
+      }
+    }
+  }
+
+  if (Array.isArray(result.questions_to_ask)) {
+    const existingQ = new Set(
+      (result.questions_to_ask as any[]).map(q =>
+        (typeof q === 'string' ? q : (q.question ?? '')).toLowerCase().slice(0, 30)
+      )
+    );
+    for (const q of SF_CANDIDATE_QUESTIONS) {
+      if ((result.questions_to_ask as any[]).length >= 5) break;
+      const key = q.question.toLowerCase().slice(0, 30);
+      if (!existingQ.has(key)) {
+        if (q.question.includes('basement') && !hasBasementMention) continue;
+        (result.questions_to_ask as any[]).push(q);
+        existingQ.add(key);
+      }
+    }
+  }
+
+  // ── Diagnostic summary ───────────────────────────────────────────────────────
+  console.log('[SingleFamilyGuard] scrubbed', {
+    bottomLineChanged: finalBottomLine !== origBottomLine,
+    bottomLineBefore: origBottomLine,
+    bottomLineAfter: result.bottom_line,
+    removedMissingCount: origMissing.length - (Array.isArray(result.whats_missing) ? result.whats_missing.length : 0),
+    removedTopChecksCount: origTop3.length - (Array.isArray(result.top_3_things_to_check) ? result.top_3_things_to_check.length : 0),
+    removedQuestionsCount: origQuestions.length - (Array.isArray(result.questions_to_ask) ? result.questions_to_ask.length : 0),
+    finalMissing: result.whats_missing,
+    finalTopChecks: result.top_3_things_to_check,
+    finalQuestions: result.questions_to_ask,
+  });
+
+  return result;
+}
+
 // ========== Auth Helpers ==========
 
 interface UserProfile {
@@ -803,6 +1691,49 @@ function pickCoverImage(imageUrls: string[]): string | null {
 }
 
 /**
+ * Strips MLS / data-source boilerplate from a listing description before it is
+ * sent to the Reality Check AI. Handles full-line, trailing, and inline patterns.
+ */
+const MLS_BP_PATTERNS = [
+  'mls\\s*grid', 'not been verified', 'may not have been verified',
+  'multiple listing service', 'real estate database', 'idx\\s*information',
+  'as\\s+distributed\\s+by', 'listing\\s+provided\\s+by',
+  'mls\\s*logo', 'report\\s+a\\s+problem',
+  'source\\s*:\\s*\\S+\\s+mls', 'onekey®?\\s*mls',
+  'properties may or may not be listed',
+];
+const MLS_BP_RE = new RegExp('\\b(' + MLS_BP_PATTERNS.join('|') + ')\\b', 'gi');
+
+const MLS_FL_PATTERNS = [
+  'source\\s*:', 'mls\\s*#', 'mls\\s*id\\s*#', 'mls\\s*logo',
+  'report\\s+a\\s*problem', 'listing\\s+provided\\s*by',
+  'idx\\s*information', 'as\\s+distributed\\s+by\\s+mls\\s*grid',
+  'mls\\s*grid', 'onekey®?\\s*mls',
+  'Properties\\s+may\\s+or\\s+may\\s+not\\s+be\\s+listed',
+];
+const MLS_FL_RE = new RegExp('^(' + MLS_FL_PATTERNS.join('|') + ')\\b', 'i');
+
+const MLS_TR_PATTERNS = [
+  'mls\\s*grid', 'information deemed reliable',
+  'not been verified', 'may not have been verified',
+  'as distributed by', 'listing provided by',
+  'source\\s*:', 'idx\\s*information',
+];
+const MLS_TR_RE = new RegExp('(?:\\.\\s*){2,}\\s*(?:' + MLS_TR_PATTERNS.join('|') + ')\\b', 'i');
+
+function stripMlsFromDescription(raw) {
+  if (!raw) return raw;
+  const lines = raw.split(/\r?\n/);
+  const filtered = lines.filter(line => !MLS_FL_RE.test(line.trim()));
+  let cleaned = filtered.join('\n');
+  const ti = cleaned.search(MLS_TR_RE);
+  if (ti !== -1) cleaned = cleaned.slice(0, ti).replace(/\.\\s*$/, '').trim();
+  cleaned = cleaned.replace(MLS_BP_RE, '').replace(/\n{3,}/g, '\n\n').trim();
+  return cleaned;
+}
+
+
+/**
  * Create a new analysis record in the analyses table
  */
 async function createAnalysisRecord(
@@ -817,7 +1748,7 @@ async function createAnalysisRecord(
 ): Promise<{ success: boolean; error?: string }> {
   // Extract title/address from description if available
   const title = extractTitleFromDescription(description);
-  const address = optionalDetails?.suburb as string | undefined;
+  const address = (optionalDetails?.address as string | undefined) || (optionalDetails?.suburb as string | undefined);
   const coverImage = pickCoverImage(imageUrls);
 
   console.log("=== createAnalysisRecord called ===");
@@ -1825,22 +2756,34 @@ Use "verify" language — do not assert illegal or legal status without evidence
 ================================
 QUESTIONS TO ASK BEFORE OFFER
 ================================
-Generate at least 8 specific, practical questions. Base them on the ACTUAL property signals, not generic questions.
+Generate 0 to 6 buyer questions for this specific property.
 
-For Brooklyn multi-family examples:
-- Is it legally registered as a 2-family property?
-- What does the Certificate of Occupancy allow?
-- Is the walk-in apartment legal to rent?
-- Are there any open permits or violations?
-- What is the roof age and condition?
-- What is the electrical panel amperage?
-- Any history of water intrusion?
-- What is the realistic market rent for the secondary unit?
-- What are annual insurance costs?
-- Is the property in a flood zone or hurricane evacuation zone?
-- Are any units subject to rent stabilization?
-- Has there been any recent price reduction?
-- What are nearby comparable sales?
+Only include questions that are genuinely useful for this listing. Do not force coverage of every category. Do not add questions just to reach a target count.
+
+Each question should be natural, specific, and written like something a serious buyer would ask the listing agent before viewing or making an offer.
+
+Base questions on concrete listing signals, missing details, contradictions, photo findings, financials, or agent language.
+
+Examples of signals that may justify questions:
+- finished basement, basement size, outside entrance, or unclear legal use
+- extension / build-out potential
+- zoning or lot-size claims
+- unusually high price per sqft
+- missing or unclear major system ages
+- dated bathrooms, visible condition issues, or garage concerns
+- unusual seller requirements such as buyer qualification
+- unclear cooling/heating setup
+- price cuts, relisting history, or stale days on market
+- HOA / ownership ambiguity
+- school, transit, flood, or insurance claims only if they are material or unclear
+
+Do not ask about a topic if the listing already provides enough clear information and there is no meaningful risk or uncertainty.
+
+Do not generate generic template questions.
+Do not repeat the same topic.
+Do not ask multiple versions of the same legal-use, comps, permit, cost, or public-records question.
+
+Return only the strongest questions. It is acceptable to return 0, 1, 2, 3, 4, 5, or 6 questions depending on the available evidence.
 
 ================================
 DATA GAPS
@@ -2073,17 +3016,8 @@ CRITICAL: You MUST include ALL fields listed below. Empty arrays are allowed but
     "external_sources_needed": ["FEMA flood map", "NYC flood maps", "insurance quote"]
   },
 
-  // QUESTIONS TO ASK — at least 8
-  "questions_to_ask": [
-    "specific question 1",
-    "specific question 2",
-    "specific question 3",
-    "specific question 4",
-    "specific question 5",
-    "specific question 6",
-    "specific question 7",
-    "specific question 8"
-  ],
+  // QUESTIONS TO ASK — 0 to 6, based on genuine signals only
+  "questions_to_ask": [],
 
   // DATA GAPS
   "data_gaps": [
@@ -2125,7 +3059,7 @@ CRITICAL: You MUST include ALL fields listed below. Empty arrays are allowed but
   // =============================================
   // - pros: max 4 items, each ≤ 120 characters
   // - cons: max 5 items, each ≤ 120 characters
-  // - questions_to_ask: max 8 items, each ≤ 120 characters
+  // - questions_to_ask: max 6 items, each ≤ 120 characters
   // - data_gaps: max 5 items
   // - listing_language_reality_check: max 4 items
   // - maintenance_risk.risk_factors: max 4 items
@@ -3415,6 +4349,28 @@ function buildVerifiedFactsFromPayload(body: Record<string, unknown>, optionalDe
   };
   const displayType = DISPLAY_TYPE_MAP[normalizedPropertyCategory] ?? 'Not clearly disclosed';
 
+  // ── HOA 冲突检测 ─────────────────────────────────────────────────────────────
+  // 检测 hoaStatus 和 hoaFee 之间的矛盾
+  const hoaStatusRaw = (zillowFinancials as any)?.monthlyPayment?.hoaFees?.status;
+  const hoaValueRaw = (zillowFinancials as any)?.monthlyPayment?.hoaFees?.value;
+  const hoaFeeFromOd = parseVerifiedNumberLocal(od.hoaFee);
+  const hoaStatusText = String(od.hoaStatus ?? '').toLowerCase();
+  const hoaIsExplicitlyNo = hoaStatusRaw === 'not_applicable' ||
+    /n\/a|no\s*hoa|hoa\s*n\/a|hoa.*none|has\s*hoa.*no/i.test(hoaStatusText);
+  // 冲突: 明确说 No HOA / N/A 但有 hoaFee 数值
+  const hasHoAConflict = hoaIsExplicitlyNo && hoaFeeFromOd != null;
+
+  let hoa: 'no' | 'yes' | 'unknown' | 'inconsistent';
+  if (hasHoAConflict) {
+    hoa = 'inconsistent';
+  } else if (hoaIsExplicitlyNo) {
+    hoa = 'no';
+  } else if (hoaValueRaw != null || hoaFeeFromOd != null) {
+    hoa = 'yes';
+  } else {
+    hoa = 'unknown';
+  }
+
   return {
     address: String(od.address ?? od.fullAddress ?? od.streetAddress ?? od.suburb ?? '') || null,
     price: parseVerifiedNumberLocal(od.askingPrice ?? od.price) ?? null,
@@ -3443,8 +4399,9 @@ function buildVerifiedFactsFromPayload(body: Record<string, unknown>, optionalDe
     principalAndInterest: (zillowFinancials as any)?.monthlyPayment?.principalAndInterest?.value ?? null,
     propertyTaxMonthly: (zillowFinancials as any)?.monthlyPayment?.propertyTaxes?.value ?? (verifiedAnnualTax != null ? Math.round(verifiedAnnualTax / 12) : null),
     homeInsuranceMonthly: (zillowFinancials as any)?.monthlyPayment?.homeInsurance?.value ?? null,
-    hoa: (((zillowFinancials as any)?.monthlyPayment?.hoaFees?.status === 'not_applicable') ? 'no' : (((zillowFinancials as any)?.monthlyPayment?.hoaFees?.value != null || od.hoaFee) ? 'yes' : 'unknown')),
-    hoaAmount: (zillowFinancials as any)?.monthlyPayment?.hoaFees?.value ?? parseVerifiedNumberLocal(od.hoaFee) ?? null,
+    hoa: hoa as 'no' | 'yes' | 'unknown' | 'inconsistent',
+    hoaAmount: hoaValueRaw ?? hoaFeeFromOd ?? null,
+    hoaConflict: hasHoAConflict ? true : undefined,
     utilitiesIncluded: ((zillowFinancials as any)?.monthlyPayment?.utilities?.status === 'not_included') ? false : (((zillowFinancials as any)?.monthlyPayment?.utilities?.value != null) ? true : null),
     annual_tax: verifiedAnnualTax,
     annual_tax_display: verifiedAnnualTaxDisplay,
@@ -3460,6 +4417,12 @@ function buildVerifiedFactsFromPayload(body: Record<string, unknown>, optionalDe
     rawHomeType,
     rawPropertyType,
     rawPropertySubtype,
+    // ── Location Facts ─────────────────────────────────────────────────────────
+    floodZone: String(od.floodZone ?? '') || null,
+    walkScore: String(od.walkScore ?? '') || null,
+    bikeScore: String(od.bikeScore ?? '') || null,
+    neighborhood: String(od.neighborhood ?? '') || null,
+    architecturalStyle: String(od.architecturalStyle ?? '') || null,
     fieldEvidence: (body as any)?.listingFacts?.evidence ?? null,
   };
 }
@@ -3625,12 +4588,152 @@ function lockVerifiedFactsIntoResult(finalReport: Record<string, any>, verifiedF
   if (verifiedFacts.monthlyPayment != null) {
     finalReport.carrying_costs.primary_monthly_estimate = verifiedFacts.monthlyPayment;
   }
-  if (verifiedFacts.hoa === 'no') {
+  // ── HOA 冲突处理 ──────────────────────────────────────────────────────────
+  if (verifiedFacts.hoa === 'inconsistent') {
+    finalReport.carrying_costs.hoa = 'Verify HOA Status';
+    finalReport.carrying_costs.hoa_conflict = true;
+    if (verifiedFacts.hoaAmount != null) {
+      finalReport.carrying_costs.hoa_amount = verifiedFacts.hoaAmount;
+    }
+  } else if (verifiedFacts.hoa === 'no') {
     finalReport.carrying_costs.hoa = 'No';
   } else if (verifiedFacts.hoa === 'yes') {
     finalReport.carrying_costs.hoa = 'Yes';
     if (verifiedFacts.hoaAmount != null) finalReport.carrying_costs.hoa_amount = verifiedFacts.hoaAmount;
   }
+  // 如果 hoa === 'unknown', 不设置 carrying_costs.hoa（让它保持 undefined）
+
+  // ── Zestimate 锁定 ─────────────────────────────────────────────────────────
+  if (verifiedFacts.zestimate != null) {
+    finalReport.price_assessment.zestimate = verifiedFacts.zestimate;
+    finalReport.price_assessment.zillow_estimate = verifiedFacts.zestimate;
+  }
+  if (verifiedFacts.rentZestimate != null) {
+    finalReport.price_assessment.rent_zestimate = verifiedFacts.rentZestimate;
+  }
+
+  // ── Market Time Guard: extended market time / stale listing only for DOM >= 60 ─
+  {
+    const dom = verifiedFacts.daysOnMarket ?? verifiedFacts.daysOnZillow;
+    const domNum = typeof dom === 'number' ? dom : parseInt(String(dom), 10);
+    const hasValidDom = Number.isFinite(domNum);
+    const isShortDom = hasValidDom && domNum < 30;
+    const isMidDom = hasValidDom && domNum >= 30 && domNum < 60;
+
+    if (isShortDom) {
+      // daysOnZillow < 30: never use extended market time / stale listing language
+      const applyShortDomReplacements = (obj: unknown): void => {
+        if (typeof obj !== 'object' || obj === null || typeof obj === 'function') return;
+        if (Array.isArray(obj)) { obj.forEach(applyShortDomReplacements); return; }
+        for (const k of Object.keys(obj)) {
+          const v = (obj as Record<string, unknown>)[k];
+          if (typeof v === 'string') {
+            const next = v
+              .replace(/\bextended market time\b/gi, 'short market time')
+              .replace(/\blong time on market\b/gi, 'early market stage')
+              .replace(/\bstale listing\b/gi, 'fresh listing')
+              .replace(/\blast longer to sell\b/gi, 'recently listed')
+              .replace(/\bhas been on the market\b/gi, 'recently listed');
+            if (next !== v) (obj as Record<string, unknown>)[k] = next;
+          } else {
+            applyShortDomReplacements(v);
+          }
+        }
+      };
+      applyShortDomReplacements(finalReport);
+    }
+
+    if (isMidDom) {
+      // 30 <= daysOnZillow < 60: soften language
+      const applyMidDomReplacements = (obj: unknown): void => {
+        if (typeof obj !== 'object' || obj === null || typeof obj === 'function') return;
+        if (Array.isArray(obj)) { obj.forEach(applyMidDomReplacements); return; }
+        for (const k of Object.keys(obj)) {
+          const v = (obj as Record<string, unknown>)[k];
+          if (typeof v === 'string') {
+            const next = v
+              .replace(/\bextended market time\b/gi, 'market response still developing')
+              .replace(/\blong time on market\b/gi, 'early market response period');
+            if (next !== v) (obj as Record<string, unknown>)[k] = next;
+          } else {
+            applyMidDomReplacements(v);
+          }
+        }
+      };
+      applyMidDomReplacements(finalReport);
+    }
+  }
+
+  // ── Flood Zone: Phase 4 structural repair on environmental_risk ─────────────
+  if (verifiedFacts.floodZone) {
+    finalReport.property_snapshot.floodZone = verifiedFacts.floodZone;
+
+    const fz = verifiedFacts.floodZone;
+    const zoneDisplay = String(fz).startsWith('FEMA') ? String(fz) : `FEMA Zone: ${fz}`;
+    const isMinimalRisk = /Zone X|minimal|unshaded/i.test(zoneDisplay);
+    const envRisk = finalReport.environmental_risk as Record<string, unknown> | undefined;
+
+    if (envRisk && typeof envRisk === 'object') {
+      const defaultSummary = isMinimalRisk
+        ? `${zoneDisplay}, a minimal FEMA flood-risk area. Still verify insurance requirements, drainage, and any water-intrusion history.`
+        : `${zoneDisplay}. Verify insurance requirements, flood maps, basement water history, and local storm/drainage exposure.`;
+
+      const existingSummary = String(envRisk.summary ?? envRisk.description ?? '');
+      const needsOverride = !existingSummary
+        || /not stated|unknown|not disclosed|not provided/i.test(existingSummary)
+        || existingSummary === 'Environmental Risk';
+
+      if (needsOverride) {
+        if ('summary' in envRisk) envRisk.summary = defaultSummary;
+        else if ('description' in envRisk) envRisk.description = defaultSummary;
+      }
+
+      if ('title' in envRisk) {
+        envRisk.title = isMinimalRisk
+          ? 'Flood / Drainage — Lower FEMA Risk, Still Verify'
+          : 'Flood / Drainage Verification';
+      }
+
+      if (!('risk_level' in envRisk) || /unknown|not provided/i.test(String(envRisk.risk_level ?? ''))) {
+        envRisk.risk_level = isMinimalRisk ? 'Low / Verify' : 'Medium';
+      }
+
+      if (!envRisk.items_to_check || !Array.isArray(envRisk.items_to_check)) {
+        (envRisk as Record<string, unknown>).items_to_check = [];
+      }
+      const items: string[] = (envRisk as Record<string, unknown>).items_to_check as string[];
+      if (!items.some((item) => /flood/i.test(String(item)))) {
+        items.unshift(`Flood Zone: ${zoneDisplay} — verify insurance cost and basement water history`);
+      }
+    }
+
+    // Fix generic flood questions in top-level questions arrays
+    const topQuestions: unknown[] =
+      finalReport.questions_to_ask
+      ?? finalReport.questions
+      ?? [];
+    const floodQReplacement = 'Does the stated flood zone affect insurance requirements, drainage risk, or basement water history?';
+    for (const q of topQuestions) {
+      if (typeof q === 'object' && q !== null) {
+        const qObj = q as Record<string, unknown>;
+        const qText = String(qObj.text ?? qObj.question ?? '');
+        if (/is the property in a flood zone\?/i.test(qText)) {
+          if ('text' in qObj) qObj.text = floodQReplacement;
+          if ('question' in qObj) qObj.question = floodQReplacement;
+        }
+      } else if (typeof q === 'string' && /is the property in a flood zone\?/i.test(q)) {
+        const idx = topQuestions.indexOf(q);
+        topQuestions[idx] = floodQReplacement;
+      }
+    }
+  }
+
+  // ── Address 确定性锁定 ─────────────────────────────────────────────────────
+  if (verifiedFacts.address) {
+    finalReport.verifiedFacts = finalReport.verifiedFacts || {};
+    finalReport.verifiedFacts.address = verifiedFacts.address;
+  }
+
   if (verifiedFacts.fieldEvidence) {
     finalReport.verifiedFacts = {
       ...(finalReport.verifiedFacts || {}),
@@ -3865,6 +4968,11 @@ interface RealityCheck {
   missing_specifics?: string[];
   support_gaps?: string[];
   confidence?: "low" | "medium" | "high";
+  listing_language_reality_check?: Array<{
+    phrase: string;
+    what_it_may_mean: string;
+    what_to_verify: string;
+  }>;
 }
 
 const REALITY_CHECK_SYSTEM_PROMPT = `You are a rental listing analyst. Your job is to analyze listing descriptions for promotional language and marketing tactics.
@@ -3957,6 +5065,22 @@ function normalizeRealityCheck(input: unknown): RealityCheck {
     confidence = data.confidence as "low" | "medium" | "high";
   }
 
+  // Extract listing_language_reality_check (the Spin Decoder entries)
+  const spinRaw = data.listing_language_reality_check ?? data.listingLanguageRealityCheck;
+  const spinEntries: Array<{ phrase: string; what_it_may_mean: string; what_to_verify: string }> = [];
+  if (Array.isArray(spinRaw)) {
+    for (const item of spinRaw) {
+      if (item && typeof item === 'object') {
+        const phrase = String(item.phrase ?? item.title ?? '').trim();
+        const what_it_may_mean = String(item.what_it_may_mean ?? item.meaning ?? item.description ?? '').trim();
+        const what_to_verify = String(item.what_to_verify ?? item.ask ?? item.question ?? '').trim();
+        if (phrase && what_it_may_mean) {
+          spinEntries.push({ phrase, what_it_may_mean, what_to_verify });
+        }
+      }
+    }
+  }
+
   return {
     should_display: true,
     overall_verdict: verdict as RealityCheckVerdict,
@@ -3964,7 +5088,8 @@ function normalizeRealityCheck(input: unknown): RealityCheck {
     marketing_phrases,
     missing_specifics,
     support_gaps,
-    confidence: confidence as "low" | "medium" | "high"
+    confidence: confidence as "low" | "medium" | "high",
+    listing_language_reality_check: spinEntries.length > 0 ? spinEntries : undefined,
   };
 }
 
@@ -4017,11 +5142,22 @@ async function runRealityCheck(
     const content = data?.choices?.[0]?.message?.content;
 
     if (!content) {
+      console.error("[RealityCheck] No content in API response");
       return { should_display: false };
     }
 
+    console.log("[RealityCheck] Raw AI response (first 600 chars):", content.slice(0, 600));
     const parsed = safeParseModelJson(content);
-    return normalizeRealityCheck(parsed);
+    console.log("[RealityCheck] Parsed result:", JSON.stringify(parsed)?.slice(0, 400));
+
+    if (!parsed) {
+      console.error("[RealityCheck] safeParseModelJson returned null/undefined");
+      return { should_display: false };
+    }
+
+    const result = normalizeRealityCheck(parsed);
+    console.log("[RealityCheck] Final result:", JSON.stringify(result)?.slice(0, 400));
+    return result;
   } catch (err) {
     console.error("[RealityCheck] Error:", err);
     return { should_display: false };
@@ -4031,180 +5167,549 @@ async function runRealityCheck(
 // ========== Basic Report Cleanup Helpers ==========
 
 /**
- * normalizeBasicChecks — backend enforcement for top_3_things_to_check
+ * normalizeTop3Checks — backend enforcement for top_3_things_to_check (US Basic v2)
+ * Input schema: [{ title, why_it_matters, action }]
  * Rules:
- * - Strip "without X" for already-known fields (sqft/beds/baths/property type/price)
- * - Full rewrite if still mentions known fields after stripping
+ * - Force exactly 3 items.
+ * - If AI returns fewer, fill with US-standard fallbacks tailored to property type.
+ * - If AI returns more, truncate to 3.
+ * - Strip "without X" patterns referencing already-known fields.
+ * - Title <= 60 chars, action <= 120 chars (hard truncate).
  */
-function normalizeBasicChecks(result: any): any {
+function normalizeTop3Checks(result: any, optionalDetails?: Record<string, unknown>, profile?: PropertyIntelligenceProfile): any {
+  const opts = optionalDetails ?? {};
   const wwKnow = result.what_we_know ?? {};
-  const missing = result.whats_missing ?? [];
+  const yearBuilt = opts.yearBuilt ?? wwKnow.year_built ?? wwKnow.yearBuilt ?? null;
+  const propertyType = (opts.propertyType ?? wwKnow.property_type ?? wwKnow.propertyType ?? '').toLowerCase();
+  const listingText = String(opts.description ?? opts.listingDescription ?? opts.whatSpecial ?? opts.whatsSpecialText ?? '').toLowerCase();
+  const pricePerSqft = opts.pricePerSqft ?? wwKnow.price_per_sqft ?? wwKnow.pricePerSqft ?? null;
+  const askingPrice = opts.askingPrice ?? wwKnow.asking_price ?? wwKnow.askingPrice ?? wwKnow.price ?? null;
+  const hasSqft = !!(opts.sqft ?? wwKnow.sqft ?? wwKnow.square_feet ?? wwKnow.squareFeet);
+  const hasBeds = !!(opts.bedrooms ?? wwKnow.beds ?? wwKnow.bedrooms);
+  const hasBaths = !!(opts.bathrooms ?? wwKnow.baths ?? wwKnow.bathrooms);
+  const hasPrice = !!(askingPrice);
+  const hasHOA = !!(opts.hoaFee ?? wwKnow.hoa ?? wwKnow.HOA ?? wwKnow.hoa_fee ?? wwKnow.hoaFee);
+  const hasBasementMention = /basement|cellar|below.?grade|walk.?out/i.test(listingText);
+  const isCondoOrCoop = /condo|co.?op|townhouse/i.test(propertyType);
+  const isMultiFamily = /duplex|multi.?family|2\.?family|3\.?family|4\.?family|two.?family/i.test(propertyType);
+  const hasComps = !!(wwKnow.comparable_sales ?? wwKnow.comparableSales ?? wwKnow.zestimate);
+  const isOld = yearBuilt && Number(yearBuilt) < 1975;
+  const hasRenovationMention = /renovation|updated|remodel|newly.?done|refurbish/i.test(listingText);
 
-  const hasSqft = !!(wwKnow.sqft);
-  const hasBeds = !!(wwKnow.beds || wwKnow.bedrooms);
-  const hasBaths = !!(wwKnow.baths || wwKnow.bathrooms);
-  const hasPropertyType = !!(wwKnow.property_type || wwKnow.propertyType);
-  const hasPrice = !!(wwKnow.asking_price || wwKnow.askingPrice || wwKnow.price);
+  // Use profile.category if available, otherwise fall back to raw type detection
+  const profileCategory = profile?.propertyCategory ?? (
+    isCondoOrCoop ? 'condo' :
+    isMultiFamily ? 'multi_family' :
+    'single_family'
+  );
 
-  const missingLabels = (missing as any[]).map((m: any) => {
-    const label = typeof m === 'string' ? m : (m.label ?? '');
-    return label.toLowerCase();
-  });
-  const missingFieldMap: Record<string, string> = {
-    'property type': 'property type and zoning',
-    'legal use': 'legal use and Certificate of Occupancy',
-    'legal': 'legal status and permits',
-    'coc': 'Certificate of Occupancy',
-    'certificate of occupancy': 'Certificate of Occupancy',
-    'taxes': 'annual tax amount and insurance',
-    'insurance': 'insurance estimates',
-    'hoa': 'HOA fees and restrictions',
-    'council': 'council rates',
-    'comparables': 'comparable sales or rent data',
-    'comps': 'comparable sales or rent data',
-    'condition': 'interior condition and visible quality',
-    'photos': 'listing photos and condition evidence',
-    'maintenance': 'maintenance history and system age',
-    'carrying cost': 'carrying costs and holding expenses',
-    'sqft': 'square footage and lot size',
-    'square footage': 'square footage and lot size',
+  const avoid = profile?.irrelevantGenericRisksToAvoid ?? [];
+  const avoidPatterns = avoid.map(r => new RegExp(r.replace(/\s+/g, '\\s*'), 'i'));
+  const isForbidden = (text: string) =>
+    avoidPatterns.some(p => p.test(text));
+
+  const hasKnown = (re: RegExp) => re;
+  const stripKnown = (s: string): string => {
+    let out = s;
+    if (hasSqft) out = out.replace(hasKnown(/without\s+(sqft|square\s*footage|square\s*feet|interior\s*(size|area)?)\s*,?\s*/gi), '');
+    if (hasBeds) out = out.replace(hasKnown(/without\s+(beds?|bedrooms?)\s*,?\s*/gi), '');
+    if (hasBaths) out = out.replace(hasKnown(/without\s+(baths?|bathrooms?)\s*,?\s*/gi), '');
+    if (hasPrice) out = out.replace(hasKnown(/without\s+(asking\s*price|listing\s*price)\s*,?\s*/gi), '');
+    return out.replace(/\s{2,}/g, ' ').trim();
   };
-  const dynamicMissingText = () => {
-    const parts = missingLabels
-      .filter(l => l.length > 2)
-      .map(l => missingFieldMap[l] ?? l)
-      .filter((v, i, a) => a.indexOf(v) === i)
-      .slice(0, 4);
-    return parts.length > 0 ? parts.join(', ') : 'property type, legal use, costs, and comparable context';
+
+  const sanitizeItem = (raw: any) => {
+    if (!raw) return null;
+    if (typeof raw === 'string') {
+      return { title: raw.slice(0, 60), why_it_matters: '', action: '' };
+    }
+    const title = typeof raw.title === 'string' ? raw.title : '';
+    const why = typeof raw.why_it_matters === 'string' ? raw.why_it_matters : (typeof raw.explanation === 'string' ? raw.explanation : '');
+    const action = typeof raw.action === 'string' ? raw.action : (typeof raw.ask === 'string' ? raw.ask : '');
+    const cleanedTitle = stripKnown(title);
+    const cleanedWhy = stripKnown(why);
+    const cleanedAction = stripKnown(action);
+    return {
+      title: cleanedTitle.length > 60 ? cleanedTitle.slice(0, 57) + '...' : cleanedTitle,
+      why_it_matters: cleanedWhy.slice(0, 200),
+      action: cleanedAction.length > 120 ? cleanedAction.slice(0, 117) + '...' : cleanedAction,
+    };
   };
 
-  const topChecks = (result.top_3_things_to_check ?? []).map((check: any) => {
-    const rawTitle = typeof check === 'string' ? check : (check.title ?? '');
-    const rawExplanation = typeof check === 'string' ? '' : (check.explanation ?? '');
+  const rawList: any[] = Array.isArray(result.top_3_things_to_check) ? result.top_3_things_to_check : [];
+  const cleaned: Array<{ title: string; why_it_matters: string; action: string }> = [];
 
-    // Strip "without X" patterns from title and explanation independently.
-    // Use combined for the "still mentions known without" check.
-    let cleanedTitle = rawTitle;
-    let cleanedExplanation = rawExplanation;
+  // Category-level deduplication: same category only keeps the first item
+  const CATEGORY_BUCKETS: Array<{ name: string; patterns: RegExp[] }> = [
+    {
+      name: 'PriceValue',
+      patterns: [/compar?|comps?/i, /sold|market\s*value|price\s*fair|price\s*confidence/i],
+    },
+    {
+      name: 'Condition',
+      patterns: [/system|roof|hvac|electrical|plumb|age/i],
+    },
+    {
+      name: 'LegalTitle',
+      patterns: [/permit|legal|co |occupancy|certificate/i],
+    },
+    {
+      name: 'Cost',
+      patterns: [/hoa|reserve|assessment|insurance|tax|cost/i],
+    },
+  ];
+  const seenCategories = new Set<string>();
 
-    if (hasSqft) {
-      const sqftPattern = /without\s+(sqft|square\s*footage|square\s*feet|interior\s*(size|area)?)\s*,?\s*/gi;
-      cleanedTitle = cleanedTitle.replace(sqftPattern, '');
-      cleanedExplanation = cleanedExplanation.replace(sqftPattern, '');
+  const getItemCategory = (title: string): string | null => {
+    for (const bucket of CATEGORY_BUCKETS) {
+      if (bucket.patterns.some(p => p.test(title))) return bucket.name;
     }
-    if (hasBeds) {
-      cleanedTitle = cleanedTitle.replace(/without\s+(beds?|bedrooms?)\s*,?\s*/gi, '');
-      cleanedExplanation = cleanedExplanation.replace(/without\s+(beds?|bedrooms?)\s*,?\s*/gi, '');
-    }
-    if (hasBaths) {
-      cleanedTitle = cleanedTitle.replace(/without\s+(baths?|bathrooms?)\s*,?\s*/gi, '');
-      cleanedExplanation = cleanedExplanation.replace(/without\s+(baths?|bathrooms?)\s*,?\s*/gi, '');
-    }
-    if (hasPropertyType) {
-      cleanedTitle = cleanedTitle.replace(/without\s+(property\s*type|home\s*type|building\s*type)\s*,?\s*/gi, '');
-      cleanedExplanation = cleanedExplanation.replace(/without\s+(property\s*type|home\s*type|building\s*type)\s*,?\s*/gi, '');
-    }
-    if (hasPrice) {
-      cleanedTitle = cleanedTitle.replace(/without\s+(asking\s*price|listing\s*price)\s*,?\s*/gi, '');
-      cleanedExplanation = cleanedExplanation.replace(/without\s+(asking\s*price|listing\s*price)\s*,?\s*/gi, '');
-    }
+    return null;
+  };
 
-    // Build combined for the "still mentions known without" check only
-    let combined = (cleanedTitle + ' ' + cleanedExplanation)
-      .replace(/\bwithout\s*,?\s*and\b/gi, 'without')
-      .replace(/,\s*and\s+/gi, ' and ')
-      .replace(/,\s*,/g, ',')
-      .replace(/^\s*,\s*/, '').replace(/\s*,\s*$/, '').trim();
+  for (const item of rawList) {
+    const s = sanitizeItem(item);
+    if (!s || !s.title) continue;
+    const itemCat = getItemCategory(s.title);
+    if (itemCat && seenCategories.has(itemCat)) continue;  // same category, skip
+    if (itemCat) seenCategories.add(itemCat);
+    cleaned.push(s);
+    if (cleaned.length >= 4) break;
+  }
 
-    const stillMentionsKnownWithout =
-      hasSqft && /without\s+(sqft|square\s*footage|square\s*feet|interior)/i.test(combined) ||
-      hasBeds && /without\s+(beds?|bedrooms?)/i.test(combined) ||
-      hasBaths && /without\s+(baths?|bathrooms?)/i.test(combined) ||
-      hasPropertyType && /without\s+(property\s*type|home\s*type|building\s*type)/i.test(combined) ||
-      hasPrice && /without\s+(asking\s*price|listing\s*price)/i.test(combined);
-
-    if (stillMentionsKnownWithout || !combined.trim()) {
-      const missingItems = (missing as any[]).map((m: any) => {
-        const label = typeof m === 'string' ? m : (m.label ?? '');
-        return label.toLowerCase();
-      }).filter((l: string) => l.length > 2);
-      const hasLegalGap = missingItems.some((l: string) => /legal|coc|certificate|zoning|permit/i.test(l));
-      const hasCostGap = missingItems.some((l: string) => /cost|tax|insurance|hoa|council/i.test(l));
-      const hasCompGap = missingItems.some((l: string) => /comp|comparab|market/i.test(l));
-
-      let rewrittenTitle = 'Verify unverified claims and missing decision-critical information';
-      const missingParts: string[] = [];
-      if (!hasSqft) missingParts.push('interior size');
-      if (!hasBeds && !hasBaths) missingParts.push('bed and bath count');
-      if (!hasPropertyType) missingParts.push('property type and zoning');
-      if (!hasPrice) missingParts.push('asking price context');
-      if (hasLegalGap) missingParts.push('legal use and permits');
-      if (hasCostGap) missingParts.push('carrying costs and tax amount');
-      if (hasCompGap) missingParts.push('comparable sales or market data');
-      else if (missingParts.length === 0) missingParts.push('public records and documentation');
-
-      let rewrittenExplanation = '';
-      if (hasLegalGap) {
-        rewrittenExplanation = `Confirm legal use, zoning, and permits through the Certificate of Occupancy and title documents. Also verify: ${missingParts.join(', ')}.`;
-      } else if (hasCostGap) {
-        rewrittenExplanation = `Confirm carrying costs (taxes, insurance, HOA) and ownership expenses. Also verify: ${missingParts.join(', ')}.`;
-      } else if (hasCompGap) {
-        rewrittenExplanation = `Confirm the asking price against comparable sales or rent data and recent market activity. Also verify: ${missingParts.join(', ')}.`;
-      } else {
-        rewrittenExplanation = `Confirm listed facts against public records and title documents. Key areas not yet verified: ${missingParts.join(', ')}.`;
-      }
-
-      return { title: rewrittenTitle, explanation: rewrittenExplanation };
-    }
-
-    // Extract first sentence from cleaned title only (don't concatenate explanation).
-    const dotIdx = cleanedTitle.indexOf('. ');
-    const firstSentence = dotIdx > 0 ? cleanedTitle.substring(0, dotIdx + 1) : cleanedTitle.trim();
-    const titleText = firstSentence.length > 80
-      ? firstSentence.substring(0, 80).replace(/\s+\S*$/, '') + '...'
-      : firstSentence;
-
-    // Use the cleaned explanation as-is; only derive if truly empty.
-    let explanationText = cleanedExplanation.trim() || (dotIdx > 0 ? cleanedTitle.substring(dotIdx + 1).trim() : '');
-
-    // ── Legal Use CO enhancement: US market ─────────────────────────────────────
-    // If the check title mentions legal/zoning/2-family but doesn't mention CO,
-    // enhance the explanation to explicitly reference Certificate of Occupancy.
-    const isLegalCheck = /legal|2-family|multi-family|zoning|certificate|occupancy/i.test(titleText + ' ' + explanationText);
-    const alreadyHasCO = /certificate of occupancy|co\b/i.test(explanationText);
-    const alreadyHasCOInTitle = /certificate of occupancy|co\b/i.test(titleText);
-    if (isLegalCheck && !alreadyHasCO && !alreadyHasCOInTitle) {
-      const isUSMarket = (result.market === 'US' || result.market === 'UNKNOWN');
-      if (isUSMarket) {
-        explanationText = explanationText
-          ? `Confirm the listed use through the Certificate of Occupancy and public records. ${explanationText}`
-          : 'Confirm the listed use through the Certificate of Occupancy and public records.';
-      } else {
-        explanationText = explanationText
-          ? `Confirm the approved use and planning details through official records. ${explanationText}`
-          : 'Confirm the approved use and planning details through official records.';
+  // Semantic dedup: remove items that are semantically identical even if in different categories.
+  // Example: "At $X/sqft, Comps Matter" (PriceValue) and "Comparable Sales" (uncategorized)
+  // both target the same decision question. Use token-overlap Jaccard > 0.40 as trigger.
+  for (let i = 0; i < cleaned.length; i++) {
+    const qi = cleaned[i].title + ' ' + cleaned[i].why_it_matters;
+    const qiTokens = new Set(qi.toLowerCase().replace(/[^a-z0-9\s]/g, ' ').split(/\s+/).filter(t => t.length > 2));
+    for (let j = i + 1; j < cleaned.length; j++) {
+      const qj = cleaned[j].title + ' ' + cleaned[j].why_it_matters;
+      const qjTokens = new Set(qj.toLowerCase().replace(/[^a-z0-9\s]/g, ' ').split(/\s+/).filter(t => t.length > 2));
+      let intersection = 0;
+      for (const t of qiTokens) { if (qjTokens.has(t)) intersection++; }
+      const union = qiTokens.size + qjTokens.size - intersection;
+      const jaccard = union > 0 ? intersection / union : 0;
+      if (jaccard > 0.40) {
+        // Higher token count = more specific. Remove the shorter/less specific one.
+        if (cleaned[i].title.length >= cleaned[j].title.length) {
+          cleaned.splice(j, 1); j--;
+        } else {
+          cleaned.splice(i, 1); i--; break;
+        }
       }
     }
+  }
 
-    return { title: titleText, explanation: explanationText };
-  });
+  // If AI returned fewer than 2 usable items, build property-specific fallbacks — NOT generic templates
+  if (cleaned.length < 2) {
+    const builtIn = yearBuilt ? `Built in ${yearBuilt}` : null;
 
-  result.top_3_things_to_check = topChecks.slice(0, 3);
+    // Detect whether AI already covered comps — skip duplicate fallback items
+    const aiHasComps = cleaned.some(item =>
+      /compar?|comps?|sold|market\s*value|price\s*fair/i.test(item.title + ' ' + item.why_it_matters)
+    );
+    const aiHasBasement = cleaned.some(item =>
+      /basement|cellar|egress|walk.?out|below.?grade/i.test(item.title + ' ' + item.why_it_matters)
+    );
+
+    let fallbacks: Array<{ title: string; why_it_matters: string; action: string }> = [];
+
+    // ── Profile-aware fallback generation ─────────────────────────────────────────
+    // Only add roof/HVAC/plumbing risks for asset types where buyer owns/maintains systems
+    const SYSTEM_MAINTENANCE_OWNER_TYPES = new Set(['single_family', 'multi_family', 'townhouse']);
+
+    if (isOld && builtIn && SYSTEM_MAINTENANCE_OWNER_TYPES.has(profileCategory) && !isForbidden(`${builtIn} Major Systems`)) {
+      fallbacks.push({
+        title: `${builtIn}: Major Systems Age`,
+        why_it_matters: `A home from ${yearBuilt} likely has aging roof, HVAC, electrical, or plumbing — all significant repair costs before year one.`,
+        action: 'Ask for roof age, HVAC age, electrical panel type, plumbing material, and any recent system updates or repairs.',
+      });
+    } else if (isOld && builtIn && (profileCategory === 'co_op' || profileCategory === 'condo')) {
+      // Co-op/condo old building: check if listing has stronger signals before defaulting to building financials
+      const hasFinancialSignal = /flip tax|reserve|assessment|maintenance breakdown|building financials/i.test(listingText);
+      if (!hasFinancialSignal && !isForbidden('Building Financial Health')) {
+        fallbacks.push({
+          title: `Built in ${yearBuilt}: Building Financial Health`,
+          why_it_matters: `A building from ${yearBuilt} may have aging infrastructure — reserve fund health and upcoming assessments are a decision-changing cost for all unit owners.`,
+          action: 'Ask for the building\'s reserve fund balance, recent financial statements, and any planned special assessments.',
+        });
+      }
+    }
+
+    if (hasPrice && hasSqft && pricePerSqft && !aiHasComps && !isForbidden('Comparable Sales')) {
+      const displayVal = typeof pricePerSqft === 'string' ? pricePerSqft : `$${Number(pricePerSqft).toLocaleString()}/sqft`;
+      fallbacks.push({
+        title: `At ${displayVal}, Comps Matter`,
+        why_it_matters: `The $/sqft is visible but condition and comparable sales are needed before judging whether the asking price is justified.`,
+        action: 'Ask for 3–5 recent nearby comparable sales before relying on the asking price or Zestimate range.',
+      });
+    }
+
+    // Basement fallback only for single-family/multi-family/townhouse
+    if (hasBasementMention && !aiHasBasement &&
+        SYSTEM_MAINTENANCE_OWNER_TYPES.has(profileCategory) &&
+        !isForbidden('Basement')) {
+      fallbacks.push({
+        title: 'Basement: Permits, Egress, and Legal Use',
+        why_it_matters: 'The listing mentions a basement — but permits, legal use, and proper egress have not been verified. Without permits, this space can block financing and insurance.',
+        action: 'Confirm whether the basement is permitted, finished legally, has proper egress, and whether any area is counted in the legal sqft.',
+      });
+    }
+
+    // Co-op/Condo HOA fallback
+    if ((profileCategory === 'co_op' || profileCategory === 'condo') && hasHOA && !isForbidden('HOA')) {
+      fallbacks.push({
+        title: 'HOA: Reserves, Assessments, and Special Fees',
+        why_it_matters: 'HOA fees are visible, but reserve fund health, pending special assessments, and rental limits are not — and can significantly affect total cost.',
+        action: 'Ask for the HOA reserve fund balance, last reserve study, any pending special assessments, and whether there are rental or pet restrictions.',
+      });
+    }
+
+    // Multi-family CO fallback
+    if (profileCategory === 'multi_family' && !isForbidden('Certificate of Occupancy')) {
+      fallbacks.push({
+        title: 'Multi-Family: Certificate of Occupancy and Legal Unit Count',
+        why_it_matters: 'A multi-family claim is listed, but the Certificate of Occupancy must confirm how many units are legally approved before you can rely on rental income.',
+        action: 'Ask for the Certificate of Occupancy and confirm the legal unit count and approved use for each unit.',
+      });
+    }
+
+    if (!isOld && hasPrice && hasSqft && !pricePerSqft && !aiHasComps && !isForbidden('Comparable Sales')) {
+      fallbacks.push({
+        title: 'Price Confidence',
+        why_it_matters: 'The asking price and $/sqft are visible, but comparable sales and condition evidence are needed before judging whether the price is fair.',
+        action: 'Ask for 3–5 recent comparable sales in the neighborhood before relying on the asking price.',
+      });
+    }
+
+    if (hasRenovationMention && !isForbidden('Renovation')) {
+      fallbacks.push({
+        title: 'Renovation: Permits and Inspection History',
+        why_it_matters: 'Renovation or update claims are in the listing — without permits on record, there is no confirmation the work was done legally or to code.',
+        action: 'Ask which renovations were done, whether permits were pulled, and request copies of inspection or certificate of completion records.',
+      });
+    }
+
+    if (!hasComps && hasPrice && !aiHasComps && !isForbidden('Comparable Sales') &&
+        !fallbacks.some(f => /comps?|market\s*value|price\s*fair|sold\s*data/i.test(f.title))) {
+      fallbacks.push({
+        title: 'Comparable Sales',
+        why_it_matters: 'No comparable sales data is available from the listing. Without recent nearby sales, it is difficult to judge whether the asking price is reasonable.',
+        action: 'Ask for 3–5 recent comparable sales within 0.5 miles that are similar in size, beds/baths, and condition.',
+      });
+    }
+
+    // Fallback intra-dedup: prevent multiple comps items within fallbacks themselves
+    // (e.g. "At $X/sqft, Comps Matter" + "Comparable Sales" can both be pushed above)
+    const compsPattern = /comps?|market\s*value|price\s*fair|sold\s*data/i;
+    const compsItems = fallbacks.filter(f => compsPattern.test(f.title));
+    if (compsItems.length > 1) {
+      const best = compsItems.reduce((a, b) => a.title.length >= b.title.length ? a : b);
+      fallbacks = fallbacks.filter(f => !compsPattern.test(f.title));
+      fallbacks.push(best);
+    }
+
+  // Only fill from fallbacks when AI returns fewer than 2 items; never force 3 items
+  // But for property types with required decision coverage, also check coverage depth
+  const requiredKeywords = REQUIRED_DECISION_KEYWORDS[profileCategory ?? 'single_family'] ?? [];
+  const coverageCount = requiredKeywords.filter(kw =>
+    cleaned.some(item => (item.title + item.why_it_matters).toLowerCase().includes(kw))
+  ).length;
+  const needsCoverage = coverageCount < Math.max(2, Math.ceil(requiredKeywords.length / 2));
+
+  if (cleaned.length < 2 || needsCoverage) {
+    for (const fb of fallbacks) {
+      if (cleaned.length >= 4) break;
+      const duplicate = cleaned.some(c => c.title.toLowerCase() === fb.title.toLowerCase());
+      if (!duplicate) cleaned.push(fb);
+    }
+  }
+
+  }
+
+  result.top_3_things_to_check = cleaned.slice(0, 4);
+  return result;
+}
+
+/**
+ * normalizeWhatsMissing — backend enforcement for whats_missing (US Basic v2)
+ * Input: string[] (short phrases, no periods).
+ * Rules:
+ * - Force exactly 6 items.
+ * - Trim, strip trailing periods, dedupe (case-insensitive).
+ * - Fill with property-type-specific pool if short.
+ */
+
+const US_WHATS_MISSING_FALLBACKS: string[] = [
+  'Major systems age: roof / HVAC / electrical / plumbing',
+  'Basement legal use, permits, and egress',
+  'Comparable sales',
+  'Certificate of Occupancy or legal-use documents',
+  'Open permits or violations',
+  'Actual insurance and utility costs',
+];
+
+function normalizeWhatsMissing(result: any, optionalDetails?: Record<string, unknown>, profile?: PropertyIntelligenceProfile): any {
+  const opts = optionalDetails ?? {};
+  const rawList: any[] = Array.isArray(result.whats_missing) ? result.whats_missing : [];
+  const seen = new Set<string>();
+  const cleaned: string[] = [];
+
+  for (const item of rawList) {
+    if (typeof item !== 'string') continue;
+    const t = item.replace(/\.+$/g, '').trim();
+    if (!t) continue;
+    const key = t.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    cleaned.push(t);
+    if (cleaned.length >= 6) break;
+  }
+
+  // If AI returned at least 4 items, use as-is (no forcing, no padding)
+  if (cleaned.length >= 4) {
+    result.whats_missing = cleaned.slice(0, 6);
+    return result;
+  }
+
+  // AI returned fewer than 4 — build property-type-specific fallbacks
+  const wwKnow = result.what_we_know ?? {};
+  const yearBuilt = opts.yearBuilt ?? wwKnow.year_built ?? wwKnow.yearBuilt ?? null;
+  const propertyType = (opts.propertyType ?? wwKnow.property_type ?? wwKnow.propertyType ?? '').toLowerCase();
+  const listingText = String(opts.description ?? opts.listingDescription ?? opts.whatSpecial ?? opts.whatsSpecialText ?? '').toLowerCase();
+  const hasBeds = !!(opts.bedrooms ?? wwKnow.beds ?? wwKnow.bedrooms);
+  const hasSqft = !!(opts.sqft ?? wwKnow.sqft ?? wwKnow.square_feet ?? wwKnow.squareFeet);
+  const hasPrice = !!(opts.askingPrice ?? wwKnow.asking_price ?? wwKnow.askingPrice ?? wwKnow.price);
+  const hasHOA = !!(opts.hoaFee ?? wwKnow.hoa ?? wwKnow.HOA ?? wwKnow.hoa_fee ?? wwKnow.hoaFee);
+  const hasTax = !!(opts.annualTax ?? opts.annualTaxAmount ?? opts.taxAnnual ?? wwKnow.tax_year ?? wwKnow.taxes ?? wwKnow.annual_tax);
+  const hasComps = !!(wwKnow.comparable_sales ?? wwKnow.comparableSales ?? wwKnow.zestimate);
+
+  const hasBasementMention = /basement| cellar|below.?grade|walk.?out/i.test(listingText);
+  const hasRenovationMention = /renovation|updated|remodel|newly.?done|refurbish/i.test(listingText);
+  const isOld = yearBuilt && Number(yearBuilt) < 1975;
+  const hasHighPricePerSqft = !!(wwKnow.price_per_sqft ?? wwKnow.pricePerSqft);
+
+  // Use profile.category for fallback decisions when available
+  const profileCategory = profile?.propertyCategory ?? (
+    /condo|co.?op/i.test(propertyType) ? 'condo' :
+    /duplex|multi.?family|2\.?family/i.test(propertyType) ? 'multi_family' :
+    'single_family'
+  );
+  const avoid = profile?.irrelevantGenericRisksToAvoid ?? [];
+  const avoidPatterns = avoid.map(r => new RegExp(r.replace(/\s+/g, '\\s*'), 'i'));
+  const isForbidden = (text: string) =>
+    avoidPatterns.some(p => p.test(text));
+
+  // Property-type-specific fallback pool (profile-aware)
+  const candidates: string[] = [];
+
+  if (!isForbidden('Comparable sales') && hasPrice && hasSqft && !hasComps) {
+    candidates.push('Comparable sales');
+  }
+  if (hasPrice && !hasTax) {
+    candidates.push('Actual insurance and utility costs');
+  }
+
+  // Old building: different risks per type
+  if (isOld && hasBeds) {
+    if (['single_family', 'multi_family', 'townhouse'].includes(profileCategory)) {
+      if (!isForbidden('roof age')) {
+        candidates.push('Major systems age: roof / HVAC / electrical / plumbing');
+      }
+    } else if (['co_op', 'condo'].includes(profileCategory)) {
+      if (!isForbidden('Building Financial Health')) {
+        candidates.push('Building financials: reserves, assessments, and capital expenditure plan');
+      }
+    }
+  }
+
+  if (hasBasementMention && ['single_family', 'townhouse'].includes(profileCategory)) {
+    if (!isForbidden('Basement')) {
+      candidates.push('Basement permits, egress, and legal use');
+    }
+  }
+
+  if (profileCategory === 'co_op') {
+    if (!isForbidden('Monthly maintenance')) candidates.push('Monthly maintenance total cost and what it covers');
+    if (!isForbidden('Board approval')) candidates.push('Board approval requirements and timeline');
+    if (!isForbidden('Flip tax')) candidates.push('Flip tax or transfer fee calculation');
+    if (!isForbidden('Subletting')) candidates.push('Subletting and owner-occupancy rules');
+    if (!isForbidden('Reserve fund')) candidates.push('Reserve fund balance and building financials');
+  } else if (profileCategory === 'condo') {
+    if (!isForbidden('HOA')) candidates.push('HOA reserves, pending assessments, and special fees');
+    if (!isForbidden('Rental restrictions')) candidates.push('Rental restrictions and pet policies');
+    if (!isForbidden('Master insurance')) candidates.push('Master insurance coverage');
+    if (!isForbidden('Owner-occupancy')) candidates.push('Owner-occupancy ratio and financing restrictions');
+  } else if (profileCategory === 'multi_family') {
+    if (!isForbidden('Certificate of Occupancy')) candidates.push('Certificate of Occupancy and legal unit count');
+    if (!isForbidden('Rent roll')) candidates.push('Current rent roll and actual leases');
+    if (!isForbidden('Open violations')) candidates.push('Open DOB/HPD/ECB violations');
+    if (!isForbidden('Separate metering')) candidates.push('Separate utility metering');
+  }
+
+  if (hasHOA && !['co_op', 'condo'].includes(profileCategory)) {
+    if (!isForbidden('HOA')) candidates.push('HOA budget, reserves, and pending assessments');
+  }
+
+  if (hasRenovationMention) {
+    candidates.push('Renovation permits and inspection history');
+  }
+
+  if (hasPrice && hasSqft && hasHighPricePerSqft) {
+    if (!isForbidden('Open permits')) candidates.push('Open permits or violations');
+  }
+
+  // Fill from candidates (deduplicated against what's already there)
+  for (const item of candidates) {
+    if (cleaned.length >= 5) break;
+    const key = item.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    cleaned.push(item);
+  }
+
+  result.whats_missing = cleaned.slice(0, 6);
+  return result;
+}
+
+/**
+ * normalizeBottomLine — backend enforcement for bottom_line (US Basic v2)
+ * Rules:
+ * - bottom_line must cite at least 2 specific listing facts.
+ * - If AI returns generic "price, beds, baths, size" phrasing, rewrite.
+ * - Reference: asking price, beds/baths, sqft, year built, tax, property type.
+ * - Max 70 words.
+ */
+function normalizeBottomLine(result: any, optionalDetails?: Record<string, unknown>, profile?: PropertyIntelligenceProfile): any {
+  const opts = optionalDetails ?? {};
+  const raw = (result.bottom_line ?? result.bottomLine ?? '').toString();
+
+  // Rewrite trigger: empty OR generic template OR insufficient listing specifics
+  const specificFieldCount = [
+    /\$[\d,]+/.test(raw),          // $1.2M / $619,000
+    /\d+\s*bed/i.test(raw),        // 3 bed / 3 beds
+    /\d+\s*bath/i.test(raw),        // 2 bath
+    /sqft|sq\s*ft|square\s*foot/i.test(raw),  // sqft
+    /\b19\d{2}\b|\b20\d{2}\b/.test(raw),     // year built
+    /tax/i.test(raw),               // tax
+    /built/i.test(raw),             // built in X
+  ].filter(Boolean).length;
+
+  const isGenericTemplate = /price,?\s*beds?,?\s*baths?,?\s*size|basic\s+facts|key\s+details|standard\s+info|listing\s+gives?\s+enough\s+basic/i.test(raw);
+  const needsRewrite = !raw || isGenericTemplate || specificFieldCount < 2;
+
+  if (!needsRewrite) {
+    result.bottom_line = raw.replace(/\s{2,}/g, ' ').trim();
+    return result;
+  }
+
+  // Rewrite: build a bottom line from actual listing fields (always runs when needsRewrite)
+  const wwKnow = result.what_we_know ?? {};
+  const parts: string[] = [];
+  const price = opts.askingPrice ?? wwKnow.asking_price ?? wwKnow.askingPrice ?? wwKnow.price ?? null;
+  const beds = opts.bedrooms ?? wwKnow.beds ?? wwKnow.bedrooms ?? null;
+  const baths = opts.bathrooms ?? wwKnow.baths ?? wwKnow.bathrooms ?? null;
+  const sqft = opts.sqft ?? wwKnow.sqft ?? wwKnow.square_feet ?? wwKnow.squareFeet ?? null;
+  const yearBuilt = opts.yearBuilt ?? wwKnow.year_built ?? wwKnow.yearBuilt ?? null;
+  const tax = opts.annualTax ?? opts.annualTaxAmount ?? opts.taxAnnual ?? wwKnow.tax_year ?? wwKnow.taxes ?? wwKnow.annual_tax ?? null;
+  const propertyType = opts.propertyType ?? wwKnow.property_type ?? wwKnow.propertyType ?? null;
+
+  if (price) parts.push(typeof price === 'string' ? price : `$${Number(price).toLocaleString()}`);
+  if (beds) parts.push(`${beds} bed`);
+  if (baths) parts.push(`${baths} bath`);
+  if (sqft) parts.push(typeof sqft === 'string' ? sqft : `${Number(sqft).toLocaleString()} sqft`);
+  if (yearBuilt) parts.push(`built ${yearBuilt}`);
+  if (tax) parts.push(typeof tax === 'string' ? tax : `$${Number(tax).toLocaleString()}/yr taxes`);
+
+  // #region agent log H1-H2
+  fetch('http://127.0.0.1:7551/ingest/acb963f0-2502-480f-a2cb-a3edc4af3b03',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'05ad70'},body:JSON.stringify({sessionId:'05ad70',location:'analyze.ts:5250',message:'normalizeBottomLine parts',data:{parts:parts.slice(),partsJoin:parts.join(', ')},timestamp:Date.now()})}).catch(()=>{});
+  // #endregion
+
+  // ── Property-type-aware missing facts ─────────────────────────────────────────
+  // Different property types require different decision axes in the bottom line.
+  const SYSTEM_OWNER_TYPES = new Set(['single_family', 'multi_family', 'townhouse']);
+  const isSystemOwner = profile
+    ? SYSTEM_OWNER_TYPES.has(profile.propertyCategory)
+    : true;
+
+  const typeMissingItems: string[] = [];
+  if (profile?.propertyCategory === 'co_op') {
+    if (!wwKnow.monthly_maintenance && !wwKnow.hoa) typeMissingItems.push('monthly maintenance');
+    if (!wwKnow.board_approval) typeMissingItems.push('board approval requirements');
+    if (!wwKnow.subletting) typeMissingItems.push('subletting rules');
+    if (!wwKnow.building_financials) typeMissingItems.push('building financials and assessments');
+    if (!wwKnow.flip_tax) typeMissingItems.push('flip tax or transfer fee');
+  } else if (profile?.propertyCategory === 'condo') {
+    if (!wwKnow.hoa) typeMissingItems.push('HOA fees and what they cover');
+    if (!wwKnow.reserve_fund) typeMissingItems.push('reserve fund balance');
+    if (!wwKnow.assessments) typeMissingItems.push('special assessments');
+    if (!wwKnow.rental_restrictions) typeMissingItems.push('rental restrictions');
+  } else if (profile?.propertyCategory === 'multi_family') {
+    if (!wwKnow.certificate_of_occupancy) typeMissingItems.push('legal unit count and Certificate of Occupancy');
+    if (!wwKnow.rent_roll) typeMissingItems.push('actual rent roll and leases');
+    if (!wwKnow.separate_meters) typeMissingItems.push('separate utility metering');
+    if (!wwKnow.violations) typeMissingItems.push('open violations and DOB/HPD status');
+  } else if (profile?.propertyCategory === 'single_family') {
+    // SF: never use generic "property condition" — use fact-specific items
+    if (!wwKnow.comparable_sales && !wwKnow.comparableSales) typeMissingItems.push('comparable sales');
+    const isOld = yearBuilt && Number(yearBuilt) <= new Date().getFullYear() - 40;
+    const hasOilHeating = /oil|heating oil|kerosene/i.test(String(opts.heating ?? wwKnow.heating ?? ''));
+    if (isOld) typeMissingItems.push('roof and major systems age');
+    if (hasOilHeating) typeMissingItems.push('oil tank records and location');
+    if (!tax) typeMissingItems.push('insurance and utility costs');
+    if (typeMissingItems.length === 0) {
+      if (!wwKnow.comparable_sales && !wwKnow.comparableSales) typeMissingItems.push('comparable sales');
+      typeMissingItems.push('insurance and utility costs');
+    }
+  } else {
+    if (!yearBuilt) typeMissingItems.push('construction year');
+    if (!tax) typeMissingItems.push('annual taxes');
+    if (!wwKnow.comparable_sales && !wwKnow.comparableSales) typeMissingItems.push('comparable sales');
+  }
+
+  const missingStr = typeMissingItems.join(', ');
+  // #region agent log H2
+  fetch('http://127.0.0.1:7551/ingest/acb963f0-2502-480f-a2cb-a3edc4af3b03',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'05ad70'},body:JSON.stringify({sessionId:'05ad70',location:'analyze.ts:5298',message:'knownFacts parts',data:{missingStr,partsCount:parts.length,knownFacts:parts.join(', ')},timestamp:Date.now()})}).catch(()=>{});
+  // #endregion
+  const knownFacts = parts.join(', ');
+
+  if (knownFacts) {
+    // Use property type when available to avoid generic "basic facts" feel
+    const propTypeNote = propertyType && !/not disclosed|unknown/i.test(propertyType)
+      ? ` (${propertyType})`
+      : '';
+    // For non-system-owner types (co-op/condo), include a brief ownership structure note
+    const coopNote = profile?.propertyCategory === 'co_op' ? ' (stock cooperative)' :
+                     profile?.propertyCategory === 'condo' ? ' (condominium)' : '';
+    result.bottom_line = `This listing shows${propTypeNote}${coopNote} at ${knownFacts} — but ${missingStr} still need verification before committing.`;
+  } else {
+    result.bottom_line = `This listing does not provide enough verified information. Key basics such as ${missingStr} are missing or unclear.`;
+  }
+
+  // Enforce word limit
+  const words = result.bottom_line.split(/\s+/);
+  if (words.length > 70) {
+    result.bottom_line = words.slice(0, 70).join(' ') + '...';
+  }
+
   return result;
 }
 
 /**
  * normalizeBasicQuestions — backend enforcement for questions_to_ask
+ * Accepts string[] (US Basic v2) OR legacy {category, question}[] (AU).
  * Rules:
+ * - Normalize legacy objects to plain strings.
  * - If Zillow monthly payment exists, replace cost questions with confirm-Zillow format
- * - Known fields (sqft/beds/baths/type/price) -> "confirm against records"
- * - Unknown fields -> "can you provide"
- * - If questions_to_ask is empty, generate dynamic fallback based on what_we_know
- * - Fallback questions max 5
+ * - If questions_to_ask is empty, leave empty (no template fallback)
+ * - Max 5 questions
+ * - Profile-aware: roof/HVAC/plumbing questions only fire for system-owner types
+ *   (single_family, multi_family, townhouse).  Others get building-condition variants.
  */
-function normalizeBasicQuestions(result: any, hasZillowMonthly: boolean): any {
+function normalizeBasicQuestions(result: any, hasZillowMonthly: boolean, profile?: PropertyIntelligenceProfile): any {
   const wwKnow = result.what_we_know ?? {};
-  const hasSqft = !!(wwKnow.sqft);
+  const hasSqft = !!wwKnow.sqft;
   const hasBeds = !!(wwKnow.beds || wwKnow.bedrooms);
   const hasBaths = !!(wwKnow.baths || wwKnow.bathrooms);
   const hasPropertyType = !!(wwKnow.property_type || wwKnow.propertyType);
@@ -4212,24 +5717,43 @@ function normalizeBasicQuestions(result: any, hasZillowMonthly: boolean): any {
   const hasTaxInfo = !!(wwKnow.taxes || wwKnow.annual_tax);
   const hasHOA = !!(wwKnow.hoa || wwKnow.hoa_fees);
 
+  // ── Profile-aware guards ────────────────────────────────────────────────────
+  // Determine whether the buyer is responsible for maintaining building systems.
+  // If so, roof/HVAC/plumbing questions are relevant; otherwise they must be replaced.
+  const SYSTEM_OWNER_TYPES = new Set(['single_family', 'multi_family', 'townhouse']);
+  const isSystemOwnerType = profile
+    ? SYSTEM_OWNER_TYPES.has(profile.propertyCategory)
+    : true; // No profile: conservatively allow (preserve legacy behaviour)
+
   // Determine gaps from what_we_know presence
   const hasLegalGap = !hasPropertyType;
   const hasCostGap = !hasTaxInfo && !hasHOA;
-  const hasCompGap = true; // Basic mode cannot verify comparables
-  const hasConditionGap = true; // Basic mode cannot verify condition
 
-  // Transform existing questions
+  // Normalize to plain string questions; keep category metadata if present
   const transformed = (result.questions_to_ask ?? []).map((q: any) => {
-    const questionText = typeof q === 'string' ? q : (q.question ?? '');
-    const rawCategory = typeof q === 'string' ? 'General' : q.category;
+    const questionText = typeof q === 'string' ? q : (q?.question ?? '');
+    const rawCategory = typeof q === 'string' ? 'General' : q?.category;
     const category = (rawCategory && rawCategory.trim()) ? rawCategory.trim() : 'General';
+    if (!questionText || !questionText.trim()) return null;
+    return { category, question: questionText.trim() };
+  }).filter(Boolean) as Array<{ category: string; question: string }>;
+
+  // If AI returned plain strings, normalize to objects
+  // (We always re-emit as objects for the post-processing below, but US v2 returns strings;
+  //  we'll output as strings downstream.)
+
+  // Apply "asking for known as missing" transformation
+  const final: Array<{ category: string; question: string }> = [];
+  for (const q of transformed) {
+    let questionText = q.question;
 
     // If this is a cost question and Zillow monthly payment exists, replace it
     if (hasZillowMonthly && /cost|tax|insurance|hoa|fee|afford|monthly\s+payment/i.test(questionText)) {
-      return {
+      final.push({
         category: 'Costs',
         question: 'Can you confirm whether Zillow\'s estimated taxes, insurance, HOA fees, and monthly payment are accurate for this property?',
-      };
+      });
+      continue;
     }
 
     const askingForKnownAsMissing =
@@ -4243,7 +5767,10 @@ function normalizeBasicQuestions(result: any, hasZillowMonthly: boolean): any {
 
     const alreadyVerification = /verify|confirm.*records?|public.*records?|certificate|coc|title\s+documents?|official\s+records?/i.test(questionText);
 
-    if (!askingForKnownAsMissing || alreadyVerification) return q;
+    if (!askingForKnownAsMissing || alreadyVerification) {
+      final.push(q);
+      continue;
+    }
 
     const knownParts: string[] = [];
     if (hasPropertyType) knownParts.push('property type');
@@ -4252,13 +5779,14 @@ function normalizeBasicQuestions(result: any, hasZillowMonthly: boolean): any {
     if (hasSqft) knownParts.push('square footage');
 
     if (knownParts.length === 0) {
-      return {
+      final.push({
         category: 'Listing Facts',
         question: 'Can you provide the property type, beds, baths, and interior square footage?',
-      };
+      });
+      continue;
     } else if (knownParts.length >= 3) {
       // 3+ basic fields already known — skip generating a redundant question about them
-      return null;
+      continue;
     }
 
     let questionSuffix = '';
@@ -4268,83 +5796,179 @@ function normalizeBasicQuestions(result: any, hasZillowMonthly: boolean): any {
       questionSuffix = hasZillowMonthly
         ? ' and confirm whether Zillow\'s estimated taxes, insurance, and HOA fees are accurate'
         : ' and confirm annual tax amount, insurance, and any HOA fees';
-    } else if (hasCompGap) {
+    } else {
       questionSuffix = ' and confirm the asking price against comparable sales or rent data';
-    } else if (hasConditionGap) {
-      questionSuffix = ' and confirm the property condition and any disclosed issues';
     }
 
-    return {
+    final.push({
       category: 'Public Records',
       question: `Can you confirm whether the ${knownParts.join(', ')} match public records${questionSuffix}?`,
-    };
-  });
+    });
+  }
 
-  // If no questions exist, generate dynamic fallback based on what_we_know
-  if (transformed.length === 0) {
-    const fallbackQuestions: any[] = [];
+  // Trigger fallback when AI returned fewer than 5 questions (fill up to 5)
+  if (final.length < 5) {
+    // Build property-specific questions from missing fields and listing signals
+    const wwKnow = result.what_we_know ?? {};
+    const missing = Array.isArray(result.whats_missing ?? result.whatsMissing)
+      ? (result.whats_missing ?? result.whatsMissing).filter((x: unknown) => typeof x === 'string') as string[]
+      : [];
+    const propertyType = wwKnow.property_type ?? wwKnow.propertyType ?? '';
+    const yearBuilt = wwKnow.year_built ?? wwKnow.yearBuilt ?? null;
+    const hasPrice = !!(wwKnow.asking_price ?? wwKnow.askingPrice ?? wwKnow.price);
 
-    // Question 1: Property details — known fields verify, unknown fields provide
-    const fallbackKnownParts: string[] = [];
-    if (hasPropertyType) fallbackKnownParts.push('property type');
-    if (hasBeds) fallbackKnownParts.push('beds');
-    if (hasBaths) fallbackKnownParts.push('baths');
-    if (hasSqft) fallbackKnownParts.push('square footage');
+    console.log('[BasicQuestions] fallback triggered', {
+      missingItems: missing,
+      missingLower: missing.map(m => String(m).toLowerCase()),
+      hasBasementInMissing: missing.some((m: string) => /basement/i.test(String(m))),
+      propertyType,
+      hasZillowMonthly,
+      existingFinalCount: final.length,
+      isSystemOwnerType,
+    });
 
-    if (fallbackKnownParts.length > 0) {
-      fallbackQuestions.push({
-        category: 'Public Records',
-        question: `Can you confirm whether the ${fallbackKnownParts.join(', ')} match public records and the Certificate of Occupancy?`,
+    const generated: Array<{ category: string; question: string }> = [];
+
+    // Profile-aware question exclusion (mirrors the logic in buildWhatsMissing)
+    const avoid = profile?.irrelevantGenericRisksToAvoid ?? [];
+    const avoidPatterns = avoid.map(r => new RegExp(r.replace(/\s+/g, '\\s*'), 'i'));
+    const isForbidden = (text: string) => avoidPatterns.some(p => p.test(text));
+
+    // ── L1 fix: Profile-aware condition question ───────────────────────────────
+    // Only ask about roof/HVAC/electrical/plumbing for fee-simple / system-owner types.
+    // Co-op/condo/land: building condition is managed by the HOA/board, not unit owner.
+    if (isSystemOwnerType) {
+      generated.push({
+        category: 'Condition',
+        question: 'What is the current condition of the roof, HVAC, electrical panel, and plumbing? Are there any known issues or recent repairs?',
       });
     } else {
-      fallbackQuestions.push({
-        category: 'Listing Facts',
-        question: 'Can you provide the property type, beds, baths, and interior square footage?',
+      generated.push({
+        category: 'Condition',
+        question: 'What is the overall condition of the building — common areas, façade, elevators, and any recent capital improvements? Are there any planned special assessments?',
       });
     }
 
-    // Question 2: COC / legal use
-    fallbackQuestions.push({
-      category: 'Legal',
-      question: 'Can you provide the Certificate of Occupancy or legal-use documents for this property?',
-    });
-
-    // Question 3: Costs — vary by Zillow availability
-    if (hasZillowMonthly) {
-      fallbackQuestions.push({
-        category: 'Costs',
-        question: 'Can you confirm whether Zillow\'s estimated taxes, insurance, HOA fees, and monthly payment are accurate for this property?',
-      });
-    } else {
-      fallbackQuestions.push({
-        category: 'Costs',
-        question: 'What are the estimated annual property taxes, insurance, and any HOA fees?',
+    // Derive questions from missing fields
+    const missingLower = missing.map(m => String(m).toLowerCase());
+    if (missingLower.some(m => /comparable|comp|compar|recent.*sale|market.*value/i.test(m)) || !hasPrice) {
+      generated.push({
+        category: 'Market',
+        question: 'Can you provide 3–5 recent comparable sales in the area to help assess whether the asking price is justified?',
       });
     }
+    if (missingLower.some(m => /permit|renovation|update|addition/i.test(m))) {
+      generated.push({
+        category: 'Legal',
+        question: 'Are there any unpermitted renovations, additions, or structural changes? What is the Certificate of Occupancy status?',
+      });
+    }
+    // Basement-specific question: only for fee-simple system-owner types
+    // Co-ops/condos have basement-related decisions managed through HOA — not a unit-level question
+    if (isSystemOwnerType && missingLower.some(m => /basement/i.test(m))) {
+      generated.push({
+        category: 'Legal',
+        question: 'The listing mentions a basement — can you confirm whether it is permitted, legally finished, has proper egress, and whether it counts toward the legal sqft?',
+      });
+    }
+    // Open permits / violations
+    if (missingLower.some(m => /open permit|violation|dob|hpd|complaint/i.test(m))) {
+      generated.push({
+        category: 'Legal',
+        question: 'Are there any open permits, building violations, or unresolved DOB/HPD complaints on this property?',
+      });
+    }
+    // Profile-aware cost question: co-op/condo have different cost decision axes than SF/MF
+    if (missingLower.some(m => /cost|tax|insurance|hoa|fee/i.test(m))) {
+      if (profile?.propertyCategory === 'co_op') {
+        generated.push({
+          category: 'Costs',
+          question: 'Can you confirm the monthly maintenance amount, what it includes, and whether property taxes or utilities are part of the fee?',
+        });
+      } else if (profile?.propertyCategory === 'condo') {
+        generated.push({
+          category: 'Costs',
+          question: 'Can you confirm whether the HOA fees, property taxes, and insurance are disclosed — and what the reserve fund status is?',
+        });
+      } else {
+        generated.push({
+          category: 'Costs',
+          question: hasZillowMonthly
+            ? 'Can you confirm whether the Zillow-estimated taxes, insurance, HOA fees, and monthly payment are accurate?'
+            : 'What are the annual property taxes, HOA fees, and estimated insurance costs?',
+        });
+      }
+    }
+    if (yearBuilt && Number(yearBuilt) < 1975) {
+      if (isSystemOwnerType) {
+        generated.push({
+          category: 'Age',
+          question: `Built in ${yearBuilt} — what are the ages of the roof, HVAC system, water heater, and electrical panel?`,
+        });
+      }
+      // co-op/condo: ask about building age and capital expenditure plan
+      if (profile && ['co_op', 'condo'].includes(profile.propertyCategory)) {
+        generated.push({
+          category: 'Age',
+          question: `Built in ${yearBuilt} — what is the building's age and capital expenditure plan? Have there been recent major building system replacements (roof, boiler, façade)?`,
+        });
+      }
+    }
+    if (missingLower.some(m => /monthly.*payment|mortgage|financing|loan/i.test(m))) {
+      generated.push({
+        category: 'Financing',
+        question: 'What financing options or seller concessions are available, and is this property currently financed or in foreclosure?',
+      });
+    }
+    if (missingLower.some(m => /days.*on.*market|listing.*history|previous.*offer/i.test(m))) {
+      generated.push({
+        category: 'History',
+        question: 'How long has this property been listed, and have there been any previous offers or price reductions?',
+      });
+    }
+    // Merge: keep AI questions (final) + fill from generated, deduplicate by text prefix
+    // Double-filter: skip any generated question that matches irrelevantGenericRisksToAvoid
+    const seenQuestionTexts = new Set(final.map(q => q.question.toLowerCase().slice(0, 30)));
+    const merged = [...final];
 
-    // Question 4: Open violations
-    fallbackQuestions.push({
-      category: 'Legal',
-      question: 'Are there any open DOB, HPD, or building department violations, permits, or unresolved issues?',
-    });
+    // ── Inject from PROPERTY_TYPE_QUESTION_POOL for co-op/condo only ─────────────
+    // multi_family questions are NEVER injected for a single_family profile.
+    // Single-family homes must not get rent-roll, lease, or legal-unit-count questions.
+    // The profile.categorySource tells us whether category came from a structured field.
+    if (profile?.propertyCategory === 'co_op' || profile?.propertyCategory === 'condo') {
+      const qPool = PROPERTY_TYPE_QUESTION_POOL[profile.propertyCategory] ?? [];
+      for (const q of qPool) {
+        if (merged.length >= 5) break;
+        const key = q.toLowerCase().slice(0, 30);
+        if (!seenQuestionTexts.has(key) && !isForbidden(q)) {
+          merged.push({ category: 'Profile', question: q });
+          seenQuestionTexts.add(key);
+        }
+      }
+    }
 
-    // Question 5: Comparables
-    fallbackQuestions.push({
-      category: 'Price',
-      question: 'Can you provide recent comparable sales or active listings to support the asking price?',
-    });
+    for (const g of generated) {
+      if (merged.length >= 5) break;
+      const key = g.question.toLowerCase().slice(0, 30);
+      if (!seenQuestionTexts.has(key) && !isForbidden(g.question)) {
+        merged.push(g);
+        seenQuestionTexts.add(key);
+      }
+    }
 
-    result.questions_to_ask = fallbackQuestions;
+    result.questions_to_ask = merged.slice(0, 5).map(q => q.question);
     return result;
   }
 
-  result.questions_to_ask = transformed.filter(Boolean).slice(0, 5);
+  // Emit as plain string array (US v2 schema). Keep category internally for next steps if needed.
+  result.questions_to_ask = final.slice(0, 5).map(q => q.question);
   return result;
 }
 
 // ========== Helper Functions ==========
 
 function jsonResponse(body: unknown, status = 200) {
+  console.log("[jsonResponse] response bytes:", JSON.stringify(body).length);
   return new Response(JSON.stringify(body), {
     status,
     headers: {
@@ -5211,8 +6835,9 @@ function buildStep2Messages(
     principalAndInterest: number | null;
     propertyTaxMonthly: number | null;
     homeInsuranceMonthly: number | null;
-    hoa: 'yes' | 'no' | 'unknown';
+    hoa: 'yes' | 'no' | 'unknown' | 'inconsistent';
     hoaAmount: number | null;
+    hoaConflict?: boolean;
     utilitiesIncluded: boolean | null;
     // ── Legacy aliases (for existing logic) ──
     annual_tax: number | null;
@@ -5229,6 +6854,12 @@ function buildStep2Messages(
     rawHomeType: string;
     rawPropertyType: string;
     rawPropertySubtype: string;
+    // ── Location Facts ──
+    floodZone: string | null;
+    walkScore: string | null;
+    bikeScore: string | null;
+    neighborhood: string | null;
+    architecturalStyle: string | null;
   },
 ) {
   // ── Prompt selection ───────────────────────────────────────────────────────
@@ -5457,6 +7088,14 @@ If a field is not listed above, then treat it as unknown and add it to data_gaps
       if (verifiedFacts.displayType) {
         vfParts.push(`- Display Type: ${verifiedFacts.displayType}`);
       }
+      // HOA status (handle inconsistent)
+      if (verifiedFacts.hoa === 'inconsistent') {
+        vfParts.push(`- HOA: Status Inconsistent — verify with listing agent`);
+      }
+      // Flood Zone
+      if (verifiedFacts.floodZone) {
+        vfParts.push(`- Flood Zone: ${verifiedFacts.floodZone}`);
+      }
 
       if (vfParts.length > 0) {
         textContent += `
@@ -5473,6 +7112,8 @@ If a field is not listed above, then treat it as unknown and add it to data_gaps
 |- If Price per sqft is listed above, you MUST include it in price_assessment.price_per_sqft_context. Do NOT say price-per-sqft data is not available.
 |- If Estimated monthly payment is listed above, include it in carrying_costs.primary_monthly_estimate.
 |- If HOA is listed as "None", set carrying_costs.hoa = "No".
+|- If HOA is listed as "Status Inconsistent", include it as a question in questions_to_ask and do NOT state a definitive HOA status.
+|- If Flood Zone is listed above, you MUST include it in property_snapshot.floodZone or environmental_risk.summary. Do NOT say "flood zone not disclosed" or "flood risk unknown".
 |- Do NOT ask about missing basic property details (beds/baths/sqft/propertyType) if they are listed above.
 |- If a field is listed above, it is KNOWN — do NOT list it as a question to ask.
 `;
@@ -6212,10 +7853,85 @@ Deno.serve(async (req) => {
       ? (reportMode === 'sale' ? 'basic-au-sale' : 'basic-au-rent')
       : (reportMode === 'sale' ? 'basic-us-sale (UNKNOWN→US fallback)' : 'basic-us-rent (UNKNOWN→US fallback)');
 
+    // ── Step 1: Build Property Intelligence Profile BEFORE LLM call ──────────────
+    const profile = buildPropertyIntelligenceProfile({
+      normalizedPropertyCategory: (optionalDetails as Record<string, unknown>).normalizedPropertyCategory as string ?? null,
+      propertyType: (optionalDetails as Record<string, unknown>).propertyType as string ?? null,
+      propertySubtype: (optionalDetails as Record<string, unknown>).propertySubtype as string ?? null,
+      homeType: (optionalDetails as Record<string, unknown>).homeType as string ?? null,
+      listingText: description,
+      yearBuilt: (optionalDetails as Record<string, unknown>).yearBuilt as number ?? null,
+      pricePerSqft: (optionalDetails as Record<string, unknown>).pricePerSqft as number ?? null,
+      daysOnMarket: (optionalDetails as Record<string, unknown>).daysOnMarket as number ?? null,
+      hoaAmount: (optionalDetails as Record<string, unknown>).hoaFee as number ?? null,
+      taxHistory: (optionalDetails as Record<string, unknown>).taxHistory as string ?? null,
+      zestimateAvailable: Boolean((zillowFinancials as any)?.zestimate ?? (optionalDetails as any)?.zestimate),
+      rentZestimateAvailable: Boolean((zillowFinancials as any)?.rentZestimate ?? (optionalDetails as any)?.rentZestimate),
+    });
+
+    console.log('[RawOptionalDetails] received optionalDetails keys and values', {
+      keys: Object.keys(optionalDetails as Record<string, unknown>),
+      normalizedPropertyCategory: (optionalDetails as Record<string, unknown>).normalizedPropertyCategory,
+      propertyType: (optionalDetails as Record<string, unknown>).propertyType,
+      propertySubtype: (optionalDetails as Record<string, unknown>).propertySubtype,
+      homeType: (optionalDetails as Record<string, unknown>).homeType,
+      listingDescription: String((optionalDetails as Record<string, unknown>).listingDescription ?? '').slice(0, 100),
+      description: String(description ?? '').slice(0, 100),
+    });
+
+    console.log('[BasicProfile]', JSON.stringify({
+      normalizedPropertyCategory: (optionalDetails as Record<string, unknown>).normalizedPropertyCategory,
+      propertyType: (optionalDetails as Record<string, unknown>).propertyType,
+      propertySubtype: (optionalDetails as Record<string, unknown>).propertySubtype,
+      homeType: (optionalDetails as Record<string, unknown>).homeType,
+      listingTextPreview: description.slice(0, 200),
+      detectedCategory: profile.propertyCategory,
+      categorySource: (profile as any).categorySource,
+    }, null, 2));
+
     const systemPrompt = detectedMarket === 'US' || detectedMarket === 'UNKNOWN'
       ? `You are generating a BASIC / FREE property check, not a full property analysis.
 
-The purpose: tell the user what the listing says, what is still unverified, and what to ask before booking a viewing.
+The purpose: tell the user what the listing says, what specific signals it reveals, what is still unverified, and what to ask before booking a viewing.
+
+--- PROPERTY INTELLIGENCE (CONTROLLING CONTEXT) ---
+The following profile was built from listing facts BEFORE this analysis.
+Treat it as the controlling context UNLESS listing evidence clearly contradicts it.
+
+PROPERTY PROFILE:
+${JSON.stringify(profile, null, 2)}
+
+MANDATORY RULES derived from this profile:
+- Asset type: ${profile.propertyCategory}
+- Ownership model: ${profile.ownershipModel}
+- Primary decision axis: ${profile.primaryDecisionAxis.join('; ')}
+- Decisive listing signals: ${profile.decisiveListingSignals.length > 0 ? profile.decisiveListingSignals.join(', ') : '(none detected)'}
+- Generic risks to AVOID: ${profile.irrelevantGenericRisksToAvoid.length > 0 ? profile.irrelevantGenericRisksToAvoid.join(', ') : '(none)'}
+
+ANTI-TEMPLATE CHECK (MANDATORY for every section):
+Before including ANY risk, question, or check item, ask: "Does this apply to nearly every property of this type/age?"
+If yes → REMOVE unless listing text provides specific evidence for THIS property.
+Generic risks FORBIDDEN for ${profile.propertyCategory}:
+${profile.irrelevantGenericRisksToAvoid.length > 0 ? profile.irrelevantGenericRisksToAvoid.map(r => `  - ${r}`).join('\n') : '  (none)'}
+
+Do not default to a single-family residential template. Do not write roof/HVAC/plumbing risks for co-ops or condos unless listing explicitly mentions buyer-owned systems or system condition.
+--- END PROPERTY INTELLIGENCE ---
+
+--- STRUCTURED FIELD OVERRIDE RULES ---
+If the property profile's detected category came from a structured field (homeType / propertySubtype / propertyType / normalizedPropertyCategory), the listing description CANNOT override that classification.
+Structured field evidence includes: "SingleFamily", "Single Family Residence", "Single-Family", "SingleFamily", "Detached", "House", "Condo", "Condominium", "Townhouse", "Duplex" (when it is the primary property type, not a layout/agent wording).
+
+WORDING vs. LEGAL CLASSIFICATION — CRITICAL:
+- "duplex home", "duplex-style", "delivered vacant", "investor opportunity", "rental potential", "income unit" in the listing description are AGENT WORDING or LAYOUT DESCRIPTIONS.
+- They do NOT constitute legal classification evidence.
+- If structured facts say Single Family Residence, you MUST treat this as a single-family home even if the description uses the word "duplex" or "investor".
+- Never output "Multi-Family Claim", "rent roll", "actual leases", "separate utility metering", "Certificate of Occupancy to confirm legal unit count", or "legal unit count" questions UNLESS the listing explicitly states one of:
+  * "legal 2-family" or "legal two-family"
+  * "2 units" or "two units" (not "duplex layout")
+  * "multi-family" as the property type (not agent description)
+  * separate rental units with actual rent amounts
+  * Certificate of Occupancy already obtained confirming unit count
+--- END STRUCTURED FIELD OVERRIDE RULES ---
 
 --- CORE RESTRICTIONS ---
 - Do NOT analyse photos. Basic report has no photos.
@@ -6223,6 +7939,7 @@ The purpose: tell the user what the listing says, what is still unverified, and 
 - Do NOT generate full carrying cost analysis.
 - Do NOT generate detailed maintenance / legal / environmental risk cards.
 - Do NOT produce a full buyer recommendation.
+- Do NOT generate an "Is the price fair" verdict.
 - Do NOT infer: legal status, rental income, property type, beds, baths, sqft, renovation costs, or market time — unless explicitly stated in the listing text.
 - Do NOT use these phrases unless listing explicitly provides supporting facts:
   * "legal 2-family", "legal multi-family", "approved use", "compliant"
@@ -6240,41 +7957,146 @@ If the listing mentions rental, multi-family, or second-unit use without a Certi
 - Recommend verification through Certificate of Occupancy and public records.
 --- END LEGAL USE RULES ---
 
+--- LISTING SIGNALS RULES ---
+Signals must be specific to the identified asset type: ${profile.propertyCategory}.
+Return up to 3 listing signals — specific observations drawn directly from the listing data and structured fields.
+Each signal is a one-line insight about THIS property specifically, not a generic template.
+Format: [{ "signal": "short label", "reason": "one sentence of context from listing data" }]
+
+Signal types to look for (pick whichever apply to THIS listing):
+${profile.propertyCategory === 'co_op' ? `- Board/sublet signals: board approval requirements, subletting restrictions, flip tax
+- Maintenance: total monthly cost and what it includes
+- Building age signals: aging infrastructure in older buildings affects all unit owners` : ''}
+${profile.propertyCategory === 'condo' ? `- HOA signals: monthly fees, reserves, assessments, special charges
+- Building financial health: reserve fund, pending assessments
+- Rental/legal signals: rental restrictions, owner-occupancy ratio` : ''}
+${profile.propertyCategory === 'multi_family' ? `- Legal use: "legal 2-family", "walk-in apartment", "mother-daughter", income unit
+- Multi-unit signals: separate entrance, 2-family, duplex
+- Financial: rent roll, rental income potential` : ''}
+${['single_family', 'townhouse'].includes(profile.propertyCategory) ? `- Built year: if yearBuilt is early (pre-1970), flag that major systems (roof/HVAC/electrical/plumbing) age is important
+- Price per sqft: if $/sqft is notably high or low, flag that comparable sales are needed
+- Basement mentioned: flag that basement permits/egress/legal use need verification` : ''}
+${profile.propertyCategory === 'land' ? `- Lot/zoning signals: lot size, zoning, buildability
+- Utilities: availability at lot line
+- Survey/flood: easements, flood zone, access` : ''}
+Only output signals that are genuinely supported by THIS listing's data. Do not fabricate signals. If the listing data does not support any specific signal, return an empty array.
+--- END LISTING SIGNALS RULES ---
+
 --- BOTTOM LINE RULES ---
 Write ONE sentence that is specific and grounded in the actual data present vs. missing.
-Follow this template structure:
-"This listing provides useful basic facts, including [known facts], but [missing categories] still need verification before relying on this property."
-Only mention categories that are genuinely missing from the listing data.
-If key fields are heavily missing, say: "This listing does not provide enough verified information to judge the deal confidently. Key basics such as [list] are missing or unclear."
+MAX 70 words.
+The sentence MUST cite at least 2 specific facts from the listing — use actual values where available:
+e.g. "At $619,000 for a 3bd/2ba 1,196 sqft home built in 1960, this listing provides basic facts, but major system age, comparable sales, and inspection findings still need verification."
+If the listing has very few fields, say: "This listing does not provide enough verified information to judge the deal confidently. Key basics such as [list the missing fields] are missing or unclear."
+Only mention categories that are genuinely missing.
+NEVER write "including, but" or "and but".
 --- END BOTTOM LINE RULES ---
 
---- LISTING CLAIMS RULES ---
-Only flag claims that appear EXPLICITLY in the listing text.
-Only flag claims in one of these categories (max 3 total):
-- LEGAL 2-FAMILY / rental setup — flag if listing says "legal 2-family", "two-family", "multi-family", "rental-approved", "income opportunity"
-- CONDITION — flag if listing says "TLC", "needs work", "needs updating", "needs renovation", "as-is", "vacant", "sold as-is", "probate"
-- PRICE MOTIVATION — flag if listing says "price reduced", "motivated seller", "price drop"
-For each claim: give the phrase, a HomeScope check, and one "ask before viewing" question.
-If no clear listing-language claims exist, set listing_claims to empty array.
---- END LISTING CLAIMS RULES ---
+--- WHAT'S MISSING RULES ---
+Use THIS property's primary decision axis to rank gap importance (from PROPERTY INTELLIGENCE section).
+Return 4 to 6 short phrases describing what is still unverified from THIS listing.
+Each item is one short line, no period, no full sentence.
+Only include gaps that are genuinely relevant to THIS property type: ${profile.propertyCategory}.
+Do NOT default to roof/basement/CO/permits for every listing.
+
+Property-type priority gaps for ${profile.propertyCategory}:
+${profile.propertyCategory === 'co_op' ? `- Monthly maintenance total cost and what it includes
+- Board approval requirements and timeline
+- Flip tax or transfer fee
+- Subletting and owner-occupancy rules
+- Reserve fund balance and building financials
+- Financing restrictions` : ''}
+${profile.propertyCategory === 'condo' ? `- HOA reserves, pending assessments, and special fees
+- Rental restrictions and pet policies
+- Master insurance coverage
+- Owner-occupancy ratio and financing restrictions
+- Litigation or pending legal issues` : ''}
+${profile.propertyCategory === 'multi_family' ? `- Certificate of Occupancy and legal unit count
+- Current rent roll and actual leases
+- Rent stabilization or rent control status
+- Open DOB/HPD/ECB violations
+- Separate utility metering` : ''}
+${['single_family', 'townhouse'].includes(profile.propertyCategory) ? `- Major systems age (roof/HVAC/electrical/plumbing) — only if built before 1975
+- Basement permits, egress, and legal use — only if basement mentioned
+- Comparable sales
+- Open permits or violations
+- Actual insurance and utility costs` : ''}
+${profile.propertyCategory === 'land' ? `- Zoning and permitted uses
+- Utilities availability and connection cost
+- Flood zone and survey
+- Easements and deed restrictions` : ''}
+${profile.propertyCategory === 'unknown' ? `- Comparable sales
+- Legal use verification
+- Property condition evidence
+- Actual insurance and utility costs` : ''}
+
+Order by importance: core deal factors first, then property-type specifics, then costs.
+--- END WHAT'S MISSING RULES ---
+
+--- TOP 3 THINGS TO CHECK RULES ---
+Select items from THIS property's primary decision axis (from the PROPERTY INTELLIGENCE section above).
+Return 2–4 items (no fixed minimum). Each item has title, why_it_matters, action.
+- title: short label (<= 60 chars). MUST reference specific listing data where possible, e.g. "Built in 1960: Systems Age" or "At $1,003/sqft, Comps Matter"
+- why_it_matters: one sentence explaining why this item can change the buyer's decision (<= 140 chars). Reference specific values from THIS listing, not generic statements.
+- action: one concrete step the buyer should take (<= 120 chars). Start with a verb.
+- Do NOT force-fill to 3 items. Return fewer if there are genuinely fewer than 2 relevant items.
+
+IMPORTANT — ${profile.propertyCategory} specific:
+${profile.propertyCategory === 'co_op' ? `- PRIORITY: Board approval & timeline, maintenance total cost, subletting rules, building financial health
+- Do NOT write roof/HVAC/plumbing/electrical checks unless listing explicitly mentions buyer-owned systems` : ''}
+${profile.propertyCategory === 'condo' ? `- PRIORITY: HOA reserves & assessments, rental restrictions, master insurance, owner-occupancy ratio
+- Do NOT write roof/HVAC/plumbing/electrical checks unless listing explicitly mentions buyer-owned systems` : ''}
+${profile.propertyCategory === 'multi_family' ? `- PRIORITY: Certificate of Occupancy, actual rent roll, separate metering, open violations
+- Focus on legal use and income verification, not generic home systems` : ''}
+${profile.propertyCategory === 'single_family' ? `- PRIORITY: Roof/HVAC age, comparable sales, basement permits, drainage
+- Do NOT write co-op/condo-specific items like board approval, flip tax, HOA reserves` : ''}
+${profile.propertyCategory === 'townhouse' ? `- PRIORITY: HOA fees & responsibility scope, comparable sales, parking arrangements
+- Do NOT write co-op/condo items or generic single-family systems unless HOA covers exterior` : ''}
+${profile.propertyCategory === 'land' ? `- PRIORITY: Zoning & permitted uses, utilities at lot line, flood zone & survey
+- Do NOT write any residential systems risks` : ''}
+${profile.propertyCategory === 'unknown' ? `- Focus on comparable sales, legal use verification, and condition evidence
+- Do not assume any specific property type risks` : ''}
+
+Do NOT restate facts already confirmed in the listing. Each item must point to a genuine gap for THIS property.
+--- END TOP 3 THINGS TO CHECK RULES ---
 
 --- QUESTIONS RULES ---
-Generate up to 5 questions to ask before booking a viewing.
-Questions must cover genuine gaps in the listing — NOT restate confirmed facts.
-Rules:
-- If beds/baths/sqft/price are confirmed, frame questions as "confirm accuracy" not "can you provide X"
-- If rental or multi-family is mentioned, ask about Certificate of Occupancy
-- Ask about: legal use, costs (taxes/insurance/HOA/utilities), condition/repairs, comparable sales or rental history, open permits/violations/title issues
-- If Zillow monthly payment data exists in the listing text, ask to confirm those cost estimates
-- Max 5 questions. Each must be a real question (start with Can/Is/Are/What/How/Why).
+Generate 3 to 5 questions to ask the listing agent before booking a viewing.
+Each question is a single sentence starting with Can/Is/Are/What/How/Why/When.
+Questions must come FROM the what's_missing and top_3 items above — if a gap is listed there, it must have a corresponding question.
+Do NOT ask generic questions that do not connect to specific listing gaps.
+If a fact is already confirmed in the listing, frame the question as "confirm" not "provide".
+If Zillow monthly payment data exists, include one cost-confirmation question.
+
+Property-type-specific questions:
+${profile.propertyCategory === 'co_op' ? `- Ask about board package requirements and typical approval timeline
+- Ask for the full maintenance breakdown and what it includes
+- Ask about subletting rules, duration limits, and any fees
+- Ask about flip tax or transfer fee calculation
+- Ask for building financial statements and reserve fund balance` : ''}
+${profile.propertyCategory === 'condo' ? `- Ask about HOA reserves and any pending special assessments
+- Ask about rental restrictions and pet policies
+- Ask about master insurance coverage and unit-owner insurance requirements
+- Ask about the owner-occupancy ratio and financing restrictions` : ''}
+${profile.propertyCategory === 'multi_family' ? `- Ask for the Certificate of Occupancy confirming legal unit count
+- Ask for the current rent roll and actual leases
+- Ask about rent stabilization or rent control status
+- Ask about open violations (DOB, HPD, ECB)` : ''}
+${['single_family', 'townhouse'].includes(profile.propertyCategory) ? `- Ask about roof age and last major system updates
+- Ask for comparable sales
+- Ask about permits for any renovations
+- Ask about basement or lower level condition and permits` : ''}
+${profile.propertyCategory === 'land' ? `- Ask about zoning and permitted uses
+- Ask about utilities availability at the lot line
+- Ask for a survey and flood zone confirmation` : ''}
 --- END QUESTIONS RULES ---
 
---- CTA RULES ---
-Use exactly this upsell_cta:
+--- UPSELL CTA RULES ---
+Return a fixed upsell_cta object:
 - title: "Unlock Full Analysis"
-- body: "Basic shows what the listing says and what still needs verification. Full Analysis goes deeper into photos, price confidence, legal and maintenance risks, carrying-cost assumptions, and whether this property is actually worth viewing."
-- button: "Unlock Full Analysis"
---- END CTA RULES ---
+- body: "Basic shows what this listing reveals and what still needs asking. Full Analysis adds condition risk analysis, price confidence verdict, carrying-cost breakdown, and whether this property fits your buyer profile."
+No locked_modules field. No mention of "Photo & Space Analysis" as a locked feature in the body.
+--- END UPSELL CTA RULES ---
 
 Tone: Clear, Practical, Conservative, No overclaiming, No hallucinated facts.
 Do not pretend the report has enough data for a full decision.`
@@ -6308,6 +8130,10 @@ Write ONE sentence that is specific and grounded in the actual data present vs. 
 Follow this template structure:
 "This listing provides useful basic facts, including [known facts], but [missing categories] still need verification before relying on this property."
 Only mention categories that are genuinely missing from the listing data.
+NEVER write "including, but" or "and but" — if the [known facts] list would be empty, rephrase to:
+"This listing has limited verified information, but [missing categories] still need verification before relying on this property."
+Example bad: "This listing provides useful basic facts, including, but carrying costs..."
+Example good: "This listing has limited verified information, but carrying costs and comparable sales still need verification."
 If key fields are heavily missing, say: "This listing does not provide enough verified information to judge the deal confidently. Key basics such as [list] are missing or unclear."
 --- END BOTTOM LINE RULES ---
 
@@ -6341,19 +8167,118 @@ Use exactly this upsell_cta:
 Tone: Clear, Practical, Conservative, No overclaiming, No hallucinated facts.
 Do not pretend the report has enough data for a full decision.`;
 
+    // Helper: assemble a minimal, US-only listing data block per proposal §六.
+    // We do NOT pass: imageUrls, photo captions, raw full page text, school details,
+    // neighborhood long text, Zestimate history, MLS disclaimer.
+    const truncate = (v: unknown, max: number): string => {
+      const s = typeof v === 'string' ? v : v == null ? '' : String(v);
+      return s.length > max ? s.slice(0, max) : s;
+    };
+
+    const buildUsUserPrompt = (kind: 'sale' | 'rent') => {
+      const opts = optionalDetails as Record<string, unknown>;
+      const desc = truncate(description, 1200);
+      const factsArr = Array.isArray(opts.factsAndFeatures)
+        ? (opts.factsAndFeatures as unknown[]).slice(0, 30)
+        : [];
+      const highlightsArr = Array.isArray(opts.listingHighlights)
+        ? (opts.listingHighlights as unknown[]).slice(0, 10)
+        : [];
+
+      const lines: string[] = [];
+      lines.push(`Analyze this ${kind === 'rent' ? 'rental' : 'sale'} property listing. Return JSON with ONLY these fields (remove all others):`);
+      lines.push('{');
+      lines.push('  "bottom_line": "one sentence (max 70 words) in format: [specific facts with actual numbers from the listing data above: price, beds/baths, sqft, year built, tax if available] — [3-5 specific verification items; for single-family prefer: comparable sales, basement permits/egress, major systems age: roof/HVAC/electrical/plumbing, oil heating/tank records, open permits or violations, insurance and utility costs; no generic phrases like property condition or due diligence unless no facts available]",');
+      lines.push('  "listing_signals": [');
+      lines.push('    { "signal": "string", "reason": "string" }');
+      lines.push('  ],');
+      lines.push('  // Each signal: (1) cite a specific fact, number, or quoted phrase from the listing data above.');
+      lines.push('  // (2) state what it means and what still needs verification.');
+      lines.push('  // (3) Generate 2-3 signals only — each must be bound to a real listing field (price, beds/baths, sqft, year built, tax, zestimate, description).');
+      lines.push('  // (4) If Zillow shows a Zestimate or Rent Zestimate, do NOT say "No Zestimate" — include it as a signal.');
+      lines.push('  // (5) Do NOT infer school ratings, neighborhood safety, traffic, or future value — Basic has no verified data for these.');
+      lines.push('  // (6) Do NOT repeat the same fact in different words across signals.');
+      lines.push('  "whats_missing": ["short phrase 1", "short phrase 2", "short phrase 3", "short phrase 4"],');
+      lines.push('  // Avoid generic or duplicate verification items. Use the most concrete fact-triggered risks instead:');
+      lines.push('  // - yearBuilt before 1970 → "major systems age: roof / HVAC / electrical / plumbing"');
+      lines.push('  // - basement mentioned → "basement permits, egress, ceiling height, and legal use"');
+      lines.push('  // - oil heating mentioned → "oil tank location, service records, and removal liability"');
+      lines.push('  // - pricePerSqft or high asking price → "comparable sales"');
+      lines.push('  // - tax/monthly payment exists → "insurance, utilities, and loan terms"');
+      lines.push('  // - Zestimate/Rent Zestimate exists → mention them but still require comparable sales');
+      lines.push('  // Do NOT repeat the same concept across What\'s Missing or Key Things To Check.');
+      lines.push('  // Do not use generic phrases like "property condition", "due diligence", "verify details", or "needs more research" when specific facts are available.');
+      lines.push('  // If Zestimate or Rent Zestimate exists, never say it is missing.');
+      lines.push('  // Prefer: "Zillow Value Available — Zillow shows a Zestimate of $X and Rent Zestimate of $Y/mo, but comparable sales and actual assumptions still need verification."');
+      lines.push('  "top_3_things_to_check": [');
+      lines.push('    { "title": "string — must reference a specific extracted fact (e.g., year built, basement mention, price per sqft)", "why_it_matters": "string", "action": "string" },');
+      lines.push('    { "title": "string — must reference a specific extracted fact", "why_it_matters": "string", "action": "string" },');
+      lines.push('    { "title": "string — must reference a specific extracted fact", "why_it_matters": "string", "action": "string" }');
+      lines.push('  ],');
+      lines.push('  "questions_to_ask": ["question 1", "question 2", "question 3"],');
+      lines.push('  "upsell_cta": { "title": "Unlock Full Analysis", "body": "string" }');
+      lines.push('}');
+      lines.push('');
+      lines.push('Only output the JSON. No other text.');
+      lines.push('');
+
+      // Listing data block — minimal, US-only fields
+      if (opts.address || opts.suburb || opts.region) lines.push(`Address: ${opts.address ?? ''}${opts.suburb ? ', ' + opts.suburb : ''}${opts.region ? ', ' + opts.region : ''}`);
+      if (kind === 'rent') {
+        if (opts.weeklyRent) lines.push(`Weekly Rent: ${opts.weeklyRent}`);
+        if (opts.monthlyRent) lines.push(`Monthly Rent: ${opts.monthlyRent}`);
+        if (opts.bond) lines.push(`Bond: ${opts.bond}`);
+      } else {
+        if (opts.askingPrice || opts.price) lines.push(`Asking Price: ${opts.askingPrice ?? opts.price}`);
+      }
+      if (opts.bedrooms) lines.push(`Beds: ${opts.bedrooms}`);
+      if (opts.bathrooms) lines.push(`Baths: ${opts.bathrooms}`);
+      if (opts.sqft) lines.push(`Sqft: ${opts.sqft}`);
+      if (opts.yearBuilt) lines.push(`Year Built: ${opts.yearBuilt}`);
+      if (opts.propertyType) lines.push(`Property Type: ${opts.propertyType}`);
+      if (opts.lotSize) lines.push(`Lot Size: ${opts.lotSize}`);
+      if (kind === 'sale') {
+        if (opts.taxAnnual || opts.annualTaxAmount) lines.push(`Tax / Year: ${opts.taxAnnual ?? opts.annualTaxAmount}`);
+        if (opts.pricePerSqft) lines.push(`Price per Sqft: ${opts.pricePerSqft}`);
+        if (opts.zestimate) lines.push(`Zestimate: ${opts.zestimate}`);
+        if (opts.rentZestimate) lines.push(`Rent Zestimate: ${opts.rentZestimate}/mo`);
+        if (opts.estimatedMonthlyPayment) lines.push(`Estimated Monthly Payment: ${opts.estimatedMonthlyPayment}`);
+        if (opts.hoaFee || opts.hoa) lines.push(`HOA: ${opts.hoaFee ?? opts.hoa}`);
+      }
+      if (opts.sourceDomain) lines.push(`Source: ${opts.sourceDomain}`);
+      lines.push('');
+
+      if (desc) {
+        lines.push('--- Description ---');
+        lines.push(desc);
+        lines.push('');
+      }
+      if (factsArr.length > 0) {
+        lines.push('--- Facts & Features (max 30) ---');
+        for (const f of factsArr) {
+          if (f && typeof f === 'object') {
+            const o = f as Record<string, unknown>;
+            const k = o.label ?? o.key ?? '';
+            const v = o.value ?? '';
+            if (k || v) lines.push(`- ${k}: ${v}`);
+          } else if (f) {
+            lines.push(`- ${f}`);
+          }
+        }
+        lines.push('');
+      }
+      if (highlightsArr.length > 0) {
+        lines.push('--- Listing Highlights (max 10) ---');
+        for (const h of highlightsArr) lines.push(`- ${typeof h === 'string' ? h : (h as any)?.text ?? ''}`);
+        lines.push('');
+      }
+
+      return lines.join('\n');
+    };
+
     const userPrompt = reportMode === 'rent'
       ? (detectedMarket === 'US' || detectedMarket === 'UNKNOWN'
-          ? `Analyze this rental property listing. Return JSON with ONLY these fields (remove all others):
-{
-  "bottom_line": "one specific sentence about what this listing shows and what still needs verification",
-  "listing_claims": [{ "phrase": "exact listing text", "check": "what HomeScope can or cannot verify", "ask": "one question to ask before viewing" }],
-  "questions_to_ask": [{ "category": "Legal" | "Costs" | "Condition" | "Price" | "General", "question": "specific question text" }],
-  "upsell_cta": { "title": "Unlock Full Analysis", "body": "Basic shows what the listing says and what still needs verification. Full Analysis goes deeper into photos, price confidence, legal and maintenance risks, carrying-cost assumptions, and whether this property is actually worth viewing.", "button": "Unlock Full Analysis" }
-}
-
-Only output the JSON. No other text.
-Listing: ${description}
-${optionalDetails.weeklyRent ? `Weekly Rent: ${optionalDetails.weeklyRent}\n` : ''}${optionalDetails.suburb ? `Location: ${optionalDetails.suburb}\n` : ''}${optionalDetails.bedrooms ? `Bedrooms: ${optionalDetails.bedrooms}\n` : ''}${optionalDetails.bathrooms ? `Bathrooms: ${optionalDetails.bathrooms}\n` : ''}`
+          ? buildUsUserPrompt('rent')
           : `Analyze this rental property listing. Return JSON with ONLY these fields (remove all others):
 {
   "bottom_line": "one specific sentence about what this listing shows and what still needs verification",
@@ -6366,17 +8291,7 @@ Only output the JSON. No other text.
 Listing: ${description}
 ${optionalDetails.weeklyRent ? `Weekly Rent: ${optionalDetails.weeklyRent}\n` : ''}${optionalDetails.suburb ? `Location: ${optionalDetails.suburb}\n` : ''}${optionalDetails.bedrooms ? `Bedrooms: ${optionalDetails.bedrooms}\n` : ''}${optionalDetails.bathrooms ? `Bathrooms: ${optionalDetails.bathrooms}\n` : ''}`)
       : (detectedMarket === 'US' || detectedMarket === 'UNKNOWN'
-          ? `Analyze this property for sale. Return JSON with ONLY these fields (remove all others):
-{
-  "bottom_line": "one specific sentence about what this listing shows and what still needs verification",
-  "listing_claims": [{ "phrase": "exact listing text", "check": "what HomeScope can or cannot verify", "ask": "one question to ask before viewing" }],
-  "questions_to_ask": [{ "category": "Legal" | "Costs" | "Condition" | "Price" | "General", "question": "specific question text" }],
-  "upsell_cta": { "title": "Unlock Full Analysis", "body": "Basic shows what the listing says and what still needs verification. Full Analysis goes deeper into photos, price confidence, legal and maintenance risks, carrying-cost assumptions, and whether this property is actually worth viewing.", "button": "Unlock Full Analysis" }
-}
-
-Only output the JSON. No other text.
-Listing: ${description}
-${optionalDetails.askingPrice ? `Asking Price: ${optionalDetails.askingPrice}\n` : ''}${optionalDetails.suburb ? `Location: ${optionalDetails.suburb}\n` : ''}${optionalDetails.bedrooms ? `Bedrooms: ${optionalDetails.bedrooms}\n` : ''}${optionalDetails.bathrooms ? `Bathrooms: ${optionalDetails.bathrooms}\n` : ''}`
+          ? buildUsUserPrompt('sale')
           : `Analyze this property for sale. Return JSON with ONLY these fields (remove all others):
 {
   "bottom_line": "one specific sentence about what this listing shows and what still needs verification",
@@ -6444,7 +8359,7 @@ ${optionalDetails.askingPrice ? `Asking Price: ${optionalDetails.askingPrice}\n`
             { role: "user", content: userPrompt }
           ],
           temperature: 0.1,
-          max_tokens: 1000,
+          max_tokens: 2000,
         }),
       });
 
@@ -6481,21 +8396,18 @@ ${optionalDetails.askingPrice ? `Asking Price: ${optionalDetails.askingPrice}\n`
       } catch (parseErr) {
         console.error("Failed to parse AI response:", parseErr);
         result = {
-          // These will be filled in by backend enforcement below
           bottom_line: "Unable to fully analyse listing from available data.",
-          listing_claims: [],
+          listing_signals: [],
+          whats_missing: [],
+          top_3_things_to_check: [],
           questions_to_ask: [],
           upsell_cta: {
             title: "Unlock Full Analysis",
-            body: "Basic shows what the listing says and what still needs verification. Full Analysis goes deeper into photos, price confidence, legal and maintenance risks, carrying-cost assumptions, and whether this property is actually worth viewing.",
-            button: "Unlock Full Analysis",
+            body: "Basic shows what this listing reveals and what still needs asking. Full Analysis adds condition risk analysis, price confidence verdict, carrying-cost breakdown, and whether this property fits your buyer profile.",
           },
-          // Legacy compat — will be overwritten by backend enforcement
           evidence_score: 30,
           verdict: "High Uncertainty",
           what_we_know: {},
-          whats_missing: [],
-          top_3_things_to_check: [],
           overallScore: 30,
           quickSummary: "Unable to fully analyse listing from available data.",
           whatLooksGood: [],
@@ -6504,64 +8416,34 @@ ${optionalDetails.askingPrice ? `Asking Price: ${optionalDetails.askingPrice}\n`
       }
 
       // Backend enforcement: compute evidence_score from actual field completeness
+      // Basic 模式只基于 listing 中实际可获得的字段，不对无法验证的字段扣分
       {
         const opts = optionalDetails as Record<string, unknown>;
-        const rawScore = (result.evidence_score ?? result.overallScore ?? 50) as number;
 
         const hasPrice = !!(opts.askingPrice || opts.weeklyRent);
         const hasBeds = !!(opts.bedrooms);
         const hasBaths = !!(opts.bathrooms);
         const hasSqft = !!(opts.sqft);
-        const hasPropertyType = !!(opts.propertyType);
         const hasSource = !!(result.sourceDomain || result.listingUrl || opts.sourceDomain || opts.listingUrl);
-        const hasLegalUse = false; // Basic mode cannot verify legal use
-        const hasCostDetails = !!(opts.hoaFee || opts.propertyTax || opts.annualTaxAmount || opts.propertyTax);
-        const hasComparableContext = false; // Basic mode cannot verify comparables
-        const hasConditionEvidence = false; // Basic mode does not analyze photos
+        // propertyType is often null for Zillow房源 — do not penalize for it
+        const hasCostDetails = !!(opts.hoaFee || opts.propertyTax || opts.annualTaxAmount);
+        // rich listing data: factsAndFeatures presence indicates above-average listing quality
+        const hasRichListingData = Array.isArray(opts.factsAndFeatures) && (opts.factsAndFeatures as unknown[]).length >= 3;
 
-        const missingCore = [hasPrice, hasBeds, hasBaths, hasSqft, hasSource].filter(Boolean).length;
+        const presentCount = [hasPrice, hasBeds, hasBaths, hasSqft, hasSource, hasCostDetails].filter(Boolean).length;
 
-        let deduction = 0;
-        if (!hasPrice) deduction += 15;
-        if (!hasBeds) deduction += 8;
-        if (!hasBaths) deduction += 8;
-        if (!hasSqft) deduction += 12;
-        if (!hasPropertyType) deduction += 10;
-        if (!hasSource) deduction += 8;
-        if (!hasCostDetails) deduction += 10;
-        if (!hasLegalUse) deduction += 10;
-        if (!hasComparableContext) deduction += 10;
+        // Score mapping (max 79 — preserve 80+ for Full reports):
+        //   1–2 fields: 40     |  3–4 fields: 55     |  5 fields: 68
+        //   6 fields: 73         |  6 + rich data: 79
+        let baseScore = 40;
+        if (presentCount >= 6) baseScore = 73;
+        else if (presentCount === 5) baseScore = 68;
+        else if (presentCount >= 3) baseScore = 55;
 
-        let evidence_score = Math.min(rawScore, 100 - deduction);
+        const bonusScore = (presentCount >= 6 && hasRichListingData) ? 6 : 0;
 
-        // Hard cap: if price/beds/baths/sqft all missing, cap at 55
-        if (!hasPrice && !hasBeds && !hasBaths && !hasSqft) {
-          evidence_score = Math.min(evidence_score, 55);
-        }
-
-        // Hard cap: if source info missing, cap at 65
-        if (!hasSource) {
-          evidence_score = Math.min(evidence_score, 65);
-        }
-
-        // Hard cap: if missing property type, cap at 79
-        if (!hasPropertyType) {
-          evidence_score = Math.min(evidence_score, 79);
-        }
-
-        // Hard cap: if multi-family/rental context but no legal use verification, cap at 75
-        const isMultiFamilyOrRental = !!(opts.askingPrice); // US sale listing
-        if (isMultiFamilyOrRental && !hasLegalUse) {
-          evidence_score = Math.min(evidence_score, 75);
-        }
-
-        // Hard cap: if most major decision fields are missing, cap at 79
-        const missingMajorCount = [!hasPropertyType, !hasLegalUse, !hasCostDetails, !hasComparableContext, !hasConditionEvidence].filter(Boolean).length;
-        if (missingMajorCount >= 3) {
-          evidence_score = Math.min(evidence_score, 79);
-        }
-
-        result.evidence_score = evidence_score;
+        result.evidence_score = Math.min(baseScore + bonusScore, 79);
+        result.overallScore = result.evidence_score;
       }
 
       // Backend enforcement: verdict is determined EXCLUSIVELY by evidence_score
@@ -6598,22 +8480,43 @@ ${optionalDetails.askingPrice ? `Asking Price: ${optionalDetails.askingPrice}\n`
 
       // ── BEFORE: diagnostic log ──────────────────────────────────────────────
       console.log('[Basic cleanup BEFORE]', {
+        bottom_line: result.bottom_line,
+        whats_missing: result.whats_missing,
+        top_3_things_to_check: result.top_3_things_to_check,
         questions_to_ask: result.questions_to_ask,
-        listing_claims: result.listing_claims,
+        upsell_cta: result.upsell_cta,
       });
 
-      // Set market on result so normalizeBasicChecks can reference it
+      // Set market on result so normalize helpers can reference it
       result.market = detectedMarket;
 
       const hasZillowMonthly = !!(zillowFinancials && ((zillowFinancials as any)?.monthlyPayment?.estimatedMonthlyPayment?.value || (zillowFinancials as any)?.topEstimatedPayment?.value));
 
-      // Cleanup: normalize questions only (top_3_things_to_check removed from output)
-      result = normalizeBasicQuestions(result, hasZillowMonthly);
+      // Cleanup: enforce counts and shape for the US Basic schema.
+      const opts = optionalDetails as Record<string, unknown>;
+      result = normalizeWhatsMissing(result, opts, profile);
+      result = normalizeTop3Checks(result, opts, profile);
+      result = normalizeBasicQuestions(result, hasZillowMonthly, profile);
+      // ── POST-LLM GUARDRAIL: validate report against profile ───────────────────────
+      // Remove wrong-type risks that slipped through, supplement from type-specific pool if needed
+      result = validateBasicReportAgainstProfile(result, profile, opts);
+      // ── Category-aware final guard: strip multi-family content for structured single_family ──
+      // Must run AFTER normalizeBottomLine so it cleans up bottom_line after the rewrite.
+      // Must run BEFORE _analysisProfile is attached so diagnostics are clean.
+      result = applySingleFamilyFinalGuard(result, profile, opts);
+      (result as any)._analysisProfile = profile;
+      // ── Bottom line normalization runs AFTER guard so guard can fix bottom_line first ──
+      result = normalizeBottomLine(result, opts, profile);
+      // Guard must run again AFTER bottom_line rewrite to strip any re-injected multi-family content
+      result = applySingleFamilyFinalGuard(result, profile, opts);
 
-      // ── AFTER: diagnostic log ──────────────────────────────────────────────
+      // ── AFTER: diagnostic log ──────────────────────────────────────────────────────
       console.log('[Basic cleanup AFTER]', {
+        bottom_line: result.bottom_line,
+        whats_missing: result.whats_missing,
+        top_3_things_to_check: result.top_3_things_to_check,
         questions_to_ask: result.questions_to_ask,
-        listing_claims: result.listing_claims,
+        upsell_cta: result.upsell_cta,
       });
 
       console.log("=== BASIC SYNC SUCCESS ===");
@@ -6705,10 +8608,11 @@ ${optionalDetails.askingPrice ? `Asking Price: ${optionalDetails.askingPrice}\n`
             optionalDetails,
             property_snapshot,
             monthly_cost_snapshot,
-            // These fields are needed for NewReportUI sections:
+            // These fields are needed for NewReportUI sections (US Basic v2):
             what_we_know: result.what_we_know ?? {},
-            listing_claims: (result.listing_claims ?? []).slice(0, 3),
-            questions_to_ask: (result.questions_to_ask ?? []).slice(0, 5),
+            whats_missing: (result.whats_missing ?? []).slice(0, 6),
+            top_3_things_to_check: (result.top_3_things_to_check ?? []).slice(0, 4),
+            questions_to_ask: (result.questions_to_ask ?? []).slice(0, 6),
             upsell_cta: result.upsell_cta ?? {},
           },
           reportMode
@@ -6716,21 +8620,41 @@ ${optionalDetails.askingPrice ? `Asking Price: ${optionalDetails.askingPrice}\n`
         console.log("Basic sync: History record updated with full result");
       }
 
+      console.log("[BasicSync] About to send response", {
+        analysisId,
+        evidenceScore: result?.evidence_score,
+        verdict: result?.verdict,
+      });
+
+      console.log("[BasicSync] Response payload ready");
+
       return jsonResponse({
         result: {
-          // New evidence_score schema fields
+          // New evidence_score schema fields (US Basic v2)
           evidence_score: result.evidence_score ?? result.overallScore ?? 50,
           verdict: result.verdict,
           bottom_line: result.bottom_line ?? result.quickSummary ?? '',
           what_we_know: result.what_we_know ?? {},
-          listing_claims: (result.listing_claims ?? []).slice(0, 3),
-          questions_to_ask: (result.questions_to_ask ?? []).slice(0, 5),
+          whats_missing: (result.whats_missing ?? []).slice(0, 6),
+          top_3_things_to_check: (result.top_3_things_to_check ?? []).slice(0, 4),
+          questions_to_ask: (result.questions_to_ask ?? []).slice(0, 6),
+          listing_signals: Array.isArray(result.listing_signals) ? result.listing_signals : [],
           upsell_cta: result.upsell_cta ?? {},
           // Legacy fields for backward compatibility
           overallScore: result.evidence_score ?? result.overallScore ?? result.score ?? 50,
           quickSummary: result.bottom_line ?? result.quickSummary ?? '',
           whatLooksGood: result.whatLooksGood ?? [],
-          riskSignals: result.riskSignals ?? [],
+          riskSignals: (() => {
+            const ERROR_SIGNAL_PATTERNS = [
+              /^analysis could not be completed$/i,
+              /^unable to (fully )?analyse/i,
+              /^unable to (fully )?analyze/i,
+              /^not enough data$/i,
+            ];
+            return (result.riskSignals ?? []).filter(
+              (s: string) => !ERROR_SIGNAL_PATTERNS.some(p => p.test(String(s ?? '')))
+            );
+          })(),
           reportMode,
           market: detectedMarket,
           source: bodySource || null,
@@ -7046,19 +8970,47 @@ ${optionalDetails.askingPrice ? `Asking Price: ${optionalDetails.askingPrice}\n`
     try {
       let visualAnalysis: Record<string, unknown> | null = null;
 
-      // Start Reality Check in parallel with Step 1
-      console.log("\n[Reality Check] Starting in parallel...");
+      // ── Reality Check: 5-level priority for listing description ─────────────
+      // Priority: whatsSpecialText > listingDescription > whatSpecial
+      // Falls back to stripMlsFromDescription(description) only if all are empty.
+      // If the text is only MLS/IDX/disclaimer noise, skip Reality Check entirely.
+      console.log("\n[Reality Check] Building input with 5-level priority...");
+      const odSpin = optionalDetails as Record<string, unknown>;
+      const spinDesc = [
+        odSpin?.whatsSpecialText as string | undefined,
+        odSpin?.listingDescription as string | undefined,
+        odSpin?.whatSpecial as string | undefined,
+      ].find(v => typeof v === 'string' && v.trim().length > 20);
+      const spinText = spinDesc
+        ? stripMlsFromDescription(spinDesc)
+        : (description.trim() ? stripMlsFromDescription(description) : '');
+      // === LAYER 5 ===
+      const candidates = [
+        { name: 'whatsSpecialText', text: odSpin?.whatsSpecialText as string | undefined },
+        { name: 'listingDescription', text: odSpin?.listingDescription as string | undefined },
+        { name: 'whatSpecial', text: odSpin?.whatSpecial as string | undefined },
+        { name: 'description (fallback)', text: description },
+      ];
+      candidates.forEach(c => {
+        const len = (c.text || '').length;
+        const preview = (c.text || '').slice(0, 120).replace(/\n/g, ' ');
+        console.log(`[Reality Check] candidate[${c.name}]: length=${len}, preview="${preview}"`);
+      });
+      console.log("[Reality Check] selected spinDesc length:", (spinDesc || '').length, "| preview:", (spinDesc || '').slice(0, 120).replace(/\n/g, ' '));
+      console.log("[Reality Check] stripMlsFromDescription result length:", spinText.length, "| preview:", spinText.slice(0, 120).replace(/\n/g, ' '));
+      const hasMlsNoise = !spinText || /^(source\s*:\s*|mls\s*#?\s*\d|internet\s+data\s+exchange|idx\s+program|deemed\s+reliable|as\s+distributed\s+by|listing\s+provided\s+by|report\s+a\s+problem)/i.test(spinText);
+      console.log("[Reality Check] spinText sample:", spinText?.slice(0, 300));
+      console.log("[Reality Check] hasMlsNoise:", hasMlsNoise);
       let realityCheckPromise: Promise<RealityCheck> = Promise.resolve({ should_display: false });
-      
-      if (description?.trim()) {
-        realityCheckPromise = runRealityCheck(
-          openRouterApiKey,
-          description,
-          ""
-        ).catch((rcError) => {
+      if (spinText && !hasMlsNoise) {
+        console.log("[Reality Check] Input source:", spinDesc ? 'whatsSpecialText/listingDescription/whatSpecial' : 'description (fallback)');
+        console.log("[Reality Check] Input length:", spinText.length);
+        realityCheckPromise = runRealityCheck(openRouterApiKey, spinText, "").catch((rcError) => {
           console.error("[RealityCheck] Failed:", rcError);
           return { should_display: false };
         });
+      } else {
+        console.log("[Reality Check] Skipped: no meaningful listing text after MLS filtering");
       }
 
       // Step 1: Visual analysis (batched for stability)
@@ -7848,8 +9800,18 @@ ${optionalDetails.askingPrice ? `Asking Price: ${optionalDetails.askingPrice}\n`
         carrying_costs: normalizedDecision.carrying_costs,
         maintenance_risk: normalizedDecision.maintenance_risk,
         layout_fit: normalizedDecision.layout_fit,
-        listing_language_reality_check: Array.isArray(normalizedDecision.listing_language_reality_check)
-          ? normalizedDecision.listing_language_reality_check : [],
+        // Merge Step 2 AI result + Step 1 Reality Check Spin Decoder (deduped by phrase)
+        listing_language_reality_check: (() => {
+          const step2Spin = Array.isArray(normalizedDecision.listing_language_reality_check)
+            ? normalizedDecision.listing_language_reality_check : [];
+          const step1Spin = realityCheckResult.listing_language_reality_check ?? [];
+          const seen = new Set(step2Spin.map((i: any) => String(i.phrase ?? '').toLowerCase()));
+          const merged = [...step2Spin, ...step1Spin.filter((i: any) => {
+            const key = String(i.phrase ?? '').toLowerCase();
+            return key && !seen.has(key);
+          })];
+          return merged;
+        })(),
         neighborhood_lifestyle: normalizedDecision.neighborhood_lifestyle,
         legal_compliance: normalizedDecision.legal_compliance,
         environmental_risk: normalizedDecision.environmental_risk,
@@ -8076,6 +10038,63 @@ ${optionalDetails.askingPrice ? `Asking Price: ${optionalDetails.askingPrice}\n`
           scanArray((res as any).maintenance_risk?.items ?? (res as any).maintenance_risk?.risk_factors, ['title', 'description', 'summary', 'text']);
         }
 
+        // ── legal_compliance: replace generic property-type category text with buyer-friendly language ──
+        {
+          const lc = (res as any).legal_compliance;
+          if (lc && typeof lc.summary === 'string') {
+            lc.summary = lc.summary.replace(
+              /property\s+type\s*(and\s+category)?\s+not\s+clearly\s+disclosed/gi,
+              'Verify Certificate of Occupancy, legal use, permit history, and any open violations before offering.'
+            );
+          }
+          // Also clean legal_compliance.items_to_verify
+          if (Array.isArray(lc?.items_to_verify)) {
+            lc.items_to_verify = lc.items_to_verify.map((item: unknown) => {
+              if (typeof item === 'string') {
+                return item.replace(
+                  /property\s+type\s*(and\s+category)?\s+not\s+clearly\s+disclosed/gi,
+                  'Verify Certificate of Occupancy, legal use, permit history, and any open violations before offering.'
+                );
+              }
+              if (item && typeof item === 'object') {
+                const obj = item as Record<string, unknown>;
+                for (const key of ['description', 'text', 'title', 'item']) {
+                  if (typeof obj[key] === 'string') {
+                    obj[key] = (obj[key] as string).replace(
+                      /property\s+type\s*(and\s+category)?\s+not\s+clearly\s+disclosed/gi,
+                      'Verify Certificate of Occupancy, legal use, permit history, and any open violations before offering.'
+                    );
+                  }
+                }
+              }
+              return item;
+            });
+          }
+        }
+
+        // ── layout_fit: replace multi-unit income investor phrasing with buyer-friendly alternatives ──
+        {
+          const lf = (res as any).layout_fit ?? {};
+          const cleanBestFor = (arr: unknown[] | undefined): unknown[] =>
+            (arr ?? []).map((item: unknown) => {
+              if (typeof item === 'string') {
+                return item.replace(/\binvestors\s+seeking\s+multi[- ]?unit\s+income\b/gi, 'Investors seeking strong immediate rental yield');
+              }
+              if (item && typeof item === 'object') {
+                const obj = item as Record<string, unknown>;
+                if (typeof obj.description === 'string') {
+                  obj.description = obj.description.replace(/\binvestors\s+seeking\s+multi[- ]?unit\s+income\b/gi, 'Investors seeking strong immediate rental yield');
+                }
+                if (typeof obj.text === 'string') {
+                  obj.text = obj.text.replace(/\binvestors\s+seeking\s+multi[- ]?unit\s+income\b/gi, 'Investors seeking strong immediate rental yield');
+                }
+              }
+              return item;
+            });
+          if (Array.isArray(lf.best_for)) lf.best_for = cleanBestFor(lf.best_for);
+          if (Array.isArray(lf.bestFor)) lf.bestFor = cleanBestFor(lf.bestFor);
+        }
+
         // ── Property-aware flag (used by multiple post-processing blocks below) ──
         const isSFOC = vf.reportProfile === 'single_family_owner_occupier';
 
@@ -8280,6 +10299,28 @@ ${optionalDetails.askingPrice ? `Asking Price: ${optionalDetails.askingPrice}\n`
               }
             }
           }
+        }
+
+        // ── Spin Decoder: filter out MLS-only phrases (no real listing language) ──
+        if (res.listing_language_reality_check && Array.isArray(res.listing_language_reality_check)) {
+          const MLS_ONLY_PATTERNS = [
+            /source\s*:/i, /mls\s*#?\s*\d/i, /deemed\s+reliable/i,
+            /subject\s+to\s+prior\s+sale/i, /idx\s+program/i, /idx\s+information/i,
+            /information\s+should\s+be\s+independently/i,
+            /streeteasy\s+source/i, /listing\s+data\s+last\s+updated/i,
+            /supplied\s+open\s+house\s+information/i,
+            /properties\s+may\s+or\s+may\s+not\s+be\s+listed/i,
+          ];
+
+          const filtered = (res.listing_language_reality_check as Array<{ phrase?: unknown }>).filter(item => {
+            const phrase = (String(item.phrase ?? '')).toLowerCase();
+            // Keep only entries whose phrase is NOT purely MLS disclaimer
+            const allMls = MLS_ONLY_PATTERNS.every(p => !p.test(phrase));
+            return allMls;
+          });
+
+          // Update with filtered result; if empty, clear so UI hides the section
+          res.listing_language_reality_check = filtered as unknown;
         }
 
         // ── Text-level: scan entire report for "assume pre-1980s" and force replace ──
@@ -8611,6 +10652,11 @@ ${optionalDetails.askingPrice ? `Asking Price: ${optionalDetails.askingPrice}\n`
       });
 
       // Update analysis record in analyses table
+      // Add analysisType to the full_result so frontend can identify full reports
+      const fullResultWithType = {
+        ...(result as Record<string, unknown>),
+        analysisType: 'full',
+      };
       await updateAnalysisRecord(
         id,
         result.overallScore,
@@ -8620,7 +10666,7 @@ ${optionalDetails.askingPrice ? `Asking Price: ${optionalDetails.askingPrice}\n`
           whatLooksGood: result.whatLooksGood,
           riskSignals: result.riskSignals,
         },
-        result as Record<string, unknown>,
+        fullResultWithType,
         reportMode // 传递 reportMode 以同步到数据库
       );
 

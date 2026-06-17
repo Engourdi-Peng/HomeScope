@@ -240,6 +240,7 @@ export default defineConfig(({ command }) => {
       outDir,
       emptyOutDir: command === 'build',
       copyPublicDir: true, // 确保 public 目录的文件被复制到 dist
+      sourcemap: isExtensionBuild,
       rollupOptions: {
         input: isExtensionBuild
           ? resolve(__dirname, 'src', 'extension', 'sidepanel-ext.tsx')
@@ -249,6 +250,14 @@ export default defineConfig(({ command }) => {
               output: {
                 entryFileNames: 'assets/sidepanel-ext.js',
                 chunkFileNames: 'assets/chunk-[name]-[hash].js',
+                manualChunks(id) {
+                  if (!id.includes('node_modules')) return undefined;
+                  if (id.includes('react') || id.includes('scheduler')) return 'vendor-react';
+                  if (id.includes('lucide-react')) return 'vendor-icons';
+                  if (id.includes('@radix-ui')) return 'vendor-radix';
+                  if (id.includes('@supabase/')) return 'vendor-supabase';
+                  return 'vendor-misc';
+                },
                 assetFileNames: (assetInfo) => {
                   if (assetInfo.names?.some((n) => n.endsWith('.css'))) {
                     return 'assets/sidepanel-ext.css';

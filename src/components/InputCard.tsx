@@ -211,7 +211,7 @@ export function InputCard({
               className="w-full group relative inline-flex items-center justify-center gap-3 px-8 py-4 rounded-full transition-all duration-300 shadow-[0_8px_30px_rgba(28,25,23,0.15)] hover:shadow-[0_8px_30px_rgba(28,25,23,0.25)] hover:-translate-y-0.5 bg-stone-900 hover:bg-stone-800 text-white"
             >
               <span className="font-medium tracking-widest uppercase text-[11px]">
-                Use Deep Analysis ({creditsRemaining} left)
+                Use Full Report ({creditsRemaining} left)
               </span>
               <ArrowRight size={14} className="group-hover:translate-x-1 transition-transform" strokeWidth={2} />
             </button>
@@ -253,9 +253,9 @@ export function InputCard({
         {isAuthenticated && !isLoading && (
           <div className="mt-1 text-xs text-stone-500">
             {creditsRemaining > 0 ? (
-              <>You have {creditsRemaining} deep analyses left</>
+              <>You have {creditsRemaining} full reports left</>
             ) : (
-              <span className="text-amber-600 font-medium">No deep analyses remaining. Use Basic Analysis for free!</span>
+              <span className="text-amber-600 font-medium">No full reports remaining. Use Basic Analysis for free!</span>
             )}
           </div>
         )}

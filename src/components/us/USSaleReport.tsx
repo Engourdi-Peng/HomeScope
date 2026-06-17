@@ -109,12 +109,6 @@ function PropertySnapshotCard({ result }: { result: AnalysisResult }) {
   const rows: Array<{ label: string; value: React.ReactNode }> = [];
 
   if (region) rows.push({ label: 'Address', value: region });
-  if (homeType) {
-    const displayType = /legal|approved|compliant|certified/i.test(homeType)
-      ? <>{homeType} <span style={{ fontSize: '0.75em', opacity: 0.7 }}>(listing-stated)</span></>
-      : homeType;
-    rows.push({ label: 'Type', value: displayType });
-  }
   // Beds×Baths 只在两者都有值时才显示
   if (beds != null && baths != null) {
     rows.push({ label: 'Beds / Baths', value: `${beds} / ${baths}` });
@@ -579,23 +573,6 @@ function LegalComplianceCard({ lc }: { lc?: AnalysisResult['legal_compliance'] }
   );
 }
 
-// ── Environmental Risk Card ───────────────────────────────────────────────────
-function EnvironmentalRiskCard({ er }: { er?: AnalysisResult['environmental_risk'] }) {
-  return (
-    <CardShell
-      icon={<AlertTriangle size={18} className="text-teal-600" strokeWidth={1.5} />}
-      title="Environmental & Insurance Risk"
-      delay={400}
-      badge={er?.risk_level ? <RiskBadge level={er.risk_level} /> : undefined}
-    >
-      {er?.summary && <p className="text-sm text-stone-700 leading-relaxed mb-4">{er.summary}</p>}
-      {er?.items_to_check && (er.items_to_check as string[]).length > 0 && (
-        <BulletList items={er.items_to_check as string[]} maxItems={4} />
-      )}
-    </CardShell>
-  );
-}
-
 // ── Data Gaps Card ───────────────────────────────────────────────────────────
 function DataGapsCard({ gaps }: { gaps?: AnalysisResult['data_gaps'] }) {
   const items = (gaps || []) as Array<{ missing_item?: string; why_it_matters?: string; suggested_source?: string }>;
@@ -1029,7 +1006,7 @@ export function USSaleReport({ result }: { result: AnalysisResult }) {
   // 构建 mainReasons 和 nextStep
   const mr = (result as any).maintenance_risk;
   const lc = (result as any).legal_compliance;
-  const er = (result as any).environmental_risk;
+  const er = undefined; // environmental risk card removed
   const gaps = (result as any).data_gaps as AnalysisResult['data_gaps'] | undefined;
 
   const mainReasons: string[] = [];
@@ -1103,7 +1080,6 @@ export function USSaleReport({ result }: { result: AnalysisResult }) {
         </div>
         <MaintenanceRiskCard mr={(result as any).maintenance_risk} />
         <LegalComplianceCard lc={(result as any).legal_compliance} />
-        <EnvironmentalRiskCard er={(result as any).environmental_risk} />
         <LayoutFitCard lf={(result as any).layout_fit} />
         <ListingLanguageCard llrc={(result as any).listing_language_reality_check} />
       </div>

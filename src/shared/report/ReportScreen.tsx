@@ -35,9 +35,41 @@ type ReportScreenProps = {
   onShareClick?: () => void;
   /** 当前登录用户的 ID（从 AuthContext 传入；extension 模式传 undefined） */
   userId?: string;
+  /** User auth status */
+  authStatus?: 'logged_out' | 'logging_in' | 'logged_in';
+  /** Available credits */
+  credits?: number;
+  /** Whether this listing already has a full report */
+  hasFullReport?: boolean;
+  /** Whether full analysis is currently running */
+  isFullRunning?: boolean;
+  /** Callback for sign-in action */
+  onSignIn?: () => void;
+  /** Callback for checkout/purchase action */
+  onOpenCheckout?: () => void;
+  /** Callback for viewing existing full report */
+  onViewFullReport?: () => void;
 };
 
-export function ReportScreen({ mode, result, onBack, onShare, onUpgrade, analysisId, noShell, shareState, onShareClick, userId }: ReportScreenProps) {
+export function ReportScreen({
+  mode,
+  result,
+  onBack,
+  onShare,
+  onUpgrade,
+  analysisId,
+  noShell,
+  shareState,
+  onShareClick,
+  userId,
+  authStatus,
+  credits,
+  hasFullReport,
+  isFullRunning,
+  onSignIn,
+  onOpenCheckout,
+  onViewFullReport,
+}: ReportScreenProps) {
   const isExtension = mode === 'extension';
 
   // Detect share page to suppress back button
@@ -68,6 +100,11 @@ export function ReportScreen({ mode, result, onBack, onShare, onUpgrade, analysi
     const isBasic = normalizedReport.meta.isBasic;
     const viewModel = buildReportViewModel(result, result?.listingInfo, normalizedReport);
 
+    // ── DEBUG: trace what sections were built ───────────────────────────────
+    console.log('[ReportScreen] isBasic:', isBasic, '| sections:', normalizedReport.sections.map(s => s.id).join(', '));
+    console.log('[ReportScreen] result keys:', Object.keys(result).join(', '));
+    console.log('[ReportScreen] whats_missing from result:', JSON.stringify((result as any).whats_missing ?? []));
+
     const newContent = (
       <NewReportUI
         report={normalizedReport}
@@ -84,6 +121,13 @@ export function ReportScreen({ mode, result, onBack, onShare, onUpgrade, analysi
         listingFingerprint={listingFingerprint}
         listingAddress={listingAddress}
         reportType={reportType}
+        authStatus={authStatus}
+        credits={credits}
+        hasFullReport={hasFullReport}
+        isFullRunning={isFullRunning}
+        onSignIn={onSignIn}
+        onOpenCheckout={onOpenCheckout}
+        onViewFullReport={onViewFullReport}
       />
     );
 

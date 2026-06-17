@@ -39,11 +39,9 @@
       "matches": [
         "https://www.realestate.com.au/*",
         "https://*.realestate.com.au/*",
-        "https://www.zillow.com/*",
         "https://*.zillow.com/*",
-        "https://zillow.com/*",
-        "https://*.tryhomescope.com/*",
-        "https://trteewgplkqiedonomzg.supabase.co/*"
+        "https://www.zillow.com/*",
+        "https://*.tryhomescope.com/*"
       ],
       "js": ["content.js"],
       "run_at": "document_idle"

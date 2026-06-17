@@ -98,11 +98,6 @@ function buildQuickFacts(result: AUSaleResult): QuickFact[] {
   add('Baths', info.bathrooms ?? result.bathrooms);
   add('Parking', info.parking ?? result.parking);
   add('Price', info.price ?? result.price);
-  const auSaleType = info.propertyType ?? result.propertyType ?? '';
-  const auSaleTypeDisplay = auSaleType && /legal|approved|compliant|certified/i.test(auSaleType)
-    ? `${auSaleType.trim()} (listing-stated)`
-    : auSaleType;
-  add('Type', auSaleTypeDisplay);
   const costs = result.holding_costs ?? result.holdingCosts ?? {};
   add('20% Deposit', costs.deposit20pct);
   add('Stamp Duty', costs.stampDuty);

@@ -26,6 +26,22 @@ export type ReportProfile =
   | 'land'
   | 'unknown';
 
+export type BuyerReportMode =
+  | 'single_family_owner_occupier'
+  | 'multi_family_income'
+  | 'condo_hoa'
+  | 'coop_board'
+  | 'townhouse'
+  | 'land_or_development'
+  | 'new_construction'
+  | 'unknown';
+
+export type EvidenceType =
+  | 'listing_stated'
+  | 'photo_observed'
+  | 'inferred_needs_verification'
+  | 'missing_data';
+
 /**
  * Normalized property category — canonical property-type classification
  * used to drive report templates, risk/question routing, and display labels.
@@ -71,6 +87,29 @@ export const PROPERTY_CATEGORY_DISPLAY: Record<NormalizedPropertyCategory, strin
   unknown: 'Not clearly disclosed',
 };
 
+// ---- Internal intelligence layer ----
+// Profile drives Basic report generation in the backend pipeline.
+// Stored in ReportMeta for frontend compatibility (read-only, does not affect AI output).
+export type PropertyIntelligenceCategory =
+  | 'single_family' | 'multi_family' | 'condo' | 'co_op'
+  | 'townhouse' | 'land' | 'manufactured' | 'unknown';
+export type OwnershipModel = 'fee_simple' | 'condominium' | 'cooperative' | 'unknown';
+export type BuyerUseCase = 'primary_residence' | 'investment' | 'mixed' | 'unknown';
+export type ProfileConfidence = 'high' | 'medium' | 'low';
+
+export interface PropertyIntelligenceProfile {
+  propertyCategory: PropertyIntelligenceCategory;
+  ownershipModel: OwnershipModel;
+  likelyBuyerUseCase: BuyerUseCase;
+  /** Top 3-6 questions a buyer must answer for this asset type — drives report focus */
+  primaryDecisionAxis: string[];
+  /** Keywords/phrases detected in listing text that are decisive for THIS asset type */
+  decisiveListingSignals: string[];
+  /** Generic risks to suppress for this propertyCategory — AI must not default to these */
+  irrelevantGenericRisksToAvoid: string[];
+  confidence: ProfileConfidence;
+}
+
 // ---- meta ----
 export interface ReportMeta {
   market: Market;
@@ -82,8 +121,12 @@ export interface ReportMeta {
   usedSectionIds?: string[];
   /** Property-type classification driving report routing */
   reportProfile?: ReportProfile;
-  /** Canonical property-type category for display and routing */
+  /** Buyer-oriented routing for report generation and validation */
+  buyerReportMode?: BuyerReportMode;
+  /** Canonical property type for display and routing (mirrors backend verifiedFacts.normalizedPropertyCategory) */
   normalizedPropertyCategory?: NormalizedPropertyCategory;
+  /** Internal intelligence profile — drives Basic report generation in backend; frontend read-only */
+  analysisProfile?: PropertyIntelligenceProfile;
   /** Debug metadata from normalization */
   _normalizationDebug?: {
     rawHomeType?: string;
@@ -104,11 +147,14 @@ export interface HeroData {
   sqft?: string;
   zestimate?: string;
   monthlyPayment?: string;
+  homeType?: string;
   imageUrl?: string;
   score: number | null;
   verdict: string;
   confidence?: string;
   summary?: string;
+  /** AI-generated bottom line from backend normalizeBottomLine (US Basic v2) */
+  bottomLine?: string;
   primaryLabel?: string;
   secondaryLabel?: string;
 }
@@ -132,9 +178,23 @@ export interface SectionItem {
   title: string;
   value?: string;
   description?: string;
+  /** Action prompt (used by Top 3 Things To Check on US Basic v2). */
+  action?: string;
   severity?: 'low' | 'medium' | 'high' | 'critical';
   badge?: string;
 }
+
+/**
+ * Section IDs used by the US Basic v2 layout. Not exhaustive — other layouts
+ * (Full, AU Basic) may use additional IDs.
+ */
+export type BasicSectionId =
+  | 'what-we-know'
+  | 'listing-signals'
+  | 'whats-missing'
+  | 'top-3-things-to-check'
+  | 'questions'
+  | 'basic-cta';
 
 // ---- sections ----
 export interface ReportSection {

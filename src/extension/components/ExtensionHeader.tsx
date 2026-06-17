@@ -21,7 +21,7 @@ export function ExtensionHeader() {
   const getStatusText = () => {
     switch (propertyStatus) {
       case 'detected':
-        return 'Ready to analyse';
+        return 'Property detected';
       case 'not_listing':
         return 'Page not detected';
       case 'error':

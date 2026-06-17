@@ -1,10 +1,8 @@
 // ===== Generic / Basic Adapter =====
 // 兜底适配器：处理 Basic result 和未知结构
-// Basic 模式下生成专属 sections：what-we-know, listing-claims, basic-decision-cards,
-//   monthly-cost-snapshot, basic-questions, basic-cta
 
-import type { NormalizedReport, HeroData, HighlightsData, QuickFact, ReportSection, SectionItem } from './types';
-import { computeReportProfile } from './usSale';
+import type { NormalizedReport, HeroData, HighlightsData, QuickFact, ReportSection, SectionItem, PropertyIntelligenceProfile } from './types';
+import { buildPropertyIntelligenceProfile } from './reportRules';
 
 type AnyResult = any;
 
@@ -28,7 +26,34 @@ function toText(value: unknown): string {
   return '';
 }
 
-function objectItems(arr: unknown[], opts?: { badge?: string; severity?: 'low' | 'medium' | 'high' }): SectionItem[] {
+/** "3 / 2" or "" if both missing. */
+function formatBedsBaths(beds: unknown, baths: unknown): string {
+  const b = toText(beds);
+  const ba = toText(baths);
+  if (b && ba) return `${b} / ${ba}`;
+  return b || ba;
+}
+
+/** "1,196 sqft" — appends "sqft" if numeric. */
+function formatSqft(value: unknown): string {
+  const t = toText(value);
+  if (!t) return '';
+  if (/sqft|sq\s*ft|square\s*feet|square\s*footage/i.test(t)) return t;
+  return `${t} sqft`;
+}
+
+/** "$11,988/yr" — formats a raw tax number into a readable annual figure. */
+function formatTax(value: unknown): string {
+  const raw = toText(value);
+  if (!raw) return '';
+  // If already formatted like "$12,000/yr", return as-is
+  if (/^\$[\d,]+(\/yr)?/i.test(raw)) return raw.replace(/\/yr$/i, '') + '/yr';
+  const num = Number(String(raw).replace(/[$,]/g, ''));
+  if (isNaN(num)) return raw;
+  return `$${num.toLocaleString('en-US')}/yr`;
+}
+
+function objectItems(arr: unknown[], opts?: { title?: string; badge?: string; severity?: 'low' | 'medium' | 'high' }): SectionItem[] {
   if (!Array.isArray(arr)) return [];
   return arr
     .map(item => {
@@ -50,61 +75,33 @@ function objectItems(arr: unknown[], opts?: { badge?: string; severity?: 'low' |
 
 // ── hero ─────────────────────────────────────────────────────────────────────
 
-// ── Listing summary / dirty data filters ──────────────────────────────────────
-
-function isListingSummaryString(value: unknown): boolean {
-  if (!value) return true;
-  const text = String(value).trim();
-  if (!text) return true;
-  return (
-    /\b\d+\s*bds\b/i.test(text) ||
-    /\b\d+\s*beds?\b/i.test(text) ||
-    /\b\d+\s*ba\b/i.test(text) ||
-    /\b\d+[,.\d]*\s*sqft\b/i.test(text) ||
-    /\b\d+\s*sq\s*ft\b/i.test(text) ||
-    /home\s+for\s+sale\b/i.test(text) ||
-    /\bactive\b/i.test(text) ||
-    /\bmulti\.?family\s+home\s+for\s+sale\b/i.test(text) ||
-    /\bsingle\s+family\s+home\s+for\s+sale\b/i.test(text) ||
-    /\bcondo\s+for\s+sale\b/i.test(text) ||
-    /\btownhouse\s+for\s+sale\b/i.test(text)
-  );
-}
-
 function buildHero(result: AnyResult, isBasic: boolean): HeroData {
   if (isBasic || result.analysisType === 'basic') {
-    const evidenceScore = (() => {
-      const v = result.evidence_score ?? result.overallScore ?? result.overall_score;
+    const score = (() => {
+      const v = result.overallScore ?? result.overall_score;
       return v != null && v !== '' ? Number(v) || null : null;
     })();
-    const address = toText(
-      result.listingInfo?.address ??
-      result.listingOverview?.address ??
-      result.address ?? ''
-    );
-    // Filter listing summary from title
-    const rawTitle = result.listingInfo?.title ?? result.listingOverview?.title ?? result.title ?? '';
-    const title = isListingSummaryString(rawTitle) ? '' : toText(rawTitle);
+    const address = toText(result.listingOverview?.address ?? result.address ?? '');
     return {
-      title: title || 'Quick Property Check',
+      title: toText(result.listingOverview?.title ?? result.title ?? ''),
       address: address || undefined,
-      score: evidenceScore,
-      verdict: toText(result.verdict ?? 'Need More Evidence'),
-      confidence: evidenceScore != null ? String(evidenceScore) : '',
-      summary: toText(result.bottom_line ?? result.quickSummary ?? result.quick_summary ?? ''),
+      score,
+      verdict: (typeof result.decision === 'string' && result.decision.trim())
+        ? toText(result.decision)
+        : toText(result.verdict ?? 'Not enough data'),
+      confidence: undefined,
+      summary: toText(result.textAnalysis ?? result.summary ?? result.quickSummary ?? result.quick_summary ?? ''),
+      bottomLine: toText(result.bottom_line ?? result.bottomLine ?? result.quickSummary ?? '') || undefined,
       primaryLabel: undefined,
-      secondaryLabel: undefined,
+      secondaryLabel: toText(result.nextBestMove ?? result.next_step ?? '') || undefined,
     };
   }
   const score = (() => {
     const v = result.overallScore ?? result.overall_score;
     return v != null && v !== '' ? Number(v) || null : null;
   })();
-  // Filter listing summary from title
-  const rawTitle = result.listingInfo?.title ?? result.title ?? '';
-  const title = isListingSummaryString(rawTitle) ? '' : toText(rawTitle);
   return {
-    title: title || '',
+    title: toText(result.listingInfo?.title ?? result.title ?? ''),
     address: toText(result.listingInfo?.address ?? result.address ?? ''),
     score,
     verdict: toText(result.verdict ?? result.overall_verdict ?? 'Not enough data'),
@@ -129,11 +126,7 @@ function buildQuickFacts(result: AnyResult): QuickFact[] {
   add('Parking', info.parking ?? result.parking);
   add('Price', info.price ?? result.price);
   add('Rent/wk', info.weeklyRent ?? result.weeklyRent);
-  const quickFactsPropertyType = info.propertyType ?? result.propertyType ?? '';
-  const quickFactsPropertyTypeDisplay = quickFactsPropertyType && /legal|approved|compliant|certified/i.test(quickFactsPropertyType)
-    ? `${quickFactsPropertyType.trim()} (listing-stated)`
-    : quickFactsPropertyType;
-  add('Type', quickFactsPropertyTypeDisplay);
+
   add('Sqft', info.sqft ?? result.sqft);
   return facts;
 }
@@ -142,359 +135,239 @@ function buildQuickFacts(result: AnyResult): QuickFact[] {
 
 function buildHighlights(result: AnyResult): HighlightsData {
   const stringArr = (v: unknown): string[] => (Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string') : []);
+
+  // Filter out AI error/hallucination text that slips through as risk items
+  const ERROR_PATTERNS = [
+    /^analysis could not be completed$/i,
+    /^unable to (fully )?analyse/i,
+    /^unable to (fully )?analyze/i,
+    /^not enough data/i,
+    /^error: /i,
+    /^failed to /i,
+  ];
+  const isErrorText = (s: string) => ERROR_PATTERNS.some((re) => re.test(s.trim()));
+
+  const allRisks = [
+    ...stringArr(result.riskSignals),
+    ...stringArr(result.risks),
+    ...stringArr(result.hidden_risks),
+    ...stringArr(result.hiddenRisks),
+    ...stringArr(result.red_flags),
+    ...stringArr(result.redFlags),
+  ].filter((s) => !isErrorText(s));
+
   return {
     pros: stringArr(result.whatLooksGood).concat(stringArr(result.pros)),
     cons: stringArr(result.cons),
-    risks: [
-      ...stringArr(result.riskSignals),
-      ...stringArr(result.risks),
-      ...stringArr(result.hidden_risks),
-      ...stringArr(result.hiddenRisks),
-      ...stringArr(result.red_flags),
-      ...stringArr(result.redFlags),
-    ],
+    risks: allRisks,
   };
 }
 
-// ── Basic: build what-we-know section ─────────────────────────────────────────
+// ── build sections ────────────────────────────────────────────────────────────
 
-function buildWhatWeKnow(result: AnyResult): ReportSection | null {
-  const listingInfo = (result as any).listingInfo ?? {};
-  const snapshot = (result as any).property_snapshot ?? {};
-  const wwKnow = result.what_we_know ?? {};
-  const sourceDomain = result.sourceDomain ?? result.source ?? '';
-
-  const items: SectionItem[] = [];
-
-  const add = (label: string, aiVal: unknown, rawVal: unknown) => {
-    const t = toText(aiVal ?? rawVal ?? '');
-    if (label === 'Photos') {
-      items.push({ title: label, value: aiVal != null ? String(aiVal) : 'Not analysed in basic report' });
-    } else {
-      items.push({ title: label, value: t || 'Not disclosed' });
+/**
+ * Apply property_snapshot data to fill any missing fields in what_we_know.
+ * property_snapshot is built from optionalDetails in the backend and is always
+ * populated — it is the authoritative source for extracted structured fields.
+ * This ensures WhatWeKnowSection always shows data even when the AI's
+ * what_we_know is empty or incomplete.
+ */
+function applyPropertySnapshot(wwKnow: Record<string, unknown>, result: AnyResult): void {
+  const snap = (result as any).property_snapshot ?? {};
+  const setIfEmpty = (key: string, value: unknown) => {
+    if ((wwKnow[key] == null || wwKnow[key] === '') && value != null && value !== '') {
+      wwKnow[key] = value;
     }
   };
-
-  const address = wwKnow.address ?? listingInfo.address ?? snapshot.address ?? result.address ?? '';
-  add('Address', address, '');
-
-  const askingPrice = wwKnow.asking_price ?? wwKnow.askingPrice ?? listingInfo.price ?? '';
-  add('Asking price', askingPrice, '');
-
-  const beds = wwKnow.beds ?? listingInfo.bedrooms ?? snapshot.beds ?? '';
-  add('Beds', beds, '');
-
-  const baths = wwKnow.baths ?? listingInfo.bathrooms ?? snapshot.baths ?? '';
-  add('Baths', baths, '');
-
-  const sqft = wwKnow.sqft ?? listingInfo.sqft ?? snapshot.sqft ?? '';
-  add('Sqft', sqft, '');
-
-  const propertyType = wwKnow.property_type ?? wwKnow.propertyType ?? listingInfo.propertyType ?? snapshot.home_type ?? '';
-  const propertyTypeDisplay = propertyType && /legal|approved|compliant|certified/i.test(propertyType)
-    ? `${propertyType.trim()} (listing-stated, not independently verified)`
-    : propertyType;
-  add('Property type', propertyTypeDisplay, '');
-
-  const source = wwKnow.source ?? sourceDomain;
-  add('Source', source, '');
-
-  add('Photos', wwKnow.photos_count ?? null, '');
-
-  if (items.length === 0) return null;
-  return { id: 'what-we-know', title: 'What We Know', subtitle: 'Data from the listing only — not verified or analysed.', items };
+  setIfEmpty('address',        snap.address ?? snap.full_address ?? snap.street_address);
+  setIfEmpty('asking_price',   snap.asking_price_display ?? snap.asking_price ?? snap.price);
+  setIfEmpty('beds',          snap.beds ?? snap.bedrooms);
+  setIfEmpty('baths',         snap.baths ?? snap.bathrooms);
+  setIfEmpty('sqft',          snap.sqft ?? snap.square_feet ?? snap.squareFeet);
+  setIfEmpty('year_built',    snap.year_built ?? snap.yearBuilt);
+  setIfEmpty('property_type', snap.home_type ?? snap.property_type ?? snap.propertyType);
+  setIfEmpty('lot_size',      snap.lot_size ?? snap.lotSize);
+  setIfEmpty('tax_year',      snap.annual_tax_display ?? snap.annual_tax ?? snap.annualTax);
+  setIfEmpty('price_per_sqft',snap.price_per_sqft_display ?? snap.price_per_sqft ?? snap.pricePerSqft);
+  // monthly_payment: the backend builds monthly_cost_snapshot separately;
+  // read from result.monthly_cost_snapshot if present.
+  const mcs = (result as any).monthly_cost_snapshot;
+  if (mcs && !wwKnow['monthly_payment']) {
+    setIfEmpty('monthly_payment', mcs.principalAndInterest ?? mcs.monthlyPayment ?? mcs.totalMonthlyPayment);
+  }
 }
 
-// ── Basic: build listing-claims section ───────────────────────────────────────
-
-const LISTING_CLAIM_FALLBACKS = [
-  {
-    keyword: /legal 2-family|two.family|multi.family|rental.approved/i,
-    phrase: 'LEGAL 2-FAMILY',
-    homeScopeCheck: 'Listing-stated only. Confirm through Certificate of Occupancy and public records.',
-    askBeforeViewing: 'Can you provide the Certificate of Occupancy or legal-use documents?',
-  },
-  {
-    keyword: /\bTLC\b|needs work|needs updating|needs renovation|needs repair/i,
-    phrase: 'Needs TLC',
-    homeScopeCheck: 'This may mean repairs, renovations, or system updates are needed.',
-    askBeforeViewing: 'Are any repairs, renovations, or major system updates needed?',
-  },
-  {
-    keyword: /\svacant\b|delivered vacant|tenant vacated/i,
-    phrase: 'Delivered Vacant',
-    homeScopeCheck: 'Vacant properties can have maintenance, security, insurance, or deterioration concerns.',
-    askBeforeViewing: 'How long has it been vacant, and have utilities, heating, plumbing, and security been maintained?',
-  },
-  {
-    keyword: /sold as.is|as.is\b|as is\b/i,
-    phrase: 'Sold As-Is',
-    homeScopeCheck: 'As-is sales typically indicate the seller will not make repairs or provide credits.',
-    askBeforeViewing: 'Is the asking price reflective of the as-is condition, and are repairs needed before financing?',
-  },
-  {
-    keyword: /motivated seller|price reduced|price drop|price adjustment/i,
-    phrase: 'Motivated Seller / Price Reduced',
-    homeScopeCheck: 'Price reductions may signal pricing concerns, condition issues, or weak demand.',
-    askBeforeViewing: "Why has the price been reduced, and what is the seller's motivation?",
-  },
-];
-
-function buildListingClaims(result: AnyResult): ReportSection | null {
-  // Prefer structured AI output (listing_claims from new compact prompt)
-  const aiClaims = result.listing_claims ?? result.listing_language_reality_check ?? result.listingLanguageRealityCheck ?? result.listing_spin_decoder ?? [];
-  const claimArray = Array.isArray(aiClaims) ? aiClaims : [];
-
-  interface Claim {
-    phrase: string;
-    homeScopeCheck: string;
-    askBeforeViewing: string;
-  }
-
-  const claims: Claim[] = [];
-
-  // Use AI claims if available (max 3)
-  if (claimArray.length > 0) {
-    for (const item of claimArray.slice(0, 3)) {
-      const phrase = toText(item.phrase ?? item.listing_says ?? item.listing ?? item.keyword ?? '');
-      const homeScopeCheck = toText(item.check ?? item.what_it_may_mean ?? item.interpretation ?? item.reads ?? '');
-      const ask = toText(item.ask ?? item.what_to_verify ?? item.question ?? item.ask_before_viewing ?? '');
-      if (phrase && homeScopeCheck) {
-        claims.push({ phrase, homeScopeCheck, askBeforeViewing: ask });
-      }
-    }
-  }
-
-  // Fallback: detect claims from listing text (max 3 total, only if AI claims empty)
-  if (claims.length === 0) {
-    const listingText = [
-      result.listingInfo?.description ?? '',
-      result.listingOverview?.description ?? '',
-      result.description ?? '',
-      result.quickSummary ?? '',
-      result.summary ?? '',
-      result.quick_summary ?? '',
-    ].join(' ');
-
-    const seen = new Set<string>();
-    for (const fallback of LISTING_CLAIM_FALLBACKS) {
-      if (fallback.keyword.test(listingText)) {
-        if (!seen.has(fallback.phrase)) {
-          seen.add(fallback.phrase);
-          claims.push({
-            phrase: fallback.phrase,
-            homeScopeCheck: fallback.homeScopeCheck,
-            askBeforeViewing: fallback.askBeforeViewing,
-          });
-        }
-      }
-      if (claims.length >= 3) break;
-    }
-  }
-
-  if (claims.length === 0) return null;
-
-  const items: SectionItem[] = claims.map(c => ({
-    title: c.phrase,
-    description: c.homeScopeCheck,
-    value: c.askBeforeViewing,
-  }));
-
-  return {
-    id: 'listing-claims',
-    title: 'Listing Claims to Verify',
-    subtitle: 'Based on listing language only. HomeScope has not independently verified these claims.',
-    items,
-  };
-}
-
-// ── Basic: build basic-decision-cards section ─────────────────────────────────
-
-interface DecisionCard {
-  title: string;
-  whyMatters: string;
-  action: string;
-}
-
-function buildBasicDecisionCards(result: AnyResult, hasZillowMonthly: boolean): ReportSection | null {
-  const isNYC = /nyc|new york city|brooklyn|queens|bronx|manhattan|staten/i.test(
-    (result.listingInfo?.address ?? '') + (result.address ?? '')
-  );
-
-  const listingText = [
-    result.listingInfo?.description ?? '',
-    result.listingOverview?.description ?? '',
-    result.description ?? '',
-    result.quickSummary ?? '',
-    result.summary ?? '',
-    result.quick_summary ?? '',
-    result.listingInfo?.propertyType ?? '',
-    result.propertyType ?? '',
-  ].join(' ').toLowerCase();
-
-  // Detect SFOC profile
-  const profileText = ((result as any).property_snapshot?.homeType ?? (result as any).property_snapshot?.home_type ?? '').toLowerCase();
-  const isSingleFamilyProfile = /single\s*family|singlefamily|single\s*family\s*residence|single\s*family\s*home/i.test(profileText) || (/single/i.test(profileText) && !/multi/i.test(profileText));
-  const hasRentalSignal = /rental\s*unit|basement\s*apartment|income\s*unit|legal\s*two.family|2.family|multi.family|duplex|separate\s*unit|tenant|walk.in\s*apartment|mother.daughter/i.test(listingText);
-  const isSFOC = isSingleFamilyProfile && !hasRentalSignal;
-
-  const isRentalMentioned = /legal 2-family|two.family|multi.family|rental|second unit|income|tenant/i.test(listingText);
-  const hasConditionSignal = /TLC|needs work|needs updating|needs renovation|needs repair|vacant|as.is|sold/i.test(listingText);
-
-  const cards: DecisionCard[] = [];
-
-  // 1. Legal Use Verification — only if listing mentions rental/multi-family use (NOT for SFOC)
-  if (isRentalMentioned && !isSFOC) {
-    cards.push({
-      title: 'Legal Use Verification',
-      whyMatters: 'You should not rely on the 2-family or rental setup until the Certificate of Occupancy is confirmed.',
-      action: isNYC
-        ? 'Ask for the Certificate of Occupancy and check NYC DOB, HPD, and ACRIS records before relying on rental income.'
-        : 'Ask for the Certificate of Occupancy and check local building department and county records before relying on rental income.',
-    });
-  }
-
-  // 2. Carrying Costs — always, but SFOC uses more specific action
-  if (hasZillowMonthly) {
-    cards.push({
-      title: 'Carrying Costs',
-      whyMatters: "Zillow provides a monthly estimate, but actual taxes, insurance, HOA, utilities, loan terms, and maintenance may differ from the estimate.",
-      action: isSFOC
-        ? 'Confirm whether Zillow\'s estimated taxes, insurance, HOA fees, and monthly payment are accurate, and ask for actual insurance quotes and average utility costs.'
-        : 'Confirm whether Zillow\'s estimated taxes, insurance, HOA fees, and monthly payment are accurate for this specific property.',
-    });
-  } else {
-    cards.push({
-      title: 'Carrying Costs',
-      whyMatters: 'Monthly affordability cannot be judged from the asking price alone.',
-      action: isSFOC
-        ? 'Confirm property taxes, insurance, HOA, utilities, and maintenance expectations before booking a viewing.'
-        : 'Confirm property taxes, insurance, HOA, utilities, and maintenance expectations before booking a viewing.',
-    });
-  }
-
-  // 3. Comparable Sales Context — SFOC vs multi-family
-  cards.push({
-    title: isSFOC ? 'Comparable Sales Context' : 'Comparable Sales / Rent Context',
-    whyMatters: 'The asking price has no visible market support from the listing alone.',
-    action: isSFOC
-      ? 'Ask for recent comparable single-family sales to support the asking price.'
-      : 'Ask for recent comparable sales or actual rental history to support the asking price.',
-  });
-
-  // 4. Condition / Title Verification — only if listing mentions condition signals
-  if (hasConditionSignal) {
-    cards.push({
-      title: 'Condition / Title Verification',
-      whyMatters: 'Properties described as needing TLC, vacant, or sold as-is may have hidden condition or title concerns.',
-      action: isSFOC
-        ? 'Ask for permits for recent updates, roof age, electrical panel details, and any open violations.'
-        : 'Ask for repair history, maintenance records, and any open permits, violations, liens, or title issues.',
-    });
-  }
-
-  if (cards.length === 0) return null;
-
-  const items: SectionItem[] = cards.map(c => ({
-    title: c.title,
-    description: c.whyMatters,
-    value: c.action,
-  }));
-
-  return {
-    id: 'basic-decision-cards',
-    title: 'What Could Change Your Decision',
-    subtitle: 'Key verification items based on what the listing discloses — not independent analysis.',
-    items,
-  };
-}
-
-// ── Basic: build questions section ────────────────────────────────────────────
-
-function buildBasicQuestions(result: AnyResult): ReportSection | null {
-  const raw = result.questions_to_ask ?? result.questionsToAsk ?? [];
-  if (!Array.isArray(raw) || raw.length === 0) return null;
-
-  const items: SectionItem[] = raw.slice(0, 5).map((q: any) => ({
-    title: toText(q.category ?? 'General'),
-    description: toText(q.question ?? q.text ?? q.title ?? ''),
-  })).filter((i: SectionItem) => i.description);
-
-  if (items.length === 0) return null;
-  return { id: 'basic-questions', title: 'Questions to Ask', subtitle: 'Before booking a viewing.', items };
-}
-
-// ── Basic: build CTA section ──────────────────────────────────────────────────
-
-function buildBasicCTA(result: AnyResult): ReportSection {
-  const cta = result.upsell_cta ?? {};
-  return {
-    id: 'basic-cta',
-    title: toText(cta.title ?? 'Unlock Full Analysis'),
-    subtitle: toText(cta.button ?? 'Upgrade'),
-    items: [
-      {
-        title: toText(cta.body ?? 'Basic shows what the listing says and what still needs verification. Full Analysis goes deeper into photos, price confidence, legal and maintenance risks, carrying-cost assumptions, and whether this property is actually worth viewing.'),
-        description: '',
-      },
-    ],
-  };
-}
-
-// ── build sections ───────────────────────────────────────────────────────────
-
-function buildSections(result: AnyResult, isBasic: boolean): ReportSection[] {
+function buildSections(result: AnyResult, isBasic: boolean, analysisProfile?: PropertyIntelligenceProfile): ReportSection[] {
   const sections: ReportSection[] = [];
 
   if (isBasic) {
-    // 1. What We Know
-    const whatWeKnow = buildWhatWeKnow(result);
-    if (whatWeKnow) sections.push(whatWeKnow);
+    // ── DEBUG LOG: trace what's available ─────────────────────────────────────
+    console.log('[basic-buildSections] result keys:', Object.keys(result).join(', '));
+    console.log('[basic-buildSections] whats_missing:', JSON.stringify(result.whats_missing ?? result.whatsMissing ?? []));
+    console.log('[basic-buildSections] top_3_things_to_check:', JSON.stringify(result.top_3_things_to_check ?? result.top3ThingsToCheck ?? []));
+    console.log('[basic-buildSections] questions_to_ask:', JSON.stringify(result.questions_to_ask ?? result.questionsToAsk ?? []));
 
-    // 2. Listing-Stated Monthly Payment — only if Zillow data exists (no empty shell)
-    const monthlyCostSnapshot = (result as any).monthly_cost_snapshot ?? null;
-    if (monthlyCostSnapshot) {
-      const snapItems: SectionItem[] = [];
-      const add = (label: string, value: unknown) => {
-        const t = toText(value);
-        if (t) snapItems.push({ title: label, value: t });
-      };
-      add('Estimated Monthly Payment', monthlyCostSnapshot.estimated_monthly_payment);
-      add('Principal & Interest', monthlyCostSnapshot.principal_and_interest);
-      add('Mortgage Insurance', monthlyCostSnapshot.mortgage_insurance);
-      add('Property Taxes', monthlyCostSnapshot.property_taxes);
-      add('Home Insurance', monthlyCostSnapshot.home_insurance);
-      add('HOA Fees', monthlyCostSnapshot.hoa_fees);
-      add('Utilities', monthlyCostSnapshot.utilities);
-      if (snapItems.length > 0) {
-        sections.push({
-          id: 'monthly-cost-snapshot',
-          title: 'Zillow Monthly Payment Snapshot',
-          subtitle: monthlyCostSnapshot.disclaimer ?? 'Based on Zillow/listing estimate. Not independently verified by HomeScope.',
-          items: snapItems,
-        });
-      }
+    // ── what-we-know (US Basic v2) ─────────────────────────────────────────
+    const wwKnow = result.what_we_know ?? result.whatWeKnow ?? {};
+    // Fill gaps from property_snapshot (authoritative source from optionalDetails)
+    applyPropertySnapshot(wwKnow, result);
+    const wwItems: SectionItem[] = [];
+    const labelMap: Array<[string, unknown]> = [
+      ['Address', wwKnow.address],
+      ['Asking Price', wwKnow.asking_price ?? wwKnow.askingPrice ?? wwKnow.price],
+      ['Beds / Baths', formatBedsBaths(wwKnow.beds ?? wwKnow.bedrooms, wwKnow.baths ?? wwKnow.bathrooms)],
+      ['Sqft', formatSqft(wwKnow.sqft)],
+      ['Year Built', wwKnow.year_built ?? wwKnow.yearBuilt],
+      ['Property Type', wwKnow.property_type ?? wwKnow.propertyType],
+      ['Lot Size', wwKnow.lot_size ?? wwKnow.lotSize],
+      ['Tax / Year', formatTax(wwKnow.tax_year ?? wwKnow.taxYear ?? wwKnow.taxes ?? wwKnow.annual_tax)],
+      ['Price per Sqft', wwKnow.price_per_sqft ?? wwKnow.pricePerSqft],
+      ['Estimated Monthly Payment', wwKnow.monthly_payment ?? wwKnow.monthlyPayment],
+      ['HOA', wwKnow.hoa ?? wwKnow.HOA ?? wwKnow.hoa_fee ?? wwKnow.hoaFee],
+    ];
+    for (const [label, val] of labelMap) {
+      const t = toText(val);
+      if (t) wwItems.push({ title: label, value: t });
+    }
+    if (wwItems.length > 0) sections.push({ id: 'what-we-know', title: 'What We Know', items: wwItems });
+
+    // ── listing-signals (US Basic v2) ─────────────────────────────────────────
+    // Prefer AI-generated signals; if none returned, derive from structured fields
+    const aiSignals: any[] = Array.isArray(result.listing_signals) ? result.listing_signals : [];
+    const snap = (result as any).property_snapshot ?? {};
+    const yearBuilt = wwKnow.year_built ?? wwKnow.yearBuilt ?? snap.year_built ?? snap.yearBuilt ?? null;
+    const propertyType = ((wwKnow.property_type ?? wwKnow.propertyType ?? snap.home_type ?? snap.property_type ?? '')).toLowerCase();
+    const pricePerSqft = wwKnow.price_per_sqft ?? wwKnow.pricePerSqft ?? snap.price_per_sqft ?? snap.pricePerSqft ?? null;
+    const tax = wwKnow.tax_year ?? wwKnow.taxYear ?? wwKnow.taxes ?? wwKnow.annual_tax ?? snap.annual_tax ?? snap.annualTax ?? null;
+    const hasHOA = !!(wwKnow.hoa ?? wwKnow.HOA ?? wwKnow.hoa_fee ?? wwKnow.hoaFee ?? snap.hoa_fee ?? snap.hoaFee);
+    const hasBasementMention = /basement|cellar|below.?grade|walk.?out/i.test(String(wwKnow.description ?? snap.description ?? ''));
+    const isMultiFamily = /duplex|multi.?family|2\.?family|3\.?family|4\.?family|two.?family/i.test(propertyType);
+    const hasRenovationMention = /renovation|updated|remodel|newly.?done|refurbish/i.test(String(wwKnow.description ?? snap.description ?? ''));
+    const isOld = yearBuilt && Number(yearBuilt) < 1975;
+    const listingText = String(wwKnow.description ?? snap.description ?? '').toLowerCase();
+    // Heuristic: above-average price/sqft is a signal worth surfacing
+    const sqft = wwKnow.sqft ?? wwKnow.square_feet ?? wwKnow.squareFeet ?? null;
+    const pricePerSqftSignal = pricePerSqft && Number(pricePerSqft) > 500
+      ? pricePerSqft : null;
+
+    // Only add yearBuilt system signal for fee-simple ownership types where buyer maintains systems
+    const SYSTEM_OWNER_TYPES = new Set(['single_family', 'multi_family', 'townhouse']);
+    const profileCategory = analysisProfile?.propertyCategory;
+    const isSystemOwnerType = profileCategory
+      ? SYSTEM_OWNER_TYPES.has(profileCategory)
+      : !/condo|co.?op|land|manufactured/i.test(propertyType);
+
+    const dynamicSignals: any[] = [];
+    if (isOld && yearBuilt && isSystemOwnerType) dynamicSignals.push({
+      signal: `Built in ${yearBuilt}`,
+      reason: `A home from ${yearBuilt} likely has aging roof, HVAC, electrical, or plumbing — all significant costs to verify before committing.`,
+    });
+    if (pricePerSqftSignal) {
+      const display = typeof pricePerSqftSignal === 'string' ? pricePerSqftSignal : `$${Number(pricePerSqftSignal).toLocaleString()}/sqft`;
+      dynamicSignals.push({
+        signal: `At ${display}`,
+        reason: `Price per sqft is visible, but comparable sales and property condition are needed before judging whether the price is justified.`,
+      });
+    }
+    if (tax) {
+      const taxDisplay = typeof tax === 'string' ? tax : `$${Number(tax).toLocaleString()}/yr`;
+      dynamicSignals.push({
+        signal: `Tax Disclosed: ${taxDisplay}`,
+        reason: `Annual taxes are listed, but insurance, utilities, and loan terms still need verification before calculating real carrying costs.`,
+      });
+    }
+    // Zestimate signal: if Zillow data exists, surface it
+    const zestimate = wwKnow.zestimate ?? (snap as any).zestimate ?? null;
+    const rentZestimate = wwKnow.rent_zestimate ?? (snap as any).rentZestimate ?? null;
+    if (zestimate) {
+      dynamicSignals.push({
+        signal: 'Zillow Value Available',
+        reason: `Zillow shows a Zestimate of $${Number(zestimate).toLocaleString()}${rentZestimate ? ` and Rent Zestimate of $${Number(rentZestimate).toLocaleString()}/mo` : ''} — verify with comparable sales and actual assumptions before relying on these figures.`,
+      });
+    }
+    // Basement signal: only for fee-simple / system-owner types (SF, MF, TH)
+    // Co-ops and condos may reference a basement but that decision lives with the building management
+    if (hasBasementMention && profileCategory && SYSTEM_OWNER_TYPES.has(profileCategory)) dynamicSignals.push({
+      signal: `Basement Mentioned`,
+      reason: `The listing references a basement — permits, legal use, and egress should be verified before relying on that space.`,
+    });
+    if (isMultiFamily) dynamicSignals.push({
+      signal: `Multi-Family Claim`,
+      reason: `The listing suggests multi-family use — Certificate of Occupancy and legal unit count must be verified.`,
+    });
+    if (hasHOA) dynamicSignals.push({
+      signal: `HOA Property`,
+      reason: `HOA fees are listed, but reserves, special assessments, and rental restrictions are not disclosed.`,
+    });
+    if (hasRenovationMention) dynamicSignals.push({
+      signal: `Renovation Mentioned`,
+      reason: `Update or renovation is referenced — permits and inspection history should be verified.`,
+    });
+    if (sqft && !pricePerSqft && listingText.includes('spacious')) dynamicSignals.push({
+      signal: `Listing Highlights Size`,
+      reason: `The listing mentions interior size, but room dimensions and layout practicality still need verification.`,
+    });
+
+    // Build final signals: AI signals first, then dynamic fill
+    const signals: any[] = [...aiSignals];
+    if (signals.length === 0 && dynamicSignals.length > 0) {
+      // Use dynamic signals (property-specific) instead of fixed trio
+      signals.push(...dynamicSignals);
+    }
+    if (signals.length > 0) {
+      sections.push({
+        id: 'listing-signals',
+        title: 'Listing Signals',
+        subtitle: 'What this listing reveals about the property',
+        items: signals.slice(0, 3).map((s: any) => ({
+          title: s.signal ?? '',
+          description: s.reason ?? '',
+        })),
+      });
     }
 
-    // 3. Listing Claims to Verify
-    const listingClaims = buildListingClaims(result);
-    if (listingClaims) sections.push(listingClaims);
+    // ── whats-missing (US Basic v2) ─────────────────────────────────────────
+    const missing: string[] = Array.isArray(result.whats_missing ?? result.whatsMissing)
+      ? (result.whats_missing ?? result.whatsMissing).filter((x: unknown) => typeof x === 'string')
+      : [];
+    if (missing.length > 0) {
+      sections.push({
+        id: 'whats-missing',
+        title: "What's Missing",
+        subtitle: 'Still needs verification before relying on this listing',
+        items: missing.map((s) => ({ title: s })),
+      });
+    }
 
-    // 4. What Could Change Your Decision
-    const decisionCards = buildBasicDecisionCards(result, !!monthlyCostSnapshot);
-    if (decisionCards) sections.push(decisionCards);
-
-    // 5. Questions to Ask (max 5, from AI output)
-    const basicQuestions = buildBasicQuestions(result);
-    if (basicQuestions) sections.push(basicQuestions);
-
-    // 6. CTA
-    sections.push(buildBasicCTA(result));
-
-    return sections;
+    // ── key-things-to-check (US Basic v2) ────────────────────────────────────
+    const top3Raw: any[] = Array.isArray(result.top_3_things_to_check ?? result.top3ThingsToCheck)
+      ? (result.top_3_things_to_check ?? result.top3ThingsToCheck)
+      : [];
+    const top3Items: SectionItem[] = top3Raw
+      .map((item) => {
+        if (!item) return null;
+        if (typeof item === 'string') return { title: item };
+        const title = toText(item.title ?? '');
+        const why = toText(item.why_it_matters ?? item.why ?? item.explanation ?? '');
+        const action = toText(item.action ?? item.ask ?? '');
+        if (!title && !why && !action) return null;
+        return {
+          title: title || why || action,
+          description: why || undefined,
+          action: action || undefined,
+        } as SectionItem;
+      })
+      .filter(Boolean) as SectionItem[];
+    // Show 2–4 items; if fewer than 2, hide the section entirely
+    if (top3Items.length >= 2) {
+      sections.push({
+        id: 'key-things-to-check',
+        title: 'Key Things To Check',
+        subtitle: 'Decisions that can change before you commit',
+        items: top3Items.slice(0, 4),
+      });
+    }
   }
-
-  // ── Deep mode: existing sections ────────────────────────────────────────────
 
   // ── price_assessment ───────────────────────────────────────────────────────
   const price = result.price_assessment ?? result.priceAssessment ?? {};
@@ -516,7 +389,7 @@ function buildSections(result: AnyResult, isBasic: boolean): ReportSection[] {
   if (fair.explanation) fairItems.push({ title: 'Analysis', description: toText(fair.explanation) });
   if (fairItems.length > 0) sections.push({ id: 'rent-fairness', title: 'Rent Fairness', items: fairItems });
 
-  // ── investment_potential ───────────────────────────────────────────────────
+  // ── investment_potential ────────────────────────────────────────────────────
   const invest = result.investment_potential ?? result.investmentPotential ?? {};
   const investItems: SectionItem[] = [];
   if (invest.rating ?? invest.growth_outlook) {
@@ -558,20 +431,45 @@ function buildSections(result: AnyResult, isBasic: boolean): ReportSection[] {
   // ── questions_to_ask ──────────────────────────────────────────────────────
   const questions = Array.isArray(result.questionsToAsk ?? result.questions_to_ask ?? result.agentQuestions) ? result.questionsToAsk ?? result.questions_to_ask ?? result.agentQuestions : [];
   const qItems = objectItems(questions, { title: 'Question' });
-  if (qItems.length > 0) sections.push({ id: 'questions-to-ask', title: 'Questions to Ask', items: qItems });
+    if (qItems.length > 0) sections.push({ id: 'questions', title: 'Questions to Ask', items: qItems });
 
   return sections;
 }
 
 // ── main adapter ──────────────────────────────────────────────────────────────
 
-export function normalizeGenericReport(result: AnyResult): NormalizedReport {
+export function normalizeGenericReport(result: AnyResult, opts?: { analysisProfile?: PropertyIntelligenceProfile }): NormalizedReport {
   const isBasic = result.analysisType === 'basic' || ('decision' in result && result.decision !== undefined);
-  const reportProfile = computeReportProfile(result);
+
+  // Resolve market from result (backend now sets market='US' or 'AU' on basic responses).
+  const rawMarket = toText(result.market ?? result.Market ?? '');
+  const market: 'US' | 'AU' | 'UNKNOWN' = rawMarket === 'US' || rawMarket === 'AU' ? rawMarket : 'UNKNOWN';
+
+  // Build profile if not already provided (standalone calls won't have opts)
+  const analysisProfile = opts?.analysisProfile ?? buildPropertyIntelligenceProfile({
+    normalizedPropertyCategory: null,
+    propertyType: (result as any).propertyType
+      ?? (result as any).what_we_know?.property_type
+      ?? (result as any).property_snapshot?.home_type,
+    listingText: (result as any).description
+      ?? (result as any).listingInfo?.description
+      ?? (result as any).what_we_know?.description,
+    yearBuilt: (() => {
+      const yb = (result as any).yearBuilt
+        ?? (result as any).what_we_know?.year_built
+        ?? (result as any).property_snapshot?.year_built;
+      return typeof yb === 'number' ? yb : null;
+    })(),
+    zestimateAvailable: Boolean(
+      (result as any).zestimate
+        ?? (result as any).what_we_know?.zestimate
+        ?? (result as any).property_snapshot?.zestimate,
+    ),
+  });
 
   return {
     meta: {
-      market: 'UNKNOWN',
+      market,
       reportMode: (() => {
         const m = result.reportMode ?? result.report_mode ?? result.analysisType ?? 'unknown';
         return toText(m) as 'sale' | 'rent' | 'unknown';
@@ -579,12 +477,12 @@ export function normalizeGenericReport(result: AnyResult): NormalizedReport {
       source: toText(result.source ?? ''),
       sourceDomain: toText(result.sourceDomain ?? result.source_domain ?? ''),
       isBasic,
-      reportProfile,
+      analysisProfile,
     },
     hero: buildHero(result, isBasic),
     highlights: buildHighlights(result),
     quickFacts: buildQuickFacts(result),
-    sections: buildSections(result, isBasic),
+    sections: buildSections(result, isBasic, analysisProfile),
     raw: result,
   };
 }

@@ -6,6 +6,8 @@ import { normalizeUSSaleReport } from './usSale';
 import { normalizeAUSaleReport } from './auSale';
 import { normalizeAURentReport } from './auRent';
 import { normalizeGenericReport } from './generic';
+import { buildPropertyIntelligenceProfile } from './reportRules';
+import type { PropertyIntelligenceProfile } from './types';
 
 type AnyResult = any;
 
@@ -50,6 +52,14 @@ function detectMarket(result: AnyResult): Market {
   const mode = detectReportMode(result);
   if (mode === 'rent') return 'AU';
 
+  // displayType from the US backend's normalized type is a strong US signal
+  const displayType = getField(result, 'displayType', 'verifiedFacts.displayType');
+  const normalizedPropertyCategory = getField(result, 'normalizedPropertyCategory', 'verifiedFacts.normalizedPropertyCategory');
+  if ((displayType && displayType !== 'Not clearly disclosed' && displayType !== 'unknown') ||
+      (normalizedPropertyCategory && normalizedPropertyCategory !== 'unknown')) {
+    return 'US';
+  }
+
   return 'UNKNOWN';
 }
 
@@ -62,10 +72,11 @@ function detectReportMode(result: AnyResult): ReportMode {
 }
 
 // ---- detect basic result ----
-// Priority: explicit analysisType='basic' > legacy 'decision' format > no deep modules
 function detectBasicResult(result: AnyResult): boolean {
   if (getField(result, 'analysisType') === 'basic') return true;
   if ('decision' in result && result.decision !== undefined) return true;
+  // US Basic v2 always emits `whats_missing`; if present, treat as basic.
+  if (Array.isArray(result?.whats_missing) && result.whats_missing.length > 0) return true;
   if (!result?.property_snapshot && !result?.carrying_costs && !result?.price_assessment && !result.overallScore) return true;
   return false;
 }
@@ -157,11 +168,8 @@ function pickFirstImage(result: AnyResult): string | undefined {
 }
 
 // ---- buildAddress (safe, no price/beds baked in) ----
-// Priority: verifiedFacts.address (deterministic backend data) > listingInfo.address >
-// property_snapshot.address > propertySnapshot.address > fullAddress > full_address > address
 function buildAddress(result: AnyResult): string {
   const paths = [
-    () => getField(result, 'verifiedFacts.address'),
     () => getField(result, 'listingInfo.address'),
     () => getField(result, 'property_snapshot.address'),
     () => getField(result, 'propertySnapshot.address'),
@@ -195,74 +203,50 @@ function buildTitle(result: AnyResult): string {
   return '';
 }
 
-// ── Listing summary / dirty data filters ──────────────────────────────────────
-
-function isListingSummaryString(value: unknown): boolean {
-  if (!value) return true;
-  const text = String(value).trim();
-  if (!text) return true;
-  return (
-    /\b\d+\s*bds\b/i.test(text) ||
-    /\b\d+\s*beds?\b/i.test(text) ||
-    /\b\d+\s*ba\b/i.test(text) ||
-    /\b\d+[,.\d]*\s*sqft\b/i.test(text) ||
-    /\b\d+\s*sq\s*ft\b/i.test(text) ||
-    /home\s+for\s+sale\b/i.test(text) ||
-    /\bactive\b/i.test(text) ||
-    /\bmulti\.?family\s+home\s+for\s+sale\b/i.test(text) ||
-    /\bsingle\s+family\s+home\s+for\s+sale\b/i.test(text) ||
-    /\bcondo\s+for\s+sale\b/i.test(text) ||
-    /\btownhouse\s+for\s+sale\b/i.test(text)
-  );
-}
-
-function isLikelyValidAddress(value: unknown): boolean {
-  if (!value) return false;
-  const text = String(value).trim();
-  if (!text) return false;
-
-  if (isListingSummaryString(text)) return false;
-
-  // Accept complete US address: "1231 Lydig Avenue, Bronx, NY 10461"
-  if (/^\d[\d-]*\s+.+,\s*[^,]+,\s*[A-Z]{2}\s*\d{5}(?:-\d{4})?$/i.test(text)) {
-    return true;
-  }
-
-  // Accept partial street address: "810 Neill Avenue", "1231 Lydig Avenue", "119-06 229th St #1"
-  // \d[\d-]* handles hyphenated street numbers like "119-06", "33-30"
-  if (/^\d[\d-]*\s+[A-Za-z0-9 .'-]+(?:street|st|avenue|ave|road|rd|place|pl|drive|dr|court|ct|lane|ln|boulevard|blvd|terrace|ter|way|circle|cir|floor)\b/i.test(text)) {
-    return true;
-  }
-
-  return false;
-}
-
-function firstValidAddress(...values: unknown[]): string {
-  for (const v of values) {
-    const text = String(v ?? '').trim();
-    if (isLikelyValidAddress(text)) return text;
-  }
-  return '';
-}
-
-function firstValidTitle(...values: unknown[]): string {
-  for (const v of values) {
-    const text = String(v ?? '').trim();
-    if (text && !isListingSummaryString(text)) return text;
-  }
-  return '';
-}
-
 // ---- main export ----
 export function normalizeReportResult(result: AnyResult): NormalizedReport {
   const market = detectMarket(result);
   const reportMode = detectReportMode(result);
   const isBasic = detectBasicResult(result);
 
+  // Build analysisProfile for frontend compatibility.
+  // This profile was already used in the backend to generate the AI report;
+  // we rebuild it here for UI consumption and downstream adapters.
+  const analysisProfile: PropertyIntelligenceProfile | undefined = buildPropertyIntelligenceProfile({
+    normalizedPropertyCategory: getField(result, 'normalizedPropertyCategory'),
+    propertyType: getField(result, 'propertyType')
+      ?? getField(result, 'what_we_know.property_type')
+      ?? getField(result, 'property_snapshot.home_type'),
+    propertySubtype: getField(result, 'propertySubtype')
+      ?? getField(result, 'property_snapshot.property_subtype'),
+    homeType: getField(result, 'homeType')
+      ?? getField(result, 'property_snapshot.home_type'),
+    listingText: getField(result, 'listingInfo.description')
+      ?? getField(result, 'description')
+      ?? getField(result, 'what_we_know.description'),
+    yearBuilt: (() => {
+      const yb = getField(result, 'yearBuilt')
+        ?? getField(result, 'what_we_know.year_built')
+        ?? getField(result, 'property_snapshot.year_built');
+      return typeof yb === 'number' ? yb : null;
+    })(),
+    pricePerSqft: (() => {
+      const psf = getField(result, 'pricePerSqft')
+        ?? getField(result, 'what_we_know.price_per_sqft')
+        ?? getField(result, 'property_snapshot.price_per_sqft');
+      return typeof psf === 'number' ? psf : null;
+    })(),
+    zestimateAvailable: Boolean(
+      getField(result, 'what_we_know.zestimate')
+        ?? getField(result, 'zestimate')
+        ?? getField(result, 'property_snapshot.zestimate'),
+    ),
+  });
+
   let normalized: NormalizedReport;
 
   if (isBasic) {
-    normalized = normalizeGenericReport(result);
+    normalized = normalizeGenericReport(result, { analysisProfile });
   } else if (market === 'US' && reportMode === 'sale') {
     normalized = normalizeUSSaleReport(result);
   } else if (market === 'AU' && reportMode === 'sale') {
@@ -270,65 +254,22 @@ export function normalizeReportResult(result: AnyResult): NormalizedReport {
   } else if (market === 'AU' && reportMode === 'rent') {
     normalized = normalizeAURentReport(result);
   } else if (market === 'US' && reportMode === 'rent') {
-    normalized = normalizeGenericReport(result);
+    normalized = normalizeGenericReport(result, { analysisProfile });
   } else {
-    normalized = normalizeGenericReport(result);
+    normalized = normalizeGenericReport(result, { analysisProfile });
   }
 
   // Fill hero.imageUrl from result — always from raw result, not adapter output
   // Adapter's hero.title / hero.address may differ; we want the canonical identity from the source
   normalized.hero.imageUrl = pickFirstImage(result);
+  // Ensure hero.address is always the canonical address from raw source
+  const canonicalAddress = buildAddress(result);
+  if (canonicalAddress) normalized.hero.address = canonicalAddress;
+  const canonicalTitle = buildTitle(result);
+  if (canonicalTitle) normalized.hero.title = canonicalTitle;
 
-  // ── Canonical address: filter out listing summary strings ──────────────────────
-  const addressCandidates = [
-    { path: 'verifiedFacts.address', value: result?.verifiedFacts?.address },
-    { path: 'listingInfo.address', value: result?.listingInfo?.address },
-    { path: 'property_snapshot.address', value: result?.property_snapshot?.address },
-    { path: 'property_snapshot.region', value: result?.property_snapshot?.region },
-    { path: 'propertySnapshot.address', value: result?.propertySnapshot?.address },
-    { path: 'propertySnapshot.region', value: result?.propertySnapshot?.region },
-    { path: 'address', value: result?.address },
-    { path: 'region', value: result?.region },
-    { path: 'result.verifiedFacts.address', value: (result as any)?.result?.verifiedFacts?.address },
-    { path: 'result.listingInfo.address', value: (result as any)?.result?.listingInfo?.address },
-    { path: 'result.property_snapshot.address', value: (result as any)?.result?.property_snapshot?.address },
-    { path: 'result.property_snapshot.region', value: (result as any)?.result?.property_snapshot?.region },
-    { path: 'full_result.verifiedFacts.address', value: (result as any)?.full_result?.verifiedFacts?.address },
-    { path: 'full_result.listingInfo.address', value: (result as any)?.full_result?.listingInfo?.address },
-    { path: 'full_result.property_snapshot.address', value: (result as any)?.full_result?.property_snapshot?.address },
-    { path: 'full_result.property_snapshot.region', value: (result as any)?.full_result?.property_snapshot?.region },
-  ];
-
-  const canonicalAddress = firstValidAddress(...addressCandidates.map(c => c.value));
-
-  // ── Canonical title: filter out listing summary strings ───────────────────────
-  const titleValues = [
-    result?.listingInfo?.title,
-    result?.propertyTitle,
-    result?.property_title,
-    result?.listingTitle,
-    result?.listing_title,
-    result?.title,
-  ];
-  const canonicalTitle = firstValidTitle(...titleValues);
-
-  console.log('[HS NORMALIZE INPUT]', {
-    listingInfoAddress: result?.listingInfo?.address,
-    listingInfoTitle: result?.listingInfo?.title,
-    propertySnapshotAddress: result?.property_snapshot?.address,
-    rawTitle: result?.title,
-    rawAddress: result?.address,
-  });
-  console.log('[HS NORMALIZE OUTPUT]', {
-    canonicalAddress,
-    canonicalTitle,
-  });
-
-  // Always overwrite — never skip if value is falsy
-  normalized.hero.address = canonicalAddress;
-  // Title: avoid duplicate when title === address (both are the full address string).
-  // If title differs from address, use it; otherwise null → falls back to 'Property report'.
-  normalized.hero.title = canonicalTitle && canonicalTitle !== canonicalAddress ? canonicalTitle : null;
+  // Inject profile into meta for frontend consumption (read-only, backend already used it)
+  normalized.meta.analysisProfile = analysisProfile;
 
   return normalized;
 }

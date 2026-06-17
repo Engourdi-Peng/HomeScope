@@ -49,7 +49,6 @@ export function buildChecklistItems(result: AnalysisResult): string[] {
   
   const mr = (result as any).maintenance_risk;
   const lc = (result as any).legal_compliance;
-  const er = (result as any).environmental_risk;
   const cc = (result as any).carrying_costs;
   const gaps = (result as any).data_gaps as Array<{ missing_item?: string; suggested_source?: string }> | undefined;
 
@@ -73,13 +72,7 @@ export function buildChecklistItems(result: AnalysisResult): string[] {
   // 4. Interior / Photos
   items.add('Request recent interior photos');
 
-  // 5. Insurance / Flood
-  if (er?.risk_level && er.risk_level !== 'Low') {
-    items.add('Check FEMA flood zone designation');
-    items.add('Get insurance quote estimate');
-  }
-
-  // 6. Data gaps from analysis
+  // 5. Data gaps from analysis
   if (gaps && gaps.length > 0) {
     const topGaps = gaps.slice(0, 3);
     for (const gap of topGaps) {

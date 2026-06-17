@@ -47,6 +47,19 @@ function fmtPerSqft(val: unknown): string {
   return toText(val);
 }
 
+function fmtSqft(val: unknown): string {
+  if (typeof val === 'string') {
+    if (val.startsWith('$') || /sqft/i.test(val)) return val;
+    const num = parseFloat(val.replace(/[^0-9.]/g, ''));
+    if (Number.isFinite(num)) return num.toLocaleString() + ' sqft';
+    return val;
+  }
+  if (typeof val === 'number' && Number.isFinite(val)) {
+    return val.toLocaleString() + ' sqft';
+  }
+  return toText(val);
+}
+
 function makeItem(
   label: string,
   value: unknown,
@@ -76,7 +89,7 @@ function stringsToItems(label: string, arr: unknown[], opts?: { badge?: string; 
     .filter(Boolean) as SectionItem[];
 }
 
-function objectItems(arr: unknown[], opts?: { badge?: string; severity?: 'low' | 'medium' | 'high' }): SectionItem[] {
+function objectItems(arr: unknown[], opts?: { title?: string; badge?: string; severity?: 'low' | 'medium' | 'high' }): SectionItem[] {
   if (!Array.isArray(arr)) return [];
   return arr
     .map(item => {
@@ -264,7 +277,7 @@ function buildHero(result: USSaleResult): HeroData {
   );
   const beds = toText(result.listingInfo?.bedrooms ?? result.bedrooms ?? result.property_snapshot?.beds ?? result.property_snapshot?.bedrooms ?? '');
   const baths = toText(result.listingInfo?.bathrooms ?? result.bathrooms ?? result.property_snapshot?.baths ?? result.property_snapshot?.bathrooms ?? '');
-  const sqft = toText(result.sqft ?? result.property_snapshot?.sqft ?? '');
+  const sqft = fmtSqft(result.sqft ?? result.property_snapshot?.sqft ?? '');
 
   // Zestimate from price_assessment or property_snapshot
   const priceAsmt = result.price_assessment ?? result.priceAssessment ?? {};
@@ -307,6 +320,7 @@ function buildHero(result: USSaleResult): HeroData {
     verdict: toText(result.overall_verdict ?? result.verdict ?? 'Not enough data'),
     confidence: toText(result.recommendation?.confidence ?? result.scoreConfidence ?? result.confidence ?? ''),
     summary: toText(result.quick_summary ?? result.quickSummary ?? result.summary ?? ''),
+    bottomLine: toText(result.bottom_line ?? result.bottomLine ?? '') || undefined,
     primaryLabel: toText(result.recommendation?.mainReasons?.[0] ?? ''),
     secondaryLabel: toText(result.recommendation?.nextStep ?? ''),
   };
@@ -370,15 +384,8 @@ function buildQuickFacts(result: USSaleResult): QuickFact[] {
   // Format baths with full/half detail when available
   const bathsVal = snap.baths ?? snap.bathrooms;
   if (bathsVal != null) add('Baths', formatBaths(bathsVal));
-  add('Sqft', snap.sqft);
+  add('Sqft', fmtSqft(snap.sqft));
   add('Built', snap.yearBuilt ?? snap.year_built);
-
-  // Type: prefer backend displayType, then raw homeType
-  const rawHomeType = snap.homeType ?? snap.home_type ?? '';
-  const typeDisplay = displayType && displayType !== 'unknown'
-    ? displayType
-    : (rawHomeType || 'Not disclosed');
-  if (typeDisplay) add('Type', typeDisplay);
 
   add('Lot', snap.lotSize ?? snap.lot_size);
   addMoney('Assessed', snap.tax_assessed_value_display ?? snap.taxAssessedValue ?? snap.tax_assessed_value);
@@ -454,23 +461,11 @@ function buildSections(result: USSaleResult): ReportSection[] {
   const snapItems: SectionItem[] = [];
   if (snap.beds ?? snap.bedrooms) snapItems.push({ title: 'Beds', value: toText(snap.beds ?? snap.bedrooms) });
   if (snap.baths ?? snap.bathrooms) snapItems.push({ title: 'Baths', value: formatBaths(snap.baths ?? snap.bathrooms) });
-  if (snap.sqft) snapItems.push({ title: 'Sqft', value: toText(snap.sqft) });
-  if (snap.yearBuilt ?? snap.year_built) snapItems.push({ title: 'Year Built', value: toText(snap.yearBuilt ?? snap.year_built) });
-
-  // Home Type: prefer normalized displayType, fallback to raw homeType
-  const rawHomeType = snap.homeType ?? snap.home_type ?? '';
-  const typeDisplay = displayType && displayType !== 'unknown'
-    ? displayType
-    : rawHomeType;
-  if (typeDisplay) {
-    const isListingStated = /legal|approved|compliant|certified/i.test(rawHomeType);
-    snapItems.push({
-      title: 'Home Type',
-      value: isListingStated
-        ? `${typeDisplay.trim()} (listing-stated, not independently verified)`
-        : typeDisplay,
-    });
+  if (snap.sqft) {
+    const n = Number(snap.sqft);
+    snapItems.push({ title: 'Sqft', value: Number.isFinite(n) ? n.toLocaleString() + ' sqft' : toText(snap.sqft) });
   }
+  if (snap.yearBuilt ?? snap.year_built) snapItems.push({ title: 'Year Built', value: toText(snap.yearBuilt ?? snap.year_built) });
 
   if (snap.roof) snapItems.push({ title: 'Roof', value: toText(snap.roof) });
   if (snap.lotSize ?? snap.lot_size) snapItems.push({ title: 'Lot Size', value: toText(snap.lotSize ?? snap.lot_size) });
@@ -511,9 +506,9 @@ function buildSections(result: USSaleResult): ReportSection[] {
   // ── price_assessment ───────────────────────────────────────────────────────
   const price = result.price_assessment ?? result.priceAssessment ?? {};
   const priceItems: SectionItem[] = [];
-  if (price.estimated_min ?? price.estimatedMin) priceItems.push({ title: 'Est. Min', value: toText(price.estimated_min ?? price.estimatedMin) });
-  if (price.estimated_max ?? price.estimatedMax) priceItems.push({ title: 'Est. Max', value: toText(price.estimated_max ?? price.estimatedMax) });
-  if (price.asking_price ?? price.askingPrice) priceItems.push({ title: 'Asking Price', value: toText(price.asking_price ?? price.askingPrice) });
+  if (price.estimated_min ?? price.estimatedMin) priceItems.push({ title: 'Est. Min', value: fmtMoney(price.estimated_min ?? price.estimatedMin) });
+  if (price.estimated_max ?? price.estimatedMax) priceItems.push({ title: 'Est. Max', value: fmtMoney(price.estimated_max ?? price.estimatedMax) });
+  if (price.asking_price ?? price.askingPrice) priceItems.push({ title: 'Asking Price', value: fmtMoney(price.asking_price ?? price.askingPrice) });
   const conf = price.valuation_confidence ?? price.valuationConfidence;
   if (conf) priceItems.push({ title: 'Confidence', value: toText(conf), badge: toText(conf) });
   if (price.verdict) priceItems.push({ title: 'Verdict', value: toText(price.verdict) });
@@ -628,17 +623,6 @@ function buildSections(result: USSaleResult): ReportSection[] {
   legalItems.push(...objectItems(legal.external_sources_needed, { title: 'Data Needed' }));
   if (legalItems.length > 0) sections.push({ id: 'legal-compliance', title: 'Legal & Compliance', items: legalItems });
 
-  // ── environmental_risk ─────────────────────────────────────────────────────
-  const env = result.environmental_risk ?? result.environmentalRisk ?? {};
-  const envItems: SectionItem[] = [];
-  if (env.risk_level ?? env.riskLevel) {
-    const r = toText(env.risk_level ?? env.riskLevel);
-    envItems.push({ title: 'Risk Level', value: r, badge: r });
-  }
-  if (env.summary) envItems.push({ title: 'Summary', description: toText(env.summary) });
-  envItems.push(...objectItems(env.items_to_check, { title: 'Check' }));
-  if (envItems.length > 0) sections.push({ id: 'environmental-risk', title: 'Environmental Risk', items: envItems });
-
   // ── listing_language_reality_check ─────────────────────────────────────────
   const reality = Array.isArray(result.listing_language_reality_check ?? result.listingLanguageRealityCheck)
     ? result.listing_language_reality_check ?? result.listingLanguageRealityCheck : [];
@@ -711,7 +695,7 @@ function buildSections(result: USSaleResult): ReportSection[] {
   if (layoutItems.length > 0) sections.push({ id: 'layout-fit', title: 'Layout Fit', subtitle: 'Space and layout suitability', items: layoutItems });
 
   // ── questions_to_ask ──────────────────────────────────────────────────────
-  const questions = Array.isArray(result.questions_to_ask ?? result.questionsToAsk) ? result.questions_to_ask ?? result.questionsToAsk : [];
+  const questions = (Array.isArray(result.questions_to_ask ?? result.questionsToAsk) ? result.questions_to_ask ?? result.questionsToAsk : []).slice(0, 6);
   const qItems = objectItems(questions, { title: 'Question' });
   if (qItems.length > 0) sections.push({ id: 'questions-to-ask', title: 'Questions to Ask', subtitle: 'Before you make an offer', items: qItems });
 

@@ -31,35 +31,29 @@ function getScoreColor(score?: number) {
 
 /** Inject listingInfo into full_result using AnalysisSummary metadata, matching Share/Account logic */
 function enrichWithListingInfo(result: AnalysisResult, summary: AnalysisSummary): AnalysisResult {
-  const coverImageUrl = summary.cover_image_url || undefined;
   const listingInfo: ListingInfo = {
     title: summary.title || undefined,
     address: summary.address || undefined,
-    coverImageUrl,
+    coverImageUrl: summary.cover_image_url || undefined,
     priceAmount: summary.weekly_rent || undefined,
     bedrooms: summary.bedrooms || undefined,
     bathrooms: summary.bathrooms || undefined,
     parking: summary.car_spaces || undefined,
-    images: coverImageUrl ? [coverImageUrl] : undefined,
-    imageUrls: coverImageUrl ? [coverImageUrl] : undefined,
   };
-  return {
-    ...result,
-    coverImageUrl,
-    images: coverImageUrl ? [coverImageUrl] : undefined,
-    imageUrls: coverImageUrl ? [coverImageUrl] : undefined,
-    listingInfo,
-  };
+  return { ...result, listingInfo };
 }
 
 export function HistorySection() {
-  const { history, historyLoading, viewingHistoryId } = useAppState();
+  const { history, historyLoading, viewingHistoryId, authStatus } = useAppState();
   const { navigateToReport } = useActions();
+
+  // 未登录时完全隐藏，不调用 history API
+  if (authStatus !== 'logged_in') return null;
 
   if (historyLoading) {
     return (
       <section className="ext-reports-section">
-        <div className="ext-section-label">Recent analyses</div>
+        <div className="ext-section-label">Recent Property Checks</div>
         <div className="ext-loading-state">
           <div className="ext-spinner" />
           <span>Loading history...</span>
@@ -71,7 +65,7 @@ export function HistorySection() {
   if (!history || history.length === 0) {
     return (
       <section className="ext-reports-section">
-        <div className="ext-section-label">Recent analyses</div>
+        <div className="ext-section-label">Recent Property Checks</div>
         <div className="ext-empty-state">
           <span>No analyses yet. Analyze a property to get started.</span>
         </div>
@@ -83,7 +77,7 @@ export function HistorySection() {
 
   return (
     <section className="ext-reports-section">
-      <div className="ext-section-label">Recent analyses</div>
+      <div className="ext-section-label">Recent Property Checks</div>
       <ul className="ext-report-list">
         {displayHistory.map((item) => {
           const isActive = viewingHistoryId === item.id;

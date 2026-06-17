@@ -19,46 +19,46 @@ const PRODUCTS = [
   {
     id: 'starter',
     title: 'Starter',
-    price: 'AU$6.99',
-    reportCount: '3 REPORTS',
-    description: 'Perfect for trying the tool',
+    price: 'US$9.99',
+    reportCount: '1 FULL REPORT',
+    description: 'Best for checking one property before booking a showing.',
     features: [
-      'AI rental analysis',
-      'Price fairness check',
-      'Risk detection',
-      'Condition analysis',
+      'Full property risk analysis',
+      'Photo & space analysis',
+      'Price confidence check',
+      'Questions to ask the agent',
     ],
-    buttonText: 'Buy Starter',
+    buttonText: 'Buy 1 Report',
     isPopular: false,
   },
   {
     id: 'standard',
     title: 'Standard',
-    price: 'AU$14.99',
-    reportCount: '10 REPORTS',
-    description: 'Most popular - enough for a full house search',
+    price: 'US$19.99',
+    reportCount: '3 FULL REPORTS',
+    description: 'Best for buyers with a few homes on their shortlist.',
     features: [
       'Everything in Starter',
-      'Best value per report',
-      'Priority support',
-      'Detailed competition analysis',
+      'Lower cost per report',
+      'Saved report access',
+      'Shareable report link',
     ],
-    buttonText: 'Buy Standard',
+    buttonText: 'Buy 3 Reports',
     isPopular: true,
   },
   {
     id: 'pro',
     title: 'Pro',
-    price: 'AU$39',
-    reportCount: '40 REPORTS',
-    description: 'For heavy users and professionals',
+    price: 'US$49.99',
+    reportCount: '10 FULL REPORTS',
+    description: 'Best for active buyers searching across multiple listings.',
     features: [
       'Everything in Standard',
-      'Unlimited analysis history',
-      'API access',
-      'Custom integrations',
+      'Best value per report',
+      'Lowest cost per report',
+      'Useful for serious home searches',
     ],
-    buttonText: 'Buy Pro',
+    buttonText: 'Buy 10 Reports',
     isPopular: false,
   },
 ];
@@ -190,9 +190,6 @@ export function Home() {
   const handleBasicAnalysis = async () => {
     console.log('[BasicAnalysis] Starting lightweight basic analysis...');
 
-    // Clear stale cache so the result page always shows the latest response, not an old result
-    sessionStorage.removeItem('analysisResult');
-
     // 1. 权限检查 - 无需登录，任何人都可以使用
     // 注意：basic 分析不需要登录
 
@@ -214,10 +211,6 @@ export function Home() {
         reportMode: optionalDetails.reportMode || 'rent',
         description,
         optionalDetails: Object.keys(optionalDetails).length > 0 ? optionalDetails : undefined,
-        source: optionalDetails.source,
-        sourceDomain: optionalDetails.sourceDomain,
-        market: optionalDetails.market,
-        listingUrl: optionalDetails.listingUrl,
       });
 
       setProgressPct(100);
@@ -237,8 +230,6 @@ export function Home() {
         bedrooms: optionalDetails.bedrooms ? parseInt(optionalDetails.bedrooms, 10) : undefined,
         bathrooms: optionalDetails.bathrooms ? parseInt(optionalDetails.bathrooms, 10) : undefined,
         parking: optionalDetails.parking ? parseInt(optionalDetails.parking, 10) : undefined,
-        sqft: optionalDetails.sqft ?? null,
-        propertyType: optionalDetails.propertyType ?? null,
       };
 
       const resultWithListingInfo = {
@@ -246,31 +237,14 @@ export function Home() {
         listingInfo,
       };
 
-      const address = resultWithListingInfo?.listingInfo?.address
-        ?? (resultWithListingInfo as any)?.address
-        ?? '';
-      const resultVersion = address
-        ? `${Date.now()}-${address.toLowerCase().trim()}`
-        : String(Date.now());
-
       sessionStorage.setItem('analysisResult', JSON.stringify(resultWithListingInfo));
-      sessionStorage.setItem('analysisResultVersion', resultVersion);
-
-      console.log('[HS RESULT SAVE]', {
-        resultVersion,
-        address,
-        title: resultWithListingInfo?.listingInfo?.title,
-      });
-
-      window.dispatchEvent(new CustomEvent('homescope:analysis-result-updated', {
-        detail: { resultVersion, address },
-      }));
 
       setIsLoading(false);
       setIsComplete(true);
 
+      // 5. 跳转到结果页
       setTimeout(() => {
-        navigate(`/result?rid=${encodeURIComponent(resultVersion)}`);
+        navigate('/result');
       }, 300);
 
     } catch (err) {
@@ -284,10 +258,6 @@ export function Home() {
   };
 
   const handleSubmit = async (analysisType: 'basic' | 'full' = 'full') => {
-    console.log('[Analysis] mode:', analysisType);
-    console.log('[Analysis] requiresLogin:', analysisType === 'full');
-    console.log('[Analysis] shouldProcessImages:', analysisType === 'full');
-
     // ========== Basic Analysis - 轻量路径 ==========
     if (analysisType === 'basic') {
       return handleBasicAnalysis();
@@ -311,7 +281,7 @@ export function Home() {
     }
 
     // 2. 已登录但无可用积分 - 深度分析需要积分，基础分析不需要
-    if (creditsRemaining <= 0) {
+    if (analysisType === 'full' && creditsRemaining <= 0) {
       console.log('analyze blocked reason: NO_CREDITS');
       setError('You\'ve used all credits. Use Basic Analysis for free!');
       return;
@@ -326,13 +296,15 @@ export function Home() {
 
     setIsLoading(true);
     setError('');
-    setAnalyzingCount(Math.min(photos.length, 10));
+    setAnalyzingCount(Math.min(photos.length, analysisType === 'basic' ? 4 : 10));
     setIsComplete(false);
     setActiveStage(null);
     setProgressPct(0);
 
     try {
-      const photosToAnalyze = photos.slice(0, 10);
+      const photosToAnalyze = analysisType === 'basic'
+        ? photos.slice(0, 4)
+        : photos.slice(0, 10);
 
       // ========== Step 1: Compress images ==========
       setProgressLabel('Preparing photos...');
@@ -376,7 +348,7 @@ export function Home() {
       console.log('Analysis submitted, ID:', analysisId);
 
       // ========== Step 5: Trigger the analysis runner ==========
-      setProgressLabel('Analyzing property...');
+      setProgressLabel(analysisType === 'basic' ? 'Running basic analysis...' : 'Analyzing property...');
       setActiveStage('upload_received');
       setProgressPct(Math.max(65, stageToPct('upload_received')));
 
@@ -416,32 +388,17 @@ export function Home() {
               ...progress.result,
               listingInfo,
             };
-            const address = resultWithListingInfo?.listingInfo?.address
-              ?? (resultWithListingInfo as any)?.address
-              ?? '';
-            const resultVersion = address
-              ? `${Date.now()}-${address.toLowerCase().trim()}`
-              : String(Date.now());
             sessionStorage.setItem('analysisResult', JSON.stringify(resultWithListingInfo));
-            sessionStorage.setItem('analysisResultVersion', resultVersion);
-
-            console.log('[HS RESULT SAVE]', {
-              resultVersion,
-              address,
-              title: resultWithListingInfo?.listingInfo?.title,
-            });
-
-            window.dispatchEvent(new CustomEvent('homescope:analysis-result-updated', {
-              detail: { resultVersion, address },
-            }));
-
             setIsComplete(true);
             setProgressPct(100);
             setProgressLabel('Analysis complete');
             clearPollTimer();
-            refreshProfile();
+            // Refresh user profile to update credits display
+            if (analysisType === 'full') {
+              refreshProfile();
+            }
             setTimeout(() => {
-              navigate(`/result?rid=${encodeURIComponent(resultVersion)}`);
+              navigate('/result');
             }, 500);
             return;
           }
@@ -518,16 +475,16 @@ export function Home() {
         {/* 1. Hero */}
         <div className="text-center mb-12 animate-in fade-in slide-in-from-bottom-8 duration-700 ease-out">
           <h1 className="text-3xl md:text-4xl font-light tracking-tight text-stone-900 leading-[1.15] mb-4">
-            Stop Guessing. Know Before You Visit.
+            Know What to Check Before You Tour.
           </h1>
           <p className="text-lg md:text-xl text-stone-600 max-w-2xl mx-auto leading-relaxed font-light mb-2">
-            Upload a listing or screenshots. HomeScope reveals hidden risks, fake upgrades, and real living conditions in seconds.
+            HomeScope turns Zillow listings into buyer-focused risk reports — price signals, photo observations, carrying costs, and questions to ask the agent.
           </p>
           <p className="text-sm text-stone-500 max-w-lg mx-auto">
-            Avoid wasting inspections. Make smarter rental decisions.
+            Run a free Basic Check first. Unlock a Full Report when a property is worth a closer look.
           </p>
           <p className="text-xs text-stone-500 text-center mt-4 italic max-w-lg mx-auto">
-            This is an independent third-party AI tool. Not affiliated with, endorsed by, or connected to realestate.com.au or REA Group. All analysis is for informational purposes only.
+            HomeScope is an independent AI tool. Not affiliated with Zillow, StreetEasy, or any real estate marketplace. Reports are for informational purposes only and are not home inspections, appraisals, legal advice, or financial advice.
           </p>
         </div>
 
@@ -537,10 +494,9 @@ export function Home() {
         {/* 2. Upload Tool - First Screen */}
         <div className="mb-16 animate-in fade-in slide-in-from-bottom-8 duration-700 ease-out" style={{ animationDelay: '100ms' }}>
           <div className="bg-white rounded-[2rem] shadow-[0_8px_40px_-12px_rgba(0,0,0,0.08)] border border-stone-200 p-8 md:p-12">
-            <h2 className="text-xl font-semibold text-stone-900 mb-2 text-center">Paste the Listing or Upload Screenshots</h2>
+            <h2 className="text-xl font-semibold text-stone-900 mb-2 text-center">Paste a Listing or Upload Screenshots</h2>
             <p className="text-sm text-stone-500 text-center mb-8">
-              Add listing screenshots, description text, or both.<br className="hidden sm:inline" />
-              The AI will combine them into a full rental analysis.
+              Add a property listing, screenshots, or notes. HomeScope will turn them into a buyer-focused property report.
             </p>
             
             <InputCard
@@ -603,28 +559,27 @@ export function Home() {
               <div className="w-14 h-14 rounded-2xl bg-stone-100 flex items-center justify-center mx-auto mb-4">
                 <Camera size={28} className="text-stone-600" />
               </div>
-              <h3 className="text-base font-semibold text-stone-900 mb-2">1. Upload Listing Screenshots or Description</h3>
+              <h3 className="text-base font-semibold text-stone-900 mb-2">1. Open a Supported Listing</h3>
               <p className="text-sm text-stone-500 leading-relaxed">
-                Upload property screenshots or paste the listing description.<br />
-                Our AI will analyze the photos and text to evaluate the property.
+                Open a Zillow property page or paste listing details into HomeScope. Add screenshots if you want extra photo context.
               </p>
             </div>
             <div className="text-center p-6 bg-white/60 rounded-2xl border border-stone-200/50">
               <div className="w-14 h-14 rounded-2xl bg-stone-100 flex items-center justify-center mx-auto mb-4">
                 <Sparkles size={28} className="text-stone-600" />
               </div>
-              <h3 className="text-base font-semibold text-stone-900 mb-2">2. AI Analyzes the Property</h3>
+              <h3 className="text-base font-semibold text-stone-900 mb-2">2. Run a Basic Check or Full Report</h3>
               <p className="text-sm text-stone-500 leading-relaxed">
-                The AI evaluates kitchens, bathrooms, bedrooms, and overall condition.
+                Start with a free Basic Check. Unlock a Full Report for deeper photo review, price confidence, carrying costs, and risk analysis.
               </p>
             </div>
             <div className="text-center p-6 bg-white/60 rounded-2xl border border-stone-200/50">
               <div className="w-14 h-14 rounded-2xl bg-stone-100 flex items-center justify-center mx-auto mb-4">
                 <FileText size={28} className="text-stone-600" />
               </div>
-              <h3 className="text-base font-semibold text-stone-900 mb-2">3. Get a Decision Report</h3>
+              <h3 className="text-base font-semibold text-stone-900 mb-2">3. Review Your Buyer Report</h3>
               <p className="text-sm text-stone-500 leading-relaxed">
-                See quality scores, hidden risks, and whether the property is worth inspecting.
+                See the score, key risks, missing information, and questions to ask before viewing or making an offer.
               </p>
             </div>
           </div>
@@ -639,9 +594,9 @@ export function Home() {
                 <LayoutGrid size={24} className="text-green-600" />
               </div>
               <div>
-                <h3 className="text-base font-semibold text-stone-900 mb-1">Space Condition Scores</h3>
+                <h3 className="text-base font-semibold text-stone-900 mb-1">Property Risk Score</h3>
                 <p className="text-sm text-stone-500 leading-relaxed">
-                  Kitchen, bathroom and bedroom condition evaluated with clear scores.
+                  A clear score that summarizes listing strength, risk level, and how much still needs verification.
                 </p>
               </div>
             </div>
@@ -652,7 +607,7 @@ export function Home() {
               <div>
                 <h3 className="text-base font-semibold text-stone-900 mb-1">Detect Hidden Listing Risks</h3>
                 <p className="text-sm text-stone-500 leading-relaxed">
-                  Spot missing information, weak evidence, or exaggerated claims.
+                  Spot missing information, weak evidence, dated systems, legal-use concerns, or exaggerated listing claims.
                 </p>
               </div>
             </div>
@@ -661,9 +616,9 @@ export function Home() {
                 <TrendingUp size={24} className="text-amber-600" />
               </div>
               <div>
-                <h3 className="text-base font-semibold text-stone-900 mb-1">Competition Estimate</h3>
+                <h3 className="text-base font-semibold text-stone-900 mb-1">Price Confidence Check</h3>
                 <p className="text-sm text-stone-500 leading-relaxed">
-                  Understand how competitive the listing may be in the current market.
+                  Understand whether the asking price needs comps, condition checks, or stronger evidence before you trust it.
                 </p>
               </div>
             </div>
@@ -672,9 +627,9 @@ export function Home() {
                 <CheckCircle size={24} className="text-blue-600" />
               </div>
               <div>
-                <h3 className="text-base font-semibold text-stone-900 mb-1">Should You Inspect?</h3>
+                <h3 className="text-base font-semibold text-stone-900 mb-1">Should You View It?</h3>
                 <p className="text-sm text-stone-500 leading-relaxed">
-                  Get a clear recommendation on whether the property is worth your time.
+                  Get a practical next step: keep it on your shortlist, ask more questions, or skip the showing.
                 </p>
               </div>
             </div>
@@ -729,7 +684,7 @@ export function Home() {
                   See What You'll Get
                 </h3>
                 <p className="text-base text-stone-600 leading-relaxed mb-6">
-                  A structured report with scores, risks, and actionable insights.
+                  A structured buyer report with scores, risks, photo insights, carrying costs, and agent questions.
                 </p>
                 <button
                   onClick={() => {
@@ -741,7 +696,7 @@ export function Home() {
                   }}
                   className="inline-flex items-center justify-center rounded-full bg-stone-900 hover:bg-stone-800 text-white font-semibold px-6 py-3 transition-colors w-fit"
                 >
-                  Get 3 Free Analyses
+                  Get 3 Free Full Reports
                 </button>
               </div>
             </div>
@@ -751,10 +706,10 @@ export function Home() {
         <div className="mb-16 animate-in fade-in slide-in-from-bottom-8 duration-700 ease-out">
           <div className="text-center mb-10">
             <h2 className="text-center text-sm font-semibold uppercase tracking-widest text-stone-500 mb-4">
-              One Report Can Save You Hundreds
+              One Report Can Save You Thousands
             </h2>
             <p className="text-center text-stone-400 font-light mb-8">
-              Avoid bad rentals, save time, and make confident decisions.
+              Avoid bad purchases, save time, and make confident home buying decisions.
             </p>
           </div>
           <div className="grid grid-cols-1 md:grid-cols-3 gap-6 md:gap-8 max-w-5xl mx-auto">
@@ -782,28 +737,28 @@ export function Home() {
           <Accordion.Root type="single" collapsible className="bg-[rgba(250,250,249,0.4)] border-[0.667px] border-solid border-[rgba(231,229,228,0.8)] rounded-[24px] px-6 max-w-5xl mx-auto">
             <FAQItem 
               value="analyze-listings"
-              question="Can AI analyze rental listings?"
-              answer="Yes, our AI analyzes rental listing photos to assess space quality, detect potential issues, and provide competition estimates. Upload screenshots from realestate.com.au, Domain, or other rental platforms to get an instant analysis."
+              question="Can AI analyze Zillow property listings?"
+              answer="Yes. HomeScope can analyze supported property listings and extract key details such as price, beds, baths, square footage, year built, taxes, monthly payment estimates, listing claims, and available photos. It then turns those details into a buyer-focused risk report."
             />
             <FAQItem 
               value="evaluate-property"
-              question="How to evaluate a rental property before inspection?"
-              answer="Before attending a rental inspection, analyze the listing photos carefully. Look for signs of maintenance quality, check if all rooms are shown, and note any inconsistencies between the description and photos. Our tool automates this process using AI."
+              question="How should I evaluate a home before booking a showing?"
+              answer="Before booking a showing, check the asking price, comparable sales, property age, roof and major systems, permits, basement use, monthly carrying costs, and missing listing details. HomeScope helps organize these checks into a clear report."
             />
             <FAQItem 
               value="check-renting"
-              question="What should I check when renting a house?"
-              answer="When renting, check the condition of kitchen appliances, bathroom fixtures, flooring, walls, and storage space. Also verify natural light, ventilation, and any visible damage. Our rental inspection checklist helps you systematically evaluate each aspect."
+              question="What should I check before making an offer?"
+              answer="Ask about roof age, HVAC, electrical, plumbing, permits, open violations, basement legality, insurance costs, taxes, and recent comparable sales. A Full Report gives you a focused question list for the agent."
             />
             <FAQItem 
               value="competition"
-              question="How does AI estimate rental competition?"
-              answer="Our AI estimates competition levels based on property presentation quality, attractive features, and market positioning. Well-maintained properties with appealing features typically have higher competition, helping you gauge your chances."
+              question="Can HomeScope tell me if a property is overpriced?"
+              answer="HomeScope can flag price concerns and explain when comparable sales are needed, but it is not an appraisal. Use the report as a pre-check before speaking with your agent, lender, inspector, or appraiser."
             />
             <FAQItem 
               value="misleading"
               question="Can AI detect misleading listing photos?"
-              answer="The AI analyzes staging signs, image quality, and inconsistencies to highlight possible risks in rental listings."
+              answer="HomeScope can point out photo-based condition signals and missing views, such as limited bathroom photos, no roof photos, unclear basement condition, older finishes, or missing mechanical-system photos. It cannot replace an in-person inspection."
             />
           </Accordion.Root>
         </div>
@@ -811,7 +766,7 @@ export function Home() {
         {/* Footer */}
         <div className="text-center pt-8 pb-4 border-t border-stone-200">
           <p className="text-xs text-stone-500 mb-3 italic max-w-md mx-auto">
-            This is an independent third-party AI tool. Not affiliated with, endorsed by, or connected to realestate.com.au or REA Group. All analysis is for informational purposes only.
+            HomeScope is an independent AI tool. Not affiliated with Zillow, StreetEasy, or any real estate marketplace. Reports are for informational purposes only and are not home inspections, appraisals, legal advice, or financial advice.
           </p>
           <div className="flex justify-center gap-4 mb-3">
             <Link to="/privacy" className="text-xs text-stone-400 hover:text-stone-600 transition-colors">Privacy Policy</Link>
@@ -819,7 +774,7 @@ export function Home() {
             <Link to="/refund" className="text-xs text-stone-400 hover:text-stone-600 transition-colors">Refund Policy</Link>
           </div>
           <p className="text-xs text-stone-400 font-medium">
-            AI Rental Decision Assistant
+            AI Property Risk Assistant
           </p>
         </div>
         </div>

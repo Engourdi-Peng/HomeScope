@@ -1,12 +1,13 @@
+import React from 'react';
 import { AppProvider, useAppState } from './store';
 import { ExtensionHeader } from './components/ExtensionHeader';
 import { ListingSummary } from './components/ListingSummary';
 import { AnalyseSection } from './components/AnalyseSection';
 import { HistorySection } from './components/HistorySection';
 import { AccountSection } from './components/AccountSection';
-import { GateView, FreemiumEntry } from './components/GateView';
 import { ExtensionResultView } from './components/ExtensionResultView';
-import { HowToUseCard } from './components/HowToUseCard';
+import { AuthGateSection } from './components/AuthGateSection';
+import { HowItWorksSection } from './components/HowItWorksSection';
 
 function AppContent() {
   const { authStatus, currentView } = useAppState();
@@ -22,7 +23,7 @@ function AppContent() {
     );
   }
 
-  // 结果页优先 — 即使是未登录用户查看了 guest basic report，也要显示结果页
+  // Page B: 报告结果页 — 直接渲染 ExtensionResultView（与 web Result.tsx 结构同构）
   if (currentView === 'report') {
     return (
       <div className="ext-app--report">
@@ -31,33 +32,17 @@ function AppContent() {
     );
   }
 
-  // Freemium 未登录首页：展示房产卡片 + 免费分析入口 + 登录引导
-  if (authStatus === 'logged_out') {
-    return (
-      <div className="ext-app">
-        <ExtensionHeader />
-        <div className="ext-content">
-          <ListingSummary />
-          <GateView />
-          <AnalyseSection />
-          <FreemiumEntry />
-          <HowToUseCard />
-        </div>
-      </div>
-    );
-  }
-
-  // 已登录首页：AnalyseSection（Deep 入口） + GateView（Basic 入口） + HistorySection + AccountSection
+  // Page A: 首页
   return (
     <div className="ext-app">
       <ExtensionHeader />
       <div className="ext-content">
         <ListingSummary />
         <AnalyseSection />
-        <GateView variant="secondary" />
+        <AuthGateSection />
         <HistorySection />
         <AccountSection />
-        <HowToUseCard />
+        <HowItWorksSection />
       </div>
     </div>
   );

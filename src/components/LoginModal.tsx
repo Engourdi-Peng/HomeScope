@@ -15,8 +15,6 @@ export function LoginModal({ isOpen, onClose }: LoginModalProps) {
   const [emailSent, setEmailSent] = useState(false);
   const [error, setError] = useState('');
 
-  if (!isOpen) return null;
-
   const handleGoogleLogin = async () => {
     console.log('🔵 LoginModal: Google login button clicked');
     try {
@@ -29,6 +27,8 @@ export function LoginModal({ isOpen, onClose }: LoginModalProps) {
       setError('Failed to sign in with Google. Please try again.');
     }
   };
+
+  if (!isOpen) return null;
 
   const handleEmailLogin = async (e: React.FormEvent) => {
     e.preventDefault();

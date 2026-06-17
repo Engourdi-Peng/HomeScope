@@ -119,7 +119,7 @@ export function DescriptionInput({ value, onChange, photos = [], onPhotosChange 
           </div>
         </div>
         <p className="text-xs text-stone-500 mt-2 leading-relaxed">
-          Paste any listing description or notes. Add screenshots via upload or Ctrl+V.
+          Paste a listing description, agent notes, or property details. You can also add screenshots for extra context.
         </p>
       </div>
 
@@ -128,7 +128,7 @@ export function DescriptionInput({ value, onChange, photos = [], onPhotosChange 
           value={value}
           onChange={(e) => onChange(e.target.value)}
           onPaste={handlePaste}
-          placeholder="Paste the listing description, inspection notes, or anything important about the property…"
+          placeholder="Paste the listing description, property facts, agent notes, or anything important about the property…"
           className="flex-1 min-h-[280px] w-full p-6 pr-24 bg-stone-50/40 border border-stone-200/80 rounded-3xl resize-none outline-none focus:ring-0 focus:border-stone-400 focus:bg-white transition-all duration-500 placeholder:text-stone-400 text-stone-700 leading-relaxed font-light text-[15px]"
         ></textarea>
 
@@ -177,7 +177,7 @@ export function DescriptionInput({ value, onChange, photos = [], onPhotosChange 
       )}
 
       <p className="text-xs text-stone-400 mt-3 font-light">
-        {hasPhotoSupport ? 'Tip: include kitchen + bathroom screenshots for best accuracy' : 'Even a short description is enough to start'}
+        {hasPhotoSupport ? 'Tip: include kitchen, bathroom, exterior, basement, and mechanical-system photos when available.' : 'Even a short description is enough to start'}
       </p>
     </div>
   );

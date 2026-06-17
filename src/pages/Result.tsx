@@ -1,67 +1,38 @@
 import { useEffect, useState } from 'react';
 import type { AnalysisResult, BasicAnalysisResult } from '../types';
-import { useNavigate, useLocation } from 'react-router-dom';
+import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
 import { shareAnalysis } from '../lib/api';
 import { ReportScreen } from '../shared/report/ReportScreen';
 import { usePrivatePageSEO } from '../hooks/useSEOMeta';
 
-function loadFromSession() {
-  try {
-    const stored = sessionStorage.getItem('analysisResult');
-    if (!stored) return null;
-    return JSON.parse(stored);
-  } catch {
-    return null;
-  }
-}
-
 export function ResultPage() {
   const navigate = useNavigate();
-  const location = useLocation();
-  const { isAuthenticated, user } = useAuth();
+  const { isAuthenticated, creditsRemaining, signInWithGoogle } = useAuth();
   const [result, setResult] = useState<AnalysisResult | BasicAnalysisResult | null>(null);
+  const [shareState, setShareState] = useState<{
+    shareResult: { slug: string; shareUrl: string } | null;
+    copied: boolean;
+    isSharing: boolean;
+  }>({ shareResult: null, copied: false, isSharing: false });
 
   // 私密报告页：设置 noindex, nofollow
   usePrivatePageSEO();
 
-  // 主读取：location.search (rid) 变化时重新读取 sessionStorage
-  const rid = new URLSearchParams(location.search).get('rid');
-
   useEffect(() => {
-    const parsed = loadFromSession();
-    if (parsed) {
-      setResult(parsed);
-      const storedVersion = sessionStorage.getItem('analysisResultVersion') || '';
-      console.log('[HS RESULT LOAD]', {
-        rid,
-        storedVersion,
-        address: (parsed as any)?.listingInfo?.address ?? (parsed as any)?.address,
-        title: (parsed as any)?.listingInfo?.title ?? (parsed as any)?.title,
-      });
-    }
-  }, [rid]);
-
-  // 补充：同 tab 自定义事件（当 navigation 已经发生时）
-  useEffect(() => {
-    const handler = () => {
-      const parsed = loadFromSession();
-      if (parsed) {
-        setResult(parsed);
-        const storedVersion = sessionStorage.getItem('analysisResultVersion') || '';
-        console.log('[HS RESULT LOAD (event)]', {
-          rid: new URLSearchParams(location.search).get('rid'),
-          storedVersion,
-        });
+    const stored = sessionStorage.getItem('analysisResult');
+    if (stored) {
+      try {
+        setResult(JSON.parse(stored));
+      } catch {
+        // Invalid data
       }
-    };
-    window.addEventListener('homescope:analysis-result-updated', handler);
-    return () => window.removeEventListener('homescope:analysis-result-updated', handler);
-  }, [location.search]);
+    }
+  }, []);
 
   const handleBack = () => {
     sessionStorage.removeItem('analysisResult');
-    sessionStorage.removeItem('analysisResultVersion');
+    // 返回上一页，如果无法返回则跳转首页
     if (window.history.length > 1) {
       navigate(-1);
     } else {
@@ -73,8 +44,42 @@ export function ResultPage() {
     if (!analysisId) {
       throw new Error('Analysis ID not found');
     }
-    const shareResult = await shareAnalysis(analysisId);
-    return { slug: shareResult.slug, shareUrl: shareResult.shareUrl };
+    setShareState({ shareResult: null, isSharing: true, copied: false });
+    try {
+      const shareResult = await shareAnalysis(analysisId);
+      setShareState({ shareResult: { slug: shareResult.slug, shareUrl: shareResult.shareUrl }, copied: false, isSharing: false });
+      return { slug: shareResult.slug, shareUrl: shareResult.shareUrl };
+    } catch (err) {
+      setShareState(prev => ({ ...prev, isSharing: false }));
+      throw err;
+    }
+  };
+
+  // Handle upgrade from basic to full analysis
+  const handleUpgrade = () => {
+    if (!isAuthenticated) {
+      // Redirect to home page which has login flow
+      navigate('/?login=true');
+    } else if (creditsRemaining <= 0) {
+      // Redirect to account page for purchasing credits
+      navigate('/account');
+    }
+    // If authenticated with credits, the onUpgrade would need to trigger full analysis
+    // For web mode, this would typically redirect to home with full analysis request
+  };
+
+  // Sign-in handler for the upsell CTA
+  const handleSignIn = async () => {
+    try {
+      await signInWithGoogle();
+    } catch (error) {
+      console.error('Sign in failed:', error);
+    }
+  };
+
+  // Checkout handler for purchasing credits
+  const handleOpenCheckout = () => {
+    navigate('/account');
   };
 
   // For basic analysis, we don't have a direct ID from the session storage
@@ -108,8 +113,13 @@ export function ResultPage() {
       result={result}
       onBack={handleBack}
       onShare={isAuthenticated ? handleShare : undefined}
+      onUpgrade={handleUpgrade}
       analysisId={getAnalysisId()}
-      userId={user?.id}
+      shareState={shareState}
+      authStatus={isAuthenticated ? 'logged_in' : 'logged_out'}
+      credits={creditsRemaining}
+      onSignIn={handleSignIn}
+      onOpenCheckout={handleOpenCheckout}
     />
   );
 }

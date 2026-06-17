@@ -1,5 +1,5 @@
 // @ts-nocheck — chrome global type not in tsconfig.libs (pre-existing errors suppressed)
-import React, { createContext, useContext, useReducer, useEffect, useCallback, useRef } from 'react';
+import React, { createContext, useContext, useReducer, useEffect, useCallback } from 'react';
 import type {
   AppState,
   AppAction,
@@ -17,6 +17,16 @@ import { PING_TIMEOUT_MS, EXTRACTION_COOLDOWN_MS } from '../../shared/constants'
 import { ExtractionErrorCode, getUserErrorMessage } from '../../shared/errors';
 
 // ===== Helper: Inject listingInfo into analysis result =====
+//
+// IMPORTANT: This function MERGES frontend-extracted listingData with backend-returned
+// result data, rather than overwriting backend data with frontend data.
+//
+// Merge strategy:
+// - Backend result has higher priority for ALL fields except the ones that need
+//   to be refreshed from the live page (e.g. current URL, session-specific data).
+// - Frontend listingData provides fallback values only when backend doesn't have them.
+// - For images: prefer backend's analysis images > frontend's thumbnail images.
+//
 function isV2Data(data: ListingData | ListingDataV2 | null): data is ListingDataV2 {
   // V2: 有 listingUrl 或同时有 images 和 source
   // V1: 没有 listingUrl，有 source 但没有 images
@@ -30,89 +40,165 @@ function isV2Data(data: ListingData | ListingDataV2 | null): data is ListingData
   return false;
 }
 
-/**
- * Enrich an analysis result with listing images from listingData.
- * Writes images to ALL possible field names so pickFirstImage() can find them
- * regardless of which path the result arrived through:
- *   - result.images           (top-level array, first-image-only for Hero compat)
- *   - result.imageUrls        (top-level full array)
- *   - result.coverImageUrl    (top-level single string)
- *   - result.listingInfo.images        (nested full array)
- *   - result.listingInfo.imageUrls     (nested full array)
- *   - result.listingInfo.coverImageUrl (nested single string)
- *
- * All callers (submitAnalysis basic, pollAnalysisStatus full) MUST route
- * through this function so the image fields are always populated.
- */
-function enrichResultWithListingData(result: AnalysisResult, listingData: ListingData | ListingDataV2 | null): AnalysisResult {
+function injectListingInfo(result: AnalysisResult, listingData: ListingData | ListingDataV2 | null): AnalysisResult {
+  // If no frontend listingData, return result as-is
   if (!listingData) return result;
 
   const isV2 = isV2Data(listingData);
 
-  // Canonical imageUrls array — use this as the single source of truth
-  const imageUrls: string[] = isV2
-    ? (((listingData as ListingDataV2).imageUrls?.length ?? 0) > 0 ? (listingData as ListingDataV2).imageUrls! : [])
-    : (((listingData as ListingData).imageUrls?.length ?? 0) > 0 ? (listingData as ListingData).imageUrls! : []);
-
-  const firstImageUrl: string | null = imageUrls.length > 0 ? imageUrls[0] : null;
-
-  // Build listingInfo with all image fields
-  const listingInfo: ListingInfo = {};
-
+  // Get the first frontend image URL (thumbnail, lower priority)
+  let frontendFirstImageUrl: string | null = null;
   if (isV2) {
-    const v2 = listingData as ListingDataV2;
-    listingInfo.title = v2.title || null;
-    listingInfo.address = v2.address || null;
-    listingInfo.price = v2.price || null;
-    listingInfo.priceAmount = v2.priceAmount || null;
-    listingInfo.bedrooms = v2.bedrooms || null;
-    listingInfo.bathrooms = v2.bathrooms || null;
-    listingInfo.parking = v2.parking || null;
-    listingInfo.coverImageUrl = firstImageUrl;
-    listingInfo.images = imageUrls.length > 0 ? imageUrls : null;
-    listingInfo.imageUrls = imageUrls.length > 0 ? imageUrls : null;
-    // US Sale specific fields
-    listingInfo.sqft = (v2 as Record<string, unknown>).sqft ?? (v2 as Record<string, unknown>).floorArea ?? null;
-    listingInfo.propertyType = (v2 as Record<string, unknown>).propertyType ?? (v2 as Record<string, unknown>).homeType ?? null;
+    frontendFirstImageUrl = ((listingData as ListingDataV2).imageUrls?.length ?? 0) > 0
+      ? (listingData as ListingDataV2).imageUrls![0]
+      : null;
   } else {
-    const v1 = listingData as ListingData;
-    listingInfo.title = v1.title || null;
-    listingInfo.address = v1.address || null;
-    listingInfo.price = v1.priceText || v1.price || null;
-    listingInfo.bedrooms = v1.bedrooms ?? null;
-    listingInfo.bathrooms = v1.bathrooms ?? null;
-    listingInfo.parking = v1.parking ?? null;
-    listingInfo.coverImageUrl = firstImageUrl;
-    listingInfo.images = imageUrls.length > 0 ? imageUrls : null;
-    listingInfo.imageUrls = imageUrls.length > 0 ? imageUrls : null;
-    // US Sale specific fields
-    listingInfo.sqft = (v1 as Record<string, unknown>).sqft ?? null;
-    listingInfo.propertyType = (v1 as Record<string, unknown>).propertyType ?? null;
+    frontendFirstImageUrl = ((listingData as ListingData).imageUrls?.length ?? 0) > 0
+      ? (listingData as ListingData).imageUrls![0]
+      : null;
   }
 
-  // Strip null values from listingInfo
-  const cleanListingInfo: ListingInfo = {};
-  for (const [key, value] of Object.entries(listingInfo)) {
-    if (value != null) {
-      (cleanListingInfo as Record<string, unknown>)[key] = value;
+  // Get backend's existing listingInfo (from analysis result)
+  const backendListingInfo = result?.listingInfo as Record<string, unknown> | null;
+  const backendHasImages = Array.isArray(backendListingInfo?.images) && (backendListingInfo.images as unknown[]).length > 0;
+  const backendFirstImage = backendHasImages
+    ? (backendListingInfo!.images as string[])[0]
+    : (backendListingInfo?.coverImageUrl as string | undefined);
+
+  // Merge listingInfo: backend takes priority, frontend provides fallback
+  const mergedListingInfo: ListingInfo = {};
+
+  // Helper to get value from merged sources (backend first, then frontend fallback)
+  const getMergedString = (
+    field: keyof ListingInfo,
+    frontendValue: unknown
+  ): string | null => {
+    // Backend first (analysis result has authoritative data)
+    const backendValue = backendListingInfo?.[field];
+    if (backendValue != null) {
+      if (typeof backendValue === 'string' && backendValue.trim()) return backendValue.trim();
+      if (backendValue != null && String(backendValue).trim()) return String(backendValue).trim();
     }
+    // Frontend fallback
+    if (frontendValue != null) {
+      if (typeof frontendValue === 'string' && frontendValue.trim()) return frontendValue.trim();
+      if (String(frontendValue).trim()) return String(frontendValue).trim();
+    }
+    return null;
+  };
+
+  const getMergedNumber = (
+    field: keyof ListingInfo,
+    frontendValue: unknown
+  ): number | null => {
+    // Backend first (analysis result has authoritative data)
+    const backendValue = backendListingInfo?.[field];
+    if (backendValue != null) {
+      if (typeof backendValue === 'number') return backendValue;
+    }
+    // Frontend fallback
+    if (frontendValue != null) {
+      if (typeof frontendValue === 'number') return frontendValue;
+      const parsed = parseFloat(String(frontendValue));
+      if (!isNaN(parsed)) return parsed;
+    }
+    return null;
+  };
+
+  // Get frontend values based on V1/V2 format
+  const getFrontendString = (field: keyof ListingInfo): string | null => {
+    if (isV2) {
+      const v = (listingData as ListingDataV2)[field];
+      if (typeof v === 'string' && v.trim()) return v.trim();
+      return null;
+    } else {
+      // V1 format: price uses priceText field
+      if (field === 'price') {
+        const v = (listingData as ListingData).priceText || (listingData as ListingData).price;
+        if (typeof v === 'string' && v.trim()) return v.trim();
+        return null;
+      }
+      const v = (listingData as ListingData)[field];
+      if (typeof v === 'string' && v.trim()) return v.trim();
+      return null;
+    }
+  };
+
+  const getFrontendNumber = (field: keyof ListingInfo): number | null => {
+    if (isV2) {
+      const v = (listingData as ListingDataV2)[field];
+      if (typeof v === 'number') return v;
+      return null;
+    } else {
+      const v = (listingData as ListingData)[field];
+      if (typeof v === 'number') return v;
+      return null;
+    }
+  };
+
+  // Build merged listingInfo — backend values take priority, frontend provides fallback
+  const title = getMergedString('title', getFrontendString('title'));
+  const address = getMergedString('address', getFrontendString('address'));
+  const price = getMergedString('price', getFrontendString('price'));
+  const priceAmount = getMergedNumber('priceAmount', getFrontendNumber('priceAmount'));
+  const bedrooms = getMergedNumber('bedrooms', getFrontendNumber('bedrooms'));
+  const bathrooms = getMergedNumber('bathrooms', getFrontendNumber('bathrooms'));
+  const parking = getMergedNumber('parking', getFrontendNumber('parking'));
+  const sqft = getMergedNumber('sqft', getFrontendNumber('sqft'));
+  const propertyType = getMergedString('propertyType', getFrontendString('propertyType'));
+  const yearBuilt = getMergedNumber('yearBuilt', getFrontendNumber('yearBuilt'));
+  const annualTax = getMergedString('annualTax', getFrontendString('annualTax'));
+  const floodZone = getMergedString('floodZone', getFrontendString('floodZone'));
+  const heating = getMergedString('heating', getFrontendString('heating'));
+  const cooling = getMergedString('cooling', getFrontendString('cooling'));
+  const basement = getMergedString('basement', getFrontendString('basement'));
+
+  // Image: prefer backend (analysis images) > frontend (thumbnails)
+  // Backend first image comes from analysis, frontend is just a fallback
+  const effectiveCoverImageUrl = backendFirstImage ?? frontendFirstImageUrl ?? null;
+
+  // Backend's images array (from analysis) is more valuable than frontend's
+  // Only copy frontend images if backend doesn't have any
+  const backendImages = backendListingInfo?.images as string[] | undefined;
+  const frontendImages = frontendFirstImageUrl ? [frontendFirstImageUrl] : [];
+
+  if (title != null) mergedListingInfo.title = title;
+  if (address != null) mergedListingInfo.address = address;
+  if (price != null) mergedListingInfo.price = price;
+  if (priceAmount != null) mergedListingInfo.priceAmount = priceAmount;
+  if (bedrooms != null) mergedListingInfo.bedrooms = bedrooms;
+  if (bathrooms != null) mergedListingInfo.bathrooms = bathrooms;
+  if (parking != null) mergedListingInfo.parking = parking;
+  if (sqft != null) mergedListingInfo.sqft = sqft;
+  if (propertyType != null) mergedListingInfo.propertyType = propertyType;
+  if (yearBuilt != null) mergedListingInfo.yearBuilt = yearBuilt;
+  if (annualTax != null) mergedListingInfo.annualTax = annualTax;
+  if (floodZone != null) mergedListingInfo.floodZone = floodZone;
+  if (heating != null) mergedListingInfo.heating = heating;
+  if (cooling != null) mergedListingInfo.cooling = cooling;
+  if (basement != null) mergedListingInfo.basement = basement;
+  if (effectiveCoverImageUrl != null) mergedListingInfo.coverImageUrl = effectiveCoverImageUrl;
+
+  // Images: use backend images if available, otherwise use frontend images
+  if (backendImages?.length) {
+    mergedListingInfo.images = backendImages;
+  } else if (frontendImages.length) {
+    mergedListingInfo.images = frontendImages;
   }
 
-  // Merge into result — write ALL image field variants
-  return {
-    ...result,
-    // Top-level image fields
-    images: imageUrls.length > 0 ? imageUrls : (result as any).images ?? null,
-    imageUrls: imageUrls.length > 0 ? imageUrls : (result as any).imageUrls ?? null,
-    coverImageUrl: firstImageUrl ?? (result as any).coverImageUrl ?? null,
-    // Nested listingInfo (covers HeroSection, pickFirstImage fallback, ListingSummary)
-    listingInfo: Object.keys(cleanListingInfo).length > 0 ? cleanListingInfo : null,
-  };
-}
+  // Inject top-level images array for pickFirstImage() fallback
+  // Use backend images (more reliable from analysis) or frontend as fallback
+  const resultWithImages = { ...result } as AnalysisResult & { images?: string[] };
+  if (backendImages?.length) {
+    resultWithImages.images = backendImages;
+  } else if (frontendFirstImageUrl) {
+    resultWithImages.images = [frontendFirstImageUrl];
+  }
 
-// Alias for backwards compatibility
-function injectListingInfo(result: AnalysisResult, listingData: ListingData | ListingDataV2 | null): AnalysisResult {
-  return enrichResultWithListingData(result, listingData);
+  return {
+    ...resultWithImages,
+    listingInfo: Object.keys(mergedListingInfo).length > 0 ? mergedListingInfo : null,
+  };
 }
 
 // ===== URL Guard Helpers =====
@@ -183,16 +269,29 @@ interface BasicSyncResult {
 function convertBasicToFullResult(basicResult: BasicSyncResult): AnalysisResult {
   // Check if this is the new backend format (has overallScore)
   if (basicResult.overallScore !== undefined) {
-    // New backend format - verdict is already normalized by backend.
-    // Do NOT re-map it here — that would reintroduce inconsistencies.
-    // The backend enforces: score >= 80 -> Enough to Review, etc.
-    const overallScore = basicResult.overallScore || 50;
-    const verdict = basicResult.verdict || 'Need More Evidence';
+    // New backend format - direct mapping
+    const verdictMap: Record<string, AnalysisResult['verdict']> = {
+      'Strong Buy': 'Worth Inspecting',
+      'Consider Carefully': 'Need More Evidence',
+      'Probably Skip': 'Likely Overpriced / Risky',
+    };
 
-    // Calculate priority based on score (aligned with backend verdict thresholds)
+    const priorityMap: Record<string, 'HIGH' | 'MEDIUM' | 'LOW'> = {
+      'Worth Inspecting': 'HIGH',
+      'Need More Evidence': 'MEDIUM',
+      'Probably Skip': 'LOW',
+    };
+
+    const rawVerdict = basicResult.verdict || '';
+    // New Basic v2 verdict values are not in the old map; pass them through as-is.
+    // Only apply the old legacy mapping for the three original values.
+    const verdict = verdictMap[rawVerdict] ?? (rawVerdict || 'Need More Evidence');
+    const overallScore = basicResult.overallScore || 50;
+
+    // Calculate priority based on score
     let priority: 'HIGH' | 'MEDIUM' | 'LOW' = 'MEDIUM';
-    if (overallScore >= 80) priority = 'HIGH';
-    else if (overallScore < 40) priority = 'LOW';
+    if (overallScore >= 65) priority = 'HIGH';
+    else if (overallScore < 45) priority = 'LOW';
 
     const result: AnalysisResult = {
       reportMode: basicResult.reportMode || 'rent',
@@ -225,12 +324,13 @@ function convertBasicToFullResult(basicResult: BasicSyncResult): AnalysisResult 
       'market', 'source', 'listingUrl', 'sourceDomain', 'pros', 'cons',
       'price_assessment', 'investment_potential',
       'carrying_costs', 'maintenance_risk', 'layout_fit', 'listing_language_reality_check',
-      'neighborhood_lifestyle', 'legal_compliance', 'environmental_risk',
+      'neighborhood_lifestyle', 'legal_compliance',
       'data_gaps', 'questions_to_ask', 'recommendation', 'property_snapshot',
       'room_by_room',
-      // Basic-mode specific fields
-      'evidence_score', 'bottom_line', 'what_we_know', 'whats_missing',
-      'top_3_things_to_check', 'upsell_cta',
+      // US Basic v2 schema fields
+      'whats_missing', 'top_3_things_to_check',
+      'what_we_know', 'evidence_score', 'bottom_line', 'upsell_cta',
+      'listing_signals', 'questions_to_ask', 'verdict',
     ];
     for (const field of passthroughFields) {
       if (field in basicResult) {
@@ -305,16 +405,15 @@ const initialState: AppState = {
   analysisProgress: 0,
   analysisError: null,
   analysisResult: null,
-  listingFingerprint: null,
   history: [],
   historyLoading: false,
   viewingHistoryId: null,
   currentView: 'home',
   cooldownEndsAt: null,
-  analysisType: 'full',
   extractionCached: false,
   lastExtractedUrl: null,
   sourceTabId: null,
+  currentAnalysisType: 'basic',
 };
 
 // ===== Reducer =====
@@ -366,10 +465,6 @@ function appReducer(state: AppState, action: AppAction): AppState {
     case 'SET_CURRENT_VIEW':
       return { ...state, currentView: action.view };
 
-    case 'SET_ANALYSIS_TYPE':
-      console.log('[DEBUG store reducer] SET_ANALYSIS_TYPE:', action.analysisType);
-      return { ...state, analysisType: action.analysisType };
-
     case 'SET_PAGE_STATE':
       return { ...state, pageState: action.pageState };
 
@@ -395,6 +490,9 @@ function appReducer(state: AppState, action: AppAction): AppState {
     case 'SET_SOURCE_TAB_ID':
       return { ...state, sourceTabId: action.sourceTabId };
 
+    case 'SET_CURRENT_ANALYSIS_TYPE':
+      return { ...state, currentAnalysisType: action.analysisType };
+
     case 'RESET_ANALYSIS':
       return {
         ...state,
@@ -402,14 +500,9 @@ function appReducer(state: AppState, action: AppAction): AppState {
         analysisProgress: 0,
         analysisError: null,
         analysisResult: null,
-        listingFingerprint: null,
         viewingHistoryId: null,
-        analysisType: 'full',
         // Do NOT reset cooldownEndsAt, extractionCached, lastExtractedUrl
       };
-
-    case 'SET_LISTING_FINGERPRINT':
-      return { ...state, listingFingerprint: action.fingerprint };
 
     default:
       return state;
@@ -424,7 +517,7 @@ interface AppContextValue {
   actions: {
     refreshPageData: () => Promise<void>;
     refreshAll: () => Promise<void>;
-    startAnalysis: (options?: { bypassCache?: boolean; analysisType?: 'basic' | 'full' }) => Promise<void>;
+    startAnalysis: (options?: { bypassCache?: boolean }) => Promise<void>;
     retryAnalysis: () => Promise<void>;
     refreshPhotos: () => Promise<void>;
     logout: () => Promise<void>;
@@ -436,7 +529,6 @@ interface AppContextValue {
     sendMagicLink: (email: string) => Promise<{ success: boolean; error?: string }>;
     initiateGoogleOAuth: () => Promise<{ success: boolean; error?: string }>;
     shareAnalysis: (analysisId: string) => Promise<{ slug: string; shareUrl: string }>;
-    upgradeToFull: () => Promise<void>;
   };
 }
 
@@ -446,13 +538,29 @@ const AppContext = createContext<AppContextValue | null>(null);
 
 const noop = (..._args: unknown[]) => { if (_args.length) console.warn('[ExtApp]', ..._args); };
 
-function sendMessage<T = unknown>(message: Record<string, unknown>): Promise<T> {
-  return new Promise((resolve, reject) => {
+function sendMessage<T = unknown>(message: Record<string, unknown>, timeoutMs = 30000): Promise<T | undefined> {
+  return new Promise((resolve) => {
+    let settled = false;
+    const resolveOnce = (value: T | undefined) => {
+      if (settled) return;
+      settled = true;
+      resolve(value);
+    };
+
+    const timer = setTimeout(() => {
+      settled = true;
+      noop('[ExtApp] sendMessage: TIMEOUT after', timeoutMs, 'ms for action:', message.action);
+      resolveOnce(undefined);
+    }, timeoutMs);
+
     chrome.runtime.sendMessage(message, (response) => {
+      clearTimeout(timer);
+      if (settled) return;
       if (chrome.runtime.lastError) {
-        reject(new Error(chrome.runtime.lastError.message));
+        noop('[ExtApp] sendMessage: lastError =', chrome.runtime.lastError.message, 'for action:', message.action);
+        resolveOnce(undefined);
       } else {
-        resolve(response as T);
+        resolveOnce(response as T);
       }
     });
   });
@@ -486,11 +594,62 @@ async function sendMessageWithTimeout<T>(
   });
 }
 
+const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
+
+// ── Dedup: throttle get_user_data calls from the sidepanel ──
+// Background token refresh on every getAuth() call was creating a feedback loop
+// (refresh → save → broadcast → sidepanel refetch → refresh ...). Together with
+// the JWT exp check in background.js, this sidepanel-side throttle provides
+// defense in depth: even if multiple useEffects re-fire, we only hit the
+// background at most once per USER_DATA_DEDUPE_MS.
+const USER_DATA_DEDUPE_MS = 5_000;
+let _lastUserDataFetchAt = 0;
+let _userDataInFlight: Promise<{ status: string; data?: { credits_remaining: number } } | undefined> | null = null;
+
+function fetchUserDataDeduped(): Promise<{ status: string; data?: { credits_remaining: number } } | undefined> {
+  const now = Date.now();
+  if (_userDataInFlight) {
+    // Reuse the in-flight request to avoid parallel calls
+    return _userDataInFlight;
+  }
+  if (now - _lastUserDataFetchAt < USER_DATA_DEDUPE_MS) {
+    // Throttled — return undefined so callers treat as "skip this time"
+    return Promise.resolve(undefined);
+  }
+  _lastUserDataFetchAt = now;
+  _userDataInFlight = sendMessage<{ status: string; data?: { credits_remaining: number } }>({ action: 'get_user_data' })
+    .finally(() => { _userDataInFlight = null; });
+  return _userDataInFlight;
+}
+
 // ── Shared extraction result type ──
 interface ExtractionResult {
   data: ListingData | ListingDataV2 | null;
   error: string | null;
   detection: PropertyDetection | null;
+}
+
+/**
+ * Wait for content script to be ready with exponential backoff.
+ * Retries up to `retries` times with increasing delay (200ms + i*200ms).
+ */
+async function waitForContentReady(tabId: number, retries = 5): Promise<boolean> {
+  for (let i = 0; i < retries; i++) {
+    try {
+      const result = await sendMessageWithTimeout<{ ready: boolean }>(
+        { action: 'PONG' },
+        tabId,
+        1000
+      );
+      if (result.success && result.data?.ready) {
+        return true;
+      }
+    } catch {
+      // Not ready yet
+    }
+    await new Promise(r => setTimeout(r, 200 + i * 200));
+  }
+  return false;
 }
 
 /**
@@ -539,7 +698,7 @@ async function ensureContentScriptThenExtractListing(
     noop('[ExtApp] PING exception:', err);
   }
 
-  // Step 2: Inject if needed, then retry PING with backoff until ready
+  // Step 2: Inject if needed (only if PING failed)
   if (!pingOk) {
     try {
       noop('[ExtApp] Content script not responding, attempting injection...');
@@ -549,43 +708,22 @@ async function ensureContentScriptThenExtractListing(
       });
       noop('[ExtApp] content.js injected successfully');
 
-      // Retry PING with exponential backoff: [200, 400, 800, 1200, 2000, 3000]ms
-      const delays = [200, 400, 800, 1200, 2000, 3000];
-      let reconnected = false;
-      for (let i = 0; i < delays.length; i++) {
-        await new Promise(r => setTimeout(r, delays[i]));
-        try {
-          const pongResult = await sendMessageWithTimeout<{ ready: boolean }>(
-            { action: 'PONG' },
-            tabId,
-            1500  // generous timeout per attempt
-          );
-          if (pongResult.success && pongResult.data?.ready === true) {
-            reconnected = true;
-            const totalMs = delays.slice(0, i + 1).reduce((a, b) => a + b, 0);
-            noop(`[ExtApp] PING after injection success after ${totalMs}ms (attempt ${i + 1})`);
-            break;
-          } else {
-            noop(`[ExtApp] PING attempt ${i + 1} returned but not ready: ${pongResult.error || 'no data'}`);
-          }
-        } catch (err: any) {
-          noop(`[ExtApp] PING attempt ${i + 1} exception: ${err.message}`);
-        }
-      }
-
-      // CRITICAL: if still not ready, do NOT continue — return error
-      if (!reconnected) {
-        noop('[ExtApp] Content script injected but NOT ready after all retries. Returning error.');
+      // Wait for content script to initialize with backoff retry
+      const ready = await waitForContentReady(tabId, 5);
+      if (!ready) {
+        noop('[ExtApp] Content script may not be fully loaded after injection');
         return {
           data: null,
-          error: 'Content script injected but not responding. Please refresh the page and try again.',
+          error: 'Content script not ready after injection. Please refresh the page and try again.',
           detection: null,
         };
       }
     } catch (err: any) {
+      // 仅对可注入页面打印严重错误；chrome:// 等页面预期失败，不打印
       if (isInjectableUrl(tabUrl)) {
         noop('[ExtApp] executeScript failed:', err.message, err);
       }
+      // 注入失败，返回明确错误
       return {
         data: null,
         error: `Failed to inject content script: ${err.message}. Please refresh the page.`,
@@ -678,6 +816,9 @@ async function ensureContentScriptThenExtractListing(
  * Used by startAnalysis (no EXTRACT_LISTING call needed there).
  */
 async function ensureContentScriptLoaded(tabId: number): Promise<boolean> {
+  const PING_TIMEOUT_MS = 3000;  // 3 秒超时，给繁忙页面足够时间
+  const MAX_RETRIES = 3;
+
   // 获取 tab URL 用于错误分类
   let tabUrl: string | undefined;
   try {
@@ -691,56 +832,67 @@ async function ensureContentScriptLoaded(tabId: number): Promise<boolean> {
   if (!isInjectableUrl(tabUrl)) return false;
   if (!isSupportedPropertyUrl(tabUrl)) return false;
 
-  // Step 1: Quick PING to see if already loaded
-  let pingOk = false;
-  try {
-    const pongResult = await sendMessageWithTimeout<{ ready: boolean; instanceId?: string }>(
-      { action: 'PONG' },
-      tabId,
-      1500
-    );
-    pingOk = pongResult.success && pongResult.data?.ready === true;
-    if (pingOk) return true;
-  } catch (_) {
-    // not ready yet
-  }
+  for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
+    let pingOk = false;
+    let lastError = '';
 
-  // Step 2: Inject immediately
-  try {
-    noop('[ExtApp] Content script not responding, injecting...');
-    await chrome.scripting.executeScript({
-      target: { tabId },
-      files: ['content.js'],
-    });
-    noop('[ExtApp] content.js injected successfully');
-  } catch (err: any) {
-    if (isInjectableUrl(tabUrl)) {
-      noop('[ExtApp] executeScript failed:', err.message);
-    }
-    return false;
-  }
-
-  // Step 3: Retry PING with backoff until ready
-  const delays = [200, 400, 800, 1200, 2000, 3000];
-  for (let i = 0; i < delays.length; i++) {
-    await new Promise(r => setTimeout(r, delays[i]));
     try {
-      const pongResult = await sendMessageWithTimeout<{ ready: boolean }>(
+      const pongResult = await sendMessageWithTimeout<{ ready: boolean; instanceId?: string }>(
         { action: 'PONG' },
         tabId,
-        1500
+        PING_TIMEOUT_MS
       );
-      if (pongResult.success && pongResult.data?.ready === true) {
-        const totalMs = delays.slice(0, i + 1).reduce((a, b) => a + b, 0);
-        noop(`[ExtApp] PING after injection success after ${totalMs}ms (attempt ${i + 1})`);
+      pingOk = pongResult.success && pongResult.data?.ready === true;
+      if (pingOk) {
+        if (attempt > 1) {
+          noop(`[ExtApp] PING succeeded on attempt ${attempt}`);
+        }
         return true;
       }
-    } catch (_) {
-      // not ready yet
+      lastError = pongResult.error || 'PONG returned !ready';
+    } catch (err: any) {
+      lastError = err?.message || String(err);
     }
+
+      noop(`[ExtApp] PING attempt ${attempt}/${MAX_RETRIES} failed: ${lastError}`);
+
+    // 最后一次尝试失败后才注入
+    if (attempt === MAX_RETRIES) {
+      try {
+        noop('[ExtApp] Content script not responding, injecting...');
+        await chrome.scripting.executeScript({
+          target: { tabId },
+          files: ['content.js'],
+        });
+        noop('[ExtApp] content.js injected successfully');
+
+        // 注入后验证
+        const verifyResult = await sendMessageWithTimeout<{ ready: boolean }>(
+          { action: 'PONG' },
+          tabId,
+          PING_TIMEOUT_MS
+        );
+        pingOk = verifyResult.success && verifyResult.data?.ready === true;
+
+        if (pingOk) {
+          noop('[ExtApp] Content script ready after injection');
+          return true;
+        }
+        noop('[ExtApp] Content script injected but not ready');
+        return false;
+      } catch (err: any) {
+        // 非可注入页面的 executeScript 失败预期，不需要警告
+        if (isInjectableUrl(tabUrl)) {
+          noop('[ExtApp] executeScript failed:', err?.message || String(err));
+        }
+        return false;
+      }
+    }
+
+    // 短暂等待后再重试
+    await new Promise(resolve => setTimeout(resolve, 500));
   }
 
-  noop('[ExtApp] Content script injected but NOT ready after all retries');
   return false;
 }
 
@@ -840,22 +992,15 @@ async function initializePageData(dispatch: React.Dispatch<AppAction>) {
 export function AppProvider({ children }: { children: React.ReactNode }) {
   const [state, dispatch] = useReducer(appReducer, initialState);
 
-  // Re-entry guard: prevents concurrent startAnalysis calls (e.g. from multiple
-  // useEffect triggers + React.StrictMode double-invoke during development).
-  const analysisInFlightRef = useRef(false);
-
   // Destructure frequently-used state slices at the top level so they are
   // always up-to-date in callbacks (avoids stale-closure bugs in useCallback).
   const { listingData, analysisResult } = state;
 
   const refreshUserDataAndHistory = useCallback(async (user: ExtUser) => {
     try {
-      const userData = await sendMessage<{
-        status: string;
-        data?: { credits_remaining: number };
-      }>({ action: 'get_user_data' });
+      const userData = await fetchUserDataDeduped();
 
-      if (userData.status === 'success' && userData.data) {
+      if (userData && userData.status === 'success' && userData.data) {
         dispatch({
           type: 'SET_AUTH_STATUS',
           authStatus: 'logged_in',
@@ -897,32 +1042,35 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
 
   // ---- 初始化：检查认证状态 ----
   useEffect(() => {
-    const checkAuth = async () => {
-      // Prime the service worker on mount so it's ready for critical operations.
-      // This prevents cold-start timeouts on the first analyze click.
-      try {
-        await sendMessage<{ ok: boolean }>({ action: 'KEEPALIVE' });
-      } catch (_) {}
+    // Guard: skip if already logged in (prevents double dispatch when
+    // refreshUserDataAndHistory also updates authStatus inside this same effect).
+    if (state.authStatus === 'logged_in') return;
 
+    let cancelled = false;
+    const checkAuth = async () => {
       try {
         const authResult = await sendMessage<{
           state: string;
           user?: ExtUser;
         }>({ action: 'check_auth_status' });
 
+        if (cancelled) return;
         if (authResult.state === 'authenticated' && authResult.user) {
           await refreshUserDataAndHistory(authResult.user);
-        } else {
+        } else if (!cancelled) {
           dispatch({ type: 'SET_AUTH_STATUS', authStatus: 'logged_out' });
         }
       } catch (err) {
-        noop('[ExtApp] Auth check failed:', err);
-        dispatch({ type: 'SET_AUTH_STATUS', authStatus: 'logged_out' });
+        if (!cancelled) {
+          noop('[ExtApp] Auth check failed:', err);
+          dispatch({ type: 'SET_AUTH_STATUS', authStatus: 'logged_out' });
+        }
       }
     };
 
     checkAuth();
-  }, [refreshUserDataAndHistory]);
+    return () => { cancelled = true; };
+  }, [state.authStatus, refreshUserDataAndHistory]);
 
   // ---- 初始化：接入页面数据（Layer A: Ping -> 运行时注入 -> 获取状态）----
   useEffect(() => {
@@ -971,12 +1119,32 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     return () => chrome.runtime.onMessage.removeListener(handleMessage);
   }, [refreshUserDataAndHistory]);
 
-  // ---- Tab 切换 / URL 变化时自动轻量读取（仅在已登录时生效）----
+  // ── Tab 切换 / URL 变化时自动轻量读取（仅在已登录时生效）----
   useEffect(() => {
     if (state.authStatus !== 'logged_in') return;
 
     let currentWindowId: number | null = null;
     let debounceTimer: ReturnType<typeof setTimeout> | null = null;
+
+    // ── URL 标准化辅助函数 ─────────────────────────────────────
+    // 去除跟踪参数和 hash，用于比较两个 URL 是否指向同一页面
+    function normalizeUrlForComparison(url: string): string {
+      if (!url) return '';
+      try {
+        const parsed = new URL(url);
+        // Strip common tracking parameters
+        parsed.searchParams.delete('utm_source');
+        parsed.searchParams.delete('utm_medium');
+        parsed.searchParams.delete('utm_campaign');
+        parsed.searchParams.delete('ref');
+        parsed.searchParams.delete('source');
+        // Strip hash
+        parsed.hash = '';
+        return parsed.toString().toLowerCase();
+      } catch {
+        return url.toLowerCase();
+      }
+    }
 
     async function getCurrentWindowId() {
       try {
@@ -1018,6 +1186,22 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
 
           const pingResult = { url: activeTab.url, title: activeTab.title, readyState: activeTab.status };
           const result = await ensureContentScriptThenExtractListing(activeTab.id);
+
+          // ── URL 校验：防止陈旧数据显示 ─────────────────────────────
+          // 在搜索结果页→房源详情页切换时，content script 可能在旧页面运行
+          // 导致提取到陈旧数据。通过比对提取结果的 URL 与当前 tab URL 来检测
+          const extractedUrl = (result.data as any)?.listingUrl || (result.data as any)?.url || '';
+          const normalizedExtracted = normalizeUrlForComparison(extractedUrl);
+          const normalizedTab = normalizeUrlForComparison(activeTab.url);
+          if (extractedUrl && normalizedExtracted !== normalizedTab) {
+            noop('[ExtApp] URL mismatch detected, skipping stale data', {
+              extracted: extractedUrl,
+              current: activeTab.url,
+            });
+            // 不更新 listingData，保持当前显示的内容
+            return;
+          }
+
           // 静默更新：保持当前 analysisPhase 不变，仅更新卡片数据
           dispatchExtractionResult(dispatch, result, pingResult);
           // 更新 sourceTabId：用户切换到了新的房产页面
@@ -1088,15 +1272,12 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
 
     // 2. 刷新用户积分
     if (state.user) {
-      sendMessage<{
-        status: string;
-        data?: { credits_remaining: number };
-      }>({ action: 'get_user_data' }).then((userData) => {
+      fetchUserDataDeduped().then((userData) => {
         if (userData?.status === 'success' && userData.data) {
           dispatch({
             type: 'SET_AUTH_STATUS',
             authStatus: 'logged_in',
-            credits: userData.data.credits_remaining,
+            credits: userData.data!.credits_remaining,
           });
         }
       }).catch(() => {});
@@ -1112,28 +1293,6 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       }
     }).catch(() => {});
   }, [refreshPageData, state.user]);
-
-  // ── listingFingerprint: prevents stale cross-listing data from polluting results ──────────────
-  // Hash of (address + price + beds + baths + sqft + listingUrl).
-  // Any fingerprint change between analysis submission and result arrival triggers a discard.
-  function computeFingerprint(listingData: ListingData | ListingDataV2 | null): string {
-    if (!listingData) return '';
-    const key = [
-      (listingData as any).address || '',
-      (listingData as any).price || (listingData as any).priceText || '',
-      String((listingData as any).bedrooms ?? ''),
-      String((listingData as any).bathrooms ?? ''),
-      String((listingData as any).sqft ?? (listingData as any).floorArea ?? ''),
-      (listingData as any).listingUrl || (listingData as any).url || '',
-    ].join('|');
-    let hash = 0;
-    for (let i = 0; i < key.length; i++) {
-      const char = key.charCodeAt(i);
-      hash = ((hash << 5) - hash) + char;
-      hash = hash & hash;
-    }
-    return String(Math.abs(hash));
-  }
 
   /**
    * User-triggered analysis flow.
@@ -1151,37 +1310,17 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     const bypassCache = options?.bypassCache ?? false;
     const analysisType = options?.analysisType ?? 'full';
 
-    // Re-entry guard — prevents concurrent calls from multiple useEffect triggers
-    // and React.StrictMode double-invokes during development.
-    if (analysisInFlightRef.current) {
-      noop('[ExtApp] startAnalysis ignored: already in flight');
+    noop('[ExtApp] startAnalysis called:', { bypassCache, analysisType });
+
+    // Step 1: Check cooldown
+    const now = Date.now();
+    if (!bypassCache && state.cooldownEndsAt !== null && now < state.cooldownEndsAt) {
       return;
     }
-    analysisInFlightRef.current = true;
 
-    try {
-      noop('[ExtApp] startAnalysis called:', { bypassCache, analysisType });
-      noop('[Analysis] mode:', analysisType);
-      noop('[Analysis] requiresLogin:', analysisType === 'full');
-      noop('[Analysis] shouldProcessImages:', analysisType === 'full');
-
-      // Prime the service worker before critical operation to prevent cold-start timeout.
-      // Even if SW was terminated, this wakes it up before we start the async flow.
-      try {
-        await sendMessage<{ ok: boolean }>({ action: 'KEEPALIVE' });
-      } catch (_) {}
-
-      // Step 1: Check cooldown
-      const now = Date.now();
-      if (!bypassCache && state.cooldownEndsAt !== null && now < state.cooldownEndsAt) {
-        return;
-      }
-
-      console.log('[DEBUG store] about to dispatch SET_ANALYSIS_TYPE:', analysisType);
-      dispatch({ type: 'SET_ANALYSIS_TYPE', analysisType });
-      dispatch({ type: 'SET_ANALYSIS_PHASE', phase: 'preparing', error: null });
-      dispatch({ type: 'SET_ANALYSIS_RESULT', result: null });
-      dispatch({ type: 'SET_VIEWING_HISTORY', id: null });
+    dispatch({ type: 'SET_ANALYSIS_PHASE', phase: 'preparing', error: null });
+    dispatch({ type: 'SET_ANALYSIS_RESULT', result: null });
+    dispatch({ type: 'SET_VIEWING_HISTORY', id: null });
 
     // Step 1: Determine which tab to use for analysis
     // Prefer the stored source tab ID (captured when sidepanel first loaded),
@@ -1236,16 +1375,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       if (hasImages || hasValidDesc) {
         noop('[ExtApp] Cache HIT - valid:', { images: cached.imageUrls?.length, descLen: cached.description?.length });
         dispatch({ type: 'SET_ANALYSIS_PHASE', phase: 'sending_data' });
-
-        // Basic: strip images from cached data (never re-extract gallery)
-        const dataToSubmit = analysisType === 'basic'
-          ? { ...cached, imageUrls: [] }
-          : cached;
-
-        // Re-compute fingerprint for cached data — guards against stale cross-listing state
-        dispatch({ type: 'SET_LISTING_FINGERPRINT', fingerprint: computeFingerprint(dataToSubmit) });
-
-        await submitAnalysis(dataToSubmit, analysisType);
+        await submitAnalysis(cached, analysisType);
         return;
       }
 
@@ -1253,18 +1383,12 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       // Continue to force re-extraction
     }
 
-    // Step 3: Ensure content script is loaded — bail out if it fails
-    const scriptReady = await ensureContentScriptLoaded(tabId);
-    if (!scriptReady) {
-      noop('[ExtApp] startAnalysis: content script not ready after ensureContentScriptLoaded');
-      dispatch({ type: 'SET_ANALYSIS_PHASE', phase: 'error', error: 'Content script not ready. Please refresh the page and try again.' });
-      return;
-    }
+    // Step 3: Ensure content script is loaded (reuse shared helper)
+    await ensureContentScriptLoaded(tabId);
 
-    // Step 4: Extract listing data
-    // Basic: skip START_USER_EXTRACTION (no gallery, no image collection)
-    // Full: extract images via gallery/PhotoSwipe
+    // Step 4: Send START_USER_EXTRACTION
     dispatch({ type: 'SET_ANALYSIS_PHASE', phase: 'reading_page' });
+    dispatch({ type: 'SET_CURRENT_ANALYSIS_TYPE', analysisType });
 
     // Define the expected response structure from content script
     type ContentScriptResponse = {
@@ -1275,48 +1399,10 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       code?: string;
     };
 
-    // ── BASIC: lightweight text-only extraction ──────────────────────────────
-    if (analysisType === 'basic') {
-      noop('[ExtApp] startAnalysis: BASIC mode — skipping image extraction');
-
-      let extractResult: { success: boolean; data?: ContentScriptResponse; error?: string } | null = null;
-      try {
-        extractResult = await sendMessageWithTimeout<ContentScriptResponse>(
-          { action: 'EXTRACT_LISTING', includeGalleryImages: false },
-          tabId,
-          10000
-        );
-      } catch (err) {
-        noop('[ExtApp] startAnalysis: EXTRACT_LISTING threw:', err);
-      }
-
-      // Use whatever we got; fall back to empty data
-      const response = extractResult?.data;
-      const listingData: ListingData = {
-        description: response?.data?.description || '',
-        imageUrls: [],
-        title: response?.data?.title || '',
-        price: response?.data?.price || '',
-        address: response?.data?.address || '',
-        bedrooms: response?.data?.bedrooms,
-        bathrooms: response?.data?.bathrooms,
-        reportMode: response?.data?.reportMode || 'rent',
-        ...(response?.data && typeof response.data === 'object'
-          ? response.data
-          : {}),
-      };
-
-      dispatch({ type: 'SET_PROPERTY_STATUS', propertyStatus: 'detected', listingData, propertyDetection: response?.detection ?? null });
-      dispatch({ type: 'SET_LISTING_FINGERPRINT', fingerprint: computeFingerprint(listingData) });
-      await submitAnalysis(listingData, 'basic');
-      return;
-    }
-
-    // ── FULL: extract images via gallery ────────────────────────────────────
     let extractResult: { success: boolean; data?: ContentScriptResponse; error?: string } | null = null;
     try {
       extractResult = await sendMessageWithTimeout<ContentScriptResponse>(
-        { action: 'START_USER_EXTRACTION', bypassCache },
+        { action: 'START_USER_EXTRACTION', bypassCache, analysisType },
         tabId,
         60000  // 60秒，给图片多的页面足够时间
       );
@@ -1372,40 +1458,15 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       return;
     }
 
-    noop('[TRACE][BG_EXTRACTION_RESPONSE]', {
-      hasResponse: true,
-      hasData: !!response.data,
-      responseConfidence: response.detection?.canAnalyze,
-      dataConfidence: (listingData as any).confidence,
-      dataExtractionConfidence: (listingData as any).extractionConfidence,
-      dataPrice: (listingData as any).price,
-      dataAskingPrice: (listingData as any).askingPrice,
-      hasZillowFinancials: !!(listingData as any).zillowFinancials,
-      monthlyEstimate: (listingData as any).zillowFinancials?.monthlyPayment?.estimatedMonthlyPayment?.value,
-      // Commercial-grade image extraction metadata
-      imageExtractionStatus: (listingData as any).imageExtractionStatus,
-      imageExtractionExpectedCount: (listingData as any).imageExtractionExpectedCount,
-      imageExtractionCollectedCount: (listingData as any).imageExtractionCollectedCount,
-      imageExtractionGalleryType: (listingData as any).imageExtractionGalleryType,
-      imageExtractionExtractorUsed: (listingData as any).imageExtractionExtractorUsed,
-      imageExtractionFailureReason: (listingData as any).imageExtractionFailureReason,
-    });
-    noop('[ExtApp] startAnalysis: extraction successful, images:', (listingData as any).imageUrls?.length || 0, 'status:', (listingData as any).imageExtractionStatus, 'expected:', (listingData as any).imageExtractionExpectedCount);
+    noop('[ExtApp] startAnalysis: extraction successful, images:', (listingData as any).imageUrls?.length || (listingData as any).images?.length || 0);
 
     dispatch({ type: 'SET_PROPERTY_STATUS', propertyStatus: 'detected', listingData, propertyDetection: response.detection ?? null });
-
-    // Compute and store fingerprint immediately after extraction — guards against stale data
-    const fingerprint = computeFingerprint(listingData);
-    dispatch({ type: 'SET_LISTING_FINGERPRINT', fingerprint });
 
     // Mark URL as cached
     dispatch({ type: 'SET_EXTRACTION_CACHED', extractionCached: true, lastExtractedUrl: currentUrl });
 
     // Step 5: Submit to analyze API (passes analysisType)
     await submitAnalysis(listingData, analysisType);
-    } finally {
-      analysisInFlightRef.current = false;
-    }
   }, [state.cooldownEndsAt, state.lastExtractedUrl, state.extractionCached, state.listingData, state.sourceTabId]);
 
   /**
@@ -1414,10 +1475,12 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
    * This avoids Service Worker termination issues that caused sendResponse loss.
    */
   async function pollAnalysisStatus(analysisId: string) {
-    const POLL_INTERVAL_MS = 2000;
-    const MAX_POLL_MS = 120_000; // 2 minutes max for frontend polling
+    const POLL_INTERVAL_MS = 3000;
+    const MAX_POLL_MS = 180_000; // 3 minutes max for full analysis
+    const MAX_SW_RETRIES = 3; // Max consecutive SW unavailable retries before giving up
 
     const startTime = Date.now();
+    let swUnavailableCount = 0;
 
     while (Date.now() - startTime < MAX_POLL_MS) {
       try {
@@ -1432,20 +1495,26 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
           analysisId,
         });
 
-        if (statusResponse.status === 'done' && statusResponse.result) {
-          // Fingerprint mismatch guard — discard stale results from a different listing
-          const responseFingerprint = (statusResponse as any).listingFingerprint as string | null | undefined;
-          if (state.listingFingerprint && responseFingerprint && responseFingerprint !== state.listingFingerprint) {
-            console.warn('[ExtApp] pollAnalysisStatus: fingerprint mismatch, discarding stale result',
-              { expected: state.listingFingerprint, got: responseFingerprint });
+        // Guard: SW may be dead mid-poll
+        if (!statusResponse) {
+          swUnavailableCount++;
+          if (swUnavailableCount >= MAX_SW_RETRIES) {
+            // After multiple retries, assume analysis failed or is stuck
             dispatch({
               type: 'SET_ANALYSIS_PHASE',
               phase: 'error',
-              error: 'Analysis result is for a different property. Please re-analyse this listing.',
+              error: 'Connection lost. Please check history to see if analysis completed.',
             });
             return;
           }
+          await sleep(3000);
+          continue;
+        }
 
+        // Reset counter on successful response
+        swUnavailableCount = 0;
+
+        if (statusResponse.status === 'done' && statusResponse.result) {
           const resultWithListingInfo = injectListingInfo(statusResponse.result, state.listingData);
           // Override reportMode from API top-level field (source of truth from analyses table)
           const reportMode = (statusResponse as any).report_mode as string | undefined;
@@ -1461,17 +1530,14 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
           // Set 20s cooldown to prevent rapid re-triggers
           dispatch({ type: 'SET_COOLDOWN', cooldownEndsAt: Date.now() + EXTRACTION_COOLDOWN_MS });
 
-          // Refresh credits — only for logged-in users
+          // Refresh credits — only when logged in (full analysis requires auth)
           if (state.authStatus === 'logged_in') {
-            const userData = await sendMessage<{
-              status: string;
-              data?: { credits_remaining: number };
-            }>({ action: 'get_user_data' });
-            if (userData.status === 'success' && userData.data) {
+            const userData = await fetchUserDataDeduped();
+            if (userData && userData.status === 'success' && userData.data) {
               dispatch({ type: 'SET_AUTH_STATUS', authStatus: 'logged_in', credits: userData.data.credits_remaining });
             }
 
-            // Refresh history — only for logged-in users
+            // Refresh history so new analysis appears immediately
             sendMessage<{
               status: string;
               analyses?: AnalysisSummary[];
@@ -1495,8 +1561,6 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         }
 
         // Update progress based on backend stage
-        // Note: 'extracting' and 'image' are NOT included in collecting_photos because
-        // they incorrectly match backend stages like 'detecting_rooms' and 'extracting_strengths_and_issues'
         if (statusResponse.stage) {
           const stage = statusResponse.stage;
           if (stage.includes('uploading') || stage.includes('Reading')) {
@@ -1518,18 +1582,17 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
           }
         }
       } catch (err) {
-        noop('[ExtApp] pollAnalysisStatus: error —', err);
         // Continue polling despite errors
       }
 
-      await new Promise((resolve) => setTimeout(resolve, POLL_INTERVAL_MS));
+      await sleep(POLL_INTERVAL_MS);
     }
 
     // Timeout after max poll duration
     dispatch({
       type: 'SET_ANALYSIS_PHASE',
       phase: 'error',
-      error: 'Analysis timed out. Please check history later.',
+      error: 'Analysis timed out. Please check history to see if it completed.',
     });
   }
 
@@ -1545,90 +1608,95 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     if (analysisType === 'basic') {
       dispatch({ type: 'SET_ANALYSIS_PHASE', phase: 'analysing', error: null });
 
-      noop('[ExtApp] submitAnalysis (basic): sending to background', {
-        hasDescription: !!listingData.description,
-        descriptionLen: listingData.description?.length || 0,
-        descriptionPreview: listingData.description?.substring(0, 100),
-        hasTitle: !!listingData.title,
-        hasPrice: !!listingData.price,
-      });
+      // Dedup key: url + price uniquely identifies a listing + price combo
+      const dedupeKey = `${listingData?.url || listingData?.address || ''}::${listingData?.price || ''}`;
 
-      try {
-        // Send message to background to handle basic-sync API call (anonymous)
-        const response = await sendMessage<{
-          status: string;
-          result?: AnalysisResult;
-          error?: string;
-          analysisId?: string | null;
-        }>({
-          action: 'analyze_basic',
-          data: listingData,
+      // Timeout tiers: first attempt 120s (LLM may take 30-60s, backend can take up to ~90s)
+      const BASIC_TIMEOUT_MS = 120000;
+      const RETRY_TIMEOUT_MS = 120000;
+
+      // Helper: process API response and dispatch result/error
+      // Called for both the first attempt and any retry.
+      async function processBasicResponse(res, attempt) {
+        noop('[ExtApp] submitAnalysis (basic): received response after attempt', attempt, {
+          responseStatus: res?.status,
+          hasResult: !!res?.result,
+          hasError: !!res?.error,
+          error: res?.error,
+          hasAnalysisId: !!res?.analysisId,
         });
 
-        noop('[ExtApp] submitAnalysis (basic): received response', {
-          responseStatus: response.status,
-          hasResult: !!response.result,
-          hasError: !!response.error,
-          error: response.error,
-          hasAnalysisId: !!response.analysisId,
-        });
+        if (!res) {
+          if (attempt === 1) {
+            noop('[ExtApp] submitAnalysis (basic): attempt 1 timed out, retrying with dedupe key...');
+            const retryRes = await sendMessage<{
+              status: string;
+              result?: AnalysisResult;
+              error?: string;
+              analysisId?: string | null;
+            }>({ action: 'analyze_basic', data: listingData, _dedupeKey: dedupeKey }, RETRY_TIMEOUT_MS);
+            return processBasicResponse(retryRes, 2);
+          } else {
+            dispatch({ type: 'SET_ANALYSIS_PHASE', phase: 'error', error: 'Analysis timed out after retry. Please try again.' });
+            return;
+          }
+        }
 
-        // Basic-sync returns { status: 'done', result: ... }
-        const isSuccess = response.status === 'success' || response.status === 'done';
-        noop('[ExtApp] submitAnalysis (basic): checking success', {
-          responseStatus: response.status,
-          isSuccess,
-          hasResult: !!response.result,
-          error: response.error,
-        });
-        if (isSuccess && response.result) {
-          // Convert BasicAnalysisResult to AnalysisResult format for ResultCard compatibility
+        const isSuccess = res.status === 'success' || res.status === 'done';
+        if (isSuccess && res.result) {
           noop('[ExtApp] submitAnalysis (basic): converting to full result format...');
-          const fullResult = convertBasicToFullResult(response.result);
+          const fullResult = convertBasicToFullResult(res.result);
           noop('[ExtApp] submitAnalysis (basic): fullResult.overallScore:', fullResult.overallScore);
 
-          // Store analysisId if returned (indicates user is logged in and history record was created)
-          const analysisId = response.analysisId;
+          const analysisId = res.analysisId;
           if (analysisId) {
             noop('[ExtApp] submitAnalysis (basic): history record created, analysisId:', analysisId);
             fullResult.id = analysisId;
-            // Refresh history for logged-in users
-            sendMessage<{
-              status: string;
-              analyses?: AnalysisSummary[];
-            }>({ action: 'get_analysis_history', limit: 8, offset: 0 }).then((historyResponse) => {
-              if (historyResponse.status === 'success' && historyResponse.analyses) {
-                dispatch({ type: 'SET_HISTORY', history: historyResponse.analyses });
-              }
-            }).catch(() => {});
-          } else {
-            // 未登录 Guest：标记结果为 guest，不写入历史记录
-            noop('[ExtApp] submitAnalysis (basic): guest user — result marked as guest, no history');
-            (fullResult as any).isGuest = true;
+            // Only refresh history when logged in — guests have no history
+            if (state.authStatus === 'logged_in') {
+              sendMessage<{ status: string; analyses?: AnalysisSummary[] }>({ action: 'get_analysis_history', limit: 8, offset: 0 }).then((historyResponse) => {
+                if (historyResponse?.status === 'success' && historyResponse.analyses) {
+                  dispatch({ type: 'SET_HISTORY', history: historyResponse.analyses });
+                }
+              }).catch(() => {});
+            }
           }
 
-          // Inject listing info into result
-          noop('[ExtApp] submitAnalysis (basic): injecting listing info...');
           const resultWithListingInfo = injectListingInfo(fullResult, listingData);
-          noop('[ExtApp] submitAnalysis (basic): resultWithListingInfo.listingInfo:', resultWithListingInfo.listingInfo);
           dispatch({ type: 'SET_ANALYSIS_RESULT', result: resultWithListingInfo });
-          dispatch({ type: 'SET_ANALYSIS_PHASE', phase: 'generating_report' });
           dispatch({ type: 'SET_ANALYSIS_PHASE', phase: 'done' });
           dispatch({ type: 'SET_CURRENT_VIEW', view: 'report' });
-          noop('[ExtApp] submitAnalysis (basic): dispatched all actions, should navigate to report');
           return;
         }
 
-        // Handle errors
+        // Non-timeout error (API returned an error status)
         dispatch({
           type: 'SET_ANALYSIS_PHASE',
           phase: 'error',
-          error: response.error || 'Basic analysis failed',
+          error: res.error || 'Analysis failed. Please try again.',
         });
-      } catch (err) {
-        noop('[ExtApp] submitAnalysis (basic) error:', err);
-        dispatch({ type: 'SET_ANALYSIS_PHASE', phase: 'error', error: String(err) });
       }
+
+      noop('[ExtApp] submitAnalysis (basic): sending to background', {
+        hasDescription: !!listingData.description,
+        descriptionLen: listingData.description?.length || 0,
+        hasTitle: !!listingData.title,
+        hasPrice: !!listingData.price,
+        dedupeKey,
+      });
+
+      const response = await sendMessage<{
+        status: string;
+        result?: AnalysisResult;
+        error?: string;
+        analysisId?: string | null;
+      }>({
+        action: 'analyze_basic',
+        data: listingData,
+        _dedupeKey: dedupeKey,
+      }, BASIC_TIMEOUT_MS);
+
+      await processBasicResponse(response, 1);
       return;
     }
 
@@ -1642,13 +1710,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     return;
   }
 
-  // DIAG: Enhanced logging for debugging — include commercial-grade image extraction metadata
-  const imgStatus = (listingData as any).imageExtractionStatus;
-  const imgFailureReason = (listingData as any).imageExtractionFailureReason;
-  const imgExpected = (listingData as any).imageExtractionExpectedCount;
-  const imgCollected = (listingData as any).imageExtractionCollectedCount;
-  const imgGalleryType = (listingData as any).imageExtractionGalleryType;
-  const imgExtractor = (listingData as any).imageExtractionExtractorUsed;
+  // DIAG: Enhanced logging for debugging
   noop('[Analytics] submitAnalysis called with:', JSON.stringify({
     hasImageUrls: !!listingData.imageUrls,
     imageUrlsLen: (listingData.imageUrls || []).length,
@@ -1663,20 +1725,8 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     hasPrice: !!listingData.price,
     hasReportMode: !!listingData.reportMode,
     reportMode: listingData.reportMode,
-    // Commercial-grade image extraction
-    imageExtractionStatus: imgStatus,
-    imageExtractionExpectedCount: imgExpected,
-    imageExtractionCollectedCount: imgCollected,
-    imageExtractionGalleryType: imgGalleryType,
-    imageExtractionExtractorUsed: imgExtractor,
-    imageExtractionFailureReason: imgFailureReason,
     allKeys: Object.keys(listingData)
   }));
-
-  // Commercial-grade: warn if full analysis was requested but images failed
-  if (analysisType === 'full' && imgStatus === 'failed') {
-    console.warn('[Analytics] Full analysis requested but image extraction FAILED:', imgFailureReason, '| Expected:', imgExpected, '| Collected:', imgCollected);
-  }
 
   // Ensure we have either images OR description (Edge Function validation requirement)
   // Support both field names: imageUrls (from content script) and images (from ListingDataV2)
@@ -1695,20 +1745,13 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     noop('[Analytics] Added fallback description:', listingData.description);
   }
 
-  // DIAG: Log the actual data being sent — include image extraction metadata
+  // DIAG: Log the actual data being sent
   noop('[Analytics] About to send to background:', JSON.stringify({
     action: 'analyze',
     dataKeys: Object.keys(listingData),
     dataImageUrls: listingData.imageUrls,
     dataImages: (listingData as any).images,
-    dataDescription: listingData.description,
-    // Commercial-grade image extraction metadata
-    imageExtractionStatus: (listingData as any).imageExtractionStatus,
-    imageExtractionExpectedCount: (listingData as any).imageExtractionExpectedCount,
-    imageExtractionCollectedCount: (listingData as any).imageExtractionCollectedCount,
-    imageExtractionGalleryType: (listingData as any).imageExtractionGalleryType,
-    imageExtractionExtractorUsed: (listingData as any).imageExtractionExtractorUsed,
-    imageExtractionFailureReason: (listingData as any).imageExtractionFailureReason,
+    dataDescription: listingData.description
   }));
 
   try {
@@ -1721,6 +1764,16 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         action: 'analyze',
         data: listingData,
       });
+
+      // Guard: sendMessage returns undefined when SW is dead or times out
+      if (!response) {
+        dispatch({
+          type: 'SET_ANALYSIS_PHASE',
+          phase: 'error',
+          error: 'Service worker was unavailable. Please try again.',
+        });
+        return;
+      }
 
       if (response.status === 'submitted' && response.analysisId) {
         // Start polling from frontend
@@ -1741,27 +1794,32 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     } catch (err) {
       // Clear invalid cache on failure to force re-extraction on retry
       dispatch({ type: 'SET_EXTRACTION_CACHED', extractionCached: false, lastExtractedUrl: null });
-      dispatch({ type: 'SET_ANALYSIS_PHASE', phase: 'error', error: String(err) });
+      const msg = err instanceof Error ? err.message : String(err);
+      noop('[ExtApp] submitAnalysis: unhandled exception =', msg);
+      dispatch({ type: 'SET_ANALYSIS_PHASE', phase: 'error', error: msg || 'Analysis failed unexpectedly.' });
     }
   }
 
   const retryAnalysis = useCallback(async () => {
+    // Capture current type BEFORE reset (reset clears currentAnalysisType to 'basic')
+    const typeToRetry = state.currentAnalysisType;
     dispatch({ type: 'RESET_ANALYSIS' });
-    await startAnalysis({ bypassCache: true });
-  }, [startAnalysis]);
+    await startAnalysis({ bypassCache: true, analysisType: typeToRetry });
+  }, [startAnalysis, state.currentAnalysisType]);
 
   /** Force a fresh image extraction, bypassing the URL result cache */
   const refreshPhotos = useCallback(async () => {
     dispatch({ type: 'RESET_ANALYSIS' });
     dispatch({ type: 'SET_EXTRACTION_CACHED', extractionCached: false, lastExtractedUrl: null });
-    await startAnalysis({ bypassCache: true });
+    await startAnalysis({ bypassCache: true, analysisType: 'full' });
   }, [startAnalysis]);
 
   const logout = useCallback(async () => {
     try {
       await sendMessage({ action: 'logout' });
-      dispatch({ type: 'SET_AUTH_STATUS', authStatus: 'logged_out' });
+      dispatch({ type: 'SET_AUTH_STATUS', authStatus: 'logged_out', user: null, credits: 0 });
       dispatch({ type: 'RESET_ANALYSIS' });
+      dispatch({ type: 'SET_HISTORY', history: [] });
     } catch (err) {
       noop('[ExtApp] Logout failed:', err);
     }
@@ -1788,33 +1846,36 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       dispatch({ type: 'SET_ANALYSIS_RESULT', result });
       dispatch({ type: 'SET_ANALYSIS_PHASE', phase: 'done' });
       dispatch({ type: 'SET_CURRENT_VIEW', view: 'report' });
+      // Scroll to top when navigating to report
+      window.scrollTo({ top: 0, behavior: 'instant' });
       return;
     }
 
     // Otherwise, start a new analysis: reset state + switch view + trigger analysis
     dispatch({ type: 'RESET_ANALYSIS' });
     dispatch({ type: 'SET_CURRENT_VIEW', view: 'report' });
+    // Scroll to top when navigating to report
+    window.scrollTo({ top: 0, behavior: 'instant' });
     // startAnalysis will be called by ExtensionResultView once the view mounts
   }, []);
 
   const navigateToHome = useCallback(() => {
     dispatch({ type: 'SET_CURRENT_VIEW', view: 'home' });
-    // Refresh user credits when returning to home — only for logged-in users
-    if (state.authStatus === 'logged_in') {
-      sendMessage<{
-        status: string;
-        data?: { credits_remaining: number };
-      }>({ action: 'get_user_data' }).then((userData) => {
+    // Refresh user credits when returning to home — only when logged in
+    if (state.user) {
+      fetchUserDataDeduped().then((userData) => {
         if (userData?.status === 'success' && userData.data) {
           dispatch({
             type: 'SET_AUTH_STATUS',
             authStatus: 'logged_in',
-            credits: userData.data.credits_remaining,
+            credits: userData.data!.credits_remaining,
           });
         }
-      }).catch(() => {});
+      }).catch(() => {
+        // Silently ignore refresh failures
+      });
     }
-  }, [state.authStatus]);
+  }, [state.user]);
 
   const sendMagicLink = useCallback(async (email: string): Promise<{ success: boolean; error?: string }> => {
     try {
@@ -1869,12 +1930,6 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     }
   }, [listingData, analysisResult]);
 
-  // Upgrade from basic to full: switch analysisType to 'full' and restart analysis
-  const upgradeToFull = useCallback(async () => {
-    dispatch({ type: 'SET_ANALYSIS_TYPE', analysisType: 'full' });
-    await startAnalysis({ bypassCache: true, analysisType: 'full' });
-  }, [dispatch, startAnalysis]);
-
   const value: AppContextValue = {
     state,
     dispatch,
@@ -1893,7 +1948,6 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       sendMagicLink,
       initiateGoogleOAuth,
       shareAnalysis,
-      upgradeToFull,
     },
   };
 

@@ -45,6 +45,28 @@ export interface OptionalDetails {
   yearBuilt?: string | number;
   hoaFee?: string | number;
   propertyTax?: string | number;
+  /** 完整浴室数 */
+  fullBaths?: string | number;
+  /** 半浴室数 */
+  halfBaths?: string | number;
+  /** flood zone */
+  floodZone?: string;
+  /** 供暖类型 */
+  heating?: string;
+  /** 制冷类型 */
+  cooling?: string;
+  /** 地下室状态 */
+  basement?: string;
+  /** 月供 */
+  monthlyPayment?: string;
+  /** 月税 */
+  monthlyTax?: string;
+  /** 房屋保险 */
+  homeInsurance?: string;
+  /** 每平方尺价格 */
+  pricePerSqft?: string;
+  /** 地块尺寸 */
+  lotDimensions?: string;
 }
 
 export type FactSource = 'bodyText' | 'dom' | 'jsonld' | 'script' | 'structured' | 'fallback';
@@ -368,8 +390,12 @@ export interface ListingInfo {
   priceAmount?: number;
   /** 卧室数 */
   bedrooms?: number | null;
-  /** 浴室数 */
+  /** 浴室数（总数） */
   bathrooms?: number | null;
+  /** 完整浴室数（用于 bathDisplay） */
+  fullBaths?: number | null;
+  /** 半浴室数（用于 bathDisplay） */
+  halfBaths?: number | null;
   /** 车位 */
   parking?: number | null;
   /** 封面图 URL（第一张图） */
@@ -378,6 +404,28 @@ export interface ListingInfo {
   sqft?: number | string | null;
   /** 房型 (US) */
   propertyType?: string | null;
+  /** 供暖类型 */
+  heating?: string | null;
+  /** 制冷类型 */
+  cooling?: string | null;
+  /** 地下室状态 */
+  basement?: string | null;
+  /** 建造年份 */
+  yearBuilt?: number | string | null;
+  /** 年税 */
+  annualTax?: string | number | null;
+  /** 月供 */
+  monthlyPayment?: string | null;
+  /** 月税 */
+  monthlyTax?: string | null;
+  /** 房屋保险 */
+  homeInsurance?: string | null;
+  /** 每平方尺价格 */
+  pricePerSqft?: string | null;
+  /** 地块尺寸 */
+  lotDimensions?: string | null;
+  /** flood zone */
+  floodZone?: string | null;
 }
 
 export interface AnalysisResult {

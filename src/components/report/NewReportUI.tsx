@@ -3,8 +3,17 @@
  *
  * ONLY reads NormalizedReport. All text output goes through safeText() / renderValue().
  *
- * Modules (in order):
- *  1. HeroSection       — score, verdict, headline, next best move
+ * Basic layout (in order):
+ *  1. HeroSection              — address, Evidence Score, Verdict, Bottom Line
+ *  2. WhatWeKnowSection       — property facts (missing fields hidden)
+ *  3. ListingSignalsSection   — 2–3 specific signals from listing data
+ *  4. WhatsMissingSection     — 4–6 dynamic unverified items
+ *  5. KeyThingsToCheckSection — 2–4 property-specific things to check
+ *  6. QuestionsToAskSection   — 3–5 questions before viewing
+ *  7. BasicCTA                — Unlock Full Analysis CTA
+ *
+ * Deep layout (in order):
+ *  1. HeroSection              — score, verdict, headline, next best move
  *  2. WhatCouldChangeYourDecisionSection — 3 decision-changing risk cards
  *  3. DealChangingRisksSection            — risk cards with specific actions
  *  4. PropertySnapshotSection            — "Is the Price Fair?" + property facts
@@ -45,10 +54,13 @@ import {
   CircleHelp,
   Ban,
   ThumbsUp,
+  Signal,
+  ArrowLeft,
 } from 'lucide-react';
 import type { NormalizedReport, ReportSection, ContradictionVM } from '../../lib/reportAdapters/types';
 import type { ReportViewModel } from '../../lib/reportAdapters';
 import { PhotoSpaceAnalysisCard } from './PhotoSpaceAnalysisCard';
+import { UPSELL_CTA_FALLBACK } from '../../lib/reportAdapters/Fallbacks';
 
 // ── Section dedup context ──────────────────────────────────────────────────────
 
@@ -164,16 +176,8 @@ const SEVERITY_PILL: Record<string, { bg: string; text: string }> = {
   critical: { bg: 'bg-rose-200',  text: 'text-rose-800' },
 };
 
-function SeverityPill({ value, category }: { value: string; category?: string }) {
+function SeverityPill({ value }: { value: string }) {
   const key = value?.toLowerCase() ?? '';
-  const isEnvironmental = category && /environmental|flood|insurance zone/i.test(category);
-  if (isEnvironmental && (!key || key === 'unknown')) {
-    return (
-      <span className="inline-flex items-center text-xs font-bold px-4 py-1.5 rounded-full uppercase tracking-wide bg-stone-100 text-stone-600">
-        Needs Verification
-      </span>
-    );
-  }
   const cfg = SEVERITY_PILL[key] ?? { bg: 'bg-stone-100', text: 'text-stone-600' };
   return (
     <span className={`inline-flex items-center text-xs font-bold px-4 py-1.5 rounded-full uppercase tracking-wide ${cfg.bg} ${cfg.text}`}>
@@ -186,7 +190,7 @@ function SeverityPill({ value, category }: { value: string; category?: string })
 
 function isRiskSection(section: ReportSection): boolean {
   const haystack = (section.id + ' ' + section.title).toLowerCase();
-  return /risk|danger|red.?flag|deal.?breaker|warning|legal|compliance|maintenance|environmental|flood|insurance/i.test(haystack);
+  return /risk|danger|red.?flag|deal.?breaker|warning|legal|compliance|maintenance/i.test(haystack);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -261,6 +265,12 @@ function HeroSection({ report, isBasic }: { report: NormalizedReport; isBasic?: 
   const headline = React.useMemo(() => {
     // Basic mode: generate specific Bottom Line based on what is confirmed vs. unverified
     if (isBasic) {
+      // Prioritize the backend normalizeBottomLine output — it has real listing fields
+      const backendBottomLine = hero.bottomLine;
+      if (backendBottomLine && backendBottomLine.trim() && !/^this listing provides useful basic facts/i.test(backendBottomLine)) {
+        return backendBottomLine;
+      }
+      // Fallback: listing-text-aware template only when backend is empty or generic
       const listingText = [
         rawSummary,
         (report.raw?.listingInfo?.description ?? ''),
@@ -283,9 +293,8 @@ function HeroSection({ report, isBasic }: { report: NormalizedReport; isBasic?: 
       missing.push('comparable sales/rent context');
 
       if (missing.length >= 2) {
-        const last = missing.pop();
-        const rest = missing.join(', ');
-        return `This listing provides useful basic facts, including price, beds, baths, size, and${isRentalMentioned ? ' listing-stated property type,' : ''} but ${rest}, and ${last} still need verification before relying on this property.`;
+        const list = missing.join(', ');
+        return `This listing provides useful basic facts — price, beds, baths, size${isRentalMentioned ? ', listing-stated property type' : ''} — but ${list} still need verification before relying on this property.`;
       }
       if (missing.length === 1) {
         return `This listing provides useful basic facts, including price, beds, baths, and size, but ${missing[0]} still needs verification before relying on this property.`;
@@ -370,7 +379,7 @@ function HeroSection({ report, isBasic }: { report: NormalizedReport; isBasic?: 
     return !hasExplicitRentalSignal
       ? 'Worth a closer look, but verify roof age, major systems, finished-basement permits/egress, and comparable sales before spending serious time.'
       : 'Worth a closer look, but verify the Certificate of Occupancy, legal unit count, rent roll, utility metering, and renovation permits before relying on the rental income.';
-  }, [highlights, sections, sanitizedSummary, isBasic, rawSummary, report]);
+  }, [hero.bottomLine, highlights, sections, sanitizedSummary, isBasic, rawSummary, report]);
 
   // Next Best Move — NYC-aware, actionable, property-type-aware
   const nextBestMove = React.useMemo(() => {
@@ -439,7 +448,7 @@ function HeroSection({ report, isBasic }: { report: NormalizedReport; isBasic?: 
   }
   if (mainReasons.length === 0) {
     const riskSections = sections.filter(
-      (s) => /risk|danger|red.?flag|deal.?breaker|warning|legal|compliance|maintenance|environmental|flood|insurance/i.test(s.id + s.title)
+      (s) => /risk|danger|red.?flag|deal.?breaker|warning|legal|compliance|maintenance/i.test(s.id + s.title)
     );
     for (const s of riskSections) {
       for (const item of s.items) {
@@ -485,39 +494,21 @@ function HeroSection({ report, isBasic }: { report: NormalizedReport; isBasic?: 
           );
         })()}
 
-        {/* Score + /100 — Evidence Score style for basic, amber gold style for deep */}
-        {isBasic ? (
-          scoreText !== null && (
-            <div className="mb-4">
-              <div className="text-slate-400 uppercase text-xs tracking-wider mb-2">Evidence Score</div>
-              <div className="flex items-baseline gap-2">
-                <div className="text-6xl sm:text-7xl font-bold text-amber-400">{scoreText}</div>
-                <div className="text-2xl text-slate-400">/100</div>
-              </div>
+        {/* Score + /100 */}
+        <div className="flex items-baseline gap-3 mb-6">
+          {scoreText !== null ? (
+            <div className="text-7xl sm:text-8xl font-bold text-amber-400">
+              {scoreText}
             </div>
-          )
-        ) : (
-          <div className="flex items-baseline gap-3 mb-6">
-            {scoreText !== null ? (
-              <div className="text-7xl sm:text-8xl font-bold text-amber-400">
-                {scoreText}
-              </div>
-            ) : (
-              <div className="text-7xl sm:text-8xl font-bold text-slate-500">—</div>
-            )}
-            <div className="text-3xl text-[#B3B3B3]">/100</div>
-          </div>
-        )}
+          ) : (
+            <div className="text-7xl sm:text-8xl font-bold text-slate-500">—</div>
+          )}
+          <div className="text-3xl text-[#B3B3B3]">/100</div>
+        </div>
 
-        {/* Verdict badge — basic mode uses different styling */}
+        {/* Verdict badge */}
         {hero.verdict && (
-          <div className={`inline-flex items-center gap-2 backdrop-blur border px-6 py-3 rounded-xl mb-4 ${
-            isBasic
-              ? hero.verdict === 'High Uncertainty' ? 'border-red-400/50 bg-red-500/10' :
-                hero.verdict === 'Need More Evidence' ? 'border-amber-400/50 bg-amber-500/10' :
-                'border-green-400/50 bg-green-500/10'
-              : 'border-[#DAA520]/60 bg-[rgba(218,165,32,0.12)]'
-          }`}>
+          <div className="inline-flex items-center gap-2 backdrop-blur border px-6 py-3 rounded-xl mb-4 border-[#DAA520]/60 bg-[rgba(218,165,32,0.12)]">
             <Activity className="w-4 h-4" style={{ color: '#DAA520' }} />
             <span className="font-semibold tracking-wide" style={{ color: '#DAA520' }}>{renderValue(hero.verdict)}</span>
           </div>
@@ -567,16 +558,6 @@ function HeroSection({ report, isBasic }: { report: NormalizedReport; isBasic?: 
           </div>
         )}
 
-        {/* Next Best Move CTA */}
-        <div className="border rounded-xl p-4 sm:p-5" style={{ backgroundColor: '#3a3a3a', borderColor: '#DAA520' }}>
-          <div className="flex items-center gap-2 mb-2">
-            <div className="w-5 h-5 rounded-lg flex items-center justify-center" style={{ backgroundColor: 'rgba(218, 165, 32, 0.2)' }}>
-              <Target className="w-3 h-3" style={{ color: '#DAA520' }} />
-            </div>
-            <span className="uppercase tracking-wider text-xs font-semibold" style={{ color: '#DAA520' }}>Next Best Move</span>
-          </div>
-          <p className="text-slate-100 text-sm">{nextBestMove}</p>
-        </div>
       </div>
     </div>
   );
@@ -725,7 +706,7 @@ function getImpactLabel(text: string): string {
   return 'Check before offer';
 }
 
-function WhatCouldChangeYourDecisionSection({ report, viewModel }: { report: NormalizedReport; viewModel?: ReportViewModel }) {
+function WhatCouldChangeYourDecisionSection({ report, viewModel, isBasic }: { report: NormalizedReport; viewModel?: ReportViewModel; isBasic?: boolean }) {
   const { highlights, sections } = report;
 
   // Photo consistency: skip Missing Interior Photos card if interior photos are detected
@@ -862,7 +843,9 @@ function WhatCouldChangeYourDecisionSection({ report, viewModel }: { report: Nor
         </div>
       </div>
       <p className="text-slate-500 text-sm mb-6 sm:mb-8">
-        These are the issues that could affect whether this property is still worth your time.
+        {isBasic
+          ? 'Based on listing signals only — not independent analysis.'
+          : 'These are the issues that could affect whether this property is still worth your time.'}
       </p>
 
       <div className="space-y-4 sm:space-y-6">
@@ -908,16 +891,7 @@ function buildRiskAction(riskText: string, isNYC = false, reportProfile?: string
   const t = riskText.toLowerCase();
   const isSFOC = reportProfile === 'single_family_owner_occupier';
 
-  // 1. Environmental / Flood — must come FIRST, before Maintenance
-  // to prevent basement/water keywords from triggering roof/boiler/electrical action.
-  if (/flood|insurance|zone|environmental|windstorm|hurricane|seismic/i.test(t)) {
-    if (isNYC) {
-      return 'Check FEMA flood maps, NYC flood maps, basement water history, and insurance quotes before estimating monthly costs.';
-    }
-    return 'Check FEMA flood maps, local flood maps, water intrusion history, and insurance quotes before estimating monthly costs.';
-  }
-
-  // 2. Legal & Compliance — SFOC: focus on CO/DOB/permits; multi-family: include rental income + HPD
+  // 1. Legal & Compliance — SFOC: focus on CO/DOB/permits; multi-family: include rental income + HPD
   // Also catches basement egress / ceiling height / second apartment
   if (/legal|compliance|rental|co |certificate|occupancy|lease|registered|violation|permit| dob |hpd|complaint|egress|ceiling height|second apartment/i.test(t)) {
     if (isSFOC) {
@@ -927,12 +901,12 @@ function buildRiskAction(riskText: string, isNYC = false, reportProfile?: string
       return 'Ask for legal-use documents, permits for recent updates, and check local building department records before making an offer.';
     }
     if (isNYC) {
-      return 'Ask for the Certificate of Occupancy and check NYC DOB, HPD, and ACRIS records before relying on rental income or making an offer.';
+      return 'Ask for the Certificate of Occupancy and check NYC DOB, HPD, and ACRIS records before relying on legal use, renovation claims, or investment assumptions.';
     }
-    return 'Ask for legal-use documents and check local building department or county records before relying on rental income or making an offer.';
+    return 'Ask for legal-use documents and check local building department or county records before relying on legal use, renovation claims, or investment assumptions.';
   }
 
-  // 3. Maintenance — excludes basement/water (those go to Environmental or Structural)
+  // 2. Maintenance — excludes basement/water (those go to Environmental or Structural)
   if (/maintenance|deferred|roof|drainage|leak|dated|old systems|boiler|electrical|plumbing|hvac/i.test(t)) {
     let base = 'Ask for the roof age, boiler age, electrical panel details, plumbing history, HVAC condition, and recent repair records before viewing. Bring a licensed inspector if still interested.';
     if (/cracked tile|cracked.floor/i.test(t)) {
@@ -941,17 +915,17 @@ function buildRiskAction(riskText: string, isNYC = false, reportProfile?: string
     return base;
   }
 
-  // 4. Price Risk
+  // 3. Price Risk
   if (/price|overpriced|estimate|fair|value|comparable|comp/i.test(t)) {
     return 'Ask for recent comparable sales, price reduction history, and seller motivation before deciding whether the asking price is justified.';
   }
 
-  // 5. Rent / Investment Risk
+  // 4. Rent / Investment Risk
   if (/rent|rental income|investment|yield|return/i.test(t)) {
     return 'Ask for actual lease history, current tenant status, and comparable local rents before using rental income in your numbers.';
   }
 
-  // 6. Default fallback
+  // 5. Default fallback
   return 'Ask the agent for documents or records that confirm this risk before booking a viewing or making an offer.';
 }
 
@@ -961,7 +935,7 @@ function _makeSpecificAction(text: string, isNYC = false, reportProfile?: string
 }
 
 function DealChangingRisksSection({ report, viewModel }: { report: NormalizedReport; viewModel?: ReportViewModel }) {
-  const { sections, highlights, hero } = report;
+  const { sections, hero } = report;
 
   const isNYC = viewModel?.meta?.isNYC
     ?? /nyc|new york city|brooklyn|queens|bronx|manhattan|staten/i.test(
@@ -1052,22 +1026,10 @@ function DealChangingRisksSection({ report, viewModel }: { report: NormalizedRep
     });
   }
 
-  if (riskCards.length < 3) {
-    for (const r of highlights.risks) {
-      if (riskCards.length >= 3) break;
-      const t = renderValue(r);
-      if (!t) continue;
-      riskCards.push({
-        title: t,
-        description: '',
-        severity: 'Medium',
-        action: buildRiskAction(t, isNYC, effectiveProfile),
-        icon: <AlertTriangle className="w-5 h-5" />,
-        iconColor: 'text-amber-600/70',
-        sectionId: '__highlights__',
-      });
-    }
-  }
+  // Never backfill from highlights.risks — those items are already shown in
+  // "What Could Change Your Decision" and are unstructured snippets, not
+  // standalone risk modules. Deal-Changing Risks should only show structured
+  // sections (Maintenance Risk, Legal & Compliance, etc.) regardless of count.
 
   if (riskCards.length === 0) return null;
 
@@ -1111,7 +1073,7 @@ function DealChangingRisksSection({ report, viewModel }: { report: NormalizedRep
                   <div className="flex-1 min-w-0">
                     <div className="flex items-center gap-2 sm:gap-3 flex-wrap">
                       <h3 className="text-base sm:text-xl font-bold text-slate-900">{card.title}</h3>
-                      <SeverityPill value={card.severity} category={card.category} />
+                      <SeverityPill value={card.severity} />
                     </div>
                   </div>
                 </div>
@@ -1144,7 +1106,7 @@ function DealChangingRisksSection({ report, viewModel }: { report: NormalizedRep
 // MODULE 4: PropertySnapshotSection — "Is the Price Fair?" + property facts
 // ─────────────────────────────────────────────────────────────────────────────
 
-function PropertySnapshotSection({ report }: { report: NormalizedReport }) {
+function PropertySnapshotSection({ report, isBasic }: { report: NormalizedReport; isBasic?: boolean }) {
   const { hero, quickFacts, sections, meta } = report;
 
   // Effective property category for display and routing
@@ -1194,6 +1156,12 @@ function PropertySnapshotSection({ report }: { report: NormalizedReport }) {
   );
 
   const qfItems = quickFacts
+    .filter((f) => {
+      const label = renderValue(f.label);
+      // Filter out Type field — user has asked to suppress all Type display
+      if (/^type$/i.test(label)) return false;
+      return true;
+    })
     .map((f) => ({
       label: renderValue(f.label),
       value: renderValue(f.value),
@@ -1237,13 +1205,15 @@ function PropertySnapshotSection({ report }: { report: NormalizedReport }) {
     // Remove duplicate "could materially change value" occurrences
     const materialDups = /((?:[^.!?]+\s){0,3}could materially change value(?:[^.!?]*)?)\s*(?:\1\s*)+/gi;
     const step2 = step1.replace(materialDups, '$1');
-    // If the explanation ends up with trailing incomplete sentences (e.g., "should be verified independently could materially"),
-    // truncate to the last complete sentence
+    // If the text already ends with a complete sentence (has trailing . ! or ?), return as-is.
+    // Only truncate when there are genuinely trailing incomplete fragments after the last complete sentence.
+    const trimmed = step2.trim();
+    if (/[.!?]$/.test(trimmed)) return trimmed;
     const lastSentence = step2.match(/[^.!?]*[.!?]/g);
     if (lastSentence && lastSentence.length > 0) {
       return lastSentence[lastSentence.length - 1].trim();
     }
-    return step2.trim();
+    return trimmed;
   }
 
   const rawAnalysisText = priceData.find((i) =>
@@ -1266,6 +1236,17 @@ function PropertySnapshotSection({ report }: { report: NormalizedReport }) {
   const pricePerSqftText = priceData.find((i) => /price\/?sqft|\$\/sqft|price\/sqft/i.test(i.label))?.value ?? '';
   const pricePerSqftValue = Number(String(pricePerSqftText).replace(/[^0-9.]/g, '')) || 0;
   const highPricePerSqft = pricePerSqftValue >= 800;
+
+  // Extract daysOnZillow from raw result for market-time-aware copy
+  const daysOnZillowRaw = (report as any)?.raw?.property_snapshot?.daysOnZillow
+    ?? (report as any)?.raw?.property_snapshot?.daysOnMarket
+    ?? (report as any)?.raw?.daysOnZillow
+    ?? (report as any)?.raw?.daysOnMarket;
+  const daysOnZillowNum = typeof daysOnZillowRaw === 'number' ? daysOnZillowRaw
+    : typeof daysOnZillowRaw === 'string' ? parseInt(daysOnZillowRaw, 10) : null;
+  const hasValidDom = daysOnZillowNum != null && Number.isFinite(daysOnZillowNum);
+  const isShortDom = hasValidDom && daysOnZillowNum < 30;
+  const isMidDom = hasValidDom && daysOnZillowNum >= 30 && daysOnZillowNum < 60;
 
   // Verdict-aware confidence copy — prevents contradictions like "appears fair" when verdict is Overpriced
   function getPriceConfidenceCopy(): string {
@@ -1301,7 +1282,14 @@ function PropertySnapshotSection({ report }: { report: NormalizedReport }) {
       if (isSFOC) {
         return 'The asking price appears high relative to visible condition. Confidence is still limited because local comps, full inspection details, and permit status have not been verified.';
       }
-      return 'The asking price appears high relative to visible condition and extended market time. Confidence is still limited because local comps, full inspection details, and permit status have not been verified.';
+      const marketTimeClause = isShortDom
+        ? '' // 16 days: no market time mention
+        : isMidDom
+        ? 'market response is still developing, and ' // 30-59 days
+        : hasValidDom
+        ? 'extended market time, and ' // 60+ days
+        : 'and '; // no DOM data: remove market time claim
+      return `The asking price appears high relative to visible condition${marketTimeClause ? ` ${marketTimeClause}` : '.'} Confidence is still limited because local comps, full inspection details, and permit status have not been verified.`;
     }
     if (verdictIsFair) {
       if (isSFOC) {
@@ -1329,6 +1317,9 @@ function PropertySnapshotSection({ report }: { report: NormalizedReport }) {
           <Home className="w-5 h-5" style={{ color: '#DAA520' }} />
         </div>
         <h2 className="text-2xl font-bold text-white">PROPERTY SNAPSHOT</h2>
+        {isBasic && (
+          <p className="text-xs text-stone-400 mt-0.5">Based on listing data — condition and market comparison not yet verified.</p>
+        )}
       </div>
 
       {/* Address intentionally omitted here to avoid duplicating the Hero address */}
@@ -1352,7 +1343,7 @@ function PropertySnapshotSection({ report }: { report: NormalizedReport }) {
               return (
                 <div className="mb-8">
                   <div className="text-slate-400 uppercase text-xs tracking-wider mb-3">Estimated Value Range</div>
-                  <div className="text-4xl font-bold text-white">{range}</div>
+                  <div className="text-2xl font-bold text-white">{range}</div>
                 </div>
               );
             }
@@ -1368,7 +1359,7 @@ function PropertySnapshotSection({ report }: { report: NormalizedReport }) {
               return (
                 <div className="mb-8">
                   <div className="text-slate-400 uppercase text-xs tracking-wider mb-3">Asking Price</div>
-                  <div className="text-4xl font-bold text-white">{asking}</div>
+                  <div className="text-2xl font-bold text-white">{asking}</div>
                 </div>
               );
             }
@@ -2066,10 +2057,10 @@ function fieldToQuestion(fieldText: string, reportProfile?: string): string {
     : 'Can you provide recent comparable sales for similar properties in the area?';
   if (/legal|two.?family|occupancy|certificate/i.test(t)) return isSFOC
     ? 'Can you confirm the basement’s current use, condition, access, permits, and whether any basement area is included in legal rentable space?'
-    : 'Can you provide the Certificate of Occupancy confirming legal two-family use?';
+    : 'Can you provide the Certificate of Occupancy or legal-use documents confirming the permitted use of this property?';
   if (/rent|income|lease|tenant/i.test(t)) return isSFOC
     ? 'Can you confirm the basement’s current use, condition, access, permits, and whether any basement area is included in legal rentable space?'
-    : 'Can you provide the current rent roll, leases, security deposits, and vacancy status?';
+    : 'Can you confirm the property permitted use and whether there are any rental restrictions if you intend to rent it?';
   if (/price|asking|list/i.test(t)) return 'Has the price been reduced since listing, and what is the seller\'s motivation?';
   if (/days on market|262|listed|how long/i.test(t)) return 'Why has the property been on market for this long? Were there any price reductions, failed offers, or buyer concerns?';
   if (/violation|dob|hpd|complaint|permit/i.test(t)) return isSFOC
@@ -2131,7 +2122,7 @@ function getFallbackQuestions(isNYC: boolean, reportProfile?: string): Array<{ q
       { q: 'Are there any local building department records, permits, complaints, or open violations? What permits were pulled for recent updates?', tag: 'Legal', color: 'bg-violet-100 text-violet-700' },
       { q: 'How old is the roof, and what is the electrical panel capacity?', tag: 'Roof', color: 'bg-amber-100 text-amber-700' },
       { q: 'Has the basement had water intrusion, foundation repairs, or drainage issues?', tag: 'Basement', color: 'bg-blue-100 text-blue-700' },
-      { q: 'Can you provide recent comparable two-family sales to support the asking price?', tag: 'Price', color: 'bg-amber-100 text-amber-700' },
+      { q: 'Can you provide recent comparable sales for similar nearby properties to support the asking price?', tag: 'Price', color: 'bg-amber-100 text-amber-700' },
       { q: 'Can you provide the actual insurance quote, average utility costs, and any owner-paid expenses?', tag: 'Costs', color: 'bg-teal-100 text-teal-700' },
       { q: 'What plumbing materials are currently used, and have they been updated?', tag: 'Systems', color: 'bg-orange-100 text-orange-700' },
       { q: 'Why has the property been on market for so long? Were there any price reductions or buyer concerns?', tag: 'Market Time', color: 'bg-indigo-100 text-indigo-700' },
@@ -2139,10 +2130,9 @@ function getFallbackQuestions(isNYC: boolean, reportProfile?: string): Array<{ q
   }
 
   return [
-    { q: 'Can you provide the Certificate of Occupancy confirming legal two-family use?', tag: 'Legal', color: 'bg-violet-100 text-violet-700' },
-    { q: 'Can you provide recent comparable two-family sales to support the asking price?', tag: 'Price', color: 'bg-amber-100 text-amber-700' },
-    { q: 'Can you provide the current rent roll, leases, security deposits, and vacancy status?', tag: 'Rent', color: 'bg-green-100 text-green-700' },
-    { q: 'Are there any open DOB permits, ECB/OATH violations, HPD issues, complaints, or unresolved building records?', tag: 'Legal', color: 'bg-violet-100 text-violet-700' },
+    { q: 'Can you provide the Certificate of Occupancy or legal-use documents confirming the permitted use of this property?', tag: 'Legal', color: 'bg-violet-100 text-violet-700' },
+    { q: 'Can you provide recent comparable sales for similar nearby properties to support the asking price?', tag: 'Price', color: 'bg-amber-100 text-amber-700' },
+    { q: 'Are there any open permits, violations, complaints, or unresolved building records for this address?', tag: 'Legal', color: 'bg-violet-100 text-violet-700' },
     { q: 'Are gas, electric, heat, and water separately metered or owner-paid? Can you provide recent utility bills?', tag: 'Costs', color: 'bg-teal-100 text-teal-700' },
     { q: 'How old are the roof, boiler/heating system, electrical panels, plumbing, and water heater?', tag: 'Systems', color: 'bg-orange-100 text-orange-700' },
     { q: 'What is the basement’s current condition, access, permitted use, and water-intrusion history?', tag: 'Basement', color: 'bg-blue-100 text-blue-700' },
@@ -2151,7 +2141,7 @@ function getFallbackQuestions(isNYC: boolean, reportProfile?: string): Array<{ q
 
 function QuestionsToAskSection({ report, viewModel, isBasic }: { report: NormalizedReport; viewModel?: ReportViewModel; isBasic?: boolean }) {
   const { sections, hero } = report;
-  const maxQuestions = isBasic ? 5 : 8;
+  const maxQuestions = isBasic ? 5 : 6;
   const rawResultForTrace = (report as any)?.raw ?? {};
 
   const isNYC = viewModel?.meta?.isNYC
@@ -2352,149 +2342,10 @@ function QuestionsToAskSection({ report, viewModel, isBasic }: { report: Normali
         dobHpdFamilyDedup.push(q);
       }
     }
-    finalQuestions = dobHpdFamilyDedup;
-
-    // Ensure monthly costs question is present; merge fallback if needed
-    const hasCosts = finalQuestions.some(q =>
-      /monthly|cost|insurance|utility|maintenance|reserve/i.test(q.question)
-    );
-    const seenQ = new Set(finalQuestions.map(q => q.question));
-    if (finalQuestions.length < maxQuestions || !hasCosts) {
-      const fallback = getFallbackQuestions(isNYC, effectiveProfile);
-      for (const fq of fallback) {
-        if (finalQuestions.length >= maxQuestions) break;
-        if (seenQ.has(fq.q)) continue;
-        finalQuestions.push({ question: fq.q, tag: fq.tag, tagColor: fq.color, whereToVerify: '' });
-        seenQ.add(fq.q);
-      }
-    }
+    finalQuestions = dobHpdFamilyDedup.slice(0, maxQuestions);
   } else {
-    // Legacy: build from section items
-    const gapSections = sections.filter((s) =>
-      /data.?gap|missing|verify|question|ask|inspection/i.test(s.id + s.title) &&
-      !isRiskSection(s)
-    );
-    const questions: Array<{ question: string; tag: string; tagColor: string; whereToVerify: string }> = [];
-    const seenQ = new Set<string>();
-
-    for (const s of gapSections) {
-      for (const item of s.items) {
-        const title = renderValue(item.title);
-        const desc = renderValue(item.description);
-        const badge = renderValue(item.badge);
-        const fullText = (title + ' ' + desc).trim();
-        if (!fullText) continue;
-        if (/missing data|summary|overview|where to verify|things to verify|questions to ask/i.test(title)) continue;
-        const rawText = desc.length > title.length ? desc : title;
-        const isFieldName = FIELD_NAME_PATTERNS.some((p) => p.test(rawText));
-        let qText: string;
-        if (isFieldName) {
-          const converted = fieldToQuestion(rawText, effectiveProfile);
-          if (!converted || seenQ.has(converted)) continue;
-          qText = converted;
-        } else if (rawText.endsWith('?') || /^(can|could|what|how|why|when|is|are|has|have|do|does)/i.test(rawText)) {
-          qText = rawText;
-        } else if (rawText.length > 50) {
-          continue;
-        } else {
-          continue;
-        }
-        if (seenQ.has(qText)) continue;
-        seenQ.add(qText);
-        const { label: tagLabel, color: tagColor } = getQuestionTag(qText);
-        let whereToVerify = '';
-        if (badge && /nyc| dob |hpd|acris|records/i.test(badge) && isNYC) {
-          whereToVerify = badge;
-        }
-        questions.push({ question: qText, tag: tagLabel, tagColor, whereToVerify });
-      }
-    }
-
-    if (questions.length === 0) {
-      finalQuestions = getFallbackQuestions(isNYC, effectiveProfile).map((fq) => ({
-        question: fq.q,
-        tag: fq.tag,
-        tagColor: fq.color,
-        whereToVerify: '',
-      }));
-    } else {
-      const seenFamilies = new Set<number>();
-      const deduped: typeof questions = [];
-      for (const q of questions) {
-        const qLower = q.question.toLowerCase();
-        let matchedFamily = -1;
-        for (let fi = 0; fi < CORE_QUESTION_FAMILIES.length; fi++) {
-          if (CORE_QUESTION_FAMILIES[fi].keywords.test(qLower)) {
-            matchedFamily = fi;
-            break;
-          }
-        }
-        if (matchedFamily >= 0 && seenFamilies.has(matchedFamily)) continue;
-        if (matchedFamily >= 0) seenFamilies.add(matchedFamily);
-        deduped.push(q);
-      }
-      // Substring dedup on deduped results
-      const dedupedBySubstring: typeof deduped = [];
-      for (const q of deduped) {
-        let dominated = false;
-        let moreSpecificExistingIdx = -1;
-        for (let ei = 0; ei < dedupedBySubstring.length; ei++) {
-          const existing = dedupedBySubstring[ei];
-          if (existing.question.toLowerCase().includes(q.question.toLowerCase()) && existing.question.length > q.question.length) {
-            dominated = true;
-            break;
-          }
-          if (q.question.toLowerCase().includes(existing.question.toLowerCase()) && q.question.length > existing.question.length) {
-            moreSpecificExistingIdx = ei;
-          }
-        }
-        if (dominated) continue;
-        if (moreSpecificExistingIdx >= 0) {
-          dedupedBySubstring[moreSpecificExistingIdx] = q;
-        } else {
-          dedupedBySubstring.push(q);
-        }
-      }
-      const dedupedFinal = dedupedBySubstring;
-
-      // DOB/HPD family dedup — collapse any pair of DOB/HPD questions to the longer one
-      const dobHpdDeduped: typeof dedupedFinal = [];
-      for (const q of dedupedFinal) {
-        const ql = q.question.toLowerCase();
-        const dobCoreMatch = ql.match(/^are there any\s*(open\s*)?(dob|housing and preservation department|hpd)[,\s]+(or\s*)?(any\s*)?(violations?|permits?|complaints?|unresolved building issues?)[,\s]*(or\s*)?(any\s*)?(violations?|permits?|complaints?|unresolved building issues?)?[,\s]*(or\s*)?(any\s*)?(violations?|permits?|complaints?|unresolved building issues?)?/i);
-        if (dobCoreMatch) {
-          let replaced = false;
-          for (let di = 0; di < dobHpdDeduped.length; di++) {
-            const existing = dobHpdDeduped[di];
-            const el = existing.question.toLowerCase();
-            const existingCoreMatch = el.match(/^are there any\s*(open\s*)?(dob|housing and preservation department|hpd)[,\s]+(or\s*)?(any\s*)?(violations?|permits?|complaints?|unresolved building issues?)[,\s]*(or\s*)?(any\s*)?(violations?|permits?|complaints?|unresolved building issues?)?[,\s]*(or\s*)?(any\s*)?(violations?|permits?|complaints?|unresolved building issues?)?/i);
-            if (existingCoreMatch) {
-              if (q.question.length > existing.question.length) {
-                dobHpdDeduped[di] = q;
-              }
-              replaced = true;
-              break;
-            }
-          }
-          if (!replaced) dobHpdDeduped.push(q);
-        } else {
-          dobHpdDeduped.push(q);
-        }
-      }
-      dedupedFinal.length = 0;
-      dedupedFinal.push(...dobHpdDeduped);
-
-      if (dedupedFinal.length < 4) {
-        const fallback = getFallbackQuestions(isNYC, effectiveProfile);
-        for (const fq of fallback) {
-          if (dedupedFinal.length >= maxQuestions) break;
-          if (seenQ.has(fq.q)) continue;
-          dedupedFinal.push({ question: fq.q, tag: fq.tag, tagColor: fq.color, whereToVerify: '' });
-          seenQ.add(fq.q);
-        }
-      }
-      finalQuestions = dedupedFinal.slice(0, maxQuestions);
-    }
+    // No AI questions — don't render the Questions module
+    return null;
   }
 
   if (finalQuestions.length === 0) return null;
@@ -2621,7 +2472,7 @@ function NextBestMoveSection({ report }: { report: NormalizedReport }) {
     if (isSFOC) {
       message = 'Keep this property on your shortlist, but do not rely on the finished basement value or price signal until permits, roof condition, major systems, and comparable sales are verified.';
     } else {
-      message = 'Keep this property on your shortlist, but do not rely on the rental income or price signal until the legal status, roof condition, and major systems are verified.';
+      message = 'Keep this property on your shortlist, but verify legal use, roof condition, major systems, and comparable sales before relying on the price.';
     }
   } else if (/skip|overpriced|risky|high.?risk|not.?recommend|do not/i.test(verdict) || (score !== null && score !== undefined && score < 60)) {
     message = 'This property may not be worth your time unless the seller or agent can answer the key risk questions clearly.';
@@ -2993,7 +2844,6 @@ function LocationRealityCheckSection({ report }: { report: NormalizedReport }) {
     'What are the school ratings and catchment zones?',
     'What is the crime and safety profile of this block?',
     'Is the property in a flood zone or hurricane evacuation zone?',
-    'Are comparable two-family rentals in this area leasing quickly?',
     'How easy is parking during evenings and weekends?',
   ];
 
@@ -3269,6 +3119,8 @@ function ReportClosingCTA({
   listingFingerprint,
   listingAddress,
   reportType,
+  isBasic,
+  onUpgrade,
 }: {
   report: NormalizedReport;
   onShare?: (analysisId: string) => Promise<{ slug: string; shareUrl: string }>;
@@ -3280,9 +3132,14 @@ function ReportClosingCTA({
   listingFingerprint?: string;
   listingAddress?: string;
   reportType?: string;
+  /** Set true for Basic layout to show simplified messaging */
+  isBasic?: boolean;
+  /** Show "Unlock Full Analysis" upgrade button (used in Basic layout) */
+  onUpgrade?: () => void;
 }) {
-  const [shareLabel, setShareLabel] = React.useState('Share Report');
-  const shareTimerRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
+  // ── Share state (local fallback when shareState prop not provided) ───────────
+  const [localShareResult, setLocalShareResult] = React.useState<{ slug: string; shareUrl: string } | null>(null);
+  const [localIsSharing, setLocalIsSharing] = React.useState(false);
 
   // ── Feedback state ────────────────────────────────────────────────────────
   const [rating, setRating] = React.useState<'useful' | 'not_useful' | null>(null);
@@ -3290,9 +3147,9 @@ function ReportClosingCTA({
   const [comment, setComment] = React.useState('');
   const [feedbackState, setFeedbackState] = React.useState<'idle' | 'saving' | 'submitted' | 'error'>('idle');
 
-  const effectiveShareResult = shareState !== undefined ? (shareState.shareResult ?? null) : null;
+  const effectiveShareResult = shareState !== undefined ? (shareState.shareResult ?? null) : localShareResult;
   const effectiveCopied = shareState !== undefined ? (shareState.copied ?? false) : false;
-  const effectiveIsSharing = shareState !== undefined ? (shareState.isSharing ?? false) : false;
+  const effectiveIsSharing = shareState !== undefined ? (shareState.isSharing ?? false) : localIsSharing;
 
   // ── Save feedback to Supabase ───────────────────────────────────────────────
   const saveFeedback = React.useCallback(async (
@@ -3385,11 +3242,6 @@ function ReportClosingCTA({
     }
   }
 
-  function resetShareLabel() {
-    if (shareTimerRef.current) clearTimeout(shareTimerRef.current);
-    shareTimerRef.current = setTimeout(() => setShareLabel('Share Report'), 2000);
-  }
-
   async function handleShare() {
     if (onShareClick) {
       onShareClick();
@@ -3399,13 +3251,11 @@ function ReportClosingCTA({
     const raw = report.raw ?? {};
     const explicitUrl = raw.shareUrl ?? raw.share_url ?? raw.publicUrl ?? raw.public_url;
     if (typeof explicitUrl === 'string' && explicitUrl.startsWith('http')) {
+      setLocalShareResult({ slug: '', shareUrl: explicitUrl });
       try {
         await navigator.clipboard.writeText(explicitUrl);
-        setShareLabel('Link copied');
-        resetShareLabel();
       } catch {
-        setShareLabel('Copy failed');
-        resetShareLabel();
+        // silent fail
       }
       return;
     }
@@ -3413,50 +3263,45 @@ function ReportClosingCTA({
     const slug = raw.shareSlug ?? raw.share_slug;
     if (typeof slug === 'string' && slug) {
       const url = `${window.location.origin}/share/${slug}`;
+      setLocalShareResult({ slug, shareUrl: url });
       try {
         await navigator.clipboard.writeText(url);
-        setShareLabel('Link copied');
-        resetShareLabel();
       } catch {
-        setShareLabel('Copy failed');
-        resetShareLabel();
+        // silent fail
       }
       return;
     }
 
     if (window.location.pathname.includes('/share/')) {
+      setLocalShareResult({ slug: '', shareUrl: window.location.href });
       try {
         await navigator.clipboard.writeText(window.location.href);
-        setShareLabel('Link copied');
-        resetShareLabel();
       } catch {
-        setShareLabel('Copy failed');
-        resetShareLabel();
+        // silent fail
       }
       return;
     }
 
     if (onShare && analysisId) {
+      setLocalIsSharing(true);
       try {
         const result = await onShare(analysisId);
+        setLocalShareResult({ slug: result.slug, shareUrl: result.shareUrl });
         const url = result.shareUrl ?? `${window.location.origin}/share/${result.slug}`;
         await navigator.clipboard.writeText(url);
-        setShareLabel('Link copied');
-        resetShareLabel();
       } catch {
-        setShareLabel('Copy failed');
-        resetShareLabel();
+        // silent fail
+      } finally {
+        setLocalIsSharing(false);
       }
       return;
     }
 
     try {
+      setLocalShareResult({ slug: '', shareUrl: window.location.href });
       await navigator.clipboard.writeText(window.location.href);
-      setShareLabel('Link copied');
-      resetShareLabel();
     } catch {
-      setShareLabel('Copy failed');
-      resetShareLabel();
+      // silent fail
     }
   }
 
@@ -3477,6 +3322,9 @@ function ReportClosingCTA({
           <Target className="w-5 h-5 text-amber-600/70" />
         </div>
         <h2 className="text-xl sm:text-2xl font-bold text-slate-900">One last check before you decide</h2>
+        {isBasic && (
+          <p className="text-xs text-stone-400 mt-0.5">Basic shows listing signals — Full Analysis adds condition, market comparison, and risk depth.</p>
+        )}
       </div>
 
       {/* Core message */}
@@ -3516,12 +3364,12 @@ function ReportClosingCTA({
               type="button"
               onClick={handleShare}
               disabled={effectiveIsSharing}
-              className="px-6 py-3 bg-slate-900 hover:bg-slate-700 disabled:bg-slate-400 text-white font-semibold text-sm rounded-xl transition-colors cursor-pointer w-full sm:w-auto"
+              className="px-6 py-3 bg-slate-900 hover:bg-slate-700 disabled:bg-slate-400 text-white font-semibold text-sm rounded-xl transition-colors cursor-pointer w-full sm:w-auto min-w-[11rem] text-center"
             >
-              {effectiveIsSharing ? 'Generating share link...' : shareLabel}
+              {effectiveIsSharing ? 'Generating share link...' : 'Share Report'}
             </button>
           ) : (
-            <div className="flex items-center gap-2 bg-green-50 text-green-700 px-4 py-2 rounded-full w-fit">
+            <div className="flex items-center justify-center gap-2 bg-green-50 text-green-700 px-4 py-2 rounded-full min-w-[11rem] text-center">
               {effectiveCopied ? (
                 <>
                   <CheckCircle size={14} />
@@ -3544,6 +3392,15 @@ function ReportClosingCTA({
                 </>
               )}
             </div>
+          )}
+          {onUpgrade && (
+            <button
+              type="button"
+              onClick={onUpgrade}
+              className="px-6 py-3 bg-yellow-500 hover:bg-yellow-400 text-stone-900 font-semibold text-sm rounded-xl transition-colors cursor-pointer w-full sm:w-auto"
+            >
+              Unlock Full Analysis
+            </button>
           )}
           {mode !== 'extension' && (
             <button
@@ -3676,6 +3533,141 @@ function ReportClosingCTA({
 }
 
 // ── Basic Report Components ────────────────────────────────────────────────────
+
+// ── ListingSignalsSection — "Listing Signals"（US Basic v2）────────────────────
+function ListingSignalsSection({ report }: { report: NormalizedReport }) {
+  const section = report.sections.find((s) => s.id === 'listing-signals');
+  if (!section || section.items.length === 0) return null;
+
+  return (
+    <div className="bg-white border border-stone-100 rounded-2xl p-5 sm:p-6 mb-8 shadow-[0_1px_4px_rgba(0,0,0,0.04)] animate-in fade-in slide-in-from-bottom-8 duration-700 ease-out">
+      <div className="flex items-center gap-3 mb-6">
+        <div className="w-10 h-10 rounded-xl bg-blue-50 flex items-center justify-center shrink-0">
+          <Signal className="w-5 h-5 text-blue-500" />
+        </div>
+        <div>
+          <h2 className="text-xl sm:text-2xl font-bold text-slate-900">
+            {section.title || 'Listing Signals'}
+          </h2>
+          {section.subtitle && (
+            <p className="text-xs sm:text-sm text-stone-500 mt-0.5">{section.subtitle}</p>
+          )}
+        </div>
+      </div>
+      <ul className="space-y-3">
+        {section.items.map((item, i) => (
+          <li key={i} className="flex items-start gap-3 text-sm text-slate-700">
+            <div className="w-5 h-5 rounded-full bg-blue-100 flex items-center justify-center shrink-0 mt-0.5">
+              <span className="text-xs font-bold text-blue-600">{i + 1}</span>
+            </div>
+            <div className="flex-1 min-w-0">
+              <span className="font-semibold text-slate-800">{item.title}</span>
+              {item.description && (
+                <span className="text-slate-500"> — {item.description}</span>
+              )}
+            </div>
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
+// ── WhatsMissingSection — "What's Missing"（US Basic v2）─────────────────────
+function WhatsMissingSection({ report }: { report: NormalizedReport }) {
+  const section = report.sections.find((s) => s.id === 'whats-missing');
+  if (!section || section.items.length === 0) return null;
+
+  return (
+    <div className="bg-white border border-stone-100 rounded-2xl p-5 sm:p-6 mb-8 shadow-[0_1px_4px_rgba(0,0,0,0.04)] animate-in fade-in slide-in-from-bottom-8 duration-700 ease-out">
+      <div className="flex items-center gap-3 mb-6">
+        <div className="w-10 h-10 rounded-xl bg-amber-50 flex items-center justify-center shrink-0">
+          <AlertCircle className="w-5 h-5 text-amber-500" />
+        </div>
+        <div>
+          <h2 className="text-xl sm:text-2xl font-bold text-slate-900">
+            {section.title || "What's Missing"}
+          </h2>
+        </div>
+      </div>
+      <div className="text-[10px] font-semibold text-amber-600 uppercase tracking-widest mb-3">
+        Still needs verification
+      </div>
+      <ul className="space-y-2">
+        {section.items.map((item, i) => (
+          <li key={i} className="flex items-start gap-2 text-sm text-slate-700">
+            <span className="text-amber-400 mt-1 shrink-0">—</span>
+            <span>{item.title}</span>
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
+// ── KeyThingsToCheckSection — "Key Things To Check"（US Basic v2）────────────
+function KeyThingsToCheckSection({ report }: { report: NormalizedReport }) {
+  const section = report.sections.find((s) => s.id === 'key-things-to-check');
+  if (!section || section.items.length < 2) return null;
+
+  return (
+    <div className="bg-white border border-stone-100 rounded-2xl p-5 sm:p-6 mb-8 shadow-[0_1px_4px_rgba(0,0,0,0.04)] animate-in fade-in slide-in-from-bottom-8 duration-700 ease-out">
+      <div className="flex items-start gap-3 mb-5">
+        <div className="w-10 h-10 rounded-xl bg-amber-50 flex items-center justify-center shrink-0">
+          <Target className="w-5 h-5 text-amber-500" />
+        </div>
+        <div className="flex-1 min-w-0">
+          <h2 className="text-base sm:text-lg font-bold text-slate-900">
+            {section.title || 'Key Things To Check'}
+          </h2>
+          {section.subtitle && (
+            <p className="text-xs sm:text-sm text-stone-500 mt-0.5">{section.subtitle}</p>
+          )}
+        </div>
+      </div>
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-3">
+        {section.items.map((item, i) => (
+          <div
+            key={i}
+            className="border border-stone-100 rounded-xl p-4 bg-stone-50/40 flex flex-col"
+          >
+            <div className="flex items-center gap-2 mb-2">
+              <span
+                className={`shrink-0 rounded-full w-6 h-6 flex items-center justify-center text-[11px] font-bold ${
+                  i === 0
+                    ? 'bg-red-500 text-white'
+                    : i === 1
+                    ? 'bg-amber-500 text-white'
+                    : 'bg-stone-400 text-white'
+                }`}
+              >
+                {i + 1}
+              </span>
+              <h3 className="text-sm font-semibold text-slate-900 leading-snug">
+                {item.title}
+              </h3>
+            </div>
+            {item.description && (
+              <p className="text-xs text-stone-600 leading-relaxed mb-3">
+                {item.description}
+              </p>
+            )}
+            {item.action && (
+              <div className="mt-auto pt-3 border-t border-stone-100">
+                <div className="text-[10px] font-semibold text-stone-500 uppercase tracking-widest mb-1">
+                  What to do
+                </div>
+                <p className="text-xs text-slate-700 leading-relaxed">
+                  {item.action}
+                </p>
+              </div>
+            )}
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
 
 // ── WhatWeKnowSection ────────────────────────────────────────────────────────
 function WhatWeKnowSection({ report }: { report: NormalizedReport }) {
@@ -3837,12 +3829,78 @@ function ListingClaimsSection({ report }: { report: NormalizedReport }) {
 }
 
 // ── BasicCTA ──────────────────────────────────────────────────────────────────
-function BasicCTA({ report, analysisId, mode, onUpgrade }: {
+// Button action types for upgrade flow
+export type UpgradeButtonAction = 'view' | 'disabled' | 'signIn' | 'checkout' | 'start';
+
+interface UpgradeButtonState {
+  label: string;
+  action: UpgradeButtonAction;
+  disabled: boolean;
+}
+
+interface BasicCTAProps {
   report: NormalizedReport;
   analysisId?: string;
   mode?: 'web' | 'extension';
   onUpgrade?: () => void;
-}) {
+  /** User auth status */
+  authStatus?: 'logged_out' | 'logging_in' | 'logged_in';
+  /** Available credits */
+  credits?: number;
+  /** Whether this listing already has a full report */
+  hasFullReport?: boolean;
+  /** Whether full analysis is currently running */
+  isFullRunning?: boolean;
+  /** Callback for sign-in action */
+  onSignIn?: () => void;
+  /** Callback for checkout/purchase action */
+  onOpenCheckout?: () => void;
+  /** Callback for viewing existing full report */
+  onViewFullReport?: () => void;
+}
+
+/**
+ * Unified button state selector following the priority order:
+ * 1. hasFullReport → "View Full Report"
+ * 2. isFullRunning → "Generating Full Report..." (disabled)
+ * 3. authStatus !== 'logged_in' → "Sign in to Unlock Full Analysis"
+ * 4. credits <= 0 → "Get More Full Checks"
+ * 5. Otherwise → "Unlock Full Analysis"
+ */
+function getUpgradeButtonState(props: BasicCTAProps): UpgradeButtonState {
+  if (props.hasFullReport) {
+    return { label: 'View Full Report', action: 'view', disabled: false };
+  }
+  if (props.isFullRunning) {
+    return { label: 'Generating Full Report...', action: 'disabled', disabled: true };
+  }
+  if (props.authStatus !== 'logged_in') {
+    return { label: 'Sign in to Unlock Full Analysis', action: 'signIn', disabled: false };
+  }
+  if (!props.credits || props.credits <= 0) {
+    return { label: 'Get More Full Checks', action: 'checkout', disabled: false };
+  }
+  return { label: 'Unlock Full Analysis', action: 'start', disabled: false };
+}
+
+function BasicCTA({
+  report,
+  analysisId,
+  mode,
+  onUpgrade,
+  authStatus,
+  credits,
+  hasFullReport,
+  isFullRunning,
+  onSignIn,
+  onOpenCheckout,
+  onViewFullReport,
+}: BasicCTAProps) {
+  // 网页端不显示 BasicCTA
+  if (mode !== 'extension') {
+    return null;
+  }
+
   function handleAnalyseAnother() {
     if (mode === 'extension') return;
     if (window.history.length > 1) {
@@ -3854,8 +3912,42 @@ function BasicCTA({ report, analysisId, mode, onUpgrade }: {
 
   // Pull CTA content from the adapter-generated section
   const ctaSection = report.sections.find((s) => s.id === 'basic-cta');
-  const ctaTitle = ctaSection?.title || 'Unlock Full Analysis';
-  const ctaBody = ctaSection?.items?.[0]?.title || 'Basic shows what the listing says and what still needs verification. Full Analysis goes deeper into photos, price confidence, legal and maintenance risks, carrying-cost assumptions, and whether this property is actually worth viewing.';
+  const ctaTitle = ctaSection?.title || 'Want the full picture?';
+  const ctaBody = ctaSection?.items?.[0]?.title ||
+    'Basic shows what this listing reveals and what still needs asking. Unlock Full Analysis for condition risk analysis, price confidence verdict, carrying-cost breakdown, and whether this property is actually worth viewing.';
+
+  // Unified button state
+  const buttonState = getUpgradeButtonState({
+    authStatus,
+    credits,
+    hasFullReport,
+    isFullRunning,
+  });
+
+  // Handle primary button click based on action
+  function handlePrimaryClick() {
+    switch (buttonState.action) {
+      case 'view':
+        onViewFullReport?.();
+        break;
+      case 'signIn':
+        onSignIn?.();
+        break;
+      case 'checkout':
+        onOpenCheckout?.();
+        break;
+      case 'disabled':
+        // Do nothing
+        break;
+      case 'start':
+      default:
+        onUpgrade?.();
+        break;
+    }
+  }
+
+  // Show loading spinner for generating state
+  const isGenerating = buttonState.action === 'disabled';
 
   return (
     <div className="bg-[#282828] rounded-2xl p-6 sm:p-8 md:p-10 mb-8 overflow-hidden" style={{ border: '1px solid rgba(218, 165, 32, 0.3)' }}>
@@ -3871,12 +3963,23 @@ function BasicCTA({ report, analysisId, mode, onUpgrade }: {
           <div className="flex flex-col sm:flex-row gap-3">
             <button
               type="button"
-              onClick={onUpgrade}
-              className="px-6 py-3 bg-yellow-500 hover:bg-yellow-400 text-stone-900 font-semibold text-sm rounded-xl transition-colors cursor-pointer"
+              onClick={handlePrimaryClick}
+              disabled={buttonState.disabled}
+              className={`px-6 py-3 bg-yellow-500 hover:bg-yellow-400 text-stone-900 font-semibold text-sm rounded-xl transition-colors ${
+                buttonState.disabled ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer'
+              }`}
             >
-              Unlock Full Analysis
+              {isGenerating && (
+                <span className="inline-block w-4 h-4 mr-2 align-middle">
+                  <svg className="animate-spin w-4 h-4" viewBox="0 0 24 24" fill="none">
+                    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                    <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
+                  </svg>
+                </span>
+              )}
+              {buttonState.label}
             </button>
-            {mode !== 'extension' && (
+            {mode !== 'extension' && buttonState.action !== 'view' && (
               <button
                 type="button"
                 onClick={handleAnalyseAnother}
@@ -3886,6 +3989,11 @@ function BasicCTA({ report, analysisId, mode, onUpgrade }: {
               </button>
             )}
           </div>
+          {buttonState.action === 'disabled' && (
+            <p className="text-stone-400 text-xs mt-3">
+              This usually takes 1–3 minutes.
+            </p>
+          )}
         </div>
       </div>
     </div>
@@ -4070,7 +4178,7 @@ function VerifiedFromListingSection({ report, viewModel: _viewModel }: {
     'Basement condition and permitted use',
     'DOB / HPD / ECB records',
     'Roof / boiler / electrical age',
-    'Rent roll and lease documents',
+    'Legal-use documents and occupancy records',
     'Insurance and utility costs',
   ];
 
@@ -4132,9 +4240,45 @@ interface NewReportUIProps {
   listingAddress?: string;
   /** Report type: 'basic' | 'full' */
   reportType?: string;
+  /** User auth status */
+  authStatus?: 'logged_out' | 'logging_in' | 'logged_in';
+  /** Available credits */
+  credits?: number;
+  /** Whether this listing already has a full report */
+  hasFullReport?: boolean;
+  /** Whether full analysis is currently running */
+  isFullRunning?: boolean;
+  /** Callback for sign-in action */
+  onSignIn?: () => void;
+  /** Callback for checkout/purchase action */
+  onOpenCheckout?: () => void;
+  /** Callback for viewing existing full report */
+  onViewFullReport?: () => void;
 }
 
-export function NewReportUI({ report, viewModel, isBasic: isBasicProp, mode, showBackButton, onShare, analysisId, shareState, onShareClick, onUpgrade, userId, listingFingerprint, listingAddress, reportType }: NewReportUIProps) {
+export function NewReportUI({
+  report,
+  viewModel,
+  isBasic: isBasicProp,
+  mode,
+  showBackButton,
+  onShare,
+  analysisId,
+  shareState,
+  onShareClick,
+  onUpgrade,
+  userId,
+  listingFingerprint,
+  listingAddress,
+  reportType,
+  authStatus,
+  credits,
+  hasFullReport,
+  isFullRunning,
+  onSignIn,
+  onOpenCheckout,
+  onViewFullReport,
+}: NewReportUIProps) {
   const { sections, highlights, quickFacts, hero } = report;
 
   // Resolve isBasic: explicit prop wins; fall back to viewModel.meta.isBasic
@@ -4174,39 +4318,49 @@ export function NewReportUI({ report, viewModel, isBasic: isBasicProp, mode, sho
               window.location.href = '/';
             }
           }}
-          className="mb-4 text-sm text-stone-500 hover:text-stone-900 flex items-center gap-1.5 transition-colors cursor-pointer"
+          className="group flex items-center gap-3 text-stone-500 hover:text-stone-900 transition-colors mb-4"
         >
-          Back to reports
+          <div className="w-8 h-8 rounded-full border border-stone-200 flex items-center justify-center bg-white/50 backdrop-blur-md group-hover:bg-white transition-colors">
+            <ArrowLeft size={14} strokeWidth={1.5} />
+          </div>
+          <span className="text-xs font-medium">Back to Profile</span>
         </button>
       )}
 
       {/* ── Basic Report Layout ─────────────────────────────────────── */}
       {effectiveIsBasic ? (
         <>
-          {/* 1. Hero — Quick Property Check */}
+          {/* 1. Hero */}
           <HeroSection report={report} isBasic={true} />
 
           {/* 2. What We Know */}
           <WhatWeKnowSection report={report} />
 
-          {/* 3. Listing-Stated Monthly Payment — only shown if Zillow data exists */}
-          <MonthlyCostSnapshotSection report={report} />
+          {/* 3. Listing Signals */}
+          <ListingSignalsSection report={report} />
 
-          {/* 4. Listing Claims to Verify */}
-          <ListingClaimsSection report={report} />
+          {/* 4. What's Missing */}
+          <WhatsMissingSection report={report} />
 
-          {/* 5. What Could Change Your Decision */}
-          <BasicDecisionSection report={report} />
+          {/* 5. Key Things To Check */}
+          <KeyThingsToCheckSection report={report} />
 
-          {/* 6. Questions to Ask — capped at 5 in basic mode */}
+          {/* 6. Questions to Ask */}
           <QuestionsToAskSection report={report} viewModel={viewModel} isBasic={true} />
 
-          {/* 7. Unlock Full Analysis CTA */}
+          {/* 7. Unlock Full Analysis */}
           <BasicCTA
             report={report}
             analysisId={analysisId}
             mode={mode}
             onUpgrade={onUpgrade}
+            authStatus={authStatus}
+            credits={credits}
+            hasFullReport={hasFullReport}
+            isFullRunning={isFullRunning}
+            onSignIn={onSignIn}
+            onOpenCheckout={onOpenCheckout}
+            onViewFullReport={onViewFullReport}
           />
         </>
       ) : (
