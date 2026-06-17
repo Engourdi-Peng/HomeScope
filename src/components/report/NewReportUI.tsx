@@ -4392,7 +4392,7 @@ export function NewReportUI({
           <LocationRealityCheckSection report={report} />
 
           {/* 7. Photo & Space Analysis */}
-          {report.raw?.spaceAnalysis || report.raw?.visualAnalysis || report.raw?.photos ? (
+          {report.raw?.photoReview || report.raw?.spaceAnalysis || report.raw?.visualAnalysis || report.raw?.photos ? (
             <PhotoSpaceAnalysisCard raw={report.raw} />
           ) : null}
 

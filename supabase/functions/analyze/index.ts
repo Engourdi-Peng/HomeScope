@@ -1923,9 +1923,38 @@ function extractTitleFromDescription(description: string): string | null {
 
 // ========== Prompts ==========
 
-const STEP1_SYSTEM_PROMPT = `You are a visual property analyst for rental listings.
+const STEP1_SYSTEM_PROMPT = `You are a buyer's photo review assistant for Australian property listings.
 
-Your job is to extract SHORT structured visual signals from the provided photos.
+Your job: Help buyers understand what the photos actually show — the good, the questionable, and what photos simply can't tell you.
+
+Think of it like having a knowledgeable friend look at the photos with you and point out what matters.
+
+================================
+CORE FRAMEWORK
+================================
+
+For each detected area, you provide:
+
+1. WHAT IT LOOKS LIKE
+   - Factual description of what the photos show
+   - Keep it concise and practical
+   
+2. VISIBLE CONCERNS
+   - Things that caught your eye that might need attention
+   - Use cautious language: "may indicate", "appears to be", "noted"
+   - Focus on genuine issues, not nitpicks
+   
+3. CANNOT TELL FROM PHOTOS
+   - What photos genuinely cannot reveal
+   - Be honest about limitations
+   
+4. WHAT TO CHECK NEXT
+   - Actionable next steps for the buyer
+   - Specific things to look for or ask about
+
+================================
+PHOTO AREAS TO DETECT
+================================
 
 Classify each photo into one of:
 - "bedroom"
@@ -1938,147 +1967,145 @@ Classify each photo into one of:
 - "hallway"
 - "storage"
 - "dining"
+- "backyard"
+- "frontyard"
 - "unknown"
 
 ================================
-SCORE DISTRIBUTION — USE FULL RANGE
+HANDLING PHOTO VOLUME
 ================================
 
-Give scores that actually reflect what you see. Not everyone scores 65.
-
-Score ranges:
-- 90-100: Exceptional. Rare. Looks genuinely outstanding.
-- 80-89: Strong. Well-presented, clearly above average.
-- 70-79: Good. Solid, functional, worthwhile.
-- 60-69: Average. Acceptable but nothing special.
-- 50-59: Below average. Noticeable weaknesses.
-- 40-49: Poor. Significant issues visible.
-- Below 40: Very poor. Serious problems.
-
-IMPORTANT: Only give 70+ scores when genuinely justified by what you see.
+When analyzing multiple photos:
+- Focus on the most informative shots
+- Note patterns: if something appears in multiple photos, it's more reliable
+- For repeated room types (e.g., 3 bedroom photos), summarize once with variance noted
+- Do NOT write a paragraph per photo — aggregate by area
+- You may receive photos in batches of up to 20
 
 ================================
-LOW SCORE TRIGGERS — TWO-TIER SYSTEM
+CONFIDENCE LEVELS
 ================================
 
-MAJOR ISSUES → score MUST be below 55:
-- Room is very dark with minimal natural light
-- Visible damage, wear, or deterioration
-- Outdated fixtures throughout
-- Significantly smaller than expected
-
-SEVERE ISSUES → score can go 40–50:
-- Major structural issues visible
-- Signs of neglect or poor maintenance
-- Extremely cramped or uncomfortable
-- Multiple major problems in one space
+"High" — Multiple clear photos of this area
+"Medium" — One clear photo
+"Low" — Partial view, obscured, or low resolution
 
 ================================
-HIGH SCORE TRIGGERS — SCORE SHOULD BE ABOVE 75
+OUTPUT FORMAT
 ================================
 
-If MOST of the following (3 out of 4) are true, score SHOULD be above 75:
-- Modern appliances or recent renovation
-- Good natural light
-- Clean and well-maintained
-- Functional layout with adequate space
+Return JSON only. No markdown. No code fences.
 
-If ALL four are true, score SHOULD be 80 or above.
-
-================================
-FINAL CALIBRATION — PREVENT MID-RANGE CLUSTERING
-================================
-
-If your score ends up between 60–70:
-- Re-evaluate the strongest signals
-- Push the score UP or DOWN decisively
-
-Do NOT leave scores in the 60–70 range unless evidence is genuinely mixed and balanced.
-
-Key principle: Bad spaces should fall below 60. Good spaces should exceed 70.
-Avoid the "safe zone" of 63–68.
-
-SPACE-SPECIFIC SCORING:
-
-Kitchen:
-- Clean, bright, modern appliances, good storage → 70-85
-- Narrow, dark, limited bench space → 40-60
-
-Bathroom:
-- Clean tiles, updated fixtures, well-maintained → 70-85
-- Dated fittings, visible wear → 40-60
-
-Bedroom:
-- Good light, maintained flooring, visible AC → 70-85
-- Small, dark, worn, cluttered → 40-60
-
-Exterior:
-- Maintained yard, usable outdoor area → 70-85
-- Visible wear, poor upkeep → 40-60
-
-Return concise JSON only.
-
-OUTPUT FORMAT:
 {
-  "photos": [
-    {
-      "photoIndex": 0,
-      "areaType": "kitchen",
-      "summary": "Short factual description only",
-      "score": 65
+  "photoReview": {
+    "moduleTitle": "Photo & Condition Review",
+    "moduleSubtitle": "What the photos show, what looks solid, and what still needs checking.",
+    "overallSummary": "One or two sentences on what the full photo set collectively suggests to a careful buyer",
+    "areas": [
+      {
+        "area": "Kitchen",
+        "whatLooksLike": "Compact galley layout with older appliances. Limited bench space visible. Tiles appear dated but clean.",
+        "visibleConcerns": [
+          "Cracks noted in tile grout near sink",
+          "Appliances appear to be original from construction"
+        ],
+        "cannotTellFromPhotos": [
+          "Whether there's water damage under the sink",
+          "Actual condition of cabinetry hinges and drawers",
+          "Functionality of exhaust ventilation"
+        ],
+        "whatToCheckNext": [
+          "Check cabinetry condition by opening all doors and drawers",
+          "Ask when appliances were last replaced",
+          "Test all power points in the kitchen"
+        ],
+        "confidence": "Medium",
+        "photoCount": 2
+      }
+    ],
+    "keyTakeaways": {
+      "solidSigns": [
+        "Property appears clean and reasonably well-presented",
+        "Good natural light noted in living areas"
+      ],
+      "needsAttention": [
+        "Bathroom tiles show signs of age with some grout issues",
+        "Limited storage space throughout"
+      ],
+      "cannotVerify": [
+        "Plumbing condition — no under-sink photos",
+        "Hot water system age and type",
+        "Roof condition — no photos provided"
+      ]
     }
-  ],
+  },
+
+  // Backward-compatible spaceAnalysis (used by existing components)
   "spaceAnalysis": [
     {
       "spaceType": "kitchen",
-      "score": 65,
-      "observations": ["Narrow layout", "Limited bench space", "Storage not visible"]
-    },
-    {
-      "spaceType": "bathroom",
-      "score": 78,
-      "observations": ["Recently updated", "Clean tiles", "Fixtures maintained"]
+      "score": 58,
+      "explanation": "Functional but dated. Limited bench space and older appliances noted.",
+      "photoCount": 2,
+      "observations": ["Compact layout", "Dated tiles", "Limited storage visible"]
     }
   ],
-  "kitchenCondition": "Good" | "Average" | "Poor" | "Unknown",
-  "bathroomCondition": "Good" | "Average" | "Poor" | "Unknown",
-  "renovationLevel": "Modern" | "Mixed" | "Dated" | "Original" | "Unknown",
-  "naturalLight": "Good" | "Medium" | "Low" | "Unknown",
-  "spacePerception": "Spacious" | "Fair" | "Smaller Than Expected" | "Unknown",
-  "maintenanceCondition": "Good" | "Average" | "Questionable" | "Unknown",
-  "cosmeticFlipRisk": "Low" | "Medium" | "High" | "Unknown",
-  "missingKeyAreas": ["area1", "area2"],
-  "photoObservations": ["short observation 1", "short observation 2"],
-  "spatialMetrics": {
-    "buildIntegrity": "Strong" | "Adequate" | "Inconsistent" | "Unknown",
-    "passiveLight": "Excellent" | "Good" | "Fair" | "Poor" | "Unknown",
-    "maintenanceDepth": "Well Maintained" | "Average" | "Superficial" | "Unknown"
-  }
+
+  "totalPhotos": number,
+  "areasDetected": ["kitchen", "bathroom", "bedroom", "living_room", "exterior"]
 }
 
-RULES:
-- Analyze every photo individually
-- Aggregate photos of the same space type in spaceAnalysis
-- Keep all text fields SHORT
-- Use only visible evidence - do not assume
-- Do not add markdown
-- Do not wrap output in code fences
-- If uncertain, use "Needs Comps" when asking price is known but independent comparable sales are missing; use "Unknown" only when the listing price itself is unavailable
-- photoObservations: max 2 items
-- summary: one short sentence only
-- spatialMetrics: evaluate based on overall evidence across all photos
-- spaceAnalysis: only include spaces that have photos, max 3 observations per space
-- Be decisive — avoid defaulting to mid-range scores
-- Strong positives → score above 75
-- Strong negatives → score below 60`;
+================================
+RULES
+================================
+
+- Analyze every photo, but aggregate findings by area
+- Keep WHAT IT LOOKS LIKE to 2-3 sentences max
+- visibleConcerns: max 3 items per area
+- cannotTellFromPhotos: max 3 items per area
+- whatToCheckNext: max 3 items per area
+- keyTakeaways: max 3 items each category
+- Use only visible evidence — do not invent concerns
+- Use cautious language: "appears", "may indicate", "not visible"
+- Do NOT use marketing language like "beautiful", "stunning", "spacious", "renovated"
+- Do NOT estimate repair costs from photos
+- Do NOT wrap output in code fences
+- confidence: "High" = multiple clear photos; "Medium" = one clear photo; "Low" = partial/obscured`;
 
 // ── US Visual Prompt (for Zillow / US market) ────────────────────────────────
 
-const STEP1_US_SYSTEM_PROMPT = `You are a buyer-side visual due diligence analyst for US real estate listings.
+const STEP1_US_SYSTEM_PROMPT = `You are a buyer's photo review assistant for US real estate listings.
 
-Your job is to look at property photos like a buyer's inspector — identify what looks good, what looks questionable, and what is simply not shown.
+Your job: Help buyers understand what the photos actually show — the good, the questionable, and what photos simply can't tell you.
 
-Do NOT write one paragraph per photo. Do NOT output per-photo summaries. You will aggregate all findings into a structured output.
+Think of it like having a knowledgeable friend look at the photos with you and point out what matters.
+
+================================
+CORE FRAMEWORK
+================================
+
+For each detected area, you provide:
+
+1. WHAT IT LOOKS LIKE
+   - Factual description of what the photos show
+   - Keep it concise and practical
+   
+2. VISIBLE CONCERNS
+   - Things that caught your eye that might need attention
+   - Use cautious language: "may indicate", "appears to be", "noted"
+   - Focus on genuine issues, not nitpicks
+   
+3. CANNOT TELL FROM PHOTOS
+   - What photos genuinely cannot reveal
+   - Be honest about limitations
+   
+4. WHAT TO CHECK NEXT
+   - Actionable next steps for the buyer
+   - Specific things to look for or ask about
+
+================================
+PHOTO AREAS TO DETECT
+================================
 
 Classify each photo into one of:
 - "bedroom"
@@ -2097,109 +2124,23 @@ Classify each photo into one of:
 - "unknown"
 
 ================================
-SCORE DISTRIBUTION — USE FULL RANGE
+HANDLING PHOTO VOLUME
 ================================
 
-Give scores that actually reflect what you see. Not everyone scores 65.
-
-Score ranges:
-- 90-100: Exceptional. Rare. Looks genuinely outstanding.
-- 80-89: Strong. Well-presented, clearly above average.
-- 70-79: Good. Solid, functional, worthwhile.
-- 60-69: Average. Acceptable but nothing special.
-- 50-59: Below average. Noticeable weaknesses.
-- 40-49: Poor. Significant issues visible.
-- Below 40: Very poor. Serious problems.
-
-IMPORTANT: Only give 70+ scores when genuinely justified by what you see.
-
-================================
-LOW SCORE TRIGGERS
-================================
-
-MAJOR ISSUES → score MUST be below 55:
-- Room is very dark with minimal natural light
-- Visible damage, wear, or deterioration
-- Outdated fixtures throughout
-- Significantly smaller than expected
-- Signs of water damage or mold
-
-SEVERE ISSUES → score can go 40–50:
-- Major structural issues visible
-- Signs of neglect or poor maintenance
-- Extremely cramped or uncomfortable
-- Multiple major problems in one space
-
-================================
-HIGH SCORE TRIGGERS
-================================
-
-If MOST of the following (3 out of 4) are true, score SHOULD be above 75:
-- Modern appliances or recent renovation
-- Good natural light
-- Clean and well-maintained
-- Functional layout with adequate space
-
-If ALL four are true, score SHOULD be 80 or above.
-
-================================
-VISUAL DUE DILIGENCE FRAMEWORK
-================================
-
-For each detected area, identify:
-
-VISIBLE STRENGTHS (what looks positive):
-- Recent renovation, updated finishes, modern appliances
-- Good natural light, clean surfaces, well-maintained appearance
-- Curb appeal, neat landscaping, new roof, clean driveway
-- Updated kitchen/bathroom, refinished floors, fresh paint
-
-VISIBLE CONCERNS (potential defects — use cautious language):
-- Dated fixtures, worn flooring, cracked tiles, peeling paint
-- Exposed pipes or wiring in basement/utility areas
-- Low ceilings, small rooms, cramped layout
-- Water stains, discoloration, mold/mildew signs
-- Old windows, single-pane glass, damaged frames
-- Virtual staging detected (furniture/decor digitally added)
-- Signs of cosmetic-only flip (new surfaces over old structure)
-- Dark rooms with minimal light
-- Cracks in walls or ceilings (photo quality limits what you can see)
-
-MISSING VIEWS (important inspection areas not shown):
-- Roof close-up
-- Electrical panel (breaker box)
-- Boiler / water heater
-- Under-sink plumbing (kitchen and bathroom)
-- Basement corners and foundation walls
-- Attic or crawl space
-- Garage interior
-- Rear exterior and drainage grading
-- Window frames and seals
-- HVAC equipment
-
-================================
-STAGING SIGNALS
-================================
-
-Look for signs of virtual staging or heavy editing:
-- Furniture that looks too perfect / digitally placed
-- Rooms that are too empty or too perfectly furnished
-- Obvious digital furniture insertion (shadows inconsistent, edges off)
-- Photo angles that deliberately hide limitations
-
-Also note: an empty listing may mean it is tenant-occupied or recently vacated — worth asking.
-
-================================
-PHOTO COMPRESSION STRATEGY
-================================
-
-You are analyzing multiple photos. Here is how to handle volume:
-- You will receive photos in batches of up to 20
-- Focus on the strongest signals: repeat observations across photos are more reliable
-- For duplicate angles/rooms, note once and indicate "consistent across X photos"
-- Prioritize exterior, kitchen, bathroom, and basement coverage
-- For repeated room types (e.g., 4 bedroom photos), summarize once with a note on variance
+When analyzing multiple photos:
+- Focus on the most informative shots
+- Note patterns: if something appears in multiple photos, it's more reliable
+- For repeated room types (e.g., 4 bedroom photos), summarize once with variance noted
 - Do NOT write a paragraph per photo — aggregate by area
+- You may receive photos in batches of up to 20
+
+================================
+CONFIDENCE LEVELS
+================================
+
+"High" — Multiple clear photos of this area
+"Medium" — One clear photo
+"Low" — Partial view, obscured, or low resolution
 
 ================================
 OUTPUT FORMAT
@@ -2208,96 +2149,81 @@ OUTPUT FORMAT
 Return JSON only. No markdown. No code fences.
 
 {
-  "totalPhotos": number,
-  "areasDetected": ["area1", "area2"],
-  "overallPhotoTakeaway": "One sentence summarizing what the full photo set collectively suggests",
-
-  "topVisualStrengths": [
-    "Recent kitchen update with modern finishes visible",
-    "Hardwood floors in main living areas",
-    "Good natural light in living room"
-  ],
-  "topVisualConcerns": [
-    "Small bedrooms — limited space for queen/king beds",
-    "Exposed pipes visible in basement/storage area",
-    "Old single-pane windows noted throughout"
-  ],
-  "importantMissingViews": [
-    "Roof close-up",
-    "Electrical panel",
-    "Boiler / water heater",
-    "Under-sink plumbing in kitchen"
-  ],
-
-  "photos": [
-    {
-      "photoIndex": 0,
-      "areaType": "kitchen",
-      "summary": "Short factual description only",
-      "score": 65
+  "photoReview": {
+    "moduleTitle": "Photo & Condition Review",
+    "moduleSubtitle": "What the photos show, what looks solid, and what still needs checking.",
+    "overallSummary": "One or two sentences on what the full photo set collectively suggests to a careful buyer",
+    "areas": [
+      {
+        "area": "Kitchen",
+        "whatLooksLike": "Recently updated with modern finishes. Stainless appliances visible. Layout appears functional.",
+        "visibleConcerns": [
+          "No close-up of plumbing under sink visible",
+          "Appliance age not confirmed from photos"
+        ],
+        "cannotTellFromPhotos": [
+          "Whether there's water damage under the sink",
+          "Actual condition of the electrical outlets",
+          "Age or condition of appliances"
+        ],
+        "whatToCheckNext": [
+          "Ask about appliance ages and warranties",
+          "Request to see under-sink plumbing",
+          "Check if outlets are updated to code"
+        ],
+        "confidence": "Medium",
+        "photoCount": 2
+      }
+    ],
+    "keyTakeaways": {
+      "solidSigns": [
+        "Recent updates visible in kitchen and bathroom",
+        "Hardwood floors appear in main living areas"
+      ],
+      "needsAttention": [
+        "Exposed pipes in basement suggest older infrastructure",
+        "Limited natural light in rear bedroom"
+      ],
+      "cannotVerify": [
+        "Roof condition — no close-up photos provided",
+        "Electrical panel age and capacity",
+        "Water heater and HVAC systems"
+      ]
     }
-  ],
+  },
 
-  // Backward-compatible spaceAnalysis (used by ResultCard and extension flow)
+  // Backward-compatible spaceAnalysis (used by existing components)
   "spaceAnalysis": [
     {
       "spaceType": "kitchen",
-      "score": 65,
-      "observations": ["Narrow layout", "Limited counter space", "Older appliances visible"]
-    }
-  ],
-
-  "areas": [
-    {
-      "area": "Kitchen",
+      "score": 72,
+      "explanation": "Modern finishes visible, but limited view of infrastructure",
       "photoCount": 2,
-      "conditionScore": 75,
-      "confidence": "High" | "Medium" | "Low",
-      "strengths": ["Recently updated finishes", "Stainless appliances visible", "Bright layout"],
-      "concerns": ["No close-up of plumbing under sink", "Appliance age not visible"],
-      "missingViews": ["Under-sink plumbing", "Electrical outlets", "Signs of water damage under sink"],
-      "buyerTakeaway": "Kitchen looks recently updated, but plumbing and appliance age should be verified before offering."
-    },
-    {
-      "area": "Basement",
-      "photoCount": 1,
-      "conditionScore": 45,
-      "confidence": "Low",
-      "strengths": [],
-      "concerns": ["Only storage area visible in photo", "Exposed pipes suggest older mechanical infrastructure"],
-      "missingViews": ["Foundation walls", "Moisture or water intrusion signs", "Sump pump", "Electrical panel"],
-      "buyerTakeaway": "Basement appears partially usable, but moisture history and mechanical systems should be verified."
+      "observations": ["Stainless appliances", "Updated countertops", "No under-sink view"]
     }
   ],
 
-  "stagingSignals": {
-    "hasVirtualStaging": false,
-    "notes": []
-  },
-
-  "inspectionPrioritiesFromPhotos": [
-    "Verify electrical panel age and amperage",
-    "Check boiler and water heater age",
-    "Inspect basement for moisture or water intrusion"
-  ]
+  "totalPhotos": number,
+  "areasDetected": ["kitchen", "bathroom", "living_room"]
 }
 
-RULES:
-- Analyze every photo individually (photos array)
-- Aggregate findings by room/area (areas array)
-- Do NOT invent defects that are not visible — use cautious language ("may indicate", "appears", "not visible", "should be verified")
+================================
+RULES
+================================
+
+- Analyze every photo, but aggregate findings by area
+- Keep WHAT IT LOOKS LIKE to 2-3 sentences max
+- visibleConcerns: max 3 items per area
+- cannotTellFromPhotos: max 3 items per area
+- whatToCheckNext: max 3 items per area
+- keyTakeaways: max 3 items each category
+- Use only visible evidence — do not invent concerns
+- Use cautious language: "appears", "may indicate", "not visible"
+- Do NOT use marketing language like "beautiful", "stunning", "move-in ready"
 - Do NOT estimate repair costs from photos
-- Do NOT write one paragraph per photo
-- Keep strengths/concerns/missingViews to max 3 items per area
-- topVisualStrengths / topVisualConcerns: max 3 items each
-- importantMissingViews: max 5 items
-- inspectionPrioritiesFromPhotos: max 4 items
-- Be decisive — avoid defaulting to mid-range scores
-- Use only visible evidence — do not assume
-- Do not add markdown
-- Do not wrap output in code fences
-- If uncertain, use "Needs Comps" when asking price is known but independent comparable sales are missing; use "Unknown" only when the listing price itself is unavailable
-- confidence: "High" = multiple clear photos of this area; "Medium" = one clear photo; "Low" = partial/obscured view or low resolution`;
+- Do NOT wrap output in code fences
+- confidence: "High" = multiple clear photos; "Medium" = one clear photo; "Low" = partial/obscured`;
+
 
 // ── US Step 2 Prompts (for Zillow / US market) ──────────────────────────────
 
@@ -2832,24 +2758,23 @@ Your reason should be 2-3 sentences in plain American voice. Focus on the key re
 ================================
 PHOTO ANALYSIS INJECTION
 ================================
-The visual analysis data provided above (from Step 1 photo analysis) contains photo-level and area-level assessment. Use this data to populate the photo_analysis section of your output.
+The visual analysis data provided above (from Step 1 photo analysis) contains the new photoReview structure with buyer-focused feedback. Use this data to populate the photo_analysis section of your output.
 
 Your photo_analysis output should summarize:
-1. Overall photo takeaway — what the full set of photos collectively suggests
-2. Key visual strengths — top positive signals across all photos
-3. Key visual concerns — top risk signals across all photos
-4. Important missing views — what the photos do not show that buyers should verify
-5. Per-area summary — strengths, concerns, missing views, and buyer takeaway for each detected area
-6. Inspection priorities — what the photos tell you to prioritize on an in-person visit
+1. Overall summary — what the full set of photos collectively suggests
+2. Solid Signs — what looks good/positive in the photos
+3. Needs Attention — what requires caution or follow-up
+4. Cannot Verify — what photos simply cannot confirm
+5. Per-area breakdown — what each area looks like, visible concerns, and next steps
 
 Rules:
 - Do NOT write one paragraph per photo
 - Aggregate findings by room/area
-- Limit each area to max 3 strengths, 3 concerns, 3 missing views
-- Do NOT invent defects not visible in photos — use cautious language ("may indicate", "appears", "not visible", "not visible in photos")
+- Limit each area to max 3 items in each category
+- Do NOT invent defects not visible in photos — use cautious language ("may indicate", "appears", "not visible")
 - Do NOT estimate repair costs from photos
 - Prioritize deal-changing photo signals over cosmetic observations
-- Use Step 1's areas[], topVisualStrengths[], topVisualConcerns[], importantMissingViews[], and inspectionPrioritiesFromPhotos[] to populate this section
+- Use Step 1's photoReview.areas[], photoReview.keyTakeaways.solidSigns[], photoReview.keyTakeaways.needsAttention[], and photoReview.keyTakeaways.cannotVerify[] to populate this section
 
 ================================
 PRICE ASSESSMENT — COMBINE SIZE, $/SQFT AND CONDITION
@@ -6580,7 +6505,7 @@ function buildStep1Messages(imageUrls: string[] = [], batchIndex = 0) {
  * Adjusts photoIndex to be global and merges spaceAnalysis by spaceType.
  */
 function mergeVisualAnalysis(
-  results: Array<{ photos?: Array<Record<string, unknown>>; spaceAnalysis?: Array<Record<string, unknown>> }>
+  results: Array<{ photos?: Array<Record<string, unknown>>; spaceAnalysis?: Array<Record<string, unknown>>; photoReview?: Record<string, unknown> }>
 ): Record<string, unknown> {
   const allPhotos: Array<Record<string, unknown>> = [];
   const spaceAnalysisMap = new Map<string, Record<string, unknown>>();
@@ -6616,9 +6541,19 @@ function mergeVisualAnalysis(
     }
   }
 
+  // Merge photoReview (take the first non-empty result)
+  let photoReview: Record<string, unknown> | null = null;
+  for (const result of results) {
+    if (result?.photoReview && Object.keys(result.photoReview).length > 0) {
+      photoReview = result.photoReview;
+      break;
+    }
+  }
+
   return {
     photos: allPhotos,
     spaceAnalysis: Array.from(spaceAnalysisMap.values()),
+    ...(photoReview && { photoReview }),
   };
 }
 
@@ -9910,6 +9845,7 @@ ${optionalDetails.askingPrice ? `Asking Price: ${optionalDetails.askingPrice}\n`
             }
           : { shouldDisplay: false, phrases: [] },
         photos: Array.isArray(visualAnalysis?.photos) ? visualAnalysis.photos : [],
+        photoReview: visualAnalysis?.photoReview ?? null,
         visualAnalysis: visualAnalysis
           ? {
               renovationLevel: visualAnalysis.renovationLevel ?? null,

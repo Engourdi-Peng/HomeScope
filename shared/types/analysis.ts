@@ -368,6 +368,29 @@ export interface VisualAnalysisResult {
   overallCondition: string;
 }
 
+// ===== 8b. Photo & Condition Review (NEW) =====
+export interface PhotoConditionReviewArea {
+  area: string;
+  whatLooksLike: string;
+  visibleConcerns: string[];
+  cannotTellFromPhotos: string[];
+  whatToCheckNext: string[];
+  confidence: 'High' | 'Medium' | 'Low';
+  photoCount?: number;
+}
+
+export interface PhotoConditionReview {
+  moduleTitle: string;
+  moduleSubtitle: string;
+  overallSummary: string;
+  areas: PhotoConditionReviewArea[];
+  keyTakeaways: {
+    solidSigns: string[];
+    needsAttention: string[];
+    cannotVerify: string[];
+  };
+}
+
 // ===== 9. Reality Check 模块 =====
 export interface RealityCheck {
   should_display: boolean;
@@ -490,6 +513,8 @@ export interface AnalysisResult {
     photoCount: number;
     observations: string[];
   }>;
+  // Photo & Condition Review (NEW) - 买家视角的照片检查模块
+  photoReview?: PhotoConditionReview | null;
   propertyStrengths?: string[];
   potentialIssues?: string[];
 
