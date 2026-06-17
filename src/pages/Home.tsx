@@ -19,12 +19,12 @@ const PRODUCTS = [
   {
     id: 'starter',
     title: 'Starter',
-    price: 'US$9.99',
-    reportCount: '1 FULL REPORT',
-    description: 'Best for checking one property before booking a showing.',
+    price: '$9.99',
+    reportCount: '1 FULL PROPERTY REPORT',
+    description: 'Best for checking one property before you spend time on a showing.',
     features: [
-      'Full property risk analysis',
-      'Photo & space analysis',
+      'Full listing risk review',
+      'Photo & condition review',
       'Price confidence check',
       'Questions to ask the agent',
     ],
@@ -34,14 +34,14 @@ const PRODUCTS = [
   {
     id: 'standard',
     title: 'Standard',
-    price: 'US$19.99',
-    reportCount: '3 FULL REPORTS',
-    description: 'Best for buyers with a few homes on their shortlist.',
+    price: '$19.99',
+    reportCount: '3 FULL PROPERTY REPORTS',
+    description: 'Best for buyers reviewing a few homes on their shortlist.',
     features: [
       'Everything in Starter',
       'Lower cost per report',
-      'Saved report access',
-      'Shareable report link',
+      'Save reports for later review',
+      'Shareable report links',
     ],
     buttonText: 'Buy 3 Reports',
     isPopular: true,
@@ -49,14 +49,14 @@ const PRODUCTS = [
   {
     id: 'pro',
     title: 'Pro',
-    price: 'US$49.99',
-    reportCount: '10 FULL REPORTS',
-    description: 'Best for active buyers searching across multiple listings.',
+    price: '$49.99',
+    reportCount: '10 FULL PROPERTY REPORTS',
+    description: 'Best for active buyers reviewing many listings during a serious home search.',
     features: [
       'Everything in Standard',
-      'Best value per report',
       'Lowest cost per report',
-      'Useful for serious home searches',
+      'More reports for active searching',
+      'Review more properties before you tour',
     ],
     buttonText: 'Buy 10 Reports',
     isPopular: false,
@@ -706,10 +706,10 @@ export function Home() {
         <div className="mb-16 animate-in fade-in slide-in-from-bottom-8 duration-700 ease-out">
           <div className="text-center mb-10">
             <h2 className="text-center text-sm font-semibold uppercase tracking-widest text-stone-500 mb-4">
-              One Report Can Save You Thousands
+              Spot Costly Property Risks Before You Tour
             </h2>
             <p className="text-center text-stone-400 font-light mb-8">
-              Avoid bad purchases, save time, and make confident home buying decisions.
+              Review listing risks, photo signals, price confidence, and key questions before you book a showing.
             </p>
           </div>
           <div className="grid grid-cols-1 md:grid-cols-3 gap-6 md:gap-8 max-w-5xl mx-auto">

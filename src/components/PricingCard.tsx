@@ -86,6 +86,9 @@ export function PricingCard({
           {isLoading ? 'Processing...' : buttonText}
         </span>
       </button>
+      <p className="text-[11px] text-[#a8a29e] text-center mt-2">
+        Taxes may apply at checkout.
+      </p>
     </div>
   );
 }
