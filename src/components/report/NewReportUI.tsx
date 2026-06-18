@@ -3121,6 +3121,7 @@ function ReportClosingCTA({
   reportType,
   isBasic,
   onUpgrade,
+  hideBottomSection,
 }: {
   report: NormalizedReport;
   onShare?: (analysisId: string) => Promise<{ slug: string; shareUrl: string }>;
