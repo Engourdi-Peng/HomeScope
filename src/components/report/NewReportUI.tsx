@@ -3136,6 +3136,8 @@ function ReportClosingCTA({
   isBasic?: boolean;
   /** Show "Unlock Full Analysis" upgrade button (used in Basic layout) */
   onUpgrade?: () => void;
+  /** Hide share and feedback sections for public share page */
+  hideBottomSection?: boolean;
 }) {
   // ── Share state (local fallback when shareState prop not provided) ───────────
   const [localShareResult, setLocalShareResult] = React.useState<{ slug: string; shareUrl: string } | null>(null);
@@ -3312,6 +3314,11 @@ function ReportClosingCTA({
     } else {
       window.location.href = '/';
     }
+  }
+
+  // Hide share and feedback sections for public share page
+  if (hideBottomSection) {
+    return null;
   }
 
   return (
@@ -4254,6 +4261,8 @@ interface NewReportUIProps {
   onOpenCheckout?: () => void;
   /** Callback for viewing existing full report */
   onViewFullReport?: () => void;
+  /** Hide bottom section (share + feedback modules) for public share page */
+  hideBottomSection?: boolean;
 }
 
 export function NewReportUI({
@@ -4278,6 +4287,7 @@ export function NewReportUI({
   onSignIn,
   onOpenCheckout,
   onViewFullReport,
+  hideBottomSection,
 }: NewReportUIProps) {
   const { sections, highlights, quickFacts, hero } = report;
 

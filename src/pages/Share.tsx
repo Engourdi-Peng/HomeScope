@@ -185,6 +185,8 @@ export function SharePage() {
         // 分享页不需要登录相关功能
         authStatus="logged_out"
         credits={0}
+        // 隐藏底部的分享和反馈模块
+        hideBottomSection={true}
       />
     </>
   );

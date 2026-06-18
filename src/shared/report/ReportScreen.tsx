@@ -49,6 +49,8 @@ type ReportScreenProps = {
   onOpenCheckout?: () => void;
   /** Callback for viewing existing full report */
   onViewFullReport?: () => void;
+  /** Hide bottom section (share + feedback modules) for public share page */
+  hideBottomSection?: boolean;
 };
 
 export function ReportScreen({
@@ -69,6 +71,7 @@ export function ReportScreen({
   onSignIn,
   onOpenCheckout,
   onViewFullReport,
+  hideBottomSection,
 }: ReportScreenProps) {
   const isExtension = mode === 'extension';
 
@@ -128,6 +131,7 @@ export function ReportScreen({
         onSignIn={onSignIn}
         onOpenCheckout={onOpenCheckout}
         onViewFullReport={onViewFullReport}
+        hideBottomSection={hideBottomSection}
       />
     );
 
