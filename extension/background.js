@@ -11,13 +11,13 @@ const MAGIC_LINK_REDIRECT = __MAGIC_LINK_REDIRECT__;
 
 // ===== Image collection DISABLED =====
 // REMOVED: chrome.webRequest.onCompleted auto-collected gallery images on page load.
-// Policy: "严禁后台预抓图库图片" — image collection is now exclusively user-triggered.
+// Policy: "严禁后台预抓图库图片" �?image collection is now exclusively user-triggered.
 // All gallery image collection must go through the START_USER_EXTRACTION flow in content.js.
 
-// tabId → listingUrl mapping (valid for service worker lifetime)
+// tabId �?listingUrl mapping (valid for service worker lifetime)
 const _tabListingMap = new Map();
 
-// analysisId → serverConfig mapping (memory, for fast access)
+// analysisId �?serverConfig mapping (memory, for fast access)
 const _analysisServerMap = new Map();
 
 // storage key prefix for server config persistence across SW restarts
@@ -30,6 +30,7 @@ const _oauthFlows = new Map();
 const _basicDedupeSet = new Set();
 
 const LOG_PREFIX = '[HomeScope BG]';
+const DEBUG_MODE = false;
 
 // ── SW keep-alive via chrome.alarms ────────────────────────────────────────
 // Prevents MV3 service worker from being killed during long-running analyze requests.
@@ -38,7 +39,7 @@ const HS_ALIVE_ALARM = 'hs_keep_alive';
 
 chrome.alarms.onAlarm.addListener((alarm) => {
   if (alarm.name === HS_ALIVE_ALARM) {
-    // No-op ping — just keeps SW alive
+    // No-op ping �?just keeps SW alive
     console.debug(`${LOG_PREFIX} [ALIVE] keep-alive tick`);
   }
 });
@@ -85,7 +86,7 @@ function toExtUser(supabaseUser) {
 
 // ── Unified Edge Function request headers ──
 // All /functions/v1/* calls MUST use this helper.
-// - apikey: SUPABASE_ANON_KEY (AU server) or serverConfig.anonKey (US server) — required for all requests
+// - apikey: SUPABASE_ANON_KEY (AU server) or serverConfig.anonKey (US server) �?required for all requests
 // - Authorization: Bearer <user access token> if logged in, otherwise Bearer <anon key> for anonymous access
 function buildSupabaseFunctionHeaders(accessToken, serverConfig) {
   const anonKey = serverConfig?.anonKey || SUPABASE_ANON_KEY;
@@ -106,12 +107,9 @@ function buildSupabaseFunctionHeaders(accessToken, serverConfig) {
 function getAnalyzeApiUrl(sourceDomain) {
   if (sourceDomain && (sourceDomain.includes('zillow') || sourceDomain.includes('realtor'))) {
     if (SUPABASE_US_URL) {
-      console.log(`${LOG_PREFIX} Routing to US server:`, SUPABASE_US_URL);
       return { url: SUPABASE_US_URL, anonKey: SUPABASE_US_ANON_KEY, isUS: true };
     }
-    console.warn(`${LOG_PREFIX} US server not configured, falling back to AU server`);
   }
-  console.log(`${LOG_PREFIX} Routing to AU server:`, SUPABASE_URL);
   return { url: SUPABASE_URL, anonKey: SUPABASE_ANON_KEY, isUS: false };
 }
 
@@ -159,7 +157,7 @@ function deriveListingSourceInfo(listingData, tabUrl) {
     }
   }
 
-  // ── Step 2: URL fallback — NEVER let zillow/realtor return null ───────────────────────
+  // ── Step 2: URL fallback �?NEVER let zillow/realtor return null ───────────────────────
   const urlLower = listingUrl.toLowerCase();
   if (urlLower.includes('zillow.com') || urlLower.includes('zillow')) {
     return { source: 'zillow', sourceDomain: 'zillow.com', market: 'US', listingUrl };
@@ -174,7 +172,7 @@ function deriveListingSourceInfo(listingData, tabUrl) {
     return { source: 'domain-au', sourceDomain: 'domain.com.au', market: 'AU', listingUrl };
   }
 
-  // ── Step 3: No match found → UNKNOWN ──────────────────────────────────────────────────
+  // ── Step 3: No match found �?UNKNOWN ──────────────────────────────────────────────────
   return { source: null, sourceDomain: '', market: 'UNKNOWN', listingUrl };
 }
 
@@ -205,7 +203,7 @@ async function migrateLegacySession() {
     }
   }
 
-  // Migration complete — cookies fallback removed (no legacy users, privacy-safe)
+  // Migration complete �?cookies fallback removed (no legacy users, privacy-safe)
 
   if (legacySession) {
     const extUser = toExtUser(legacySession.user);
@@ -217,14 +215,14 @@ async function migrateLegacySession() {
     });
     _cachedAuth = { user: extUser, session };
   } else {
-    // No legacy session found — just mark migration complete
+    // No legacy session found �?just mark migration complete
     await chrome.storage.local.set({ [HS_AUTH_MIGRATED_KEY]: true });
   }
 }
 
 // ----- JWT helpers: extract `exp` claim from Supabase access_token -----
 // Supabase access_token is a JWT. We decode the payload (base64url) WITHOUT
-// verifying signature — the server already verified it on issue. We only need
+// verifying signature �?the server already verified it on issue. We only need
 // the `exp` claim to decide whether to refresh.
 //
 // Returns the expiry timestamp in seconds, or null if it can't be extracted.
@@ -233,7 +231,7 @@ function _getAccessTokenExpirySeconds(accessToken) {
   const parts = accessToken.split('.');
   if (parts.length < 2) return null;
   try {
-    // base64url → base64
+    // base64url �?base64
     const b64 = parts[1].replace(/-/g, '+').replace(/_/g, '/');
     const padded = b64 + '='.repeat((4 - (b64.length % 4)) % 4);
     // atob is available in MV3 service workers
@@ -251,8 +249,8 @@ function _getAccessTokenExpirySeconds(accessToken) {
   }
 }
 
-// ----- Primary session getter (cache → migrated storage only) -----
-// NOTE: Prefer getAuth() for API calls — it auto-refreshes expired tokens.
+// ----- Primary session getter (cache �?migrated storage only) -----
+// NOTE: Prefer getAuth() for API calls �?it auto-refreshes expired tokens.
 // Use getSession() only when you need to check login state without making API calls.
 async function getSession() {
   // 1. In-memory cache
@@ -280,13 +278,12 @@ async function getAuth() {
   await refreshSessionIfNeeded();
   // Re-read from storage after refresh so we get the new tokens
   const session = await getSession();
-  console.log(`${LOG_PREFIX} getAuth: cachedAuth=${!!_cachedAuth}, cachedToken=${_cachedAuth?.session?.access_token?.substring(0, 20)}...`);
   return session;
 }
 
 // ----- Save session to canonical storage -----
 // silent: when true, skip broadcasting to sidepanel. Use for background
-// housekeeping like token refresh — those should NOT cause the sidepanel
+// housekeeping like token refresh �?those should NOT cause the sidepanel
 // to re-render or refetch user data. For real login events (oauth callback),
 // pass silent=false (default) to notify the sidepanel.
 async function saveSession(session, user, source = 'unknown', silent = false) {
@@ -310,7 +307,7 @@ async function saveSession(session, user, source = 'unknown', silent = false) {
       broadcastAuthChanged(true, user);
     }
   } catch (err) {
-    console.error(`${LOG_PREFIX} saveSession: FAILED — ${err.message}`);
+    console.error(`${LOG_PREFIX} saveSession: FAILED �?${err.message}`);
     throw err;
   }
 }
@@ -320,7 +317,6 @@ async function clearSession(reason = 'unknown') {
   // Guard: if a new session is being synced in, skip storage clear
   // to avoid wiping the session right before saveSession writes it
   if (_syncingSession) {
-    console.log(`${LOG_PREFIX} clearSession: skipped (session sync in progress, reason=${reason})`);
     _cachedAuth = null;
     _authListeners.forEach((cb) => cb(null));
     return;
@@ -375,12 +371,12 @@ async function rpcSendMagicLink(email) {
 // - After _refreshTokenInvalid = true: all subsequent refresh attempts return null
 // Refresh the access token ONLY IF it is expired or about to expire.
 // Supabase access_token lifetime is 1 hour by default. We refresh when there
-// is < 5 minutes remaining — this prevents per-request token churn (which was
+// is < 5 minutes remaining �?this prevents per-request token churn (which was
 // causing infinite refresh/data-fetch loops in the sidepanel).
 const TOKEN_REFRESH_BUFFER_SEC = 5 * 60;
 
 async function refreshSessionIfNeeded() {
-  // 1. Permanent stop flag — set after invalid_grant
+  // 1. Permanent stop flag �?set after invalid_grant
   if (_refreshTokenInvalid) {
     return null;
   }
@@ -394,14 +390,13 @@ async function refreshSessionIfNeeded() {
   _refreshLock = (async () => {
     const stored = await getSession();
 
-    // 4. No session at all — return null
+    // 4. No session at all �?return null
     if (!stored?.session) {
       return null;
     }
 
-    // 5. No refresh_token — return null immediately (do NOT call endpoint)
+    // 5. No refresh_token �?return null immediately (do NOT call endpoint)
     if (!stored.session.refresh_token) {
-      console.log(`${LOG_PREFIX} refreshSessionIfNeeded: no refresh_token available`);
       return null;
     }
 
@@ -412,14 +407,12 @@ async function refreshSessionIfNeeded() {
       const nowSec = Math.floor(Date.now() / 1000);
       const remainingSec = expSec - nowSec;
       if (remainingSec > TOKEN_REFRESH_BUFFER_SEC) {
-        console.log(`${LOG_PREFIX} refreshSessionIfNeeded: access_token still valid for ${remainingSec}s, skipping refresh`);
         return { session: stored.session, user: stored.user };
       }
     }
     // If we can't read exp (no exp claim or decode error), fall through to refresh.
 
     try {
-      console.log(`${LOG_PREFIX} refreshSessionIfNeeded: attempting refresh with token preview: ${stored.session.refresh_token.substring(0, 20)}...`);
       const res = await fetch(`${SUPABASE_URL}/auth/v1/token?grant_type=refresh_token`, {
         method: 'POST',
         headers: {
@@ -430,18 +423,16 @@ async function refreshSessionIfNeeded() {
         body: JSON.stringify({ refresh_token: stored.session.refresh_token }),
       });
 
-      console.log(`${LOG_PREFIX} refreshSessionIfNeeded: refresh response status: ${res.status}`);
 
       if (res.ok) {
         const data = await res.json();
-        console.log(`${LOG_PREFIX} refreshSessionIfNeeded: success, new token preview: ${data.access_token?.substring(0, 20)}...`);
 
         // Atomically save the FULL new session (access_token + refresh_token + user)
         // CRITICAL: must save the new refresh_token, not the old one.
-        // Use silent=true so we DON'T broadcast to sidepanel — token refresh is a
+        // Use silent=true so we DON'T broadcast to sidepanel �?token refresh is a
         // background housekeeping operation, not a login event. Broadcasting here
         // was triggering sidepanel to re-fetch user data, which in turn triggered
-        // another getAuth() → refreshSessionIfNeeded() call, creating an infinite
+        // another getAuth() �?refreshSessionIfNeeded() call, creating an infinite
         // refresh loop on every page load.
         await saveSession(data, stored.user, 'refresh', true);
         return { session: data, user: stored.user };
@@ -456,9 +447,8 @@ async function refreshSessionIfNeeded() {
         const isInvalidGrant = errCode === 'invalid_grant' || res.status === 400;
 
         if (isInvalidGrant) {
-          // CRITICAL: permanent stop flag — prevents infinite retry loops
+          // CRITICAL: permanent stop flag �?prevents infinite retry loops
           _refreshTokenInvalid = true;
-          console.warn(`${LOG_PREFIX} refreshSessionIfNeeded: refresh token invalid (${isReuseError ? 'already used' : 'invalid grant'}), clearing session permanently`);
           await clearSession('refresh_failure');
           broadcastAuthChanged(false, null);
         }
@@ -466,7 +456,6 @@ async function refreshSessionIfNeeded() {
         return null;
       }
     } catch (err) {
-      console.warn(`${LOG_PREFIX} refreshSessionIfNeeded: network exception — ${err.message} — keeping session`);
       return null;
     } finally {
       _refreshLock = null;
@@ -539,18 +528,15 @@ async function handleMessage(message, sender, sendResponse) {
       try {
         const auth = await getAuth();
         if (!auth?.user) {
-          console.log(`${LOG_PREFIX} get_user_data: no auth, returning 0`);
           sendResponse({ status: 'success', data: { credits_remaining: 0 } });
           return;
         }
-        console.log(`${LOG_PREFIX} get_user_data: user=${auth.user.email}, fetching from ${SUPABASE_URL}`);
 
         // Helper: fetch with automatic retry on 401 (force token refresh)
         async function fetchWithRetry(url, options, retries = 2) {
           for (let attempt = 0; attempt <= retries; attempt++) {
             const res = await fetch(url, options);
             if (res.status === 401 && attempt < retries) {
-              console.log(`${LOG_PREFIX} get_user_data: got 401, forcing token refresh (attempt ${attempt + 1}/${retries})`);
               await refreshSessionIfNeeded();
               // Get fresh auth after refresh
               const freshAuth = await getAuth();
@@ -574,11 +560,9 @@ async function handleMessage(message, sender, sendResponse) {
         );
         if (res.ok) {
           const rows = await res.json();
-          console.log(`${LOG_PREFIX} get_user_data: raw rows:`, JSON.stringify(rows));
           const remaining = rows?.[0]?.credits_remaining ?? 0;
           const reserved = rows?.[0]?.credits_reserved ?? 0;
           const available = Math.max(0, remaining - reserved);
-          console.log(`${LOG_PREFIX} get_user_data: remaining=${remaining}, reserved=${reserved}, available=${available}`);
           sendResponse({ status: 'success', data: { credits_remaining: available } });
         } else {
           console.error(`${LOG_PREFIX} get_user_data: HTTP error ${res.status}`);
@@ -611,17 +595,17 @@ async function handleMessage(message, sender, sendResponse) {
       try {
         // Derive site base URL from MAGIC_LINK_REDIRECT to avoid hardcoding
         const siteBase = MAGIC_LINK_REDIRECT.split('/auth/callback')[0];
-        // 生成 flowId，传递给 login 页面 → AuthContext → AuthCallback → background 关闭标签页
+        // 生成 flowId，传递给 login 页面 �?AuthContext �?AuthCallback �?background 关闭标签�?
         const flowId = generateFlowId();
 
-        // 将 flowId 通过 URL 参数传递给网站（AuthContext → AuthCallback）
+        // �?flowId 通过 URL 参数传递给网站（AuthContext �?AuthCallback�?
         const loginUrl = `${siteBase}/login?from_extension=1&flow_id=${flowId}`;
 
         // 打开登录页面，background 记录 login tab
         const loginTab = await chrome.tabs.create({ url: loginUrl, active: true });
         const loginTabId = loginTab.id;
 
-        // 记录 flow（callbackTabId 暂时未知，等用户完成 OAuth 后会打开 callback 页面）
+        // 记录 flow（callbackTabId 暂时未知，等用户完成 OAuth 后会打开 callback 页面�?
         _oauthFlows.set(flowId, {
           loginTabId,
           callbackTabId: null, // 稍后填充
@@ -644,25 +628,25 @@ async function handleMessage(message, sender, sendResponse) {
         broadcastAuthChanged(false, null);
         sendResponse({ success: true });
       } catch (err) {
-        console.error(`${LOG_PREFIX} logout: error — ${err.message}`);
+        console.error(`${LOG_PREFIX} logout: error �?${err.message}`);
         sendResponse({ success: false, error: err.message });
       }
       break;
     }
 
     // Canonical bridge: website AuthCallback forwards session here via injected <script>
-    // 双重校验：只有"扩展发起" + "当前 tab 就是那个被扩展打开的 callback tab"时才允许关闭
+    // 双重校验：只�?扩展发起" + "当前 tab 就是那个被扩展打开�?callback tab"时才允许关闭
     case 'sync_session_from_site': {
       _syncingSession = true;
       try {
-        // New login — reset the invalid token flag so future refresh works
+        // New login �?reset the invalid token flag so future refresh works
         _refreshTokenInvalid = false;
 
         const p = message.payload;
         const flowId = p?.flowId;
 
         if (!p?.access_token || !p?.user) {
-          console.error(`${LOG_PREFIX} sync_session_from_site: INVALID payload — missing access_token or user`);
+          console.error(`${LOG_PREFIX} sync_session_from_site: INVALID payload �?missing access_token or user`);
           sendResponse({ success: false, error: 'Invalid session payload' });
           return;
         }
@@ -671,23 +655,22 @@ async function handleMessage(message, sender, sendResponse) {
         const extUser = toExtUser(p.user);
         const session = { access_token: p.access_token, refresh_token: p.refresh_token || '' };
 
-        // Always save to AU session — broadcastAuthChanged is now called inside saveSession
+        // Always save to AU session �?broadcastAuthChanged is now called inside saveSession
         // after storage write is confirmed (prevents stale-read in sidepanel).
         await saveSession(session, extUser, 'oauth_callback');
 
-        // 双重校验：验证 flowId 和 sender.tab.id
+        // 双重校验：验�?flowId �?sender.tab.id
         if (flowId) {
           const validation = validateOAuthFlow(flowId, senderTabId);
           if (!validation.valid) {
-            console.warn(`${LOG_PREFIX} sync_session_from_site: flow validation FAILED (${validation.reason}) — saving session anyway (fallback mode, tab will NOT be closed)`);
           }
         } else {
-          // 旧版兼容：如果没有 flowId，检查是否有合法的 callback tab
+          // 旧版兼容：如果没�?flowId，检查是否有合法�?callback tab
           if (senderTabId == null) {
             const tabs = await chrome.tabs.query({ url: '*://*.tryhomescope.com/auth/callback*' });
             const fallbackTabId = tabs[0]?.id ?? null;
             if (fallbackTabId == null) {
-              console.error(`${LOG_PREFIX} sync_session_from_site: BLOCKED — no flowId and no callback tab detected`);
+              console.error(`${LOG_PREFIX} sync_session_from_site: BLOCKED �?no flowId and no callback tab detected`);
               sendResponse({ success: false, error: 'No valid OAuth flow found' });
               return;
             }
@@ -697,13 +680,12 @@ async function handleMessage(message, sender, sendResponse) {
         // ── 关闭回调标签页的条件（双重保护）──
         if (flowId && senderTabId != null) {
           chrome.tabs.remove(senderTabId).catch((err) => {
-            console.warn(`${LOG_PREFIX} sync_session_from_site: failed to close tab — ${err.message}`);
           });
         }
 
         sendResponse({ success: true, user: extUser });
       } catch (err) {
-        console.error(`${LOG_PREFIX} sync_session_from_store: EXCEPTION — ${err.message}`);
+        console.error(`${LOG_PREFIX} sync_session_from_store: EXCEPTION �?${err.message}`);
         sendResponse({ success: false, error: err.message });
       } finally {
         _syncingSession = false;
@@ -718,7 +700,6 @@ async function handleMessage(message, sender, sendResponse) {
       // ── Dedup: suppress duplicate in-flight requests ─────────────────────────
       const dedupeKey = message._dedupeKey;
       if (dedupeKey && _basicDedupeSet.has(dedupeKey)) {
-        console.log(`${LOG_PREFIX} analyze_basic: suppressed duplicate request for key`, dedupeKey);
         sendResponse({ status: 'error', error: 'Duplicate request suppressed. The previous analysis is still in progress.' });
         return;
       }
@@ -727,40 +708,11 @@ async function handleMessage(message, sender, sendResponse) {
         setTimeout(() => { _basicDedupeSet.delete(dedupeKey); }, 45000);
       }
 
-      console.log(`${LOG_PREFIX} analyze_basic: received message`, {
-        hasDescription: !!listingData?.description,
-        descriptionLen: listingData?.description?.length || 0,
-        hasTitle: !!listingData?.title,
-        hasPrice: !!listingData?.price,
-      });
-
       // ── Unified source/market derivation ────────────────────────────────────────────
       const tabUrl = listingData?.tabUrl || listingData?.url || '';
       const { source, sourceDomain, market, listingUrl } = deriveListingSourceInfo(listingData, tabUrl);
-      console.log('[DIAG] plugin market routing', {
-        listingDataSource: listingData?.source,
-        tabUrl,
-        source,
-        sourceDomain,
-        market,
-        listingUrl,
-        serverUrl: (() => {
-          // compute serverConfig inline so we can log it
-          const sd = sourceDomain;
-          if (sd && (sd.includes('zillow') || sd.includes('realtor'))) {
-            return SUPABASE_US_URL || 'AU-fallback';
-          }
-          return SUPABASE_URL;
-        })(),
-        isUSServer: !!(sourceDomain && (sourceDomain.includes('zillow') || sourceDomain.includes('realtor'))),
-      });
-
       const description = listingData?.description || listingData?.rawText || listingData?.title || 'Property listing information';
       // === LAYER 3a ===
-      console.log('[background] listingData.whatsSpecialText length:', (listingData?.whatsSpecialText || '').length);
-      console.log('[background] listingData.whatsSpecialText preview:', (listingData?.whatsSpecialText || '').slice(0, 120));
-      console.log('[background] listingData.description length:', (listingData?.description || '').length);
-      console.log('[background] listingData.description preview:', (listingData?.description || '').slice(0, 120));
       const reportMode = listingData?.reportMode || 'rent';
 
       // Build optionalDetails: pass ALL property info for comprehensive analysis
@@ -775,7 +727,7 @@ async function handleMessage(message, sender, sendResponse) {
       }
 
       // Parse region/neighborhood from full address string.
-      // US format: "123 Street, City, ST ZIP" → region = "City"
+      // US format: "123 Street, City, ST ZIP" �?region = "City"
       function parseRegionFromAddress(address) {
         if (!address) return null;
         const full = String(address).trim();
@@ -802,7 +754,7 @@ async function handleMessage(message, sender, sendResponse) {
       // Zillow/US specific property details
       // Extract propertyFactsV2.identity for fallback field access.
       // content.js extracts homeType/propertyType/propertySubtype into identity but not
-      // as top-level listingData fields — so we need this fallback.
+      // as top-level listingData fields �?so we need this fallback.
       const identity = listingData?.propertyFactsV2?.identity ?? {};
       if (listingData?.sqft != null) optionalDetails.sqft = listingData.sqft;
       if (listingData?.yearBuilt != null) optionalDetails.yearBuilt = listingData.yearBuilt;
@@ -812,23 +764,6 @@ async function handleMessage(message, sender, sendResponse) {
       else if (identity?.homeType) optionalDetails.homeType = identity.homeType;
       if (listingData?.propertySubtype) optionalDetails.propertySubtype = listingData.propertySubtype;
       else if (identity?.propertySubtype) optionalDetails.propertySubtype = identity.propertySubtype;
-      console.log('[HomeScope][identity fallback] propertyFactsV2 identity fields:', {
-        fromTopLevel: {
-          propertyType: listingData?.propertyType,
-          homeType: listingData?.homeType,
-          propertySubtype: listingData?.propertySubtype,
-        },
-        fromIdentity: {
-          propertyType: identity?.propertyType,
-          homeType: identity?.homeType,
-          propertySubtype: identity?.propertySubtype,
-        },
-        optionalDetailsFields: {
-          propertyType: optionalDetails.propertyType,
-          homeType: optionalDetails.homeType,
-          propertySubtype: optionalDetails.propertySubtype,
-        },
-      });
       if (listingData?.lotSize) optionalDetails.lotSize = listingData.lotSize;
       if (listingData?.hoaFee) optionalDetails.hoaFee = listingData.hoaFee;
       if (listingData?.propertyTax) optionalDetails.propertyTax = listingData.propertyTax;
@@ -859,12 +794,6 @@ async function handleMessage(message, sender, sendResponse) {
           null;
         if (normalized) optionalDetails.normalizedPropertyCategory = normalized;
       }
-      console.log('[HomeScope][normalizedPropertyCategory] set:', optionalDetails.normalizedPropertyCategory, {
-        fromExplicit: !!listingData?.normalizedPropertyCategory,
-        fromPropertyType: listingData?.propertyType,
-        fromPropertySubtype: listingData?.propertySubtype,
-        fromHomeType: listingData?.homeType,
-      });
       if (listingData?.daysOnZillow != null) optionalDetails.daysOnZillow = listingData.daysOnZillow;
       if (listingData?.dateOnMarket) optionalDetails.dateOnMarket = listingData.dateOnMarket;
       // region: prefer explicit neighborhood, fallback to parsed city
@@ -897,7 +826,7 @@ async function handleMessage(message, sender, sendResponse) {
         optionalDetails.highlights = listingData.highlights;
       }
 
-      // Listing description — 用于 Agent Spin Decoder（优先使用 agentMarketingText）
+      // Listing description �?用于 Agent Spin Decoder（优先使�?agentMarketingText�?
       const agentMarketingText =
         listingData?.propertyFactsV2?.listingText?.agentMarketingText ||
         listingData?.whatsSpecialText ||
@@ -908,12 +837,7 @@ async function handleMessage(message, sender, sendResponse) {
         listingData?.description ||
         '';
 
-      console.log('[HomeScope] listing text selected for AI', {
-        hasPropertyFactsV2: !!listingData?.propertyFactsV2,
-        agentMarketingTextLength: agentMarketingText?.length || 0,
-        fallbackDescriptionLength: listingData?.description?.length || 0,
-        selectedPreview: (agentMarketingText || cleanListingDesc || '').slice(0, 300),
-      });
+// [DEBUG] listing text selected for AI
 
       if (agentMarketingText && agentMarketingText.trim().length > 20) {
         optionalDetails.whatsSpecialText = agentMarketingText.trim();
@@ -922,8 +846,6 @@ async function handleMessage(message, sender, sendResponse) {
         optionalDetails.listingDescription = cleanListingDesc.trim();
       }
       // === LAYER 3b ===
-      console.log('[background] optionalDetails.listingDescription length:', (optionalDetails?.listingDescription || '').length);
-      console.log('[background] optionalDetails.listingDescription preview:', (optionalDetails?.listingDescription || '').slice(0, 120));
 
       // School ratings
       if (listingData?.schoolRatings && Array.isArray(listingData.schoolRatings)) {
@@ -951,7 +873,6 @@ async function handleMessage(message, sender, sendResponse) {
       optionalDetails.listingUrl = listingUrl;
 
       // ── Zillow financials: deterministic monthly payment breakdown ─────────────────
-      console.log('[HomeScope][ZillowFinancials] extracted', listingData?.zillowFinancials);
 
       // ── Determine server ───────────────────────────────────────────────────────────
       const serverConfig = getAnalyzeApiUrl(sourceDomain);
@@ -963,17 +884,6 @@ async function handleMessage(message, sender, sendResponse) {
       const LOG_BASIC_START = Date.now();
       try {
         const url = `${serverConfig.url}/functions/v1/analyze?action=basic-sync`;
-        console.log('[AnalyzeRequest-basic] optionalDetails financial fields', {
-          propertyTax: optionalDetails.propertyTax,
-          annualTaxAmount: optionalDetails.annualTaxAmount,
-          taxAssessedValue: optionalDetails.taxAssessedValue,
-          taxAssessedValueAmount: optionalDetails.taxAssessedValueAmount,
-          pricePerSqft: optionalDetails.pricePerSqft,
-          pricePerSqftAmount: optionalDetails.pricePerSqftAmount,
-          dateListed: optionalDetails.dateListed,
-          availableDate: optionalDetails.availableDate,
-          financialDetails: optionalDetails.financialDetails,
-        });
         const requestBody = {
           description,
           reportMode,
@@ -984,25 +894,6 @@ async function handleMessage(message, sender, sendResponse) {
           listingUrl,
           zillowFinancials: listingData?.zillowFinancials || null,
         };
-        // === LAYER 4 ===
-        console.log('[background] requestBody.description length:', (description || '').length);
-        console.log('[background] requestBody.description preview:', (description || '').slice(0, 120));
-        console.log('[background] requestBody.optionalDetails.listingDescription length:', (optionalDetails?.listingDescription || '').length);
-        console.log('[background] requestBody.optionalDetails.listingDescription preview:', (optionalDetails?.listingDescription || '').slice(0, 120));
-        console.log('[HomeScope][AnalyzeRequest] has zillowFinancials', !!requestBody.zillowFinancials);
-        console.log('[Edge Function Request Debug]', {
-          action: 'basic-sync',
-          method: 'POST',
-          url,
-          hasAnonKey: !!serverConfig.anonKey,
-          anonKeyPrefix: serverConfig.anonKey?.slice(0, 16),
-          anonKeyLooksLikeJwt: serverConfig.anonKey?.startsWith('eyJ'),
-          anonKeyLooksPublishable: serverConfig.anonKey?.startsWith('sb_publishable_'),
-          hasAccessToken: !!accessToken,
-          tokenPrefix: accessToken?.slice(0, 16),
-          server: serverConfig.isUS ? 'US' : 'AU',
-          requestBodyKeys: Object.keys(requestBody),
-        });
         const response = await fetch(url, {
           method: 'POST',
           headers: buildSupabaseFunctionHeaders(accessToken, serverConfig),
@@ -1018,8 +909,6 @@ async function handleMessage(message, sender, sendResponse) {
 
         const data = await response.json();
         const durationMs = Date.now() - LOG_BASIC_START;
-        console.log(`${LOG_PREFIX} analyze_basic: success in ${durationMs}ms, result keys:`, Object.keys(data.result || {}));
-        console.log(`${LOG_PREFIX} analyze_basic: analysisId:`, data.analysisId || 'none');
         sendResponse({ status: 'success', result: data.result, analysisId: data.analysisId || null });
       } catch (err) {
         console.error(`${LOG_PREFIX} analyze_basic: error in ${Date.now() - LOG_BASIC_START}ms —`, err.message);
@@ -1034,20 +923,11 @@ async function handleMessage(message, sender, sendResponse) {
 
       // ── DIAG LOG ──
       const listingDataRaw = message.data;
-      console.log(`${LOG_PREFIX} [DIAG] analyze: received. keys=`, Object.keys(listingDataRaw || {}));
-      console.log(`${LOG_PREFIX} [DIAG] analyze: imageUrls count=`, (listingDataRaw?.imageUrls || listingDataRaw?.images || []).length);
-      console.log(`${LOG_PREFIX} [DIAG] analyze: description length=`, (listingDataRaw?.description || '').length);
 
       // Step 1: Get fresh session (auto-refresh if needed)
       const auth = await getAuth();
-      console.log(`${LOG_PREFIX} [DIAG] analyze: auth result:`, {
-        hasAuth: !!auth,
-        hasToken: !!auth?.session?.access_token,
-        userId: auth?.user?.id,
-      });
 
       if (!auth?.session?.access_token) {
-        console.error(`${LOG_PREFIX} [DIAG] analyze: ❌ NO TOKEN — returning "sign in" error`);
         clearAlive();
         sendResponse({ status: 'error', error: 'Please sign in first to analyze listings.' });
         return;
@@ -1062,22 +942,6 @@ async function handleMessage(message, sender, sendResponse) {
       // ── Unified source/market derivation ────────────────────────────────────────────
       const tabUrl = listingData?.tabUrl || listingData?.url || '';
       const { source, sourceDomain, market, listingUrl } = deriveListingSourceInfo(listingData, tabUrl);
-      console.log('[DIAG] plugin market routing', {
-        listingDataSource: listingData?.source,
-        tabUrl,
-        source,
-        sourceDomain,
-        market,
-        listingUrl,
-        serverUrl: (() => {
-          if (sourceDomain && (sourceDomain.includes('zillow') || sourceDomain.includes('realtor'))) {
-            return SUPABASE_US_URL || 'AU-fallback';
-          }
-          return SUPABASE_URL;
-        })(),
-        isUSServer: !!(sourceDomain && (sourceDomain.includes('zillow') || sourceDomain.includes('realtor'))),
-      });
-
       const serverConfig = getAnalyzeApiUrl(sourceDomain);
 
       // Build optionalDetails: pass ALL property info to AI for accurate analysis
@@ -1096,7 +960,7 @@ async function handleMessage(message, sender, sendResponse) {
       }
 
       // Parse region/neighborhood from full address string.
-      // US format: "123 Street, City, ST ZIP" → region = "City"
+      // US format: "123 Street, City, ST ZIP" �?region = "City"
       function parseRegionFromAddress(address) {
         if (!address) return null;
         const full = String(address).trim();
@@ -1123,7 +987,7 @@ async function handleMessage(message, sender, sendResponse) {
       // Zillow/US specific property details
       // Extract propertyFactsV2.identity for fallback field access.
       // content.js extracts homeType/propertyType/propertySubtype into identity but not
-      // as top-level listingData fields — so we need this fallback.
+      // as top-level listingData fields �?so we need this fallback.
       const identity = listingData?.propertyFactsV2?.identity ?? {};
       if (listingData?.sqft != null) optionalDetails.sqft = listingData.sqft;
       if (listingData?.yearBuilt != null) optionalDetails.yearBuilt = listingData.yearBuilt;
@@ -1133,23 +997,6 @@ async function handleMessage(message, sender, sendResponse) {
       else if (identity?.homeType) optionalDetails.homeType = identity.homeType;
       if (listingData?.propertySubtype) optionalDetails.propertySubtype = listingData.propertySubtype;
       else if (identity?.propertySubtype) optionalDetails.propertySubtype = identity.propertySubtype;
-      console.log('[HomeScope][identity fallback] propertyFactsV2 identity fields:', {
-        fromTopLevel: {
-          propertyType: listingData?.propertyType,
-          homeType: listingData?.homeType,
-          propertySubtype: listingData?.propertySubtype,
-        },
-        fromIdentity: {
-          propertyType: identity?.propertyType,
-          homeType: identity?.homeType,
-          propertySubtype: identity?.propertySubtype,
-        },
-        optionalDetailsFields: {
-          propertyType: optionalDetails.propertyType,
-          homeType: optionalDetails.homeType,
-          propertySubtype: optionalDetails.propertySubtype,
-        },
-      });
       if (listingData?.lotSize) optionalDetails.lotSize = listingData.lotSize;
       if (listingData?.hoaFee) optionalDetails.hoaFee = listingData.hoaFee;
       if (listingData?.propertyTax) optionalDetails.propertyTax = listingData.propertyTax;
@@ -1180,12 +1027,6 @@ async function handleMessage(message, sender, sendResponse) {
           null;
         if (normalized) optionalDetails.normalizedPropertyCategory = normalized;
       }
-      console.log('[HomeScope][normalizedPropertyCategory] set:', optionalDetails.normalizedPropertyCategory, {
-        fromExplicit: !!listingData?.normalizedPropertyCategory,
-        fromPropertyType: listingData?.propertyType,
-        fromPropertySubtype: listingData?.propertySubtype,
-        fromHomeType: listingData?.homeType,
-      });
       if (listingData?.daysOnZillow != null) optionalDetails.daysOnZillow = listingData.daysOnZillow;
       if (listingData?.dateOnMarket) optionalDetails.dateOnMarket = listingData.dateOnMarket;
       // region: prefer explicit neighborhood, fallback to parsed city
@@ -1218,7 +1059,7 @@ async function handleMessage(message, sender, sendResponse) {
         optionalDetails.highlights = listingData.highlights;
       }
 
-      // Listing description — 用于 Agent Spin Decoder（优先使用 agentMarketingText）
+      // Listing description �?用于 Agent Spin Decoder（优先使�?agentMarketingText�?
       const agentMarketingText =
         listingData?.propertyFactsV2?.listingText?.agentMarketingText ||
         listingData?.whatsSpecialText ||
@@ -1229,12 +1070,7 @@ async function handleMessage(message, sender, sendResponse) {
         listingData?.description ||
         '';
 
-      console.log('[HomeScope] listing text selected for AI', {
-        hasPropertyFactsV2: !!listingData?.propertyFactsV2,
-        agentMarketingTextLength: agentMarketingText?.length || 0,
-        fallbackDescriptionLength: listingData?.description?.length || 0,
-        selectedPreview: (agentMarketingText || cleanListingDesc || '').slice(0, 300),
-      });
+// [DEBUG] listing text selected for AI
 
       if (agentMarketingText && agentMarketingText.trim().length > 20) {
         optionalDetails.whatsSpecialText = agentMarketingText.trim();
@@ -1243,8 +1079,6 @@ async function handleMessage(message, sender, sendResponse) {
         optionalDetails.listingDescription = cleanListingDesc.trim();
       }
       // === LAYER 3b ===
-      console.log('[background] optionalDetails.listingDescription length:', (optionalDetails?.listingDescription || '').length);
-      console.log('[background] optionalDetails.listingDescription preview:', (optionalDetails?.listingDescription || '').slice(0, 120));
 
       // School ratings
       if (listingData?.schoolRatings && Array.isArray(listingData.schoolRatings)) {
@@ -1271,19 +1105,6 @@ async function handleMessage(message, sender, sendResponse) {
       optionalDetails.market = market;
       optionalDetails.listingUrl = listingUrl;
 
-      // Build request body for analyze function
-      console.log('[AnalyzeRequest] optionalDetails financial fields', {
-        propertyTax: optionalDetails.propertyTax,
-        annualTaxAmount: optionalDetails.annualTaxAmount,
-        taxAssessedValue: optionalDetails.taxAssessedValue,
-        taxAssessedValueAmount: optionalDetails.taxAssessedValueAmount,
-        pricePerSqft: optionalDetails.pricePerSqft,
-        pricePerSqftAmount: optionalDetails.pricePerSqftAmount,
-        dateListed: optionalDetails.dateListed,
-        availableDate: optionalDetails.availableDate,
-        financialDetails: optionalDetails.financialDetails,
-      });
-      console.log('[HomeScope][ZillowFinancials] extracted', listingData?.zillowFinancials);
       const requestBody = {
         imageUrls,
         description,
@@ -1295,24 +1116,11 @@ async function handleMessage(message, sender, sendResponse) {
         listingUrl,
         zillowFinancials: listingData?.zillowFinancials || null,
       };
-      console.log('[HomeScope][AnalyzeRequest] has zillowFinancials', !!requestBody.zillowFinancials);
 
       // Step 3: action=submit
       try {
         const accessToken = session.access_token;
         const url = `${serverConfig.url}/functions/v1/analyze?action=submit`;
-        console.log('[Edge Function Request Debug]', {
-          action: 'submit',
-          method: 'POST',
-          url,
-          hasAnonKey: !!serverConfig.anonKey,
-          anonKeyPrefix: serverConfig.anonKey?.slice(0, 16),
-          anonKeyLooksLikeJwt: serverConfig.anonKey?.startsWith('eyJ'),
-          anonKeyLooksPublishable: serverConfig.anonKey?.startsWith('sb_publishable_'),
-          hasAccessToken: !!accessToken,
-          tokenPrefix: accessToken?.slice(0, 16),
-          server: serverConfig.isUS ? 'US' : 'AU',
-        });
         const submitRes = await fetch(url, {
           method: 'POST',
           headers: buildSupabaseFunctionHeaders(accessToken, serverConfig),
@@ -1321,15 +1129,11 @@ async function handleMessage(message, sender, sendResponse) {
 
         if (!submitRes.ok) {
           const err = await submitRes.json().catch(() => ({ message: 'Failed to submit analysis' }));
-          console.error(`${LOG_PREFIX} [DIAG] analyze: ❌ submitRes NOT OK — status=${submitRes.status}`, err);
           if (submitRes.status === 403 || err?.code === 'NO_CREDITS') {
-            console.error(`${LOG_PREFIX} [DIAG] analyze: NO_CREDITS`);
             sendResponse({ status: 'no_credits' });
           } else if (submitRes.status === 401 || err?.code === 'NOT_AUTHENTICATED') {
-            console.error(`${LOG_PREFIX} [DIAG] analyze: SESSION_EXPIRED`);
             sendResponse({ status: 'error', error: 'Session expired. Please sign in again.' });
           } else {
-            console.error(`${LOG_PREFIX} [DIAG] analyze: API_ERROR — message=${err.message || 'Failed to submit analysis'}`);
             sendResponse({ status: 'error', error: err.message || 'Failed to submit analysis' });
           }
           clearAlive();
@@ -1337,41 +1141,27 @@ async function handleMessage(message, sender, sendResponse) {
         }
 
         const { id: analysisId } = await submitRes.json();
-        console.log(`${LOG_PREFIX} [DIAG] analyze: ✅ submitted, analysisId=${analysisId}`);
 
-        // 保存 serverConfig（内存 Map + session storage，防止 MV3 SW 重启后丢失）
+        // 保存 serverConfig（内�?Map + session storage，防�?MV3 SW 重启后丢失）
         _analysisServerMap.set(analysisId, serverConfig);
         await chrome.storage.session.set({
           [`${HS_ANALYSIS_SERVER_PREFIX}${analysisId}`]: serverConfig,
         });
 
-        // Step 4: action=run — fire analysis job (fire-and-forget)
+        // Step 4: action=run �?fire analysis job (fire-and-forget)
         const runAccessToken = session.access_token;
         const runUrl = `${serverConfig.url}/functions/v1/analyze?action=run`;
-        console.log('[Edge Function Request Debug]', {
-          action: 'run',
-          method: 'POST',
-          url: runUrl,
-          hasAnonKey: !!serverConfig.anonKey,
-          anonKeyPrefix: serverConfig.anonKey?.slice(0, 16),
-          anonKeyLooksLikeJwt: serverConfig.anonKey?.startsWith('eyJ'),
-          anonKeyLooksPublishable: serverConfig.anonKey?.startsWith('sb_publishable_'),
-          hasAccessToken: !!runAccessToken,
-          tokenPrefix: runAccessToken?.slice(0, 16),
-          server: serverConfig.isUS ? 'US' : 'AU',
-        });
         fetch(runUrl, {
           method: 'POST',
           headers: buildSupabaseFunctionHeaders(runAccessToken, serverConfig),
           body: JSON.stringify({ id: analysisId, ...requestBody }),
         }).catch((err) => console.error(`${LOG_PREFIX} analyze: run error —`, err.message));
 
-        // Return analysisId immediately — frontend will poll for status
+        // Return analysisId immediately �?frontend will poll for status
         sendResponse({ status: 'submitted', analysisId });
-        clearAlive(); // SW no longer needs to stay awake — polling handles the rest
+        clearAlive(); // SW no longer needs to stay awake �?polling handles the rest
       } catch (err) {
         clearAlive();
-        console.error(`${LOG_PREFIX} [DIAG] analyze: ❌ OUTER CATCH —`, err.message);
         sendResponse({ status: 'error', error: err.message });
       }
       break;
@@ -1390,7 +1180,7 @@ async function handleMessage(message, sender, sendResponse) {
         return;
       }
 
-      // 两层查找 serverConfig：内存 Map → session storage
+      // 两层查找 serverConfig：内�?Map �?session storage
       let serverConfig = _analysisServerMap.get(analysisId);
 
       if (!serverConfig) {
@@ -1402,7 +1192,7 @@ async function handleMessage(message, sender, sendResponse) {
       }
 
       if (!serverConfig) {
-        console.error(`${LOG_PREFIX} get_analysis_status: serverConfig not found for analysisId=${analysisId} — SW may have restarted`);
+        console.error(`${LOG_PREFIX} get_analysis_status: serverConfig not found for analysisId=${analysisId} �?SW may have restarted`);
         sendResponse({ status: 'error', error: 'Analysis server not found. Please restart the analysis.' });
         return;
       }
@@ -1410,14 +1200,6 @@ async function handleMessage(message, sender, sendResponse) {
       try {
         const accessToken = auth.session.access_token;
         const url = `${serverConfig.url}/functions/v1/analyze?id=${analysisId}`;
-        console.log('[Edge Function Request Debug]', {
-          action: 'get_status',
-          method: 'GET',
-          url,
-          server: serverConfig.isUS ? 'US' : 'AU',
-          hasAnonKey: !!serverConfig.anonKey,
-          hasAccessToken: !!accessToken,
-        });
         const res = await fetch(url, {
           method: 'GET',
           headers: buildSupabaseFunctionHeaders(accessToken, serverConfig),
@@ -1448,7 +1230,7 @@ async function handleMessage(message, sender, sendResponse) {
       const limit = message.limit ?? 8;
       const offset = message.offset ?? 0;
 
-      // Single AU session — no region distinction needed
+      // Single AU session �?no region distinction needed
       const auSession = await getSession();
       if (!auSession?.session?.access_token) {
         sendResponse({ status: 'success', analyses: [], code: 'NOT_AUTHENTICATED' });
@@ -1503,7 +1285,7 @@ async function handleMessage(message, sender, sendResponse) {
         return;
       }
 
-      // ── Resolve serverConfig: memory Map → session storage → URL fallback ──
+      // ── Resolve serverConfig: memory Map �?session storage �?URL fallback ──
       let serverConfig = _analysisServerMap.get(analysisId);
 
       if (!serverConfig) {
@@ -1525,21 +1307,10 @@ async function handleMessage(message, sender, sendResponse) {
         };
       }
 
-      console.log('[share_analysis] analysisId', analysisId);
-      console.log('[share_analysis] resolved server', serverConfig.url);
-      console.log('[share_analysis] share response');
 
       try {
         const accessToken = auth.session.access_token;
         const url = `${serverConfig.url}/functions/v1/analyze?action=share`;
-        console.log('[Edge Function Request Debug]', {
-          action: 'share',
-          method: 'POST',
-          url,
-          server: serverConfig.isUS ? 'US' : 'AU',
-          hasAnonKey: !!serverConfig.anonKey,
-          hasAccessToken: !!accessToken,
-        });
         const res = await fetch(url, {
           method: 'POST',
           headers: buildSupabaseFunctionHeaders(accessToken, serverConfig),
@@ -1576,7 +1347,7 @@ async function handleMessage(message, sender, sendResponse) {
           return;
         }
 
-        // Guard: chrome://、about: 等不可注入页面
+        // Guard: chrome://、about: 等不可注入页�?
         const injectable = tabUrl && !(
           tabUrl.startsWith('chrome://') ||
           tabUrl.startsWith('chrome-extension://') ||
@@ -1592,7 +1363,7 @@ async function handleMessage(message, sender, sendResponse) {
           return;
         }
 
-        // Guard: 非支持网站（只支持 realestate.com.au 和 zillow.com 及其子域名）
+        // Guard: 非支持网站（只支�?realestate.com.au �?zillow.com 及其子域名）
         const supportedHosts = ['realestate.com.au', 'zillow.com'];
         const isSupported = (() => {
           try {
@@ -1654,7 +1425,7 @@ async function handleMessage(message, sender, sendResponse) {
           return;
         }
 
-        // Guard: chrome://、about: 等不可注入页面
+        // Guard: chrome://、about: 等不可注入页�?
         const injectable = tabUrl && !(
           tabUrl.startsWith('chrome://') ||
           tabUrl.startsWith('chrome-extension://') ||
@@ -1670,7 +1441,7 @@ async function handleMessage(message, sender, sendResponse) {
           return;
         }
 
-        // Guard: 非支持网站（只支持 realestate.com.au 和 zillow.com 及其子域名）
+        // Guard: 非支持网站（只支�?realestate.com.au �?zillow.com 及其子域名）
         const supportedHosts = ['realestate.com.au', 'zillow.com'];
         const isSupported = (() => {
           try {
@@ -1716,7 +1487,7 @@ async function handleMessage(message, sender, sendResponse) {
   }
 }
 
-// injectContentScript DISABLED — content script is injected declaratively via
+// injectContentScript DISABLED �?content script is injected declaratively via
 // manifest.content_scripts. Manifest injection is reliable and avoids double-
 // injection issues (AUTH_BRIDGE_SOURCE redeclaration). Kept as a commented
 // reference in case programmatic injection is ever needed again:
@@ -1745,21 +1516,20 @@ function validateOAuthFlow(flowId, callbackTabId) {
   if (flow.used) {
     return { valid: false, reason: 'flow_already_used' };
   }
-  // Supabase OAuth uses in-tab redirect (login → callback in same tab).
+  // Supabase OAuth uses in-tab redirect (login �?callback in same tab).
   // callbackTabId matching loginTabId is NORMAL, not an error.
   // Log it for visibility but do NOT fail validation.
   if (callbackTabId != null && flow.loginTabId === callbackTabId) {
-    console.log(`${LOG_PREFIX} validateOAuthFlow: callback_tab_id=${callbackTabId} matches login_tab — in-tab redirect detected, allowing`);
   }
   flow.used = true;
   return { valid: true };
 }
 
 // ===== OAuth Flow: 监听 callback 标签页打开/更新 =====
-// 注意：Supabase OAuth 使用"原地重定向"（在同一个标签页从 /login 重定向到 /auth/callback）
-// 因此需要同时监听 onCreated（外部打开的链接）和 onUpdated（重定向）
+// 注意：Supabase OAuth 使用"原地重定�?（在同一个标签页�?/login 重定向到 /auth/callback�?
+// 因此需要同时监�?onCreated（外部打开的链接）�?onUpdated（重定向�?
 
-/** 从完整 tab URL 提取 flow_id（query 或 hash 片段里的 flow_id） */
+/** 从完�?tab URL 提取 flow_id（query �?hash 片段里的 flow_id�?*/
 function extractFlowIdFromTabUrl(urlString) {
   try {
     const u = new URL(urlString);
@@ -1771,13 +1541,12 @@ function extractFlowIdFromTabUrl(urlString) {
       if (fid) return fid;
     }
   } catch (e) {
-    console.warn(`${LOG_PREFIX} [flow] extractFlowIdFromTabUrl parse error: ${e.message}`);
   }
   return null;
 }
 
 function handleCallbackTab(tabId, url) {
-  // 同时支持 /auth/callback 和根路径 /（Supabase 有时会回跳到根路径带 code 参数）
+  // 同时支持 /auth/callback 和根路径 /（Supabase 有时会回跳到根路径带 code 参数�?
   const isCallback =
     url.includes('/auth/callback') ||
     (url.includes('tryhomescope.com/') && url.includes('code='));
@@ -1785,7 +1554,7 @@ function handleCallbackTab(tabId, url) {
 
   let flowId = extractFlowIdFromTabUrl(url);
 
-  // 无 flow_id 时：OAuth 隐式回跳常把 query 清掉，用「同一 tab = 扩展打开的 loginTab」兜底
+  // �?flow_id 时：OAuth 隐式回跳常把 query 清掉，用「同一 tab = 扩展打开�?loginTab」兜�?
   if (!flowId) {
     for (const [fid, flow] of _oauthFlows.entries()) {
       if (flow.used) continue;
@@ -1795,7 +1564,6 @@ function handleCallbackTab(tabId, url) {
         return;
       }
     }
-    console.warn(`${LOG_PREFIX} [flow] no flow_id in URL and no loginTabId match for tabId=${tabId}`);
     return;
   }
 
@@ -1804,7 +1572,6 @@ function handleCallbackTab(tabId, url) {
     const prevCallbackTabId = flow.callbackTabId;
     flow.callbackTabId = tabId;
   } else {
-    console.warn(`${LOG_PREFIX} [flow] flowId=${flowId} not found or expired (may have already been used/consumed)`);
   }
 }
 
@@ -1812,7 +1579,7 @@ chrome.tabs.onCreated.addListener((tab) => {
   handleCallbackTab(tab.id, tab.url || '');
 });
 
-// 监听标签页 URL 变化（OAuth 完成后从 /login 重定向到 /auth/callback）
+// 监听标签�?URL 变化（OAuth 完成后从 /login 重定向到 /auth/callback�?
 chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
   if (changeInfo.status !== 'loading') return;
   handleCallbackTab(tabId, tab.url || '');

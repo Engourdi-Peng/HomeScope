@@ -20,8 +20,11 @@
     "alarms"
   ],
   "host_permissions": [
-    "https://www.realestate.com.au/*",
+    "https://www.zillow.com/*",
     "https://*.zillow.com/*",
+    "https://photos.zillowstatic.com/*",
+    "https://www.realestate.com.au/*",
+    "https://*.realestate.com.au/*",
     "https://*.tryhomescope.com/*",
     "https://trteewgplkqiedonomzg.supabase.co/*",
     "https://wkactamkheskblkdqvza.supabase.co/*"
@@ -37,10 +40,10 @@
   "content_scripts": [
     {
       "matches": [
+        "https://www.zillow.com/*",
+        "https://*.zillow.com/*",
         "https://www.realestate.com.au/*",
         "https://*.realestate.com.au/*",
-        "https://*.zillow.com/*",
-        "https://www.zillow.com/*",
         "https://*.tryhomescope.com/*"
       ],
       "js": ["content.js"],

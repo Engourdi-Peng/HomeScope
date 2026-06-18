@@ -7,8 +7,8 @@
 ;(function() {
   'use strict';
 
-  // Debug logging — always enabled for extension debugging
-  const noop = console.log.bind(console, '[HomeScope]');
+  // Debug logging — disabled in production for MV3 compliance
+  const noop = function() {};
 
   // ═══════════════════════════════════════════════════════════
   // ANTI-DETECTION UTILITIES
@@ -2573,7 +2573,6 @@ async function extractListingDataLight() {
   };
 
   // ── propertyFactsV2: structured Zillow field normalization ──
-  // Only build on Zillow pages; only console.log (no side effects, no Edge call yet)
   if (isZillowPage()) {
     const zf = zillowData?.zillowFinancials ?? null;
     const agentMarketingTextRaw = extractZillowAgentMarketingText();
@@ -2666,7 +2665,6 @@ async function extractListingDataLight() {
       },
     };
 
-    console.log('[HomeScope] propertyFactsV2 preview', JSON.parse(JSON.stringify(listing.propertyFactsV2)));
   }
 
   const detection = buildPropertyDetection(signals, listing);
@@ -3213,7 +3211,6 @@ async function waitForPhotoSwipe(timeoutMs = 3000) {
     
     // 如果 body overflow 是 hidden，也认为图库打开了
     if (bodyOverflowHidden()) {
-      console.log('[gallery] Detected open gallery via body.overflow hidden');
       return true;
     }
     
@@ -3222,7 +3219,6 @@ async function waitForPhotoSwipe(timeoutMs = 3000) {
   
   // 最后一次检查：如果 body overflow 是 hidden，仍然返回 true
   if (bodyOverflowHidden()) {
-    console.log('[gallery] Final check: body overflow hidden detected');
     return true;
   }
   
@@ -4492,11 +4488,6 @@ async function waitForRealSlideChange(prevSnapshot, prevCurrIndex, timeoutMs = 6
       if (newCurrIndex !== prevCurrIndex) {
         // currIndex 变了，必须再确认 signature 也变了才算成功
         if (snapshot.isValid && snapshot.signature && snapshot.signature !== prevSnapshot?.signature) {
-          console.log('[gallery] Slide changed (pswp-api+signature):', {
-            prevIndex: prevCurrIndex,
-            newIndex: newCurrIndex,
-            polls
-          });
           return { changed: true, newSnapshot: snapshot, prevSnapshot, reason: 'pswp-api+signature', newCurrIndex, polls };
         }
         // currIndex 变了但 signature 没变 = PhotoSwipe 内部 glitch，继续等待
@@ -4506,22 +4497,10 @@ async function waitForRealSlideChange(prevSnapshot, prevCurrIndex, timeoutMs = 6
     // Strategy B: signature changed (fallback 或无 API 时的唯一判断)
     if (snapshot.isValid && snapshot.signature && snapshot.signature !== prevSnapshot?.signature) {
       const reason = pswpInfo ? 'signature-only(no-pswp-index)' : 'signature';
-      console.log('[gallery] Slide changed (signature):', {
-        prevSignature: initialPrevSignature?.substring(0, 20),
-        newSignature: snapshot.signature?.substring(0, 20),
-        reason,
-        polls
-      });
       return { changed: true, newSnapshot: snapshot, prevSnapshot, reason, polls };
     }
   }
 
-  console.log('[gallery] waitForRealSlideChange TIMEOUT:', {
-    elapsed: Date.now() - start,
-    polls,
-    prevSignature: initialPrevSignature?.substring(0, 20),
-    lastValidSignature: lastSnapshot?.signature?.substring(0, 20)
-  });
   return { changed: false, newSnapshot: lastSnapshot, prevSnapshot, reason: 'timeout', polls };
 }
 
@@ -4535,7 +4514,6 @@ function advanceToNextSlide() {
       pswpInfo.instance.next();
       return { used: 'pswp-api', success: true };
     } catch (err) {
-      console.warn('[gallery] pswp.instance.next() failed:', err?.message);
     }
   }
 
@@ -4549,7 +4527,6 @@ function advanceToNextSlide() {
     return { used: 'button', success: true };
   }
 
-  console.warn('[gallery] No next button found, using keyboard');
   document.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true }));
   return { used: 'keyboard', success: true };
 }
@@ -4595,7 +4572,6 @@ function advanceToNextSlide() {
         document.body.classList.remove('modal-open', 'pswp--open', 'gallery-open', 'hdp-double-scroll-layout');
         document.documentElement.classList.remove('modal-open');
         
-        console.log('[gallery] Gentle page state restored');
       };
 
       // ========== Zillow StyledDialog 处理 ==========
@@ -4619,7 +4595,6 @@ function advanceToNextSlide() {
         }
         
         if (galleryDialog) {
-          console.log('[gallery] Closing Zillow StyledDialog (civil approach)');
 
           // 1️⃣ 优先：找到并点击真正的关闭按钮
           const closeBtnSelectors = [
@@ -4634,7 +4609,6 @@ function advanceToNextSlide() {
           for (const sel of closeBtnSelectors) {
             const btn = galleryDialog.querySelector(sel);
             if (btn && btn.offsetParent !== null) { // 确保按钮可见
-              console.log('[gallery] Clicking close button:', sel);
               btn.click();
               break;
             }
@@ -4675,13 +4649,11 @@ function advanceToNextSlide() {
         const bodyOverflowHidden = document.body.style.overflow === 'hidden' || 
                                  window.getComputedStyle(document.body).overflow === 'hidden';
         if (bodyOverflowHidden) {
-          console.log('[gallery] Gallery not detected but body overflow hidden, forcing restore');
           gentleRestore();
         }
         return;
       }
 
-      console.log('[gallery] Closing PhotoSwipe (civil approach)');
 
       // 1️⃣ Try clicking the close button
       const closeBtn = pswpRoot.querySelector('.pswp__button--close');
@@ -4717,7 +4689,6 @@ function advanceToNextSlide() {
         markGalleryClosed();
       }, 400);
     } catch (err) {
-      console.warn('[gallery] closeGallery error:', err);
       // 即使出错也尝试温和恢复
       setTimeout(() => {
         document.body.style.overflow = '';
@@ -4749,11 +4720,9 @@ async function collectByPhotoSwipePaging() {
     const styledDialog = document.querySelector('[class*="StyledDialog"]');
     if (isZillowPage() && styledDialog) {
       noop('[DIAG] collectByPhotoSwipePaging: Zillow StyledDialog detected');
-      console.log('[gallery] Detected Zillow StyledDialog, switching to Photos tab...');
       // 主动切换到 Photos Tab（确保在正确的媒体类型）
       const switched = await switchToPhotosTab();
       if (!switched) {
-        console.log('[gallery] Photos tab switch skipped or not needed');
       }
       const zillowImages = await extractGalleryImagesZillow();
       if (zillowImages.length > 0) {
@@ -4770,8 +4739,6 @@ async function collectByPhotoSwipePaging() {
     const bodyOverflowHidden = document.body.style.overflow === 'hidden' || 
                                window.getComputedStyle(document.body).overflow === 'hidden';
     if (isZillowPage() && bodyOverflowHidden) {
-      console.log('[gallery] Gallery appears open (body overflow hidden), but elements not detected');
-      console.log('[gallery] Attempting page data extraction...');
       
       // 尝试从页面数据提取
       const pageImages = await extractImagesFromPageDataZillow();
@@ -4803,15 +4770,12 @@ async function collectByPhotoSwipePaging() {
     // Wait for gallery to be ready
     const ready = await waitForGalleryReady(5000);
     if (!ready.ready) {
-      console.warn('[gallery] PhotoSwipe gallery not ready after 5s, proceeding with available data');
     } else {
-      console.log('[gallery] Gallery ready after', ready.pollCount, 'polls');
     }
 
     // Get PhotoSwipe instance info
     const pswpInfo = getPhotoSwipeInstance();
     const totalSlides = pswpInfo?.totalSlides || 0;
-    console.log('[gallery] PhotoSwipe instance:', pswpInfo ? `found (uid=${pswpInfo.uid}, totalSlides=${totalSlides})` : 'not found');
 
     // Get initial snapshot
     const initialSnapshot = getActiveSlideSnapshot();
@@ -4859,7 +4823,6 @@ async function collectByPhotoSwipePaging() {
       const elapsedTime = Date.now() - loopStartTime;
       if (elapsedTime > MAX_EXECUTION_TIME) {
         noop('[DIAG] collectByPhotoSwipePaging: MAX_EXECUTION_TIME reached, exiting loop');
-        console.log('[gallery] Max execution time (30s) reached, stopping extraction');
         break;
       }
 
@@ -4870,7 +4833,6 @@ async function collectByPhotoSwipePaging() {
       const totalSlidesNow = pswpInfoNow?.totalSlides || 0;
       const prevCurrIndex = pswpInfoNow?.instance?.currIndex ?? 0;
 
-      console.log('[gallery] Loop', totalAttempts, '- currIndex:', prevCurrIndex, 'totalSlides:', totalSlidesNow);
 
       noop('[DIAG] collectByPhotoSwipePaging: Loop iteration', totalAttempts, '- pswpInfo:', {
         hasInstance: !!pswpInfoNow,
@@ -4891,14 +4853,12 @@ async function collectByPhotoSwipePaging() {
                             prevCurrIndex === totalSlidesNow - 1;
       if (isAtLastSlide) {
         noop('[DIAG] collectByPhotoSwipePaging: Already at last slide, exiting');
-        console.log('[gallery] Already at last slide, exiting');
         break;
       }
 
       // Advance to next slide
       const advanceResult = advanceToNextSlide();
       noop('[DIAG] collectByPhotoSwipePaging: advanceToNextSlide result:', advanceResult);
-      console.log('[gallery] Attempt', totalAttempts, '- advanceToNextSlide:', advanceResult);
 
       // Wait for slide to change — pass full snapshot (not result item)
       const waitResult = await waitForRealSlideChange(
@@ -4923,7 +4883,6 @@ async function collectByPhotoSwipePaging() {
 
         if (isAtLastSlide || isAtFirstSlide) {
           noop('[DIAG] collectByPhotoSwipePaging: At gallery boundary (timeout), exiting');
-          console.log('[gallery] Reached gallery boundary, exiting');
           break;
         }
         // 否则继续等待
@@ -4953,7 +4912,6 @@ async function collectByPhotoSwipePaging() {
         // 如果到了边界，视为收集完成
         if (isAtLastSlide || isAtFirstSlide) {
           noop('[DIAG] collectByPhotoSwipePaging: At gallery boundary, exiting');
-          console.log('[gallery] Reached gallery boundary (first/last slide), exiting');
           break;
         }
         // 否则可能是加载延迟，继续等待
@@ -4982,7 +4940,6 @@ async function collectByPhotoSwipePaging() {
     return finalUrls.length > 0 ? finalUrls : [];
 
   } catch (err) {
-    console.error('[gallery] Error during extraction:', err);
     // Return whatever we collected
     const finalUrls = result
       .filter(item => item.signature || item.url)
@@ -5018,10 +4975,8 @@ async function switchToPhotosTab() {
                        tab.className.includes('active') ||
                        tab.className.includes('selected');
       if (isActive) {
-        console.log('[gallery] Already on Photos tab');
         return true;
       }
-      console.log('[gallery] Clicking Photos tab:', label);
       try { tab.click(); } catch (_) {
         try { tab.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true })); } catch (_2) {}
       }
@@ -5048,7 +5003,6 @@ async function extractGalleryImagesZillow() {
                  document.querySelector('[role="dialog"]');
 
   if (!dialog) {
-    console.log('[ZillowGallery] Dialog not found');
     return images;
   }
 
@@ -5056,7 +5010,6 @@ async function extractGalleryImagesZillow() {
   // Zillow 在 __NEXT_DATA__ 或 gdpClientCache 中存储所有图片 URL
   const pageImages = extractImagesFromPageData();
   if (pageImages.length > 0) {
-    console.log('[ZillowGallery] Extracted', pageImages.length, 'images from page data');
     return pageImages;
   }
 
@@ -5064,7 +5017,6 @@ async function extractGalleryImagesZillow() {
   // 根据 aria-label="view larger view of the X photo of this home" 去重
   const mediaStreamTiles = dialog.querySelectorAll('li[class*="media-stream-tile"]');
   if (mediaStreamTiles.length > 0) {
-    console.log('[ZillowGallery] Found', mediaStreamTiles.length, 'media-stream-tile elements');
     
     // 按 aria-label 编号提取图片，去重
     const tileMap = new Map();
@@ -5095,16 +5047,13 @@ async function extractGalleryImagesZillow() {
         .sort((a, b) => a[0] - b[0])
         .map(([_, url]) => url);
       
-      console.log('[ZillowGallery] Initial media-stream-tile extraction:', sortedImages.length, 'images (before lazy load)');
       
       // 如果图片数量少于预期，继续触发懒加载
       // （虚拟列表可能只有部分渲染，需要滚动触发加载）
       if (sortedImages.length < 10) {
-        console.log('[ZillowGallery] Few images found, triggering lazy load to load more...');
         // 继续执行下面的懒加载逻辑，不提前返回
       } else {
         // 图片数量足够，直接返回
-        console.log('[ZillowGallery] Media stream tiles extracted', sortedImages.length, 'unique images');
         return sortedImages;
       }
     }
@@ -5131,8 +5080,7 @@ async function extractGalleryImagesZillow() {
   const scrollContainer = (DialogBody.scrollHeight > DialogBody.clientHeight) ? DialogBody : mediaContainer;
   
   if (scrollContainer) {
-    console.log('[ZillowGallery] Triggering lazy load by scrolling', scrollContainer.tagName, 
-      'scrollH=', scrollContainer.scrollHeight, 'clientH=', scrollContainer.clientHeight);
+    console.log('scrollH=', scrollContainer.scrollHeight, 'clientH=', scrollContainer.clientHeight);
     
     // 等待第一张图片出现，最多等待 2 秒
     // 改成检测图片而非固定等待，网络快时立即开始
@@ -5143,14 +5091,12 @@ async function extractGalleryImagesZillow() {
       const imgs = dialog.querySelectorAll('img');
       const loadedImg = Array.from(imgs).find(img => img.complete && img.naturalWidth > 0);
       if (loadedImg) {
-        console.log('[ZillowGallery] First image loaded, starting scroll immediately');
         firstImgFound = true;
         break;
       }
       await new Promise(r => setTimeout(r, 50));
     }
     if (!firstImgFound) {
-      console.log('[ZillowGallery] Timeout waiting for first image, proceeding anyway');
     }
 
     // 获取初始图片数量（从 dialog 内查找）
@@ -5185,18 +5131,15 @@ async function extractGalleryImagesZillow() {
       const currentCount = getImgCount();
       const atBottom = isScrolledToBottom();
 
-      console.log('[ZillowGallery] Step', stepCount, '- scrollTop:', newScrollTop, 
-        '/', scrollContainer.scrollHeight, '- images:', currentCount, '- atBottom:', atBottom);
+      console.log('scroll progress:', newScrollTop, '/', scrollContainer.scrollHeight, '- images:', currentCount, '- atBottom:', atBottom);
 
       // 判断是否应该退出
       if (atBottom) {
-        console.log('[ZillowGallery] Reached bottom');
         break;
       }
 
       // 防止无限循环（最多滚动200步）
       if (stepCount >= 200) {
-        console.log('[ZillowGallery] Max steps reached, stopping');
         break;
       }
     }
@@ -5207,7 +5150,6 @@ async function extractGalleryImagesZillow() {
 
     // 最终等待确保所有图片渲染完成
     await new Promise(r => setTimeout(r, 500));
-    console.log('[ZillowGallery] Lazy load scrolling complete, total images found:', getImgCount());
   }
 
   // ── 策略1: 从 Photos 专用区域提取（最准确）────────────────────────────
@@ -5232,7 +5174,6 @@ async function extractGalleryImagesZillow() {
         }
       }
       if (images.length > 0) {
-        console.log('[ZillowGallery] Photo wall found, got', images.length, 'images');
         return images;
       }
     }
@@ -5262,7 +5203,6 @@ async function extractGalleryImagesZillow() {
     }
   }
 
-  console.log('[ZillowGallery] Found', images.length, 'images');
   return images;
 }
 
@@ -5426,11 +5366,9 @@ function extractImagesFromPageData() {
       const data = JSON.parse(nextData.textContent);
       const photos = deepFindPhotos(data);
       if (photos.length > images.length) {
-        console.log('[ZillowGallery] Found', photos.length, 'photos in __NEXT_DATA__');
         return photos;
       }
     } catch (e) {
-      console.log('[ZillowGallery] Failed to parse __NEXT_DATA__:', e.message);
     }
   }
 
@@ -5441,7 +5379,6 @@ function extractImagesFromPageData() {
       const data = JSON.parse(script.textContent);
       const photos = deepFindPhotos(data);
       if (photos.length > images.length) {
-        console.log('[ZillowGallery] Found', photos.length, 'photos in JSON script');
         return photos;
       }
     } catch (e) {

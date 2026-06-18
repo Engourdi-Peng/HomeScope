@@ -536,7 +536,7 @@ const AppContext = createContext<AppContextValue | null>(null);
 
 // ===== Message helper =====
 
-const noop = (..._args: unknown[]) => { if (_args.length) console.warn('[ExtApp]', ..._args); };
+const noop = (..._args: unknown[]) => {};
 
 function sendMessage<T = unknown>(message: Record<string, unknown>, timeoutMs = 30000): Promise<T | undefined> {
   return new Promise((resolve) => {

@@ -1,124 +1,170 @@
 # Privacy Policy
 
-**Last updated:** March 2026
+**Last updated:** June 2026
 
 ## Introduction
 
-This Privacy Policy explains how we collect, use, disclose, and safeguard your information when you use our rental property analysis service, including our website and browser extension ("we", "us", or "our"). We are committed to protecting your personal information in accordance with the Australian Privacy Act 1988 and the Australian Privacy Principles (APPs).
+This Privacy Policy explains how HomeScope ("we", "us", or "our") collects, uses, discloses, and safeguards your information when you use our AI-powered property analysis service, including our website (https://www.tryhomescope.com) and browser extension ("HomeScope"). We are committed to protecting your personal information in accordance with the Australian Privacy Act 1988 and the Australian Privacy Principles (APPs).
+
+**This Privacy Policy is provided in compliance with Google Chrome Web Store requirements for browser extensions that access user data.**
+
+## Supported Websites
+
+HomeScope is designed to work with the following property listing websites:
+
+- **realestate.com.au** (Australia)
+- **Zillow** (United States)
+
+The extension will only access content on these websites when you explicitly click "Analyze" on a property listing page. We do not access or collect data from any other websites.
 
 ## Information We Collect
 
 We collect the following types of information:
 
-- **Account Information**: Email address and authentication data when you sign up
-- **Property Data**: Listing photos, descriptions, and property details that you provide or that are accessed from supported property listing pages when you request an analysis
-- **Usage Data**: Information about how you use our service, including analysis history
-- **Technical Data**: IP address, browser type, and device information
+### Property Listing Data
+When you request a property analysis, we may collect:
+- Property address
+- Listing price and price history
+- Property details (beds, baths, square footage, year built)
+- Listing descriptions and text content
+- Property images and image URLs
+- Page URL of the listing
+- AI-generated analysis results and reports
 
-## Browser Extension
+### Account Information
+- Email address
+- Authentication data and session tokens
+- User ID
+- Subscription plan (Basic or Full)
+- Credit/point balance and purchase history
 
-If you use our browser extension, additional information may be processed as follows:
+### Technical Data
+- IP address
+- Browser type and version
+- Device information
+- Extension version
+- Operating system
 
-- The extension only accesses property listing content when you actively click "Analyze"
-- No data is collected in the background
-- The extension may read visible content on the current listing page, including text and images, solely to generate the requested analysis
-- The extension does not track your browsing activity outside supported property listing pages
+### Usage Data
+- Analysis history (for Full plan users)
+- Feature usage patterns
+- Timestamps of analysis requests
 
-## Chrome Extension Permissions
+## Browser Extension Data Collection
 
-Our browser extension uses the following Chrome permissions, each with a specific purpose:
+Our browser extension collects data only through **user-initiated actions**:
 
-### Permissions
+1. **User-Initiated Analysis** - The extension only accesses property listing content when you actively click "Analyze" on a supported property page. No data is collected automatically or in the background.
 
-- **`storage`** – Stores your authentication session (access tokens, user info) locally in your browser (`chrome.storage.local`). This allows you to stay signed in between sessions. Session data is only transmitted to our servers when making authenticated API requests and is never accessed remotely by us.
+2. **Image Collection** - When you request an analysis with image support:
+   - We programmatically access the photo gallery on the listing page
+   - Images are collected solely for AI-powered visual analysis
+   - Images are sent to our AI processing service and not permanently stored after analysis
 
-- **`tabs`** – Used for three essential functions:
-  - Detecting when you're viewing a property listing on supported sites (Realestate.com.au)
-  - Opening the OAuth login page in a new tab during sign-in
-  - Enabling secure communication between the extension side panel and the property page via `chrome.tabs.sendMessage`
+3. **No Background Tracking** - We do not track your browsing activity, monitor pages you visit, or collect data when you are not actively using the analysis feature.
 
-- **`sidePanel`** – Allows the extension to run in Chrome's side panel (sidebar), providing a seamless analysis experience alongside the property listing page without interrupting your browsing.
-
-### Host Permissions
-
-The extension requests access to these specific domains:
-
-- `https://www.realestate.com.au/*` – To read property listing content **only when you click "Analyze"**
-- `https://*.tryhomescope.com/*` – For authentication and API communication with our servers
-- `https://*.supabase.co/*` – For secure authentication services provided by Supabase
-
-**Important:** These permissions are strictly limited to the purposes described above. The extension does not access or collect data from these sites unless you actively use the extension's features on a supported property listing page.
-
-## Image Collection Process
-
-When you request a property analysis, we collect listing images through the following process:
-
-1. **User-Initiated** – Image collection only begins after you explicitly click "Analyze"
-2. **Gallery Access** – We programmatically open the photo gallery viewer (PhotoSwipe) on the listing page
-3. **Systematic Capture** – We navigate through all gallery slides to collect every available listing image
-4. **AI Processing** – Images are sent to our AI service for visual analysis
-5. **Temporary Storage** – Images are processed server-side and not permanently stored after analysis completion
-
-**You maintain full control:** You can cancel the analysis at any time by closing the gallery. No images are collected without your explicit action, and the gallery closes automatically after collection finishes.
-
-## How We Use Your Information
-
-We use your information for the following purposes:
-
-- To provide rental property analysis services
-- To generate AI-based insights and reports based on listing data
-- To manage your account and provide customer support
-- To improve and optimise our service (using aggregated, anonymised data)
-- To communicate with you about updates and support
-- To comply with legal obligations
+4. **Local Storage** - Authentication session data (access tokens) is stored locally in your browser's `chrome.storage.local`. This data remains on your device and is automatically cleared when you sign out or uninstall the extension.
 
 ## AI Processing
 
-To generate analysis results, property-related data may be processed by third-party AI service providers (for example, via OpenRouter). This data is used only to generate the requested analysis and is not used by us for advertising, profiling, or unrelated purposes.
+To generate analysis results, the following data may be sent to third-party AI service providers:
 
-## Data Storage and Security
+- Property listing text and descriptions
+- Property images (for Full plan analyses)
+- Analysis parameters you select
 
-### Local Storage (Your Browser)
+**AI Service Providers:** We use OpenRouter and/or OpenAI as our AI processing providers. These providers process your data solely for the purpose of generating the requested property analysis.
 
-- Session tokens and user preferences are stored in your browser's `chrome.storage.local`
-- This data remains on your device and is automatically cleared when you sign out or uninstall the extension
-- We do not have remote access to this local storage
+**Data Use Limitation:** Your property data is used ONLY to generate the requested analysis. We do not use your data for:
+- Advertising or marketing purposes
+- Building user profiles
+- Training AI models (unless explicitly disclosed by the AI provider)
+- Any purpose unrelated to HomeScope services
 
-### Server Storage
+## Data Storage
 
-- Analysis results and account data are stored on secure Supabase servers with encryption at rest and in transit
-- Property listing data is retained to provide the service and maintain your analysis history
-- We implement industry-standard technical and organisational measures to protect against unauthorised access, alteration, or disclosure
+### Basic Plan (No Account Required)
+- Analysis is performed without saving your history
+- No property data, images, or results are stored on our servers
+- Only anonymous usage metrics may be collected
+
+### Full Plan (Logged-in Users)
+When you create an account and use the Full plan, we store:
+- Your account information (email, user ID)
+- Analysis history with property details
+- Property images and AI analysis results
+- Subscription and purchase history
+
+**Storage Location:** Data is stored on secure Supabase servers with encryption at rest and in transit.
+
+**Security Measures:** We implement industry-standard technical and organisational measures to protect against unauthorized access, alteration, or disclosure of your personal information.
+
+## Third-Party Services
+
+We share your data with the following third-party service providers:
+
+| Service | Purpose | Data Shared |
+|---------|---------|-------------|
+| **Supabase** | Database, authentication, and backend services | Account info, analysis history, property data |
+| **OpenRouter** | AI model routing and processing | Property text, images (Full plan) |
+| **OpenAI** | AI language model processing | Property text, images (Full plan) |
+| **Paddle / Stripe** | Payment processing (Merchant of Record) | Transaction data, email (for payments only) |
+| **Vercel** | Website hosting and edge functions | Technical logs, usage data |
+
+Each third-party service provider is contractually bound to handle your data only for the specified purposes and in accordance with their own privacy policies.
 
 ## Data Sharing and Disclosure
 
-We do **not** sell your personal information. We may share your information only with:
+### What We Do NOT Do
 
-- **Service providers** who assist in operating our platform (hosting, customer support, analytics)
-- **AI processing providers** used exclusively to generate your analysis results
-- **Payment processors** (e.g., Paddle as Merchant of Record) to handle transactions and refunds
-- **Law enforcement or regulatory bodies** when required by law or court order
+We are committed to protecting your privacy. HomeScope does NOT:
 
-If your payment is processed by Paddle, Paddle's privacy policy and consumer terms also apply to payment-related data.
+- **Sell your personal data** - We never sell, rent, or trade your personal information to third parties for marketing purposes
+- **Use data for advertising** - Your data is not used for targeted advertising or ad profiling
+- **Read unrelated websites** - We only access content on realestate.com.au and Zillow when you actively use the Analyze feature
+- **Access passwords or cookies** - We do not read, collect, or store your passwords, banking credentials, or cookies from any website
+- **Monitor browsing history** - We do not track, log, or monitor websites you visit outside of the HomeScope analysis feature
+- **Background surveillance** - No data is collected in the background; all collection is user-initiated
 
-## Your Rights (Australian Privacy Principles)
+### When We May Share Data
 
-Under the Australian Privacy Act 1988 and Australian Privacy Principles (APPs), you have the right to:
+We may disclose your information only in these circumstances:
+- **Legal Requirements** - To comply with applicable laws, regulations, legal processes, or governmental requests
+- **Protection of Rights** - To detect, prevent, or address fraud, security issues, or technical problems
+- **Business Transfer** - In connection with a merger, acquisition, or sale of assets (with prior notice to users)
 
-- **Access** – Request a copy of the personal information we hold about you
-- **Correction** – Ask us to correct inaccurate or incomplete information
-- **Deletion** – Request erasure of your personal information (subject to legal retention limits)
-- **Opt-out** – Object to direct marketing (we do not engage in direct marketing)
-- **Complaint** – Lodge a complaint with the Office of the Australian Information Commissioner (OAIC)
+## Your Privacy Rights
 
-### Extension-Specific Rights
+### Under Australian Privacy Principles
 
-In addition to the above, you can exercise control over extension-related data at any time:
+You have the right to:
+- **Access** - Request a copy of the personal information we hold about you
+- **Correction** - Ask us to correct inaccurate or incomplete information
+- **Deletion** - Request erasure of your personal information (subject to legal retention limits)
+- **Opt-out** - Object to direct marketing (we do not engage in direct marketing)
+- **Complaint** - Lodge a complaint with the Office of the Australian Information Commissioner (OAIC)
 
-- **Clear local session data** – Sign out from within the extension or uninstall the extension to remove all locally stored data
-- **Delete analysis history** – Request deletion through the extension interface (coming soon) or by contacting us
-- **Disable the extension** – Turn off or remove the extension at any time via Chrome's extension management page (`chrome://extensions/`)
-- **Request complete data deletion** – Contact our support team to delete your account and all associated data
+### How to Delete Your Data
+
+You can delete your data through the following methods:
+
+**1. Delete Analysis History (Full Plan Users)**
+- Access your account settings in the extension or on our website
+- Use the "Delete History" option to remove individual or all analysis records
+
+**2. Delete Your Account**
+- Contact us via email: a472018670@gmail.com
+- Include "Account Deletion Request" in the subject line
+- We will process your request within 30 days
+
+**3. Uninstall the Extension**
+- Removing the extension from Chrome will clear all locally stored session data
+- Server-stored data (Full plan) will remain until you request deletion
+
+**4. Immediate Data Deletion Request**
+- Email: a472018670@gmail.com
+- Response time: Within 72 hours
+- We will confirm deletion and provide verification upon request
 
 ## Cookie and Tracking Policy
 
@@ -127,18 +173,21 @@ In addition to the above, you can exercise control over extension-related data a
 - We do not set, read, or modify any third-party cookies
 - We do not track your browsing activity across websites
 - We do not embed analytics trackers or advertising identifiers in the extension
-- Supabase authentication cookies (if any) are managed entirely by Supabase's auth service, not by our extension
-- All communication is via direct API calls using your session token
+- Supabase authentication tokens are stored locally in `chrome.storage.local`, not in cookies
+- All communication uses secure API calls with session tokens
 
 ## Data Retention
 
 We retain personal information only for as long as necessary to provide services and meet legal obligations:
 
-- **Local session data** – Stored in your browser until you sign out or uninstall the extension
-- **Analysis history** – Retained on our servers until you delete your account or request deletion
-- **Property data** – Retained only as long as necessary to maintain your analysis history and provide service
-- **Technical logs** – Automatically deleted after 30 days
-- **Account data** – Retained until you request deletion or we terminate the service (with advance notice)
+| Data Type | Retention Period |
+|-----------|------------------|
+| Local session data | Until sign out or uninstall |
+| Basic plan analyses | Not stored on servers |
+| Full plan analysis history | Until account deletion requested |
+| Account data | Until deletion request |
+| Technical logs | 30 days |
+| Payment records | 7 years (legal requirement) |
 
 ## Children's Privacy
 
@@ -146,7 +195,7 @@ Our service is not directed at children under 18 years of age. We do not knowing
 
 ## Changes to This Privacy Policy
 
-We may update this Privacy Policy from time to time to reflect changes in our practices or legal requirements. The "Last updated" date at the top indicates when the policy was most recently revised.
+We may update this Privacy Policy from time to time to reflect changes in our practices, features, or legal requirements. The "Last updated" date at the top indicates when the policy was most recently revised.
 
 If we make **material changes** that affect how we collect, use, or share your personal information, we will notify you through:
 
@@ -161,9 +210,9 @@ We encourage you to review this policy periodically to stay informed about our p
 If you have any questions about this Privacy Policy, wish to exercise your privacy rights, or have a privacy concern, please contact us:
 
 - **Email**: a472018670@gmail.com
-- **Website**: https://tryhomescope.com/contact
+- **Website**: https://www.tryhomescope.com/contact
 
-### Complaints
+### Privacy Complaints
 
 If you believe we have breached your privacy rights under the Privacy Act 1988, you may also contact the **Office of the Australian Information Commissioner (OAIC)**:
 
