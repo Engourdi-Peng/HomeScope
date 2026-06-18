@@ -4431,6 +4431,7 @@ export function NewReportUI({
               listingFingerprint={listingFingerprint}
               listingAddress={listingAddress}
               reportType={reportType}
+              hideBottomSection={hideBottomSection}
             />
           )}
         </>
