@@ -13,7 +13,7 @@ const PRODUCTS = [
   {
     id: 'starter',
     title: 'Starter',
-    price: '$9.99',
+    price: '$6.99',
     reportCount: '1 FULL PROPERTY REPORT',
     description: 'Best for checking one property before you spend time on a showing.',
     features: [
@@ -28,7 +28,7 @@ const PRODUCTS = [
   {
     id: 'standard',
     title: 'Standard',
-    price: '$19.99',
+    price: '$15.99',
     reportCount: '3 FULL PROPERTY REPORTS',
     description: 'Best for buyers reviewing a few homes on their shortlist.',
     features: [
@@ -43,7 +43,7 @@ const PRODUCTS = [
   {
     id: 'pro',
     title: 'Pro',
-    price: '$49.99',
+    price: '$39.99',
     reportCount: '10 FULL PROPERTY REPORTS',
     description: 'Best for active buyers reviewing many listings during a serious home search.',
     features: [
