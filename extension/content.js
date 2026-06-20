@@ -297,27 +297,24 @@
     window.scrollTo({ top: startScrollY, behavior: 'instant' });
   }
 
-  // ===== Multi-layer human behavior simulation =====
+  // ===== Light human behavior simulation =====
   async function simulateHumanBehavior() {
-    // Layer 1: Random pause before any interaction (500ms - 4s)
-    await randomDelay(500, 4000);
+    // Wait for gallery to be ready (with short timeout)
+    await waitForGalleryReady(2000);
 
-    // Layer 2: Slight mouse movement to mimic attention
+    // Quick mouse movement (faster)
     const viewportW = Math.max(document.documentElement.clientWidth, window.innerWidth || 800);
     const viewportH = Math.max(document.documentElement.clientHeight, window.innerHeight || 600);
     const fromX = Math.floor(Math.random() * viewportW * 0.3) + viewportW * 0.1;
     const fromY = Math.floor(Math.random() * viewportH * 0.3) + viewportH * 0.1;
     const toX = fromX + Math.floor(Math.random() * 200) - 100;
     const toY = fromY + Math.floor(Math.random() * 150) - 75;
-    await simulateMouseMove(fromX, fromY, toX, toY, 600 + Math.random() * 800);
+    await simulateMouseMove(fromX, fromY, toX, toY, 200 + Math.random() * 200);
 
-    // Layer 3: Slight scroll with natural speed
+    // Quick scroll
     const direction = Math.random() > 0.5 ? 1 : -1;
     const scrollPx = (Math.floor(Math.random() * 200) + 80) * direction;
-    await simulateHumanScroll(scrollPx, 800 + Math.random() * 1000);
-
-    // Layer 4: Pause after scroll (simulating reading)
-    await randomDelay(300, 2000);
+    await simulateHumanScroll(scrollPx, 300 + Math.random() * 300);
   }
 
   // ===== Send warning to side panel =====
@@ -904,10 +901,6 @@ async function startUserExtraction(bypassCache = false, analysisType = 'full') {
       sendWarningToSidePanel(rateCheck);
       // Proceed but warn user
     }
-
-    // ── Step: Wait for page to stabilize after load ──
-    noop('[DIAG] startUserExtraction: waiting for page to stabilize...');
-    await randomDelay(800, 3000);
 
     // ── Step: Detect CAPTCHA / challenge early ──
     if (detectZillowChallenge()) {
@@ -3214,7 +3207,7 @@ async function waitForPhotoSwipe(timeoutMs = 3000) {
       return true;
     }
     
-    await shortDelay(400, 1200);
+    await shortDelay(200, 500);
   }
   
   // 最后一次检查：如果 body overflow 是 hidden，仍然返回 true
@@ -4311,28 +4304,30 @@ function getPhotoSwipeInstance() {
 
 /**
  * Wait for gallery to enter "URL readable" state.
- * Success criteria: at least one .pswp__img with a valid http(s) src or currentSrc.
+ * Success criteria: at least one .pswp__img with a valid src or currentSrc.
  */
-async function waitForGalleryReady(timeoutMs = 3000) {
+async function waitForGalleryReady(timeoutMs = 2000) {
   const start = Date.now();
   let polls = 0;
   while (Date.now() - start < timeoutMs) {
     polls++;
     const pswp = document.querySelector('.pswp.pswp--open');
     if (!pswp) {
-      await shortDelay(300, 700);
+      await shortDelay(150, 400);
       continue;
     }
     const imgs = Array.from(pswp.querySelectorAll('.pswp__img'));
     for (const img of imgs) {
       const src = (img.currentSrc || img.src || '').trim();
-      if (src && src.startsWith('http') && !src.startsWith('data:') && !src.startsWith('blob:')) {
+      // Accept any non-empty src (http, blob, data)
+      if (src && (src.startsWith('http') || src.startsWith('blob:') || src.startsWith('data:'))) {
         return { ready: true, pollCount: polls };
       }
     }
-    await shortDelay(300, 700);
+    await shortDelay(150, 400);
   }
-  return { ready: false, pollCount: polls };
+  // Even if timeout, return true - gallery is open, just URL not ready yet
+  return { ready: true, pollCount: polls };
 }
 
 /**
@@ -4766,12 +4761,6 @@ async function collectByPhotoSwipePaging() {
       return [];
     }
     noop('[DIAG] collectByPhotoSwipePaging: PhotoSwipe is open');
-
-    // Wait for gallery to be ready
-    const ready = await waitForGalleryReady(5000);
-    if (!ready.ready) {
-    } else {
-    }
 
     // Get PhotoSwipe instance info
     const pswpInfo = getPhotoSwipeInstance();

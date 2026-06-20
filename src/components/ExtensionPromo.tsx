@@ -1,28 +1,8 @@
 import { useState, useEffect } from 'react';
-import { Zap, Shield, MapPin, ChevronLeft, Share2 } from 'lucide-react';
+import { Zap, Shield, MapPin, ChevronLeft, Share2, AlertTriangle } from 'lucide-react';
+import { LandingReportPreview } from './LandingReportPreview';
 
 const CHROME_WEBSTORE_URL = 'https://chromewebstore.google.com/detail/homescope/cajiemkghnjbidpmgfppebamgjhamjoi';
-
-function ChromeIcon({ size = 18 }: { size?: number }) {
-  return (
-    <svg width={size} height={size} viewBox="0 0 48 48" fill="none" xmlns="http://www.w3.org/2000/svg">
-      <circle cx="24" cy="24" r="22" fill="white" />
-      <circle cx="24" cy="24" r="22" stroke="#dadce0" strokeWidth="1.5" />
-      <path d="M24 10C16.268 10 10 16.268 10 24h14C24 18.485 26.5 14 31 14c-3.5 0-5.5 3-5.5 3s0 10 10 17c10-7 10-17 10-17S37 14 33.5 14C29 14 26.5 18.485 24 24V10z" fill="#4285F4" />
-      <path d="M10 24c0-7.732 6.268-14 14-14v4c-3.5 0-7 3.485-7 10H10z" fill="#EA4335" />
-      <path d="M24 38c7.732 0 14-6.268 14-14H33c0 3.515-2.5 8-9 8 5.5 0 9-4.485 9-10H24V38z" fill="#34A853" />
-      <path d="M10 24H24v4C19.5 28 17 32.515 17 36c-6.268 0-7-8-7-12z" fill="#FBBC05" />
-    </svg>
-  );
-}
-
-function HomeIcon() {
-  return (
-    <svg width="16" height="16" viewBox="0 0 37.749 26.598" fill="#e4e3e1" xmlns="http://www.w3.org/2000/svg">
-      <path d="M898.351-97.643V-71.05h9.227V-89.8l4.956,4.956V-71.05h9.289V-89.8l4.956,4.956V-71.05H936.1V-89.8l-8.043-7.848-7.442,6.5-6.486-6.5-6.547,5.4v-5.4Z" transform="translate(-898.351 97.648)" />
-    </svg>
-  );
-}
 
 export function ExtensionPromo() {
   const [isChrome, setIsChrome] = useState<boolean | null>(null);
@@ -78,96 +58,76 @@ export function ExtensionPromo() {
                 onClick={handleInstall}
                 className="inline-flex items-center gap-3 bg-stone-900 hover:bg-stone-800 text-white font-semibold px-7 py-3 rounded-full transition-colors shadow-sm hover:shadow-md"
               >
-                <ChromeIcon size={20} />
+                <svg width="20" height="20" viewBox="0 0 48 48" fill="none" xmlns="http://www.w3.org/2000/svg">
+                  <circle cx="24" cy="24" r="22" fill="white" />
+                  <circle cx="24" cy="24" r="22" stroke="#dadce0" strokeWidth="1.5" />
+                  <path d="M24 10C16.268 10 10 16.268 10 24h14C24 18.485 26.5 14 31 14c-3.5 0-5.5 3-5.5 3s0 10 10 17c10-7 10-17 10-17S37 14 33.5 14C29 14 26.5 18.485 24 24V10z" fill="#4285F4" />
+                  <path d="M10 24c0-7.732 6.268-14 14-14v4c-3.5 0-7 3.485-7 10H10z" fill="#EA4335" />
+                  <path d="M24 38c7.732 0 14-6.268 14-14H33c0 3.515-2.5 8-9 8 5.5 0 9-4.485 9-10H24V38z" fill="#34A853" />
+                  <path d="M10 24H24v4C19.5 28 17 32.515 17 36c-6.268 0-7-8-7-12z" fill="#FBBC05" />
+                </svg>
                 <span>Add to Chrome</span>
               </button>
             )}
           </div>
 
-          {/* 右侧：真实插件 UI 模拟 */}
-          <div className="hidden md:flex justify-center">
-            <div className="relative">
-              {/* 插件面板容器 */}
-              <div className="bg-[#FDFCF9] rounded-2xl shadow-2xl border border-stone-200 w-[280px] overflow-hidden">
-                {/* 顶部导航栏 */}
-                <div className="flex items-center justify-between px-3 py-2.5 border-b border-stone-200 bg-[#FDFCF9]">
-                  <div className="flex items-center gap-1.5 text-stone-500 hover:text-stone-800 transition-colors cursor-pointer">
-                    <ChevronLeft size={13} strokeWidth={1.5} />
-                    <span className="text-[11px] font-medium">Back</span>
+          {/* 右侧：Chrome extension side panel report preview */}
+          <div className="flex md:hidden justify-center mt-8">
+            <div className="w-full max-w-[322px]">
+              <div className="relative">
+                <div className="w-[322px] h-[560px] bg-white rounded-[24px] border border-black/5 shadow-[0_25px_80px_-12px_rgba(0,0,0,0.15)] overflow-hidden">
+                  <div className="flex items-center justify-between px-4 h-[40px] border-b border-black/[0.08]">
+                    <div className="flex items-center gap-1.5 text-[#7a746d]">
+                      <ChevronLeft size={13} strokeWidth={1.5} />
+                      <span className="text-[11px] font-medium">Back</span>
+                    </div>
+                    <div className="flex items-center gap-1.5 text-[#7a746d]">
+                      <Share2 size={13} strokeWidth={1.5} />
+                      <span className="text-[11px] font-medium">Share</span>
+                    </div>
                   </div>
-                  <div className="flex items-center gap-1.5 text-stone-500 hover:text-stone-800 transition-colors cursor-pointer">
-                    <Share2 size={13} strokeWidth={1.5} />
-                    <span className="text-[11px] font-medium">Share</span>
-                  </div>
-                </div>
-
-                <div className="p-3 space-y-2">
-                  {/* 房源摘要卡片 */}
-                  <div className="bg-white rounded-xl p-3 border border-stone-200">
-                    <div className="flex gap-2.5">
-                      {/* 缩略图占位 */}
-                      <div className="w-14 h-14 bg-stone-100 rounded-lg flex items-center justify-center shrink-0">
-                        <HomeIcon />
-                      </div>
-                      <div className="flex-1 min-w-0">
-                        <div className="text-[11px] font-semibold text-stone-800 leading-tight mb-0.5">
-                          123 Oak Street, Austin, TX 78701
+                  <div className="h-[calc(100%-40px)] overflow-y-auto">
+                    <div className="p-[15px]">
+                      <div className="bg-[#262624] rounded-[15px] p-5 text-white">
+                        <h2 className="text-[15px] font-semibold leading-tight text-[#e8e8e4]">
+                          46-26 217th St #1, Bayside, NY 11361
+                        </h2>
+                        <div className="w-full mt-4">
+                          <img
+                            src="/listing-photo-example.png"
+                            alt="Property"
+                            className="w-full aspect-[16/9] object-cover rounded-[10px]"
+                          />
                         </div>
-                        <div className="text-[11px] font-bold text-stone-900 mb-0.5">$425,000</div>
-                        <div className="text-[10px] text-stone-400">3 bed · 2 bath · 1,850 sqft</div>
-                      </div>
-                    </div>
-                  </div>
-
-                  {/* 房间分析标签 */}
-                  <div className="bg-white rounded-xl p-3 border border-stone-200">
-                    <div className="flex flex-wrap gap-1.5">
-                      <span className="px-2 py-0.5 bg-green-50 text-[10px] font-medium text-green-700 rounded-full border border-green-200">bathroom good</span>
-                      <span className="px-2 py-0.5 bg-stone-50 text-[10px] font-medium text-stone-600 rounded-full border border-stone-200">kitchen checked</span>
-                      <span className="px-2 py-0.5 bg-amber-50 text-[10px] font-medium text-amber-700 rounded-full border border-amber-200">outdoor bonus</span>
-                      <span className="px-2 py-0.5 bg-stone-50 text-[10px] font-medium text-stone-600 rounded-full border border-stone-200">garage bonus</span>
-                      <span className="px-2 py-0.5 bg-amber-50 text-[10px] font-medium text-amber-700 rounded-full border border-amber-200">mobility consideration</span>
-                    </div>
-                  </div>
-
-                  {/* 深色分析报告区 */}
-                  <div className="bg-[#282828] rounded-xl p-3 text-white">
-                    {/* 评分区 */}
-                    <div className="flex items-center justify-between mb-2">
-                      <div>
-                        <div className="text-[9px] font-medium uppercase tracking-widest text-[#B3B3B3] mb-1">Overall Score</div>
-                        <div className="flex items-baseline gap-1">
-                          <span className="text-3xl font-light tracking-tight text-white">78</span>
-                          <span className="text-sm font-light text-[#B3B3B3]">/100</span>
+                        <div className="mt-7 flex items-baseline gap-1">
+                          <span className="text-[56px] font-bold text-[#ffb800] leading-none tracking-tight">66</span>
+                          <span className="text-[27px] font-light text-[#b8b8b2]">/100</span>
                         </div>
+                        <div className="mt-6 flex items-center justify-center gap-2 border border-[rgba(245,180,0,0.55)] bg-[rgba(245,180,0,0.08)] text-[#f5b400] rounded-[10px] px-3 py-2.5 font-bold">
+                          <AlertTriangle size={14} className="shrink-0" />
+                          <span className="text-[13px]">Proceed With Caution</span>
+                        </div>
+                        <div className="mt-4 border border-[rgba(245,180,0,0.45)] rounded-[10px] p-3.5">
+                          <div className="text-[10px] font-semibold uppercase tracking-[0.08em] text-[#f5b400] mb-2">
+                            BOTTOM LINE
+                          </div>
+                          <p className="text-[15px] font-semibold text-white leading-[1.4]">
+                            Worth a closer look — but verify permits, roof age, and older systems first.
+                          </p>
+                        </div>
+                        <p className="mt-5 text-[13px] text-[#d6d6d2] leading-[1.6]">
+                          3-bed, 2-bath single-family home built in 1950 in Bayside. The listing shows clean interiors, an updated-looking kitchen, finished lower level, and backyard. Price per sqft is high, so confirm roof age, system updates, and permits before booking a serious viewing.
+                        </p>
                       </div>
-                      <div className="px-2 py-1 bg-green-500/20 text-green-400 border border-green-500/40 rounded-full text-[9px] font-semibold uppercase tracking-wider">
-                        High Priority
-                      </div>
-                    </div>
-
-                    {/* Verdict */}
-                    <div className="mb-2">
-                      <div className="text-[9px] font-medium uppercase tracking-widest text-[#AAAAAA] mb-1">Verdict</div>
-                      <p className="text-[11px] text-white leading-snug">
-                        Solid property with genuine appeal — worth viewing if the location works for you.
-                      </p>
-                    </div>
-
-                    {/* Understood */}
-                    <div className="pt-2 border-t border-white/10">
-                      <div className="text-[9px] font-medium uppercase tracking-widest text-[#AAAAAA] mb-1">Understood</div>
-                      <p className="text-[10px] text-[#D6D6D6] leading-relaxed">
-                        Analysed 15 screenshots across 9 spaces: bathroom, dining, outdoor, garage, hallway, driveway, living room, bedroom & more.
-                      </p>
                     </div>
                   </div>
                 </div>
+                <div className="absolute -inset-4 bg-gradient-to-r from-amber-100 to-amber-50 rounded-[2rem] opacity-40 blur-xl -z-10" />
               </div>
-
-              {/* 装饰光晕 */}
-              <div className="absolute -inset-2 bg-gradient-to-r from-amber-100 to-amber-50 rounded-[1.5rem] opacity-40 blur-xl -z-10" />
             </div>
+          </div>
+          <div className="hidden md:flex justify-center">
+            <LandingReportPreview />
           </div>
         </div>
       </div>

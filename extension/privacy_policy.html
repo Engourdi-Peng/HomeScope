@@ -65,6 +65,18 @@ Our browser extension collects data only through **user-initiated actions**:
 
 4. **Local Storage** - Authentication session data (access tokens) is stored locally in your browser's `chrome.storage.local`. This data remains on your device and is automatically cleared when you sign out or uninstall the extension.
 
+## Extension Permissions
+
+HomeScope requires certain browser permissions to function properly. Here is why we need each one:
+
+- **storage** - To save your authentication session locally on your device so you stay logged in between browser sessions.
+- **tabs** - To detect when you are viewing a supported property listing page (Zillow or realestate.com.au) and to inject the analysis button.
+- **sidePanel** - To display the analysis results in a dedicated panel next to the property listing.
+- **scripting** - To read property listing content from the page when you click the Analyze button.
+- **alarms** - To keep the extension's background service active during long-running AI property analysis requests. This prevents the analysis from being interrupted if your browser temporarily suspends the extension. The alarm is a lightweight timer that has no access to your personal data or browsing activity.
+
+**Important:** None of these permissions allow us to read your passwords, access banking information, track your browsing history outside of supported property sites, or collect data without your explicit action.
+
 ## AI Processing
 
 To generate analysis results, the following data may be sent to third-party AI service providers:

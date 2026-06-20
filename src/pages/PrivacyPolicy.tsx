@@ -131,6 +131,26 @@ export function PrivacyPolicy() {
             <section>
               <h2 className="text-lg font-semibold text-stone-900 mb-3 flex items-center gap-2">
                 <Server size={18} className="text-stone-500" />
+                Extension Permissions
+              </h2>
+              <p className="text-sm text-stone-600 leading-relaxed mb-3">
+                HomeScope requires certain browser permissions to function properly. Here is why we need each one:
+              </p>
+              <ul className="list-disc list-inside text-sm text-stone-600 space-y-2 ml-2">
+                <li><strong>storage</strong> - To save your authentication session locally on your device so you stay logged in between browser sessions.</li>
+                <li><strong>tabs</strong> - To detect when you are viewing a supported property listing page (Zillow or realestate.com.au) and to inject the analysis button.</li>
+                <li><strong>sidePanel</strong> - To display the analysis results in a dedicated panel next to the property listing.</li>
+                <li><strong>scripting</strong> - To read property listing content from the page when you click the Analyze button.</li>
+                <li><strong>alarms</strong> - To keep the extension's background service active during long-running AI property analysis requests. This prevents the analysis from being interrupted if your browser temporarily suspends the extension. The alarm is a lightweight timer that has no access to your personal data or browsing activity.</li>
+              </ul>
+              <p className="text-sm text-stone-600 leading-relaxed mt-3">
+                <strong>Important:</strong> None of these permissions allow us to read your passwords, access banking information, track your browsing history outside of supported property sites, or collect data without your explicit action.
+              </p>
+            </section>
+
+            <section>
+              <h2 className="text-lg font-semibold text-stone-900 mb-3 flex items-center gap-2">
+                <Server size={18} className="text-stone-500" />
                 AI Processing
               </h2>
               <p className="text-sm text-stone-600 leading-relaxed mb-3">

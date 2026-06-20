@@ -475,23 +475,16 @@ export function Home() {
         {/* 1. Hero */}
         <div className="text-center mb-12 animate-in fade-in slide-in-from-bottom-8 duration-700 ease-out">
           <h1 className="text-3xl md:text-4xl font-light tracking-tight text-stone-900 leading-[1.15] mb-4">
-            Spot hidden property risks in Zillow listings before you book a showing
+            Know What to Check Before You Tour.
           </h1>
           <p className="text-lg md:text-xl text-stone-600 max-w-2xl mx-auto leading-relaxed font-light mb-2">
-            HomeScope reviews Zillow and realestate.com.au property listings with AI, helping buyers check listing risks, photos, price confidence, missing information, and questions to ask the agent.
+            HomeScope turns Zillow listings into buyer-focused risk reports — price signals, photo observations, carrying costs, and questions to ask the agent.
           </p>
           <p className="text-sm text-stone-500 max-w-lg mx-auto">
             Run a free Basic Check first. Unlock a Full Report when a property is worth a closer look.
           </p>
           <p className="text-xs text-stone-500 text-center mt-4 italic max-w-lg mx-auto">
             HomeScope is an independent AI tool. Not affiliated with Zillow, StreetEasy, or any real estate marketplace. Reports are for informational purposes only and are not home inspections, appraisals, legal advice, or financial advice.
-          </p>
-        </div>
-
-        {/* 2. Platform Support Note */}
-        <div className="text-center mb-8 animate-in fade-in slide-in-from-bottom-8 duration-700 ease-out">
-          <p className="text-sm text-stone-500">
-            Works with supported property listing sites, including Zillow and realestate.com.au.
           </p>
         </div>
 
@@ -651,7 +644,7 @@ export function Home() {
                 <div className="relative aspect-[4/3] rounded-xl overflow-hidden bg-white shadow-[0_8px_40px_-12px_rgba(0,0,0,0.08)]">
                   <img 
                     src={previewImages[previewIndex]} 
-                    alt="AI property risk report for a Zillow listing" 
+                    alt="Report preview" 
                     className="w-full h-full object-contain"
                   />
                   {/* 左右箭头 */}
@@ -703,7 +696,7 @@ export function Home() {
                   }}
                   className="inline-flex items-center justify-center rounded-full bg-stone-900 hover:bg-stone-800 text-white font-semibold px-6 py-3 transition-colors w-fit"
                 >
-                  Try Free Basic Check
+                  Get 3 Free Full Reports
                 </button>
               </div>
             </div>
@@ -743,29 +736,29 @@ export function Home() {
           <h2 className="text-center text-sm font-semibold uppercase tracking-widest text-[#a8a29e] mb-8">FAQ</h2>
           <Accordion.Root type="single" collapsible className="bg-[rgba(250,250,249,0.4)] border-[0.667px] border-solid border-[rgba(231,229,228,0.8)] rounded-[24px] px-6 max-w-5xl mx-auto">
             <FAQItem 
-              value="zillow-support"
-              question="Does HomeScope work with Zillow?"
-              answer="Yes. HomeScope works with supported Zillow property listing pages and helps buyers generate AI-powered property risk reports before booking a showing."
+              value="analyze-listings"
+              question="Can AI analyze Zillow property listings?"
+              answer="Yes. HomeScope can analyze supported property listings and extract key details such as price, beds, baths, square footage, year built, taxes, monthly payment estimates, listing claims, and available photos. It then turns those details into a buyer-focused risk report."
             />
             <FAQItem 
-              value="zillow-affiliation"
-              question="Is HomeScope affiliated with Zillow?"
-              answer="No. HomeScope is an independent tool and is not affiliated with, endorsed by, or sponsored by Zillow."
+              value="evaluate-property"
+              question="How should I evaluate a home before booking a showing?"
+              answer="Before booking a showing, check the asking price, comparable sales, property age, roof and major systems, permits, basement use, monthly carrying costs, and missing listing details. HomeScope helps organize these checks into a clear report."
             />
             <FAQItem 
-              value="full-report"
-              question="What does a Full Property Report check?"
-              answer="A Full Property Report reviews listing details, photos, visible condition signals, price confidence, missing information, potential risks, and questions to ask the agent."
+              value="check-renting"
+              question="What should I check before making an offer?"
+              answer="Ask about roof age, HVAC, electrical, plumbing, permits, open violations, basement legality, insurance costs, taxes, and recent comparable sales. A Full Report gives you a focused question list for the agent."
             />
             <FAQItem 
-              value="home-inspection"
-              question="Does HomeScope replace a home inspection?"
-              answer="No. HomeScope does not replace a home inspection, appraisal, legal advice, or financial advice. It helps buyers spot listing-level risks and prepare better questions before spending time or money."
+              value="competition"
+              question="Can HomeScope tell me if a property is overpriced?"
+              answer="HomeScope can flag price concerns and explain when comparable sales are needed, but it is not an appraisal. Use the report as a pre-check before speaking with your agent, lender, inspector, or appraiser."
             />
             <FAQItem 
-              value="free-trial"
-              question="Can I try HomeScope for free?"
-              answer="Yes. You can try a free Basic Check, and new users receive free Full Reports after signing up."
+              value="misleading"
+              question="Can AI detect misleading listing photos?"
+              answer="HomeScope can point out photo-based condition signals and missing views, such as limited bathroom photos, no roof photos, unclear basement condition, older finishes, or missing mechanical-system photos. It cannot replace an in-person inspection."
             />
           </Accordion.Root>
         </div>
