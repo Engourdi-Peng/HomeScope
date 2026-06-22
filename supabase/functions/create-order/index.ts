@@ -109,7 +109,8 @@ async function createPaddleTransaction(
   userId: string,
   email: string,
   successUrl: string,
-  cancelUrl: string
+  cancelUrl: string,
+  affiliate?: { id: string; code: string }
 ): Promise<{ checkout_url: string; transactionId: string } | { error: string }> {
   const product = PRODUCTS[productId];
   if (!product) {
@@ -134,6 +135,24 @@ async function createPaddleTransaction(
   }
 
   try {
+    // 构建 custom_data（包含 affiliate 信息和完整的产品数据）
+    const customData: Record<string, unknown> = {
+      user_id: userId,
+      product: 'homescope_credits',
+      plan_key: productId,
+      credits: product.credits,
+      price_id: product.price_id,
+      product_type: 'credits',
+    };
+
+    // 如果有有效的 affiliate code，添加到 custom_data
+    if (affiliate) {
+      customData.affiliate_id = affiliate.id;
+      customData.affiliate_code = affiliate.code;
+    }
+
+    console.log("[create-order] custom_data:", JSON.stringify(customData));
+
     // 调用 Paddle API 创建交易
     const response = await fetch(`${PADDLE_API_URL}/transactions`, {
       method: "POST",
@@ -149,10 +168,7 @@ async function createPaddleTransaction(
             quantity: 1,
           },
         ],
-        custom_data: {
-          user_id: userId,
-          product: productId,
-        },
+        custom_data: customData,
         checkout: {
           return_url: `${APP_URL}/checkout?_ptxn={transaction_id}`,
         },
@@ -255,7 +271,7 @@ Deno.serve(async (req) => {
 
     // 2. 解析请求体
     const body = await req.json();
-    const { product } = body;
+    const { product, affiliate_code } = body;
 
     if (!product || !PRODUCTS[product]) {
       return new Response(
@@ -266,13 +282,54 @@ Deno.serve(async (req) => {
 
     const productConfig = PRODUCTS[product];
 
-    // 3. 构建回调 URL
+    // 3. 验证 affiliate_code（如果存在）
+    let affiliate: { id: string; code: string } | undefined;
+
+    if (affiliate_code && typeof affiliate_code === 'string') {
+      const code = affiliate_code.trim().toUpperCase();
+
+      if (code.length > 0) {
+        console.log("[create-order] Validating affiliate code:", code);
+
+        // 查询 affiliates 表
+        const affiliateResponse = await fetch(
+          `${SUPABASE_URL}/rest/v1/affiliates?code=eq.${encodeURIComponent(code)}&is_active=eq.true&select=id,code`,
+          {
+            headers: {
+              "apikey": SUPABASE_SERVICE_ROLE_KEY,
+              "Authorization": `Bearer ${SUPABASE_SERVICE_ROLE_KEY}`,
+            },
+          }
+        );
+
+        if (!affiliateResponse.ok) {
+          console.error("[create-order] Failed to query affiliates:", await affiliateResponse.text());
+        } else {
+          const affiliates = await affiliateResponse.json();
+          if (affiliates && affiliates.length > 0) {
+            affiliate = {
+              id: affiliates[0].id,
+              code: affiliates[0].code,
+            };
+            console.log("[create-order] Valid affiliate:", affiliate);
+          } else {
+            console.log("[create-order] Invalid affiliate code:", code);
+            return new Response(
+              JSON.stringify({ error: "INVALID_AFFILIATE_CODE" }),
+              { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+            );
+          }
+        }
+      }
+    }
+
+    // 4. 构建回调 URL
     const baseUrl = req.headers.get("origin") || SUPABASE_URL;
     const successUrl = `${baseUrl}/payment-success`;
     const cancelUrl = `${baseUrl}/pricing`;
 
-    // 4. 创建 Paddle 交易
-    const orderResult = await createPaddleTransaction(product, userId, email, successUrl, cancelUrl);
+    // 5. 创建 Paddle 交易（传入 affiliate 信息）
+    const orderResult = await createPaddleTransaction(product, userId, email, successUrl, cancelUrl, affiliate);
 
     if ("error" in orderResult) {
       return new Response(
@@ -281,7 +338,7 @@ Deno.serve(async (req) => {
       );
     }
 
-    // 5. 创建 pending 支付记录
+    // 6. 创建 pending 支付记录
     await createPaymentRecord(
       userId,
       orderResult.transactionId,
@@ -291,7 +348,7 @@ Deno.serve(async (req) => {
       orderResult.transactionId
     );
 
-    // 6. 返回 checkout URL
+    // 7. 返回 checkout URL
     if (!orderResult.checkout_url) {
       return new Response(
         JSON.stringify({ error: "Missing checkout_url from payment provider" }),

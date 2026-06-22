@@ -3,14 +3,10 @@ import { useState, useEffect, useRef } from 'react';
 import { useAppState, useActions } from '../store';
 import type { ExtUser } from '../types';
 
-const noop = (..._args: unknown[]) => {};
-
 export function AuthGateSection() {
   const { authStatus } = useAppState();
-  const { sendMagicLink, initiateGoogleOAuth } = useActions();
-  const [email, setEmail] = useState('');
+  const { initiateGoogleOAuth } = useActions();
   const [isLoading, setIsLoading] = useState(false);
-  const [isSuccess, setIsSuccess] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [waitingForSync, setWaitingForSync] = useState(false);
   const waitingRef = useRef(false);
@@ -71,29 +67,12 @@ export function AuthGateSection() {
     return () => clearInterval(intervalId);
   }, [waitingForSync]);
 
-  const handleEmailSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!email.trim()) return;
-
-    setIsLoading(true);
-    setError(null);
-
-    const result = await sendMagicLink(email.trim());
-    if (result.success) {
-      setIsSuccess(true);
-    } else {
-      setError(result.error || 'Failed to send magic link');
-    }
-    setIsLoading(false);
-  };
-
   const handleGoogleOAuth = async () => {
     setError(null);
     waitingRef.current = true;
     setWaitingForSync(true);
     const result = await initiateGoogleOAuth();
     if (!result.success) {
-      noop(result.error);
       setError(result.error || 'Failed to open login page');
       waitingRef.current = false;
       setWaitingForSync(false);
@@ -102,25 +81,6 @@ export function AuthGateSection() {
 
   // 登录态下不渲染（hooks 已经在前面无条件执行过）
   if (authStatus === 'logged_in') return null;
-
-  if (isSuccess) {
-    return (
-      <div className="ext-auth-gate">
-        <div className="ext-auth-gate-eyebrow">
-          Sign in to unlock Full Analysis, save reports, and track every property you check.
-        </div>
-        <div className="ext-gate-success">
-          <div className="ext-gate-success-icon">&#x2713;</div>
-          <div className="ext-gate-success-title">Check your email</div>
-          <div className="ext-gate-success-msg">
-            We&apos;ve sent a magic link to <strong>{email}</strong>
-            <br />
-            Click the link to sign in on the website.
-          </div>
-        </div>
-      </div>
-    );
-  }
 
   if (waitingForSync) {
     return (
@@ -164,35 +124,6 @@ export function AuthGateSection() {
         </svg>
         Continue with Google
       </button>
-
-      <div className="ext-freemium-entry-divider">or</div>
-
-      <form onSubmit={handleEmailSubmit}>
-        <input
-          type="email"
-          className="ext-input"
-          placeholder="Enter your email"
-          value={email}
-          onChange={(e) => setEmail(e.target.value)}
-          disabled={isLoading}
-          required
-        />
-        <button
-          type="submit"
-          className="ext-freemium-entry-magic-btn"
-          disabled={isLoading || !email.trim()}
-          style={{ marginTop: 8, width: '100%' }}
-        >
-          {isLoading ? (
-            <>
-              <div className="ext-spinner ext-spinner-sm" />
-              Sending...
-            </>
-          ) : (
-            'Continue with Email'
-          )}
-        </button>
-      </form>
 
       {error && (
         <div style={{ color: 'var(--error)', fontSize: 13, textAlign: 'center' }}>

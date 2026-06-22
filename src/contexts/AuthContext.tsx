@@ -3,6 +3,7 @@ import type { ReactNode } from 'react';
 import type { User } from '@supabase/supabase-js';
 import { supabase, type Profile } from '../lib/supabase';
 import { syncSessionToExtension } from '../lib/extensionAuthSync';
+import { useAffiliateCode } from '../hooks/useAffiliateCode';
 
 const AUTH_SYNC_DEBUG = import.meta.env.DEV;
 
@@ -16,6 +17,9 @@ interface AuthContextType {
   signInWithEmailLink: (email: string) => Promise<void>;
   signOut: () => Promise<void>;
   refreshProfile: () => Promise<void>;
+  getAffiliateCode: () => string;
+  updateAffiliateCode: (code: string) => void;
+  clearAffiliateCode: () => void;
 }
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
@@ -28,6 +32,9 @@ export function AuthProvider({ children }: AuthProviderProps) {
   const [user, setUser] = useState<User | null>(null);
   const [profile, setProfile] = useState<Profile | null>(null);
   const [isLoading, setIsLoading] = useState(true);
+
+  // Affiliate code capture and storage
+  const { getStoredCode, updateCode, clearCode } = useAffiliateCode();
 
   const creditsRemaining = Math.max(0, (profile?.credits_remaining ?? 0) - (profile?.credits_reserved ?? 0));
   const isAuthenticated = !!user;
@@ -185,6 +192,11 @@ export function AuthProvider({ children }: AuthProviderProps) {
     }
   };
 
+  // Affiliate code helpers exposed to other components
+  const getAffiliateCode = () => getStoredCode();
+  const updateAffiliateCode = (code: string) => updateCode(code);
+  const clearAffiliateCode = () => clearCode();
+
   return (
     <AuthContext.Provider
       value={{
@@ -197,6 +209,9 @@ export function AuthProvider({ children }: AuthProviderProps) {
         signInWithEmailLink,
         signOut,
         refreshProfile,
+        getAffiliateCode,
+        updateAffiliateCode,
+        clearAffiliateCode,
       }}
     >
       {children}

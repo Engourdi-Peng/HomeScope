@@ -4609,21 +4609,21 @@ function advanceToNextSlide() {
             }
           }
 
-          // 2️⃣ 补发 ESC 键事件
+          // 2️⃣ 补发 ESC 键事件（发送到 galleryDialog 而非 document，避免 Zillow 报错）
           setTimeout(() => {
-            document.dispatchEvent(new KeyboardEvent('keydown', { 
-              key: 'Escape', 
-              keyCode: 27, 
+            galleryDialog.dispatchEvent(new KeyboardEvent('keydown', {
+              key: 'Escape',
+              keyCode: 27,
               which: 27,
-              bubbles: true, 
-              cancelable: true 
+              bubbles: true,
+              cancelable: true
             }));
-            document.dispatchEvent(new KeyboardEvent('keyup', { 
-              key: 'Escape', 
-              keyCode: 27, 
+            galleryDialog.dispatchEvent(new KeyboardEvent('keyup', {
+              key: 'Escape',
+              keyCode: 27,
               which: 27,
-              bubbles: true, 
-              cancelable: true 
+              bubbles: true,
+              cancelable: true
             }));
           }, 50);
 
@@ -4656,26 +4656,28 @@ function advanceToNextSlide() {
         closeBtn.click();
       }
 
-      // 2️⃣ Simulate ESC key
+      // 2️⃣ Simulate ESC key（发送到 pswpRoot 而非 document）
       setTimeout(() => {
-        document.dispatchEvent(
-          new KeyboardEvent('keydown', {
-            key: 'Escape',
-            keyCode: 27,
-            which: 27,
-            bubbles: true,
-            cancelable: true,
-          })
-        );
-        document.dispatchEvent(
-          new KeyboardEvent('keyup', {
-            key: 'Escape',
-            keyCode: 27,
-            which: 27,
-            bubbles: true,
-            cancelable: true,
-          })
-        );
+        if (pswpRoot) {
+          pswpRoot.dispatchEvent(
+            new KeyboardEvent('keydown', {
+              key: 'Escape',
+              keyCode: 27,
+              which: 27,
+              bubbles: true,
+              cancelable: true,
+            })
+          );
+          pswpRoot.dispatchEvent(
+            new KeyboardEvent('keyup', {
+              key: 'Escape',
+              keyCode: 27,
+              which: 27,
+              bubbles: true,
+              cancelable: true,
+            })
+          );
+        }
       }, 50);
 
       // 3️⃣ Fallback: gentle restore after animation settles
@@ -4980,219 +4982,395 @@ async function switchToPhotosTab() {
 
 /**
  * Extract images from Zillow StyledDialog gallery.
- * Returns deduplicated image URLs, upgraded to highest resolution.
- * Filters out 3D Tour, Floor Plan, Map, Street View, Drone images.
+ * 一轮快速扫描：滚动过程中同步收集图片，接近底部后短暂 final collect 结束。
+ * - 使用 wheel event 模拟真实用户滚动
+ * - 按 /fp/{hash} 去重
+ * - 只从 photo wall 容器提取，不扫描整个 dialog
+ */
+// ============================================================================
+// Zillow Gallery Image Extraction
+// ============================================================================
+
+/**
+ * 找到可以真正滚动的容器（通过向上追溯父级 + 通用扫描 + 实际滚动测试）
+ * @param {Element} dialog - gallery dialog 元素
+ * @returns {Promise<Element|null>}
+ */
+async function findScrollContainer(dialog) {
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+  const checked = new Set();
+  const candidates = [];
+
+  function addCandidate(el, reason) {
+    if (!el || checked.has(el)) return;
+    checked.add(el);
+
+    const rect = el.getBoundingClientRect();
+    const style = getComputedStyle(el);
+
+    candidates.push({
+      el,
+      reason,
+      tag: el.tagName,
+      className: typeof el.className === 'string' ? el.className.slice(0, 160) : '',
+      overflowY: style.overflowY,
+      scrollTop: el.scrollTop,
+      scrollHeight: el.scrollHeight,
+      clientHeight: el.clientHeight,
+      rectWidth: rect.width,
+      rectHeight: rect.height,
+      canScrollByMetrics: el.scrollHeight > el.clientHeight + 80,
+    });
+  }
+
+  // 1. 先找 photo wall / media wall，然后向上找父级
+  const mediaWallSelectors = [
+    '[class*="media-wall"]',
+    '[class*="MediaWall"]',
+    'ul[class*="media"]',
+    '[class*="photo-wall"]',
+    '[data-testid*="media"]',
+    '[data-testid*="photo"]',
+    '[class*="photo-grid"]',
+  ];
+
+  for (const sel of mediaWallSelectors) {
+    try {
+      const mediaEls = dialog.querySelectorAll(sel);
+      for (const mediaEl of mediaEls) {
+        let cur = mediaEl;
+        let depth = 0;
+        while (cur && depth < 12) {
+          addCandidate(cur, `media-wall ancestor depth ${depth}`);
+          cur = cur.parentElement;
+          depth++;
+        }
+      }
+    } catch (e) {
+      // ignore selector errors
+    }
+  }
+
+  // 2. 通用扫描 dialog 内所有元素
+  addCandidate(dialog, 'dialog itself');
+
+  try {
+    for (const el of dialog.querySelectorAll('*')) {
+      const rect = el.getBoundingClientRect();
+      if (rect.width < 200 || rect.height < 200) continue;
+      if (el.scrollHeight <= el.clientHeight + 80) continue;
+      addCandidate(el, 'dialog descendant generic scan');
+    }
+  } catch (e) {
+    // ignore
+  }
+
+  // 3. dialog 往上找祖先
+  let parent = dialog.parentElement;
+  let depth = 0;
+  while (parent && depth < 12) {
+    addCandidate(parent, `dialog ancestor depth ${depth}`);
+    parent = parent.parentElement;
+    depth++;
+  }
+
+  // 4. 页面级兜底
+  if (document.scrollingElement) addCandidate(document.scrollingElement, 'document.scrollingElement');
+  addCandidate(document.documentElement, 'documentElement fallback');
+  addCandidate(document.body, 'body fallback');
+
+  // 过滤出有真实滚动空间的候选
+  const viable = candidates
+    .filter((c) => {
+      if (!c.el) return false;
+      const rect = c.el.getBoundingClientRect();
+      if (rect.width < 200 || rect.height < 200) return false;
+      return c.el.scrollHeight > c.el.clientHeight + 80;
+    })
+    .sort((a, b) => {
+      const aScore = a.el.scrollHeight - a.el.clientHeight;
+      const bScore = b.el.scrollHeight - b.el.clientHeight;
+      return bScore - aScore;
+    });
+
+  if (viable.length === 0) {
+    console.warn('[HomeScope Scroll] no candidates with scroll space found');
+    return null;
+  }
+
+  // 实际滚动测试
+  for (const c of viable) {
+    const el = c.el;
+    const originalTop = el.scrollTop;
+    const maxTop = Math.max(0, el.scrollHeight - el.clientHeight);
+    const step = Math.min(300, Math.max(80, Math.round(el.clientHeight * 0.5)));
+
+    if (maxTop <= 0) continue;
+
+    // WheelEvent
+    el.dispatchEvent(
+      new WheelEvent('wheel', {
+        bubbles: true,
+        cancelable: true,
+        deltaY: step,
+        deltaMode: 0,
+      })
+    );
+
+    el.scrollBy({
+      top: step,
+      behavior: 'auto',
+    });
+
+    await sleep(100);
+
+    let afterTop = el.scrollTop;
+
+    // Fallback: 直接设置 scrollTop
+    if (Math.abs(afterTop - originalTop) < 2) {
+      el.scrollTop = Math.min(originalTop + step, maxTop);
+      el.dispatchEvent(new Event('scroll', { bubbles: true }));
+      await sleep(100);
+      afterTop = el.scrollTop;
+    }
+
+    const moved = Math.abs(afterTop - originalTop) > 2;
+
+    // 恢复位置
+    el.scrollTop = originalTop;
+    el.dispatchEvent(new Event('scroll', { bubbles: true }));
+    await sleep(50);
+
+    if (moved) {
+      return el;
+    }
+  }
+
+  console.warn('[HomeScope Scroll] no real scroll container found');
+  return null;
+}
+
+/**
+ * Hybrid 滚动函数：尝试多种方式确保滚动发生
+ * @param {Element} container - 滚动容器
+ * @param {number} step - 滚动步长
+ * @returns {Promise<{moved: boolean, beforeTop: number, afterTop: number, nearBottom: boolean}>}
+ */
+async function scrollOnce(container, step) {
+  const beforeTop = container.scrollTop;
+
+  // 方式1: WheelEvent + scrollBy
+  container.dispatchEvent(new WheelEvent('wheel', {
+    bubbles: true,
+    cancelable: true,
+    deltaY: step,
+    deltaMode: 0,
+  }));
+
+  container.scrollBy({ top: step, behavior: 'auto' });
+  await new Promise(r => setTimeout(r, 200));
+
+  let afterTop = container.scrollTop;
+  let moved = Math.abs(afterTop - beforeTop) > 2;
+
+  // 方式2: Fallback 直接设置 scrollTop
+  if (!moved) {
+    const maxTop = Math.max(0, container.scrollHeight - container.clientHeight);
+    container.scrollTop = Math.min(beforeTop + step, maxTop);
+    container.dispatchEvent(new Event('scroll', { bubbles: true }));
+    await new Promise(r => setTimeout(r, 200));
+    afterTop = container.scrollTop;
+    moved = Math.abs(afterTop - beforeTop) > 2;
+  }
+
+  const nearBottom = afterTop + container.clientHeight >= container.scrollHeight - 80;
+
+  return {
+    moved,
+    beforeTop,
+    afterTop,
+    nearBottom,
+  };
+}
+
+/**
+ * 从根元素提取所有图片（收集 img/source/backgroundImage）
+ * @param {Element} root - 搜索根元素
+ * @returns {Array<{fp: string, url: string, sources: string}>}
+ */
+function collectGalleryImages(root) {
+  const map = new Map();
+  
+  function getFpHash(url) {
+    const m = String(url || '').match(/\/fp\/([a-f0-9]+)/i);
+    return m ? m[1] : '';
+  }
+  
+  function add(url, source) {
+    if (!url) return;
+    
+    const s = String(url);
+    // 只接受 Zillow 域名
+    if (!/photos\.zillowstatic\.com\/fp\//i.test(s)) return;
+    
+    const fp = getFpHash(s);
+    if (!fp) return;
+    
+    if (!map.has(fp)) {
+      map.set(fp, {
+        fp,
+        url: s,
+        sources: new Set(),
+      });
+    }
+    
+    map.get(fp).sources.add(source);
+  }
+  
+  // 收集 img 和 source 元素的 URL
+  root.querySelectorAll('img, source').forEach((el) => {
+    add(el.currentSrc, 'currentSrc');
+    add(el.getAttribute('src'), 'src');
+    
+    const srcset = el.getAttribute('srcset');
+    if (srcset) {
+      srcset.split(',').forEach((part) => {
+        const url = part.trim().split(/\s+/)[0];
+        add(url, 'srcset');
+      });
+    }
+  });
+  
+  // 收集 backgroundImage 中的 URL
+  root.querySelectorAll('*').forEach((el) => {
+    const bg = getComputedStyle(el).backgroundImage;
+    if (!bg || bg === 'none') return;
+    
+    const matches = bg.match(/https?:\/\/photos\.zillowstatic\.com\/fp\/[a-f0-9][^"')\s]+/gi);
+    if (matches) {
+      matches.forEach((url) => add(url, 'background'));
+    }
+  });
+  
+  return [...map.values()].map((x) => ({
+    fp: x.fp,
+    url: x.url,
+    sources: [...x.sources].join(', '),
+  }));
+}
+
+/**
+ * 从 Zillow 图库提取所有图片
+ * 使用改进的滚动策略确保能完整提取
  */
 async function extractGalleryImagesZillow() {
-  const images = [];
-  const seen = new Set();
+  const seenByHash = new Set();
+  const collectedUrls = [];
 
-  // 查找图库对话框
+  // ── Step 0: 找到 gallery dialog ───────────────────────────────────────
   const dialog = document.querySelector('[class*="StyledDialog"]') ||
                  document.querySelector('[role="dialog"]');
-
+  
   if (!dialog) {
-    return images;
+    return collectedUrls;
   }
 
-  // ── 策略0: 从页面 JavaScript 数据中提取（最可靠）─────────────────────
-  // Zillow 在 __NEXT_DATA__ 或 gdpClientCache 中存储所有图片 URL
-  const pageImages = extractImagesFromPageData();
-  if (pageImages.length > 0) {
-    return pageImages;
+  // ── Helper: 标准化 URL（升级到高质量）────────────────────────────
+  function normalizeUrl(url) {
+    if (!url) return '';
+    return url
+      .replace(/-cc_ft_\d+\.jpg/, '-cc_ft_1536.jpg')
+      .replace(/[?&]width=\d+/g, '')
+      .replace(/[?&]height=\d+/g, '')
+      .replace(/[?&]fit=\w+/g, '')
+      .replace(/[?&]downsample=\w+/g, '')
+      .replace(/\?.*$/, '');
   }
 
-  // ── 策略0.5: 从 media-stream-tile 提取（新版 Zillow 图库结构）───────
-  // 根据 aria-label="view larger view of the X photo of this home" 去重
-  const mediaStreamTiles = dialog.querySelectorAll('li[class*="media-stream-tile"]');
-  if (mediaStreamTiles.length > 0) {
-    
-    // 按 aria-label 编号提取图片，去重
-    const tileMap = new Map();
-    
-    mediaStreamTiles.forEach(tile => {
-      const img = tile.querySelector('img');
-      const btn = tile.querySelector('button[aria-label*="view larger view of the"]');
-      
-      if (img && btn) {
-        const ariaLabel = btn.getAttribute('aria-label') || '';
-        const match = ariaLabel.match(/view larger view of the (\d+) photo/);
-        
-        if (match) {
-          const index = parseInt(match[1], 10);
-          const src = img.src || img.currentSrc || '';
-          
-          // 只保留 zillowstatic 图片
-          if (src.includes('photos.zillowstatic.com') && !tileMap.has(index)) {
-            tileMap.set(index, upgradeToHiRes(src));
-          }
-        }
-      }
-    });
-    
-    if (tileMap.size > 0) {
-      // 按序号排序
-      const sortedImages = Array.from(tileMap.entries())
-        .sort((a, b) => a[0] - b[0])
-        .map(([_, url]) => url);
-      
-      
-      // 如果图片数量少于预期，继续触发懒加载
-      // （虚拟列表可能只有部分渲染，需要滚动触发加载）
-      if (sortedImages.length < 10) {
-        // 继续执行下面的懒加载逻辑，不提前返回
-      } else {
-        // 图片数量足够，直接返回
-        return sortedImages;
-      }
+  // ── Helper: 添加图片（按 hash 去重）──────────────────────────────
+  function addImage(url) {
+    if (!url) return false;
+    const normalized = normalizeUrl(url);
+    if (!normalized) return false;
+    const match = normalized.match(/\/fp\/([a-f0-9]+)/i);
+    const fp = match ? match[1] : '';
+    if (fp && seenByHash.has(fp)) return false;
+    if (fp) seenByHash.add(fp);
+    collectedUrls.push(normalized);
+    return true;
+  }
+
+  // ── Helper: 收集图片（使用新的 collectGalleryImages）────────────
+  function collectImages() {
+    const images = collectGalleryImages(dialog);
+    for (const img of images) {
+      addImage(img.url);
     }
   }
 
-  // ── 懒加载触发：滚动图库容器加载所有图片 ──────────────────────────────
-  // Zillow 使用虚拟列表，只渲染可见区域，需要滚动触发懒加载
-  // 关键：滚动容器是 DialogBody，不是图片墙本身
+  // ── Step 1: 找到滚动容器（通过实际滚动测试）────────────────────────
+  const scrollContainer = await findScrollContainer(dialog);
   
-  // 优先使用 DialogBody 作为滚动容器（对于新版 Zillow）
-  const DialogBody = dialog.querySelector('[class*="DialogBody"]') || dialog;
-  const mediaContainer = DialogBody.querySelector(
-    '[class*="media-wall"], ' +
-    '[class*="StyledMediaWall"], ' +
-    '[class*="PhotoViewerContent"], ' +
-    '[class*="gallery"], ' +
-    'ul[class*="media"], ' +
-    'div[class*="media"], ' +
-    '[class*="photo-grid"], ' +
-    '[class*="photo-list"]'
-  );
+  if (!scrollContainer) {
+    collectImages();
+    return collectedUrls;
+  }
 
-  // 使用哪个元素滚动（优先 DialogBody）
-  const scrollContainer = (DialogBody.scrollHeight > DialogBody.clientHeight) ? DialogBody : mediaContainer;
+  // ── Step 2: 等待 dialog 准备好 ────────────────────────────────────────
+  // 等待图片出现
+  const maxWait = 3000;
+  const waitStart = Date.now();
+  while (Date.now() - waitStart < maxWait) {
+    const imgs = dialog.querySelectorAll('img');
+    if (Array.from(imgs).some(img => img.complete && img.naturalWidth > 0)) break;
+    await new Promise(r => setTimeout(r, 100));
+  }
+
+  // ── Step 3: 初始提取 ─────────────────────────────────────────────────
+  collectImages();
+
+  // ── Step 4: Hybrid 滚动扫描 ──────────────────────────────────────────
+  const viewportH = scrollContainer.clientHeight || 600;
+  const SCROLL_STEP = Math.round(viewportH * 0.9);
+  const MAX_STEPS = 12;
+  const MAX_TIME = 25000;
   
-  if (scrollContainer) {
-    console.log('scrollH=', scrollContainer.scrollHeight, 'clientH=', scrollContainer.clientHeight);
+  const startTime = Date.now();
+
+  for (let step = 0; step < MAX_STEPS; step++) {
+    if (Date.now() - startTime > MAX_TIME) {
+      break;
+    }
+
+    const beforeCount = collectedUrls.length;
     
-    // 等待第一张图片出现，最多等待 2 秒
-    // 改成检测图片而非固定等待，网络快时立即开始
-    const maxWait = 2000;
-    const startTime = Date.now();
-    let firstImgFound = false;
-    while (Date.now() - startTime < maxWait) {
-      const imgs = dialog.querySelectorAll('img');
-      const loadedImg = Array.from(imgs).find(img => img.complete && img.naturalWidth > 0);
-      if (loadedImg) {
-        firstImgFound = true;
-        break;
-      }
-      await new Promise(r => setTimeout(r, 50));
+    // 滚动
+    const result = await scrollOnce(scrollContainer, SCROLL_STEP);
+    
+    // 收集图片
+    collectImages();
+    
+    // 如果没有新图片且没移动，停止
+    if (!result.moved && collectedUrls.length === beforeCount) {
+      break;
     }
-    if (!firstImgFound) {
-    }
-
-    // 获取初始图片数量（从 dialog 内查找）
-    const getImgCount = () => dialog.querySelectorAll('img').length;
-    const TOLERANCE = 10; // 滚动到底的容差值（像素）
-    const SCROLL_STEP_MS = 500; // 每步滚动后等待时间
-    const SCROLL_STEP_SIZE = 700; // 每次滚动 700 像素
-
-    /**
-     * 检测滚动容器是否已经滚到底部
-     */
-    function isScrolledToBottom() {
-      const { scrollTop, clientHeight, scrollHeight } = scrollContainer;
-      return scrollTop + clientHeight >= scrollHeight - TOLERANCE;
-    }
-
-    // 逐步滚动到底部，每步滚动后等待 0.5 秒
-    let stepCount = 0;
-    while (true) {
-      stepCount++;
-      
-      // 记录滚动前位置
-      const prevScrollTop = scrollContainer.scrollTop;
-      
-      // 逐步向下滚动一步
-      const targetScroll = prevScrollTop + SCROLL_STEP_SIZE;
-      scrollContainer.scrollTop = Math.min(targetScroll, scrollContainer.scrollHeight);
-      await new Promise(r => setTimeout(r, SCROLL_STEP_MS));
-
-      // 获取滚动后状态
-      const newScrollTop = scrollContainer.scrollTop;
-      const currentCount = getImgCount();
-      const atBottom = isScrolledToBottom();
-
-      console.log('scroll progress:', newScrollTop, '/', scrollContainer.scrollHeight, '- images:', currentCount, '- atBottom:', atBottom);
-
-      // 判断是否应该退出
-      if (atBottom) {
-        break;
-      }
-
-      // 防止无限循环（最多滚动200步）
-      if (stepCount >= 200) {
-        break;
-      }
-    }
-
-    // 滚动回顶部
-    scrollContainer.scrollTop = 0;
-    await new Promise(r => setTimeout(r, 300));
-
-    // 最终等待确保所有图片渲染完成
-    await new Promise(r => setTimeout(r, 500));
-  }
-
-  // ── 策略1: 从 Photos 专用区域提取（最准确）────────────────────────────
-  const photoWallSelectors = [
-    'ul[class*="hollywood-vertical-media-wall"]',
-    'ul[class*="media-wall-container"]',
-    'ul[class*="media-wall"]',
-    '[class*="StyledMediaWall"]',
-    'ul[class*="media-stream"]',
-    '[class*="media-wall"]',
-    'ul[class*="photo-stream"]',
-  ];
-  for (const sel of photoWallSelectors) {
-    const wall = dialog.querySelector(sel);
-    if (wall) {
-      const wallImgs = wall.querySelectorAll('img');
-      for (const img of wallImgs) {
-        const src = extractBestImageSrc(img);
-        if (src) {
-          const hiRes = upgradeToHiRes(src);
-          if (!seen.has(hiRes)) { seen.add(hiRes); images.push(hiRes); }
-        }
-      }
-      if (images.length > 0) {
-        return images;
-      }
+    
+    // 到达底部，停止
+    if (result.nearBottom) {
+      break;
     }
   }
 
-  // ── 策略2: 兜底 — 从整个对话框提取，放宽过滤条件 ─────────────────────
-  const imgs = dialog.querySelectorAll('img');
-  for (const img of imgs) {
-    let src = img.src || img.currentSrc || img.getAttribute('data-src') || '';
+  // ── Step 5: 最终滚动到最底部并收集 ───────────────────────────────────
+  const maxTop = Math.max(0, scrollContainer.scrollHeight - scrollContainer.clientHeight);
+  scrollContainer.scrollTop = maxTop;
+  scrollContainer.dispatchEvent(new Event('scroll', { bubbles: true }));
+  await new Promise(r => setTimeout(r, 500));
+  
+  collectImages();
 
-    // 只要是 Zillow CDN 图片就尝试获取
-    if (!src || (!src.includes('photos.zillowstatic.com') && !src.includes('photos.wikimapia') && !src.includes('mlsimaging'))) continue;
-
-    // 排除明显的非照片媒体
-    if (/3d-tour|floorplan|dron|latlng|tour-preview/i.test(src)) continue;
-
-    // 只过滤极小的缩略图（可能是地图/图标）
-    const rect = img.getBoundingClientRect();
-    if (rect.width < 30 || rect.height < 30) continue;
-
-    // 升级到高清并去除查询参数
-    src = upgradeToHiRes(src);
-
-    if (!seen.has(src)) {
-      seen.add(src);
-      images.push(src);
-    }
-  }
-
-  return images;
+  // ── Step 6: 返回 URLs ────────────────────────────────────────────────
+  return collectedUrls;
 }
 
 /**
@@ -5439,20 +5617,6 @@ function deepFindPhotos(obj, depth = 0) {
   }
 
   return photos;
-}
-
-/**
- * 从 img 元素提取最佳图片 URL（优先 srcset）
- */
-function extractBestImageSrc(img) {
-  const ss = img.getAttribute('srcset');
-  if (ss) {
-    const parts = ss.split(',').map(s => s.trim().split(/\s+/)[0]).filter(Boolean);
-    // 取最高分辨率（通常是最后一个，1536w）
-    const best = parts[parts.length - 1];
-    if (best) return best;
-  }
-  return img.currentSrc || img.src || img.getAttribute('data-src') || '';
 }
 
 /**

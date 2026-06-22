@@ -4,8 +4,8 @@ import { PricingCard } from '../components/PricingCard';
 import { FAQItem } from '../components/FAQItem';
 import { UserMenu } from '../components/UserMenu';
 import { LoginModal } from '../components/LoginModal';
+import { PurchaseModal } from '../components/PurchaseModal';
 import { useAuth } from '../contexts/AuthContext';
-import { supabase } from '../lib/supabase';
 import * as Accordion from '@radix-ui/react-accordion';
 
 // 产品配置
@@ -62,8 +62,9 @@ export function PricingPage() {
   const [isLoginModalOpen, setIsLoginModalOpen] = useState(false);
   const [buyingProduct, setBuyingProduct] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [selectedProduct, setSelectedProduct] = useState<typeof PRODUCTS[0] | null>(null);
 
-  const handleBuy = async (productId: string) => {
+  const handleSelectProduct = (productId: string) => {
     // 1. 检查登录状态
     if (!isAuthenticated || !user) {
       setIsLoginModalOpen(true);
@@ -71,60 +72,15 @@ export function PricingPage() {
       return;
     }
 
-    setBuyingProduct(productId);
-    setError(null);
-
-    try {
-      // 2. 先刷新 session，确保 token 未过期（getSession 可能返回缓存）
-      const { data: refreshData, error: refreshError } = await supabase.auth.refreshSession();
-      if (refreshError) {
-        throw new Error('登录已过期，请重新登录');
-      }
-      const token = refreshData.session?.access_token;
-      if (!token) {
-        throw new Error('No session token available');
-      }
-
-      // 获取 anon key
-      const anonKey = import.meta.env.VITE_SUPABASE_ANON_KEY;
-      if (!anonKey) {
-        throw new Error('Missing VITE_SUPABASE_ANON_KEY');
-      }
-
-      const response = await fetch(
-        `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/create-order`,
-        {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'apikey': anonKey,
-            'Authorization': `Bearer ${token}`,
-          },
-          body: JSON.stringify({ product: productId }),
-        }
-      );
-
-      if (!response.ok) {
-        const errorData = await response.json();
-        console.error('create-order error:', errorData);
-        throw new Error(errorData.error || 'Failed to create order');
-      }
-
-      const data = await response.json();
-      console.log('create-order response:', data);
-
-      // 3. 跳转到 checkout
-      if (data.checkout_url) {
-        window.location.href = data.checkout_url;
-        return;
-      }
-
-      throw new Error('Missing checkout_url in create-order response');
-    } catch (err) {
-      console.error('Purchase error:', err);
-      setError(err instanceof Error ? err.message : 'Failed to process purchase');
-      setBuyingProduct(null);
+    // 2. 打开购买确认 modal
+    const product = PRODUCTS.find(p => p.id === productId);
+    if (product) {
+      setSelectedProduct(product);
     }
+  };
+
+  const handlePurchaseModalClose = () => {
+    setSelectedProduct(null);
   };
 
   return (
@@ -170,7 +126,14 @@ export function PricingPage() {
           </p>
         </div>
 
-        {/* 2. Pricing Cards */}
+        {/* Error Message */}
+        {error && (
+          <div className="max-w-md mx-auto mb-8 p-4 bg-red-50 border border-red-200 rounded-xl">
+            <p className="text-red-700 text-sm text-center">{error}</p>
+          </div>
+        )}
+
+        {/* Pricing Cards */}
         <div className="grid grid-cols-1 md:grid-cols-3 gap-6 md:gap-8 mb-16 max-w-5xl mx-auto">
           {PRODUCTS.map((product) => (
             <PricingCard
@@ -182,7 +145,7 @@ export function PricingPage() {
               features={product.features}
               buttonText={product.buttonText}
               isPopular={product.isPopular}
-              onBuy={handleBuy}
+              onBuy={handleSelectProduct}
               productId={product.id}
               isLoading={buyingProduct === product.id}
             />
@@ -288,6 +251,13 @@ export function PricingPage() {
 
         {/* 登录弹窗 */}
         <LoginModal isOpen={isLoginModalOpen} onClose={() => setIsLoginModalOpen(false)} />
+
+        {/* 购买确认弹窗 */}
+        <PurchaseModal
+          isOpen={!!selectedProduct}
+          onClose={handlePurchaseModalClose}
+          product={selectedProduct}
+        />
       </div>
     </div>
   );

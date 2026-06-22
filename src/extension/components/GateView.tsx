@@ -3,14 +3,10 @@ import { useState, useEffect, useRef } from 'react';
 import { useAppState, useActions } from '../store';
 import type { ExtUser } from '../types';
 
-const noop = (..._args: unknown[]) => {};
-
 export function GateView() {
   const { authStatus } = useAppState();
-  const { sendMagicLink, initiateGoogleOAuth } = useActions();
-  const [email, setEmail] = useState('');
+  const { initiateGoogleOAuth } = useActions();
   const [isLoading, setIsLoading] = useState(false);
-  const [isSuccess, setIsSuccess] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [waitingForSync, setWaitingForSync] = useState(false);
   /** 避免 setTimeout 闭包捕获 stale waitingForSync */
@@ -68,23 +64,6 @@ export function GateView() {
     return () => clearInterval(intervalId);
   }, [waitingForSync]);
 
-  const handleEmailSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!email.trim()) return;
-
-    setIsLoading(true);
-    setError(null);
-
-    const result = await sendMagicLink(email.trim());
-    if (result.success) {
-      setIsSuccess(true);
-    } else {
-      setError(result.error || 'Failed to send magic link');
-    }
-
-    setIsLoading(false);
-  };
-
   /**
    * 点击 Google 登录：
    * 1. 打开网站登录页（新标签）
@@ -101,12 +80,9 @@ export function GateView() {
     const result = await initiateGoogleOAuth();
 
     if (!result.success) {
-      // Login failed silently — user can retry
-      noop(result.error);
       setError(result.error || 'Failed to open login page');
       waitingRef.current = false;
       setWaitingForSync(false);
-      return;
     }
     // 轮询兜底由 useEffect [waitingForSync] 处理，此处无需 setTimeout
   };
@@ -115,29 +91,6 @@ export function GateView() {
     waitingRef.current = false;
     setWaitingForSync(false);
   };
-
-  if (isSuccess) {
-    return (
-      <div className="ext-gate">
-        <div className="ext-gate-success">
-          <div className="ext-gate-success-icon">✓</div>
-          <div className="ext-gate-success-title">Check your email</div>
-          <div className="ext-gate-success-msg">
-            We've sent a magic link to <strong>{email}</strong>
-            <br />
-            Click the link to sign in on the website.
-            <br />
-            <br />
-            <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>
-              After you click the link: keep this panel open, then open or refresh{' '}
-              <strong>www.tryhomescope.com</strong> in a tab — your login will sync to the extension
-              automatically. Or use the link again next time; it now includes extension sync.
-            </span>
-          </div>
-        </div>
-      </div>
-    );
-  }
 
   if (waitingForSync) {
     return (
@@ -193,8 +146,6 @@ export function GateView() {
         AI-powered property analysis in your browser
       </div>
 
-      <div className="ext-gate-divider">or continue with</div>
-
       <div className="ext-gate-form">
         <button
           type="button"
@@ -211,33 +162,6 @@ export function GateView() {
           </svg>
           Continue with Google
         </button>
-
-        <form onSubmit={handleEmailSubmit}>
-          <input
-            type="email"
-            className="ext-input"
-            placeholder="Enter your email"
-            value={email}
-            onChange={(e) => setEmail(e.target.value)}
-            disabled={isLoading}
-            required
-          />
-          <button
-            type="submit"
-            className="ext-cta ext-cta--primary"
-            disabled={isLoading || !email.trim()}
-            style={{ marginTop: 10 }}
-          >
-            {isLoading ? (
-              <>
-                <div className="ext-spinner ext-spinner-sm" />
-                Sending...
-              </>
-            ) : (
-              'Continue with Email'
-            )}
-          </button>
-        </form>
 
         {error && (
           <div style={{ color: 'var(--error)', fontSize: 13, textAlign: 'center' }}>
