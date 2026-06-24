@@ -100,6 +100,23 @@ export function LandingReportPreview() {
                   ))}
                 </div>
               </div>
+
+              {/* H. 报告模块列表 */}
+              <div className="mt-6 bg-[#f5f5f3] rounded-[15px] p-5">
+                <div className="text-[11px] font-semibold uppercase tracking-[0.08em] text-[#7a746d] mb-4">
+                  BEFORE YOU BOOK A SHOWING
+                </div>
+                <div className="space-y-2.5">
+                  {['Overall Risk Score', 'Plain-English Bottom Line', 'Price & Monthly Cost Signals',
+                    'Missing Details to Verify', 'Photo & Condition Review', 'Agent Language Decoder',
+                    'Deal-Changing Risks', 'Questions for the Agent', 'Best Next Step'].map((module) => (
+                    <div key={module} className="flex items-center gap-2">
+                      <div className="w-1.5 h-1.5 rounded-full bg-[#d4d4d0]" />
+                      <span className="text-[13px] text-[#5a5a56]">{module}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
             </div>
           </div>
         </div>
