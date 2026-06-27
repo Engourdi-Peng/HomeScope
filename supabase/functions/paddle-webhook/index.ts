@@ -10,11 +10,46 @@ declare const Deno: {
   };
 };
 
+// ========== 内联共享配置 ==========
+const BASE_CREDITS: Record<string, number> = {
+  starter: 1,
+  standard: 3,
+  pro: 10,
+};
+
+const AFFILIATE_BONUS: Record<string, number> = {
+  starter: 0,
+  standard: 1,
+  pro: 2,
+};
+
+const PLAN_PRICES: Record<string, number> = {
+  starter: 6.99,
+  standard: 15.99,
+  pro: 39.99,
+};
+
+function isValidPlanKey(key: string): key is keyof typeof BASE_CREDITS {
+  return key in BASE_CREDITS;
+}
+
+function getPriceIdEnvKey(planKey: string, isSandbox: boolean): string {
+  const suffix = isSandbox ? "SANDBOX" : "LIVE";
+  return `PRICE_${planKey.toUpperCase()}_${suffix}`;
+}
+// ========== 配置结束 ==========
+
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL") || "https://trteewgplkqiedonomzg.supabase.co";
 const SUPABASE_SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") || "";
 
 // Paddle webhook 签名验证
-const PADDLE_PUBLIC_KEY = Deno.env.get("PADDLE_PUBLIC_KEY") || "";
+const PADDLE_WEBHOOK_SECRET = Deno.env.get("PADDLE_WEBHOOK_SECRET") || "";
+// 沙盒环境下跳过签名验证（仅用于本地开发测试）
+const SKIP_SIGNATURE_VERIFICATION = Deno.env.get("PADDLE_SKIP_SIGNATURE") === "true";
+
+// 环境隔离：Sandbox 使用不同的 price_id env keys
+const PADDLE_API_KEY = Deno.env.get("PADDLE_API_KEY") || "";
+const IS_SANDBOX = PADDLE_API_KEY.startsWith("pdl_test_");
 
 const corsHeaders: Record<string, string> = {
   "Access-Control-Allow-Origin": "*",
@@ -22,133 +57,270 @@ const corsHeaders: Record<string, string> = {
   "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type, passthrough",
 };
 
-/**
- * 验证 Paddle webhook 签名
- */
-function verifyPaddleSignature(req: Request, body: string): boolean {
-  const signature = req.headers.get("paddle-signature");
-  if (!signature) {
-    console.log("No Paddle signature provided");
-    return false;
-  }
+// 校验 Paddle price_id 格式
+function isValidPaddlePriceId(v: string | undefined): v is string {
+  if (!v) return false;
+  return /^pri_[a-zA-Z0-9]{26}$/.test(v.trim());
+}
 
-  // 如果没有配置公钥，跳过验证（仅用于开发测试）
-  if (!PADDLE_PUBLIC_KEY) {
-    console.log("⚠️ PADDLE_PUBLIC_KEY not configured, skipping signature verification");
+// 获取并校验环境变量中的 price_id
+function getValidatedPriceId(envKey: string): string {
+  const value = Deno.env.get(envKey)?.trim();
+  if (!value || !isValidPaddlePriceId(value)) {
+    throw new Error(`Invalid or missing Paddle price id: ${envKey}. Expected format: pri_ followed by 26 alphanumeric characters`);
+  }
+  return value;
+}
+
+// 获取环境隔离的 price_id
+function getEnvironmentPriceId(planKey: string): string {
+  const envKey = getPriceIdEnvKey(planKey, IS_SANDBOX);
+  return getValidatedPriceId(envKey);
+}
+
+// 有效的 price_id 集合（用于 webhook 验证）
+const VALID_PRICE_IDS = new Set([
+  getEnvironmentPriceId("starter"),
+  getEnvironmentPriceId("standard"),
+  getEnvironmentPriceId("pro"),
+]);
+
+/**
+ * 验证 Paddle webhook 签名（HMAC-SHA256）
+ * Paddle Billing 新版使用 notification secret 和 HMAC-SHA256 签名
+ * 格式: Paddle-Signature: ts=...;h1=...
+ */
+async function verifyPaddleSignature(req: Request, rawBody: string): Promise<boolean> {
+  // 沙盒模式下跳过验证（仅用于开发测试）
+  if (SKIP_SIGNATURE_VERIFICATION) {
+    console.log("⚠️ PADDLE_SKIP_SIGNATURE=true, skipping signature verification (sandbox mode)");
     return true;
   }
 
-  // TODO: 实现完整的签名验证
-  // Paddle 使用 Ed25519 或 RSA 签名
-  // 简化处理：这里先跳过验证，生产环境需要实现
+  // 生产环境必须验证签名
+  if (!PADDLE_WEBHOOK_SECRET) {
+    console.error("❌ PADDLE_WEBHOOK_SECRET not configured - rejecting webhook");
+    return false;
+  }
+
+  // Paddle-Signature header (Paddle 使用大写 S)
+  const signatureHeader = req.headers.get("Paddle-Signature") || req.headers.get("paddle-signature");
+  if (!signatureHeader) {
+    console.error("Missing Paddle-Signature header");
+    return false;
+  }
+
+  // 解析签名格式：ts=...;h1=...（分号分隔，h1 不是 v1）
+  const parts: Record<string, string> = {};
+  const segments = signatureHeader.split(";");
+  for (const segment of segments) {
+    const idx = segment.indexOf("=");
+    if (idx === -1) continue;
+    const key = segment.substring(0, idx).trim();
+    const value = segment.substring(idx + 1).trim();
+    parts[key] = value;
+  }
+
+  const timestamp = parts["ts"];
+  const expectedSignature = parts["h1"];
+
+  if (!timestamp || !expectedSignature) {
+    console.error(`Invalid signature format: ${signatureHeader}`);
+    return false;
+  }
+
+  // 构造签名消息：timestamp:rawBody（冒号，不是点号）
+  const signedPayload = `${timestamp}:${rawBody}`;
+
+  // 计算 HMAC-SHA256
+  const encoder = new TextEncoder();
+  const keyData = encoder.encode(PADDLE_WEBHOOK_SECRET);
+  const msgData = encoder.encode(signedPayload);
+
+  const cryptoKey = await crypto.subtle.importKey(
+    "raw",
+    keyData,
+    { name: "HMAC", hash: "SHA-256" },
+    false,
+    ["sign"]
+  );
+
+  const signatureBuffer = await crypto.subtle.sign("HMAC", cryptoKey, msgData);
+  const signatureArray = new Uint8Array(signatureBuffer);
+  const computedSignature = Array.from(signatureArray)
+    .map((b) => b.toString(16).padStart(2, "0"))
+    .join("");
+
+  // constant-time 比较防止时序攻击
+  if (computedSignature.length !== expectedSignature.length) {
+    console.error("Signature mismatch (length)");
+    return false;
+  }
+
+  let mismatch = 0;
+  for (let i = 0; i < computedSignature.length; i++) {
+    mismatch |= computedSignature.charCodeAt(i) ^ expectedSignature.charCodeAt(i);
+  }
+
+  if (mismatch !== 0) {
+    console.error("Signature mismatch");
+    return false;
+  }
+
+  // 可选：验证时间戳防止重放攻击（5分钟窗口）
+  const eventTimestamp = parseInt(timestamp, 10);
+  const now = Math.floor(Date.now() / 1000);
+  const tolerance = 300;
+
+  if (Math.abs(now - eventTimestamp) > tolerance) {
+    console.error(`Timestamp outside tolerance: event=${eventTimestamp}, now=${now}`);
+    return false;
+  }
+
+  console.log("✓ Paddle webhook signature verified");
   return true;
-}
-
-/**
- * 更新用户积分
- */
-async function addCreditsToUser(userId: string, creditsToAdd: number): Promise<boolean> {
-  try {
-    // 先获取用户当前积分
-    const getResponse = await fetch(
-      `${SUPABASE_URL}/rest/v1/profiles?id=eq.${userId}&select=credits_remaining`,
-      {
-        headers: {
-          "apikey": SUPABASE_SERVICE_ROLE_KEY,
-          "Authorization": `Bearer ${SUPABASE_SERVICE_ROLE_KEY}`,
-        },
-      }
-    );
-
-    if (!getResponse.ok) {
-      console.error("Failed to get user credits:", await getResponse.text());
-      return false;
-    }
-
-    const users = await getResponse.json();
-    if (!users || users.length === 0) {
-      console.error("User not found:", userId);
-      return false;
-    }
-
-    const currentCredits = users[0].credits_remaining || 0;
-    const newCredits = currentCredits + creditsToAdd;
-
-    // 更新积分
-    const updateResponse = await fetch(
-      `${SUPABASE_URL}/rest/v1/profiles?id=eq.${userId}`,
-      {
-        method: "PATCH",
-        headers: {
-          "Content-Type": "application/json",
-          "apikey": SUPABASE_SERVICE_ROLE_KEY,
-          "Authorization": `Bearer ${SUPABASE_SERVICE_ROLE_KEY}`,
-          "Prefer": "return=minimal",
-        },
-        body: JSON.stringify({
-          credits_remaining: newCredits,
-        }),
-      }
-    );
-
-    if (!updateResponse.ok) {
-      console.error("Failed to update credits:", await updateResponse.text());
-      return false;
-    }
-
-    console.log(`Added ${creditsToAdd} credits to user ${userId}. Total: ${newCredits}`);
-    return true;
-  } catch (err) {
-    console.error("Error adding credits:", err);
-    return false;
-  }
-}
-
-/**
- * 更新支付记录状态
- */
-async function updatePaymentStatus(
-  orderId: string,
-  status: string,
-  vendorOrderId?: string
-): Promise<boolean> {
-  try {
-    const updateData: Record<string, any> = { status };
-    if (vendorOrderId) {
-      updateData.vendor_order_id = vendorOrderId;
-    }
-
-    const response = await fetch(
-      `${SUPABASE_URL}/rest/v1/payments?order_id=eq.${orderId}`,
-      {
-        method: "PATCH",
-        headers: {
-          "Content-Type": "application/json",
-          "apikey": SUPABASE_SERVICE_ROLE_KEY,
-          "Authorization": `Bearer ${SUPABASE_SERVICE_ROLE_KEY}`,
-          "Prefer": "return=minimal",
-        },
-        body: JSON.stringify(updateData),
-      }
-    );
-
-    return response.ok;
-  } catch (err) {
-    console.error("Failed to update payment status:", err);
-    return false;
-  }
 }
 
 /**
  * 从 Paddle 事件中提取产品对应的积分数量
  */
-function getCreditsForProduct(productId: string): number {
-  const creditsMap: Record<string, number> = {
-    starter: 5,
-    standard: 20,
-    pro: 100,
-  };
-  return creditsMap[productId] || 0;
+function getCreditsForProduct(planKey: string): number {
+  return BASE_CREDITS[planKey] || 0;
+}
+
+/**
+ * 验证 webhook 中的 price_id 是否有效
+ */
+function validatePriceId(priceId: string | undefined): void {
+  if (!priceId) {
+    throw new Error("Missing price_id in transaction items");
+  }
+  if (!VALID_PRICE_IDS.has(priceId)) {
+    console.error("Invalid price_id:", priceId);
+    console.error("Valid price_ids:", Array.from(VALID_PRICE_IDS));
+    throw new Error(`Invalid price_id: ${priceId}. This webhook may be from a different environment.`);
+  }
+}
+
+/**
+ * 统一的支付处理函数，同时处理 transaction.paid 和 transaction.completed
+ * 两者共用同一个加积分逻辑，幂等通过 paddle_transaction_id 保证
+ */
+async function handlePaymentTransaction(
+  transaction: { id: string; custom_data?: Record<string, unknown>; items?: Array<{ price?: { id?: string } }> },
+  eventType: string
+): Promise<{ userId: string; planKey: string; credits: number; affiliateId?: string; affiliateCode?: string }> {
+  const transactionId = transaction.id;
+  const userId = transaction.custom_data?.user_id as string | undefined;
+  const planKey = (transaction.custom_data?.plan_key || transaction.custom_data?.product) as string | undefined;
+  const affiliateId = transaction.custom_data?.affiliate_id as string | undefined;
+  const affiliateCode = transaction.custom_data?.affiliate_code as string | undefined;
+
+  console.log(`[paddle-webhook] environment: ${IS_SANDBOX ? "sandbox" : "production"}`);
+  console.log(`[paddle-webhook] ${eventType}:`, { transactionId, userId, planKey, affiliateId, affiliateCode });
+
+  if (!userId) {
+    throw new Error("Missing user_id in transaction custom_data");
+  }
+
+  if (!planKey) {
+    throw new Error("Missing plan_key in transaction custom_data");
+  }
+
+  if (!isValidPlanKey(planKey)) {
+    throw new Error(`Invalid plan_key: ${planKey}`);
+  }
+
+  // 验证 price_id（防止跨环境 webhook）
+  if (transaction.items && transaction.items.length > 0) {
+    const priceId = transaction.items[0]?.price?.id;
+    validatePriceId(priceId);
+  }
+
+  const credits = getCreditsForProduct(planKey);
+  if (credits === 0) {
+    throw new Error(`Invalid product: ${planKey}`);
+  }
+
+  // 如果有邀请码，额外增加积分作为奖励
+  if (affiliateCode) {
+    const bonus = AFFILIATE_BONUS[planKey] || 0;
+    if (bonus > 0) {
+      console.log(`[paddle-webhook] Affiliate bonus: +${bonus} credits for plan ${planKey}`);
+      const totalCredits = credits + bonus;
+      await processPaymentWithRPC(transactionId, userId, planKey, totalCredits, affiliateId, affiliateCode);
+      return { userId, planKey, credits: totalCredits, affiliateId, affiliateCode };
+    }
+  }
+
+  const result = await processPaymentWithRPC(transactionId, userId, planKey, credits, affiliateId, affiliateCode);
+
+  if (!result.success) {
+    throw new Error(result.error || "RPC call failed");
+  }
+
+  if (result.alreadyProcessed) {
+    console.log(`Transaction already processed (idempotent): ${transactionId}`);
+  } else {
+    console.log(`Payment processed: user=${userId}, credits=${credits}, affiliate=${affiliateCode || 'none'}`);
+  }
+
+  return { userId, planKey, credits, affiliateId, affiliateCode };
+}
+
+/**
+ * 调用 RPC 处理支付完成事件（原子操作：增加积分 + 创建佣金记录）
+ */
+async function processPaymentWithRPC(
+  transactionId: string,
+  userId: string,
+  planKey: string,
+  credits: number,
+  affiliateId?: string,
+  affiliateCode?: string
+): Promise<{ success: boolean; alreadyProcessed?: boolean; error?: string }> {
+  try {
+    const body: Record<string, unknown> = {
+      p_transaction_id: transactionId,
+      p_user_id: userId,
+      p_plan_key: planKey,
+      p_credits: credits,
+    };
+
+    if (affiliateId) {
+      body.p_affiliate_id = affiliateId;
+    }
+    if (affiliateCode) {
+      body.p_affiliate_code = affiliateCode;
+    }
+
+    const response = await fetch(`${SUPABASE_URL}/rest/v1/rpc/process_paddle_completed_transaction`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "apikey": SUPABASE_SERVICE_ROLE_KEY,
+        "Authorization": `Bearer ${SUPABASE_SERVICE_ROLE_KEY}`,
+      },
+      body: JSON.stringify(body),
+    });
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      console.error("RPC call failed:", errorText);
+      return { success: false, error: errorText };
+    }
+
+    const result = await response.json();
+    console.log("RPC result:", result);
+
+    return {
+      success: result.success === true,
+      alreadyProcessed: result.already_processed === true,
+    };
+  } catch (err) {
+    console.error("RPC call error:", err);
+    return { success: false, error: String(err) };
+  }
 }
 
 Deno.serve(async (req) => {
@@ -170,7 +342,7 @@ Deno.serve(async (req) => {
     const bodyText = await req.text();
 
     // 验证 Paddle 签名
-    if (!verifyPaddleSignature(req, bodyText)) {
+    if (!(await verifyPaddleSignature(req, bodyText))) {
       return new Response(
         JSON.stringify({ error: "Invalid signature" }),
         { status: 401, headers: { ...corsHeaders, "Content-Type": "application/json" } }
@@ -182,45 +354,26 @@ Deno.serve(async (req) => {
 
     // 处理不同的事件类型
     switch (event.event_type) {
+      case "transaction.paid":
       case "transaction.completed": {
-        const transaction = event.data;
-        const orderId = transaction.custom_data?.order_id || transaction.id;
-        const userId = transaction.custom_data?.user_id;
-        const productId = transaction.custom_data?.product;
-        const vendorOrderId = transaction.id;
-
-        if (!userId) {
-          console.error("No user_id in transaction custom_data");
+        try {
+          await handlePaymentTransaction(event.data, event.event_type);
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          // 幂等检查：如果已经处理过，静默返回 200
+          if (msg.includes("already processed") || msg.includes("already_processed")) {
+            console.log("Transaction already processed, returning 200:", event.data.id);
+            return new Response(
+              JSON.stringify({ success: true, alreadyProcessed: true }),
+              { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+            );
+          }
+          console.error(`Failed to process ${event.event_type}:`, msg);
           return new Response(
-            JSON.stringify({ error: "Missing user_id" }),
-            { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
-          );
-        }
-
-        // 获取产品对应的积分
-        const creditsToAdd = getCreditsForProduct(productId);
-        if (creditsToAdd === 0) {
-          console.error("Invalid product ID:", productId);
-          return new Response(
-            JSON.stringify({ error: "Invalid product" }),
-            { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
-          );
-        }
-
-        // 更新支付状态为 completed
-        await updatePaymentStatus(orderId, "completed", vendorOrderId);
-
-        // 增加用户积分
-        const added = await addCreditsToUser(userId, creditsToAdd);
-        if (!added) {
-          console.error("Failed to add credits for user:", userId);
-          return new Response(
-            JSON.stringify({ error: "Failed to add credits" }),
+            JSON.stringify({ error: msg }),
             { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
           );
         }
-
-        console.log(`Payment completed: user=${userId}, credits=${creditsToAdd}, order=${orderId}`);
         return new Response(
           JSON.stringify({ success: true }),
           { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } }
@@ -230,10 +383,8 @@ Deno.serve(async (req) => {
       case "transaction.canceled":
       case "transaction.failed": {
         const transaction = event.data;
-        const orderId = transaction.custom_data?.order_id || transaction.id;
-
-        await updatePaymentStatus(orderId, "failed");
-        console.log(`Payment failed/canceled: order=${orderId}`);
+        const transactionId = transaction.id;
+        console.log(`Payment ${event.event_type}: transaction=${transactionId}`);
         return new Response(
           JSON.stringify({ success: true }),
           { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } }

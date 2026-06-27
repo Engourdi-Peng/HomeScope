@@ -10,15 +10,39 @@ declare const Deno: {
   };
 };
 
+// ========== 内联共享配置 ==========
+const BASE_CREDITS: Record<string, number> = {
+  starter: 1,
+  standard: 3,
+  pro: 10,
+};
+
+const PLAN_PRICES: Record<string, number> = {
+  starter: 6.99,
+  standard: 15.99,
+  pro: 39.99,
+};
+
+function isValidPlanKey(key: string): key is keyof typeof BASE_CREDITS {
+  return key in BASE_CREDITS;
+}
+
+function getPriceIdEnvKey(planKey: string, isSandbox: boolean): string {
+  const suffix = isSandbox ? "SANDBOX" : "LIVE";
+  return `PRICE_${planKey.toUpperCase()}_${suffix}`;
+}
+// ========== 配置结束 ==========
+
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL") || "https://trteewgplkqiedonomzg.supabase.co";
 const SUPABASE_SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") || "";
-const SUPABASE_ANON_KEY = Deno.env.get("SUPABASE_ANON_KEY") || "";
 
-// Paddle API 配置 - 需要在 Supabase Dashboard 中设置
-// PADDLE_API_KEY: 你的 Paddle API 密钥 (格式: pdl_live_apikey_xxx)
+// Paddle API 配置
 const PADDLE_API_KEY = Deno.env.get("PADDLE_API_KEY") || "";
 const PADDLE_API_URL = Deno.env.get("PADDLE_API_URL") || "https://api.paddle.com";
 const APP_URL = Deno.env.get("APP_URL") || "https://www.tryhomescope.com";
+
+// 环境隔离：Sandbox 使用不同的 price_id env keys
+const IS_SANDBOX = PADDLE_API_KEY.startsWith("pdl_test_");
 
 const corsHeaders: Record<string, string> = {
   "Access-Control-Allow-Origin": "*",
@@ -41,22 +65,28 @@ function getValidatedPriceId(envKey: string): string {
   return value;
 }
 
-// 产品配置 - 使用 Paddle Price ID (从环境变量读取)
+// 获取环境隔离的 price_id
+function getEnvironmentPriceId(planKey: string): string {
+  const envKey = getPriceIdEnvKey(planKey, IS_SANDBOX);
+  return getValidatedPriceId(envKey);
+}
+
+// 产品配置 - 使用环境隔离的 price_id
 const PRODUCTS: Record<string, { credits: number; price: number; price_id: string }> = {
   starter: {
-    credits: 3,
-    price: 0.01,
-    price_id: getValidatedPriceId("PRICE_STARTER"),
+    credits: BASE_CREDITS.starter, // 1
+    price: PLAN_PRICES.starter, // 6.99
+    price_id: getEnvironmentPriceId("starter"),
   },
   standard: {
-    credits: 10,
-    price: 14.99,
-    price_id: getValidatedPriceId("PRICE_STANDARD"),
+    credits: BASE_CREDITS.standard, // 3
+    price: PLAN_PRICES.standard, // 15.99
+    price_id: getEnvironmentPriceId("standard"),
   },
   pro: {
-    credits: 40,
-    price: 39.0,
-    price_id: getValidatedPriceId("PRICE_PRO"),
+    credits: BASE_CREDITS.pro, // 10
+    price: PLAN_PRICES.pro, // 39.99
+    price_id: getEnvironmentPriceId("pro"),
   },
 };
 
@@ -72,20 +102,16 @@ function getCurrentUser(req: Request): { userId: string | null; email: string | 
 
   const token = authHeader.replace("Bearer ", "");
 
-  // 直接从 JWT payload 解析 user_id
-  // JWT 格式: header.payload.signature，payload 是 base64 编码的 JSON
   try {
     const parts = token.split(".");
     if (parts.length !== 3) {
       return { userId: null, email: null, error: "Invalid token format" };
     }
 
-    // 解码 payload（base64url → base64 → JSON）
     const payloadBase64 = parts[1].replace(/-/g, "+").replace(/_/g, "/");
     const payloadJson = atob(payloadBase64);
     const payload = JSON.parse(payloadJson);
 
-    // Supabase JWT 包含 sub（用户 ID）和 email
     const userId = payload.sub;
     const email = payload.email;
 
@@ -117,14 +143,13 @@ async function createPaddleTransaction(
     return { error: "Invalid product ID" };
   }
 
+  console.log("[create-order] environment:", IS_SANDBOX ? "sandbox" : "production");
   console.log("[create-order] price_id:", product.price_id);
   console.log("[create-order] product:", productId);
 
-  // 如果没有配置 Paddle API，使用模拟模式（用于开发测试）
   if (!PADDLE_API_KEY) {
     console.log("⚠️ Paddle API not configured, using mock mode");
 
-    // 生成模拟订单 ID
     const mockOrderId = `mock_${Date.now()}_${userId.slice(0, 8)}`;
     const mockCheckoutUrl = `${successUrl}?transaction_id=${mockOrderId}&status=completed&product=${productId}`;
 
@@ -135,7 +160,6 @@ async function createPaddleTransaction(
   }
 
   try {
-    // 构建 custom_data（包含 affiliate 信息和完整的产品数据）
     const customData: Record<string, unknown> = {
       user_id: userId,
       product: 'homescope_credits',
@@ -145,7 +169,6 @@ async function createPaddleTransaction(
       product_type: 'credits',
     };
 
-    // 如果有有效的 affiliate code，添加到 custom_data
     if (affiliate) {
       customData.affiliate_id = affiliate.id;
       customData.affiliate_code = affiliate.code;
@@ -153,7 +176,6 @@ async function createPaddleTransaction(
 
     console.log("[create-order] custom_data:", JSON.stringify(customData));
 
-    // 调用 Paddle API 创建交易
     const response = await fetch(`${PADDLE_API_URL}/transactions`, {
       method: "POST",
       headers: {
@@ -183,8 +205,6 @@ async function createPaddleTransaction(
 
     const data = await response.json();
 
-    // 手动构建 checkout_url，指向我们自己的网站
-    // Paddle 会用 {transaction_id} 替换占位符
     const transactionId = data.data.id;
     const checkoutUrl = `${APP_URL}/checkout?_ptxn=${transactionId}`;
 
@@ -246,12 +266,10 @@ async function createPaymentRecord(
 }
 
 Deno.serve(async (req) => {
-  // 处理 CORS 预检请求
   if (req.method === "OPTIONS") {
     return new Response(null, { status: 204, headers: corsHeaders });
   }
 
-  // 只允许 POST 请求
   if (req.method !== "POST") {
     return new Response(
       JSON.stringify({ error: "Method not allowed" }),
@@ -260,7 +278,6 @@ Deno.serve(async (req) => {
   }
 
   try {
-    // 1. 验证用户登录
     const { userId, email, error: authError } = await getCurrentUser(req);
     if (authError || !userId || !email) {
       return new Response(
@@ -269,7 +286,6 @@ Deno.serve(async (req) => {
       );
     }
 
-    // 2. 解析请求体
     const body = await req.json();
     const { product, affiliate_code } = body;
 
@@ -282,7 +298,6 @@ Deno.serve(async (req) => {
 
     const productConfig = PRODUCTS[product];
 
-    // 3. 验证 affiliate_code（如果存在）
     let affiliate: { id: string; code: string } | undefined;
 
     if (affiliate_code && typeof affiliate_code === 'string') {
@@ -291,7 +306,6 @@ Deno.serve(async (req) => {
       if (code.length > 0) {
         console.log("[create-order] Validating affiliate code:", code);
 
-        // 查询 affiliates 表
         const affiliateResponse = await fetch(
           `${SUPABASE_URL}/rest/v1/affiliates?code=eq.${encodeURIComponent(code)}&is_active=eq.true&select=id,code`,
           {
@@ -323,12 +337,10 @@ Deno.serve(async (req) => {
       }
     }
 
-    // 4. 构建回调 URL
     const baseUrl = req.headers.get("origin") || SUPABASE_URL;
     const successUrl = `${baseUrl}/payment-success`;
     const cancelUrl = `${baseUrl}/pricing`;
 
-    // 5. 创建 Paddle 交易（传入 affiliate 信息）
     const orderResult = await createPaddleTransaction(product, userId, email, successUrl, cancelUrl, affiliate);
 
     if ("error" in orderResult) {
@@ -338,7 +350,6 @@ Deno.serve(async (req) => {
       );
     }
 
-    // 6. 创建 pending 支付记录
     await createPaymentRecord(
       userId,
       orderResult.transactionId,
@@ -348,7 +359,6 @@ Deno.serve(async (req) => {
       orderResult.transactionId
     );
 
-    // 7. 返回 checkout URL
     if (!orderResult.checkout_url) {
       return new Response(
         JSON.stringify({ error: "Missing checkout_url from payment provider" }),
