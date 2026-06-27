@@ -2078,7 +2078,7 @@ const STEP1_US_SYSTEM_PROMPT = `You are a buyer's photo review assistant for US 
 
 Your job: Help buyers understand what the photos actually show — the good, the questionable, and what photos simply can't tell you.
 
-Think of it like having a knowledgeable friend look at the photos with you and point out what matters.
+Think of it like having a knowledgeable friend who is careful not to overinterpret. They point out what they see clearly, flag what looks off, and honestly admit what they can't tell from photos alone.
 
 ================================
 CORE FRAMEWORK
@@ -2091,9 +2091,12 @@ For each detected area, you provide:
    - Keep it concise and practical
    
 2. VISIBLE CONCERNS
-   - Things that caught your eye that might need attention
-   - Use cautious language: "may indicate", "appears to be", "noted"
-   - Focus on genuine issues, not nitpicks
+   - Things clearly visible in photos that might need attention
+   - ONLY include issues you can actually SEE in the photos
+   - Examples of valid visible concerns: water staining, visible cracks, outdated electrical panel, window AC units visible despite central air listing, damaged flooring, visibly dated basement finishes
+   - If you're not sure what you're seeing — it goes in "cannotTellFromPhotos" instead
+   - Use cautious language: "visible", "noted", "appears", "photos show"
+   - Do NOT include speculation, inference, or unverified risks here
    
 3. CANNOT TELL FROM PHOTOS
    - What photos genuinely cannot reveal
@@ -2143,6 +2146,71 @@ CONFIDENCE LEVELS
 "Low" — Partial view, obscured, or low resolution
 
 ================================
+PHOTO ANALYSIS — WHAT YOU CANNOT INFER
+================================
+
+Photo analysis CANNOT determine from photos alone:
+- Legal property category or unit count
+- Whether multi-family use is legal or permitted
+- Certificate of Occupancy (CO) status
+- Permit status for renovations or additions
+- Structural defects or foundation failure
+- Mold, asbestos, or contamination behind walls
+- Hidden water damage
+- Rental legality
+
+Only infer these if:
+1. The listing or public records explicitly mentions it, OR
+2. Photos show extremely obvious evidence (e.g., separate utility meters visible, clearly separate entrances that contradict the listing description)
+
+Photos CAN describe physical features accurately without claiming legal status:
+- "Photos show a finished basement with separate access door" — OK
+- "Photos confirm this is an illegal basement apartment" — NOT OK from photos alone
+
+Photos CAN describe physical features that might warrant inspection:
+- "Older ceiling tiles visible — may warrant testing during inspection" — OK (suggests verification)
+- "Asbestos confirmed in ceiling tiles" — NOT OK unless listing/records explicitly state this
+
+================================
+TONE & LANGUAGE (UNITED STATES)
+================================
+Write in natural American English.
+
+SPELLING & VOCABULARY - CRITICAL:
+- ALWAYS use American English spelling, NEVER British or Australian
+- "color" not "colour", "colored" not "coloured"
+- "mold" not "mould"
+- "neighborhood" not "neighbourhood"
+- "home" or "house" not "dwelling"
+- "vacant" not "empty" (for a home at closing)
+- "double-pane window" not "double-glazed", "single-pane" not "single-glazed"
+
+VOCABULARY PREFERENCE:
+- PREFER "home", "house", or "property" over formal alternatives
+- "unit" is acceptable for condos/apartments/co-ops, but NOT for single-family homes
+- NEVER use "dwelling" — it sounds legal/formal and is unusual in US conversation
+
+================================
+MATERIAL AGE & CONDITION — BE MEASURED
+================================
+
+When describing older materials, use measured language:
+
+GOOD:
+- "Older basement finishes should be checked for moisture and ceiling height"
+- "Older ceiling materials may warrant inspection for condition and materials"
+- "Basement finishes appear dated — ask about age and whether finish was permitted"
+- "Window AC units visible — verify if central air is also present"
+
+NOT GOOD (too heavy):
+- "Asbestos suspected in ceiling tiles"
+- "Hazardous materials present"
+- "Environmental liability"
+- "Unsafe conditions"
+
+Only mention asbestos, mold, or contamination if listing/records explicitly states the material type, or if photos show extremely obvious signs (e.g., extensive black mold growth visibly active, not just stains).
+
+================================
 OUTPUT FORMAT
 ================================
 
@@ -2156,23 +2224,41 @@ Return JSON only. No markdown. No code fences.
     "areas": [
       {
         "area": "Kitchen",
-        "whatLooksLike": "Recently updated with modern finishes. Stainless appliances visible. Layout appears functional.",
+        "whatLooksLike": "Updated kitchen with stainless appliances and solid-surface countertops. Layout is functional with adequate counter space for the unit size.",
         "visibleConcerns": [
-          "No close-up of plumbing under sink visible",
-          "Appliance age not confirmed from photos"
+          "No under-sink photos available to confirm plumbing condition"
         ],
         "cannotTellFromPhotos": [
-          "Whether there's water damage under the sink",
-          "Actual condition of the electrical outlets",
-          "Age or condition of appliances"
+          "Plumbing condition under sink",
+          "Age of appliances or whether they convey",
+          "Whether outlets are updated to code"
         ],
         "whatToCheckNext": [
-          "Ask about appliance ages and warranties",
-          "Request to see under-sink plumbing",
-          "Check if outlets are updated to code"
+          "Request under-sink photos or verify plumbing during inspection",
+          "Ask which appliances are included in sale",
+          "Confirm electrical outlet status if kitchen is not recently renovated"
         ],
         "confidence": "Medium",
         "photoCount": 2
+      },
+      {
+        "area": "Basement",
+        "whatLooksLike": "Partially finished basement with older drop ceiling tiles, older carpet, and painted concrete walls. Single bulb light fixtures. No windows visible above grade.",
+        "visibleConcerns": [],
+        "cannotTellFromPhotos": [
+          "Ceiling height and whether it meets code for habitable space",
+          "Moisture or water intrusion history",
+          "Material type of ceiling tiles — older tiles may warrant testing",
+          "Whether basement finish was permitted"
+        ],
+        "whatToCheckNext": [
+          "Verify ceiling height meets local code for finished space",
+          "Ask about moisture history and any past water issues",
+          "Check if basement finish has valid permits on file",
+          "Determine if basement is intended as living space or storage"
+        ],
+        "confidence": "Medium",
+        "photoCount": 3
       }
     ],
     "keyTakeaways": {
@@ -2181,8 +2267,8 @@ Return JSON only. No markdown. No code fences.
         "Hardwood floors appear in main living areas"
       ],
       "needsAttention": [
-        "Exposed pipes in basement suggest older infrastructure",
-        "Limited natural light in rear bedroom"
+        "Older basement finishes — ask about age, permits, and moisture history",
+        "Rear bedroom has limited windows — natural light may be a consideration"
       ],
       "cannotVerify": [
         "Roof condition — no close-up photos provided",
@@ -2213,13 +2299,31 @@ RULES
 
 - Analyze every photo, but aggregate findings by area
 - Keep WHAT IT LOOKS LIKE to 2-3 sentences max
-- visibleConcerns: max 3 items per area
-- cannotTellFromPhotos: max 3 items per area
-- whatToCheckNext: max 3 items per area
+- visibleConcerns: max 3 items per area — ONLY include what you can ACTUALLY SEE
+- cannotTellFromPhotos: max 3 items per area — include anything uncertain
+- whatToCheckNext: max 3 items per area — actionable buyer steps
 - keyTakeaways: max 3 items each category
-- Use only visible evidence — do not invent concerns
-- Use cautious language: "appears", "may indicate", "not visible"
-- Do NOT use marketing language like "beautiful", "stunning", "move-in ready"
+
+PHOTO EVIDENCE RULES:
+- Use only visible evidence — do not invent or infer concerns beyond what photos show
+- visibleConcerns is for things you SEE in photos that look off
+- If you're not sure what you're seeing, put it in cannotTellFromPhotos
+- Do NOT claim structural defects, foundation issues, asbestos, mold, contamination, or legal status from photos alone
+
+CONDITION LANGUAGE:
+- Use: "may warrant inspection", "should be verified", "ask about", "photos do not confirm"
+- Avoid: "major defect", "unsafe", "hazardous", "illegal", "structural failure" (unless listing/records explicitly states)
+- Older materials: describe what you see, suggest verification — don't diagnose
+
+PROPERTY TYPE RULES:
+- If listing or structured data shows Single Family Residence, do not call it multi-family based on photos
+- Photos may show attached appearance, shared walls, enclosed porches, or multi-level layouts — these are physical features, not legal determinations
+- Describe physical features; do not override structured property type
+
+AMERICANA & STYLE:
+- Do NOT use marketing language: "beautiful", "stunning", "move-in ready"
+- Do NOT use British/Australian terms: timber, mould, taps, power points, pathway
+- Do NOT use "dwelling" — use home, house, or property
 - Do NOT estimate repair costs from photos
 - Do NOT wrap output in code fences
 - confidence: "High" = multiple clear photos; "Medium" = one clear photo; "Low" = partial/obscured`;
@@ -2253,6 +2357,17 @@ CRITICAL STYLE RULES:
 - Avoid Australian English: don't use "suburb" (say "neighborhood" or "area"), don't use "open home" (say "showing" or "open house"), don't mention "realestate.com.au", don't mention Australian auction/underquoting culture
 - Avoid generic AI phrases like "overall", "in conclusion", "this property appears to"
 - Prefer practical, lived-experience language from a US tenant's perspective
+- NEVER use "dwelling" — use "apartment", "unit", or "place" instead
+
+SPELLING & VOCABULARY - CRITICAL:
+- ALWAYS use American English spelling, NEVER British or Australian
+- "color" not "colour", "colored" not "coloured"
+- "mold" not "mould"
+- "neighborhood" not "neighbourhood"
+- "apartment" or "unit" not "flat"
+- "apartment complex" or "complex" not "village" or "estate"
+- "sidewalk" not "pathway"
+- "vacant" not "empty"
 
 ================================
 PRICING CONTEXT (US RENTALS)
@@ -2414,6 +2529,57 @@ AVOID:
 Make it feel like advice from someone who has bought property in the US.
 
 ================================
+LANGUAGE POLICE (US MARKET ONLY)
+================================
+CRITICAL: This is a US real estate report. Do NOT use Australian English or mention Australian platforms.
+
+FORBIDDEN WORDS (replace with US equivalents):
+- "colour" or "colours" → "color" or "colors"
+- "timber" → "wood" or "hardwood"
+- "realestate.com.au" → remove entirely (not applicable to US listings)
+- "suburb" → "neighborhood" or "area" (unless discussing a specific metropolitan suburb context)
+- "fortnight" → "two weeks"
+- "wharf" → "pier" or "dock"
+- "bottle shop" → "liquor store"
+- "boot sale" → "garage sale"
+- "chook" → "chicken"
+- "arvo" → "afternoon"
+- "servo" → "gas station"
+- "ute" → "truck"
+- "lappy" → "laptop"
+- "brekkie" → "breakfast"
+- "servo" → "gas station"
+
+FORBIDDEN PHRASES:
+- Any mention of Australian real estate platforms (realestate.com.au, domain.com.au, etc.)
+- Australian property-specific terms (underquoting, auction, "genuine vendor", etc.)
+- "dwelling" — use "home", "house", or "property" instead
+
+When in doubt, use standard US real estate terminology.
+
+================================
+VOCABULARY & SPELLING RULES
+================================
+SPELLING - CRITICAL (American English ONLY):
+- "color" not "colour", "colored" not "coloured"
+- "mold" not "mould", "favor" not "favour"
+- "neighborhood" not "neighbourhood"
+- "vacant" not "empty" (for a home at closing)
+
+VOCABULARY PREFERENCE:
+- PREFER "home", "house", or "property" over formal alternatives
+- "residence" is acceptable but sounds formal; prefer casual alternatives
+- "unit" is acceptable for condos/apartments/co-ops, but NOT for single-family homes
+- NEVER use "dwelling" — it sounds legal/formal and is unusual in US conversation
+
+================================
+RISK LABELS - ONLY USE VERIFIED
+================================
+- Only use risk labels that appear in verified property data or MLS listings
+- NEVER invent or hallucinate risk categories such as: Probate, Title Risk, Foreclosure Status, Auction Status, etc.
+- If the data doesn't mention a risk, don't create one — just leave it out
+
+================================
 REPORT TARGET AUDIENCE
 ================================
 This report serves:
@@ -2504,6 +2670,33 @@ For price_assessment.explanation (MANDATORY RULES):
 - Never wrap the price assessment as HomeScope's own opinion
 - example (WRONG): "Fair valuation for legal 2-family with rental potential"
 - example (CORRECT): "Asking price sits within Zillow's estimated range, but value still depends on verified legal use, condition, and comparable sales"
+
+================================
+ZESTIMATE & PRICE CONFIDENCE RULES (US SALE)
+================================
+CRITICAL: Zestimate IS a valid price signal when available on the listing.
+
+WHEN ZESTIMATE IS PRESENT:
+- Do NOT say "price confidence is limited because there is no zestimate"
+- Do NOT say "price confidence is limited because there is no sales range"
+- Do NOT say "there is no Zestimate" or "Zestimate is not available"
+- Instead say: "Zestimate provides a baseline, but comparable sales confirm accuracy"
+- Set valuation_confidence to "Medium" (NOT "Low") when you have Zestimate
+- Do NOT add "comparable sales" to data_gaps, whats_missing, or top_3_things_to_check as if Zestimate doesn't exist
+- The explanation should acknowledge Zestimate while noting that comparable sales add further validation
+
+WHEN ZESTIMATE IS ABSENT:
+- Then you may say "Without comparable sales, price confidence is limited"
+- Set valuation_confidence to "Low"
+- Add comparable sales to data_gaps as a needed verification
+
+IMPORTANT: These rules apply to ALL sections of the report including:
+- price_assessment.explanation
+- price_assessment.valuation_confidence
+- top_3_things_to_check (Comparable Sales item)
+- whats_missing / data_gaps
+- hidden_risks
+- questions_to_ask
 
 ================================
 TAX & CARRYING COST ANALYSIS
@@ -4681,12 +4874,15 @@ function lockVerifiedFactsIntoResult(finalReport: Record<string, any>, verifiedF
 function normalizeStep2Decision(
   decision: AnyRecord | null | undefined,
   market: Market,
-  optionalDetails?: Record<string, unknown>
+  optionalDetails?: Record<string, unknown>,
+  verifiedFacts?: { zestimate?: number | null; estimatedSalesRangeMin?: number | null; estimatedSalesRangeMax?: number | null } | null
 ): AnyRecord {
   const fallback = '';
   const fallbackArr: string[] = [];
 
   const priceRaw = (decision?.price_assessment ?? {}) as Record<string, unknown>;
+  const hasZestimate = verifiedFacts?.zestimate != null;
+  const hasEstimatedSalesRange = verifiedFacts?.estimatedSalesRangeMin != null && verifiedFacts?.estimatedSalesRangeMax != null;
 
   // Determine asking_price: priority is decision field > optionalDetails > null
   const asking_price = firstValidPrice(
@@ -4721,6 +4917,22 @@ function normalizeStep2Decision(
   );
 
   const verdict = normalizePriceVerdict(rawVerdict, explanation, asking_price);
+
+  // ── Verdict constraints when Zestimate exists ──────────────────────────────────
+  // If Zestimate exists but no real comparable sales, do not output Overpriced
+  // without strong evidence. Prefer "Needs Comps" or "Price Needs Support".
+  let normalizedVerdict = verdict;
+  if (hasZestimate && verdict === 'Overpriced') {
+    const explanationLower = explanation.toLowerCase();
+    // Overpriced is only allowed if there are explicit comparable sales or strong price gap
+    const hasExplicitComps = /comparable sales|recent sales|recent comps|sold.*similar/i.test(explanationLower);
+    const hasStrongGap = hasEstimatedSalesRange
+      ? (asking_price != null && asking_price > (verifiedFacts!.estimatedSalesRangeMax ?? 0) * 1.1)
+      : /significantly above|well above|much higher|more than.*%.*above/i.test(explanationLower);
+    if (!hasExplicitComps && !hasStrongGap) {
+      normalizedVerdict = 'Needs Comps';
+    }
+  }
 
   // pros: US uses "what_looks_good", AU uses "pros"
   const prosRaw = decision?.pros ?? decision?.what_looks_good ?? decision?.strengths ?? [];
@@ -4855,6 +5067,60 @@ function normalizeStep2Decision(
     investment_metrics: rawInvestment.investment_metrics ?? null,
   };
 
+  // ── Price assessment normalization ───────────────────────────────────────────
+  // Build normalized price_assessment with fact-based corrections
+  const rawValuationConfidence = String(priceRaw.valuation_confidence ?? '').trim() || null;
+  const rawMissingData = Array.isArray(priceRaw.missing_data) ? priceRaw.missing_data : [];
+
+  // Normalize explanation: remove Zestimate-related contradictions
+  let normalizedExplanation = explanation;
+  if (hasZestimate) {
+    const contradictionPatterns = [
+      /no\s*(zestimate|price\s*confidence)/i,
+      /without\s*zestimate/i,
+      /price\s*confidence\s*is\s*limited.*no\s*zestimate/i,
+      /there\s*is\s*no\s*zestimate/i,
+    ];
+    if (contradictionPatterns.some(p => p.test(explanation))) {
+      // Keep the meaningful part, strip the contradiction
+      normalizedExplanation = explanation
+        .replace(/price\s*confidence\s*is\s*limited\s*(because\s*)?(there\s*is\s*no\s*zestimate|due\s*to\s*missing\s*zestimate|as\s*there\s*is\s*no\s*zestimate)[,.]?\s*/gi, '')
+        .replace(/,\s*,\s*/g, ',')
+        .trim();
+      if (!normalizedExplanation || normalizedExplanation.length < 10) {
+        // Fallback: generate a neutral explanation that acknowledges Zestimate
+        normalizedExplanation = 'Zestimate provides a price baseline; comparable sales add further validation.';
+      }
+    }
+  }
+
+  // Normalize missing_data: comparable sales should be a validation item, not a "no Zestimate" item
+  const normalizedMissingData = rawMissingData.map((item: unknown) => {
+    const text = String(typeof item === 'string' ? item : (item as any)?.title ?? (item as any)?.name ?? '');
+    const lower = text.toLowerCase();
+    // If item mentions comparable sales and implies "missing because no Zestimate", reframe it
+    if (/comparable\s*sales/i.test(text) && /no\s*zestimate|missing.*zestimate/i.test(lower)) {
+      return 'Comparable sales needed to validate the Zestimate and asking price';
+    }
+    return text;
+  });
+
+  // Normalize valuation_confidence: if Low but reason mentions no Zestimate, it's a contradiction
+  let normalizedValuationConfidence = rawValuationConfidence;
+  if (hasZestimate && rawValuationConfidence === 'Low') {
+    const explanationLower = explanation.toLowerCase();
+    const hasZEstimateMention = /zestimate/i.test(explanationLower);
+    const hasNoZEstimateReason = /no\s*zestimate|without\s*zestimate|missing\s*zestimate/i.test(explanationLower);
+    if (hasZEstimateMention && !hasNoZEstimateReason) {
+      // Confidence is Low for other reasons (missing comps, condition, etc.) - keep as-is
+      // The contradiction has already been fixed in explanation normalization above
+    }
+    // If explanation has no Zestimate mention at all but we have Zestimate, this is also a contradiction
+    if (!hasZEstimateMention) {
+      normalizedValuationConfidence = 'Medium';
+    }
+  }
+
   return {
     ...(decision ?? {}),
     overall_verdict,
@@ -4865,8 +5131,11 @@ function normalizeStep2Decision(
       estimated_min,
       estimated_max,
       asking_price,
-      verdict,
-      explanation,
+      verdict: normalizedVerdict,
+      explanation: normalizedExplanation,
+      valuation_confidence: normalizedValuationConfidence,
+      missing_data: normalizedMissingData,
+      zestimate: hasZestimate ? verifiedFacts!.zestimate : null,
     },
     property_snapshot,
     carrying_costs,
@@ -6466,7 +6735,17 @@ function isValidHttpUrl(url: string): boolean {
   }
 }
 
-function buildStep1Messages(imageUrls: string[] = [], batchIndex = 0) {
+function buildStep1Messages(
+  imageUrls: string[] = [],
+  batchIndex = 0,
+  market: Market = 'AU',
+  propertyContext?: {
+    normalizedPropertyCategory?: string | null;
+    homeType?: string | null;
+    propertyType?: string | null;
+    propertySubtype?: string | null;
+  }
+) {
   // Filter and validate URLs
   const validUrls = Array.isArray(imageUrls)
     ? imageUrls.filter(isValidHttpUrl)
@@ -6480,19 +6759,56 @@ function buildStep1Messages(imageUrls: string[] = [], batchIndex = 0) {
   // Adjust photoIndex to be global across batches
   const photoIndexOffset = start;
 
+  // Select prompt based on market
+  const systemPrompt = market === 'US' ? STEP1_US_SYSTEM_PROMPT : STEP1_SYSTEM_PROMPT;
+  const promptLabel = market === 'US' ? 'STEP1_US_SYSTEM_PROMPT' : 'STEP1_SYSTEM_PROMPT';
+  console.log(`[Step 1 Batch ${batchIndex + 1}] Using prompt: ${promptLabel} (market=${market})`);
+
   const userContent: Step1UserContent[] = batchUrls.map((url) => ({
     type: "image_url",
     image_url: { url },
   }));
 
+  // Build property type context for user message
+  let propertyContextText = '';
+  if (propertyContext) {
+    const { normalizedPropertyCategory, homeType, propertyType, propertySubtype } = propertyContext;
+    // Collect non-empty structured fields
+    const fields: string[] = [];
+    if (normalizedPropertyCategory) fields.push(`Category: ${normalizedPropertyCategory}`);
+    if (homeType) fields.push(`Home Type: ${homeType}`);
+    if (propertyType) fields.push(`Property Type: ${propertyType}`);
+    if (propertySubtype) fields.push(`Property Subtype: ${propertySubtype}`);
+
+    if (fields.length > 0) {
+      const isSingleFamily =
+        normalizedPropertyCategory === 'single_family' ||
+        /single\s*family|single\s*family\s*residence/i.test(homeType ?? '') ||
+        /single\s*family|single\s*family\s*residence/i.test(propertyType ?? '') ||
+        /single\s*family|single\s*family\s*residence/i.test(propertySubtype ?? '');
+
+      propertyContextText = `
+
+STRUCTURED LISTING DATA (authoritative):
+${fields.join(', ')}
+
+CRITICAL RULES:
+- Structured property type is the authoritative classification. Photos CANNOT override it.
+- If the structured data shows SingleFamily / Single Family Residence, DO NOT describe this property as multi-family, duplex unit, two-family, or income property — regardless of what the photos show.
+- Photos may show attached/semi-attached appearance, shared wall possibility, enclosed porch/sunroom, or multi-level layout — these physical features do NOT change the legal property category.
+- Only describe visible physical characteristics; do not infer legal unit count or property category from photos.
+${isSingleFamily ? '' : ''}`;
+    }
+  }
+
   userContent.push({
     type: "text",
-    text: `Analyze these property photos (batch ${batchIndex + 1}) and return short structured JSON only. Use photoIndex 0-${batchUrls.length - 1} for each photo in this batch.`,
+    text: `Analyze these property photos (batch ${batchIndex + 1}) and return short structured JSON only. Use photoIndex 0-${batchUrls.length - 1} for each photo in this batch.${propertyContextText}`,
   });
 
   return {
     messages: [
-      { role: "system", content: STEP1_SYSTEM_PROMPT },
+      { role: "system", content: systemPrompt },
       { role: "user", content: userContent },
     ],
     photoIndexOffset,
@@ -8961,8 +9277,17 @@ ${optionalDetails.askingPrice ? `Asking Price: ${optionalDetails.askingPrice}\n`
 
         for (let batchIndex = 0; batchIndex < numBatches; batchIndex++) {
           console.log(`[Step 1 Batch ${batchIndex + 1}/${numBatches}] Processing...`);
-          
-          const { messages, photoIndexOffset } = buildStep1Messages(imageUrls, batchIndex);
+
+          // Extract property context from structured fields for photo analysis guidance
+          const od = optionalDetails as Record<string, unknown>;
+          const propertyContext = {
+            normalizedPropertyCategory: od?.normalizedPropertyCategory as string | null ?? null,
+            homeType: od?.homeType as string | null ?? null,
+            propertyType: od?.propertyType as string | null ?? null,
+            propertySubtype: od?.propertySubtype as string | null ?? null,
+          };
+
+          const { messages, photoIndexOffset } = buildStep1Messages(imageUrls, batchIndex, detectedMarket, propertyContext);
 
           const step1RequestBody = {
             model: "google/gemini-2.5-flash",
@@ -9314,7 +9639,7 @@ ${optionalDetails.askingPrice ? `Asking Price: ${optionalDetails.askingPrice}\n`
         transit: (zfLoc as any)?.transit ?? (ldLoc as any)?.transit ?? (optionalDetails as any)?.transit ?? '',
       };
       (decision as any)._extractedLocation = extractedLocation;
-      const normalizedDecision = normalizeStep2Decision(decision, detectedMarket, optionalDetails);
+      const normalizedDecision = normalizeStep2Decision(decision, detectedMarket, optionalDetails, verifiedFacts);
       lockVerifiedFactsIntoResult(normalizedDecision as Record<string, any>, verifiedFacts as Record<string, any>);
   // Basement suppression for multi-family when listing has no basement signal
   // Even with prompt instructions, the AI may generate basement rental items for
@@ -10216,6 +10541,171 @@ ${optionalDetails.askingPrice ? `Asking Price: ${optionalDetails.askingPrice}\n`
         }
         if (vf.monthlyPayment != null && /monthly.*payment.*unknown|unknown.*monthly.*payment/.test(reportText)) {
           console.warn('[validateReport] AI claimed unknown monthly payment but vf.monthlyPayment =', vf.monthlyPayment);
+        }
+
+        // ── Zestimate & Price Confidence Consistency Fix ─────────────────────────
+        // When Zestimate is present, fix contradictions where AI claims "no zestimate" or
+        // "price confidence is limited because there is no zestimate/sales range"
+        // Only fix explicit contradictions; do not force confidence level or remove items.
+        const hasZestimate = vf.zestimate != null;
+        const hasPrice = vf.price != null;
+
+        if (pa && hasZestimate && hasPrice) {
+          const currentExplanation = String(pa.explanation || '');
+
+          // Fix explicit contradictions: replace contradiction phrases with corrected context
+          // Do NOT replace the entire explanation, only fix the contradictory part
+          const contradictionReplacements: Array<[RegExp, string]> = [
+            [/price\s*confidence\s*is\s*limited\s*(because\s*)?(there\s*is\s*no\s*zestimate|due\s*to\s*missing\s*zestimate|as\s*there\s*is\s*no\s*zestimate)[,.]?\s*/gi, ''],
+            [/no\s*(zestimate|price\s*confidence)[,.]?\s*/gi, ''],
+            [/without\s*zestimate[,.]?\s*/gi, ''],
+            [/there\s*is\s*no\s*zestimate[,.]?\s*/gi, ''],
+            [/\s+,\s*,/g, ', '],
+          ];
+
+          let hasContradiction = false;
+          for (const [pattern] of contradictionReplacements) {
+            if (pattern.test(currentExplanation)) {
+              hasContradiction = true;
+              break;
+            }
+          }
+
+          if (hasContradiction) {
+            let fixedExplanation = currentExplanation;
+            for (const [pattern, replacement] of contradictionReplacements) {
+              fixedExplanation = fixedExplanation.replace(pattern, replacement);
+            }
+            // Ensure explanation still has meaningful content
+            if (fixedExplanation.trim().length > 20) {
+              pa.explanation = fixedExplanation.trim().replace(/^,\s*/, '').replace(/,\s*$/, '');
+            }
+          }
+
+          // Fix top_3_things_to_check "Comparable Sales" item: reframe from "missing" to "validation"
+          if (Array.isArray(res.top_3_things_to_check)) {
+            res.top_3_things_to_check = res.top_3_things_to_check.map((item: any) => {
+              if (typeof item === 'object' && item !== null) {
+                const title = String(item.title || '').toLowerCase();
+                const why = String(item.why_it_matters || '').toLowerCase();
+
+                // Reframe comparable sales item: from "missing because no Zestimate" to "needed for validation"
+                if (title.includes('comparable sales') &&
+                    /without\s*(comparable\s*sales|zestimate)|no\s*(zestimate|comparable)|missing\s*(zestimate|comparable)/i.test(why)) {
+                  return {
+                    ...item,
+                    title: 'Comparable Sales (for Validation)',
+                    why_it_matters: 'Comparable sales are needed to validate the Zestimate and confirm local market conditions.',
+                    action: item.action || 'Request 3-5 recent comparable sales to validate the Zestimate.'
+                  };
+                }
+              }
+              return item;
+            });
+          }
+
+          // Reframe comparable sales in data_gaps: from "missing" to "validation needed"
+          if (Array.isArray(res.data_gaps)) {
+            res.data_gaps = res.data_gaps.map((gap: any) => {
+              const text = typeof gap === 'string' ? gap : (gap.missing_item || gap.title || '');
+              const lower = text.toLowerCase();
+              // Reframe comparable sales items that imply "missing because no Zestimate"
+              if (/comparable\s*sales/i.test(text) && /no\s*(zestimate|comparable)|missing\s*(zestimate|comparable)/i.test(lower)) {
+                return 'Comparable sales needed to validate Zestimate and local market conditions';
+              }
+              return gap;
+            });
+          }
+        }
+
+        // ── Australian English Filter (US Market Only) ───────────────────────────
+        // Replace Australian-specific terms with US equivalents to prevent cross-contamination
+        if (detectedMarket === 'US' || isZillowSale) {
+          const AU_TO_US_MAP: Array<{ pattern: RegExp; replacement: string }> = [
+            { pattern: /\bcolou?rs?\b/gi, replacement: 'colors' },
+            { pattern: /\btimber\b/gi, replacement: 'wood' },
+            { pattern: /\brealestate\.com\.au\b/gi, replacement: 'property listings' },
+            { pattern: /\brealestate\.com\b/gi, replacement: 'property listings' },
+            { pattern: /\bfortnight\b/gi, replacement: 'two weeks' },
+            { pattern: /\bwharf\b/gi, replacement: 'pier' },
+            { pattern: /\bboot\s*sale\b/gi, replacement: 'garage sale' },
+            { pattern: /\bsuburb\b(?!\s+(?:of|in|around)\s+(?:NYC|New York|Brooklyn|Queens|Bronx))/gi, replacement: 'neighborhood' },
+            { pattern: /\bunit\b(?=\s+(?:in|on|of|\d))/gi, replacement: 'apartment' }, // context-dependent
+          ];
+
+          const AU_PHRASE_PATTERNS = [
+            /realestate\.com\.au|domain\.com\.au/gi,
+            /underquoting|auction\s+(?:process|bid|guide)/gi,
+            /genuine\s*vendor/gi,
+            /body\s*corp(?:orate)?/gi,
+          ];
+
+          // Deep scan and sanitize all string fields in the result
+          function sanitizeField(value: unknown): unknown {
+            if (typeof value === 'string') {
+              let cleaned = value;
+              for (const { pattern, replacement } of AU_TO_US_MAP) {
+                cleaned = cleaned.replace(pattern, replacement);
+              }
+              for (const pattern of AU_PHRASE_PATTERNS) {
+                cleaned = cleaned.replace(pattern, match => {
+                  if (/realestate\.com\.au|domain\.com\.au/i.test(match)) return 'property listings';
+                  if (/underquoting/i.test(match)) return 'asking price guide';
+                  if (/auction/i.test(match)) return 'sale process';
+                  if (/genuine\s*vendor/i.test(match)) return 'motivated seller';
+                  if (/body\s*corp/i.test(match)) return 'HOA';
+                  return match;
+                });
+              }
+              return cleaned;
+            }
+            if (Array.isArray(value)) {
+              return value.map(sanitizeField);
+            }
+            if (value && typeof value === 'object') {
+              const result: Record<string, unknown> = {};
+              for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
+                result[k] = sanitizeField(v);
+              }
+              return result;
+            }
+            return value;
+          }
+
+          // Sanitize key fields
+          if (pa && typeof pa === 'object') {
+            const fieldsToSanitize = ['explanation', 'verdict', 'zestimate_context', 'price_per_sqft_context', 'valuation_confidence'];
+            for (const field of fieldsToSanitize) {
+              if (typeof pa[field] === 'string') {
+                let cleaned = pa[field] as string;
+                for (const { pattern, replacement } of AU_TO_US_MAP) {
+                  cleaned = cleaned.replace(pattern, replacement);
+                }
+                pa[field] = cleaned;
+              }
+            }
+          }
+
+          if (res.bottom_line) res.bottom_line = sanitizeField(res.bottom_line) as string;
+          if (res.quick_summary) res.quick_summary = sanitizeField(res.quick_summary) as string;
+          if (Array.isArray(res.pros)) res.pros = sanitizeField(res.pros) as string[];
+          if (Array.isArray(res.cons)) res.cons = sanitizeField(res.cons) as string[];
+          if (Array.isArray(res.hidden_risks)) res.hidden_risks = sanitizeField(res.hidden_risks) as string[];
+          if (Array.isArray(res.whats_missing)) res.whats_missing = sanitizeField(res.whats_missing) as string[];
+          if (Array.isArray(res.data_gaps)) res.data_gaps = sanitizeField(res.data_gaps) as any[];
+          if (Array.isArray(res.questions_to_ask)) res.questions_to_ask = sanitizeField(res.questions_to_ask) as any[];
+          if (Array.isArray(res.top_3_things_to_check)) {
+            res.top_3_things_to_check = (sanitizeField(res.top_3_things_to_check) as any[]).map((item: any) => {
+              if (typeof item === 'object' && item !== null) {
+                return {
+                  title: typeof item.title === 'string' ? sanitizeField(item.title) as string : item.title,
+                  why_it_matters: typeof item.why_it_matters === 'string' ? sanitizeField(item.why_it_matters) as string : item.why_it_matters,
+                  action: typeof item.action === 'string' ? sanitizeField(item.action) as string : item.action,
+                };
+              }
+              return item;
+            });
+          }
         }
 
         // ── Spin Decoder: rewrite overly confident language to conservative ──

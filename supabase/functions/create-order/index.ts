@@ -33,16 +33,63 @@ function getPriceIdEnvKey(planKey: string, isSandbox: boolean): string {
 }
 // ========== 配置结束 ==========
 
-const SUPABASE_URL = Deno.env.get("SUPABASE_URL") || "https://trteewgplkqiedonomzg.supabase.co";
-const SUPABASE_SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") || "";
+// ========== 环境变量配置 ==========
+const PADDLE_ENV = Deno.env.get("PADDLE_ENV") || "sandbox";
+const IS_SANDBOX = PADDLE_ENV === "sandbox";
 
-// Paddle API 配置
-const PADDLE_API_KEY = Deno.env.get("PADDLE_API_KEY") || "";
-const PADDLE_API_URL = Deno.env.get("PADDLE_API_URL") || "https://api.paddle.com";
+// API URL 根据环境区分
+const PADDLE_API_URL = IS_SANDBOX
+  ? "https://sandbox-api.paddle.com"
+  : "https://api.paddle.com";
+
+// Mock 模式：仅允许本地开发（当 PADDLE_ENV=local 且 PADDLE_API_KEY 为空时）
+const IS_LOCAL = PADDLE_ENV === "local";
+const IS_MOCK_MODE = IS_LOCAL && !Deno.env.get("PADDLE_API_KEY");
+
+// Paddle API Key 校验（仅在非 mock 模式下）
+const PADDLE_API_KEY = IS_MOCK_MODE ? "" : (Deno.env.get("PADDLE_API_KEY") || "");
+
+function validateApiKey(): void {
+  if (IS_MOCK_MODE) {
+    console.log("⚠️ MOCK MODE: Paddle API not configured. Using mock checkout.");
+    return;
+  }
+
+  if (!PADDLE_API_KEY) {
+    throw new Error(
+      `FATAL: PADDLE_API_KEY is empty. ` +
+      `If you need mock mode for local development, set PADDLE_ENV=local and leave PADDLE_API_KEY empty. ` +
+      `For sandbox/production, PADDLE_API_KEY is required.`
+    );
+  }
+
+  if (IS_SANDBOX) {
+    if (!PADDLE_API_KEY.startsWith("pdl_sdbx_apikey_")) {
+      throw new Error(
+        `FATAL: PADDLE_ENV=sandbox but PADDLE_API_KEY does not start with "pdl_sdbx_apikey_". ` +
+        `Given key: ${PADDLE_API_KEY.slice(0, 20)}... ` +
+        `Please check your PADDLE_API_KEY.`
+      );
+    }
+  } else {
+    if (!PADDLE_API_KEY.startsWith("pdl_live_apikey_")) {
+      throw new Error(
+        `FATAL: PADDLE_ENV=production but PADDLE_API_KEY does not start with "pdl_live_apikey_". ` +
+        `Given key: ${PADDLE_API_KEY.slice(0, 20)}... ` +
+        `Please check your PADDLE_API_KEY.`
+      );
+    }
+  }
+}
+
+// 启动时校验 API Key
+validateApiKey();
+
+// 前端配置
 const APP_URL = Deno.env.get("APP_URL") || "https://www.tryhomescope.com";
 
-// 环境隔离：Sandbox 使用不同的 price_id env keys
-const IS_SANDBOX = PADDLE_API_KEY.startsWith("pdl_test_");
+const SUPABASE_URL = Deno.env.get("SUPABASE_URL") || "https://trteewgplkqiedonomzg.supabase.co";
+const SUPABASE_SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") || "";
 
 const corsHeaders: Record<string, string> = {
   "Access-Control-Allow-Origin": "*",
@@ -90,10 +137,15 @@ const PRODUCTS: Record<string, { credits: number; price: number; price_id: strin
   },
 };
 
+// ========== Auth 配置 ==========
+const AUTH_URL = SUPABASE_URL;
+const AUTH_ANON_KEY = Deno.env.get("AU_ANON_KEY") || "";
+
 /**
- * 从 JWT token 直接解析用户信息（无需额外 API 调用）
+ * 安全的用户验证：通过 Supabase Auth API 验证 token
+ * 不再使用 atob 解析 JWT payload（那只是解码，不是验证）
  */
-function getCurrentUser(req: Request): { userId: string | null; email: string | null; error: string | null } {
+async function getCurrentUser(req: Request): Promise<{ userId: string | null; email: string | null; error: string | null }> {
   const authHeader = req.headers.get("Authorization");
 
   if (!authHeader || !authHeader.startsWith("Bearer ")) {
@@ -102,28 +154,41 @@ function getCurrentUser(req: Request): { userId: string | null; email: string | 
 
   const token = authHeader.replace("Bearer ", "");
 
+  if (!token) {
+    return { userId: null, email: null, error: "Empty token" };
+  }
+
+  // 使用 Supabase Auth API 验证 token
+  if (!AUTH_ANON_KEY) {
+    console.error("CRITICAL: AUTH_ANON_KEY (AU_ANON_KEY) is not set!");
+    return { userId: null, email: null, error: "Server configuration error: missing auth key" };
+  }
+
   try {
-    const parts = token.split(".");
-    if (parts.length !== 3) {
-      return { userId: null, email: null, error: "Invalid token format" };
+    const userResponse = await fetch(`${AUTH_URL}/auth/v1/user`, {
+      headers: {
+        "Authorization": `Bearer ${token}`,
+        "apikey": AUTH_ANON_KEY,
+      },
+    });
+
+    if (!userResponse.ok) {
+      const errorText = await userResponse.text();
+      console.error("Auth API failed:", userResponse.status, errorText.slice(0, 200));
+      return { userId: null, email: null, error: "Invalid or expired token" };
     }
 
-    const payloadBase64 = parts[1].replace(/-/g, "+").replace(/_/g, "/");
-    const payloadJson = atob(payloadBase64);
-    const payload = JSON.parse(payloadJson);
+    const userData = await userResponse.json();
 
-    const userId = payload.sub;
-    const email = payload.email;
-
-    if (!userId) {
-      return { userId: null, email: null, error: "No user_id in token" };
+    if (!userData.id) {
+      return { userId: null, email: null, error: "No user_id in auth response" };
     }
 
-    console.log("Token parsed successfully:", { userId, email });
-    return { userId, email, error: null };
+    console.log("User authenticated:", { userId: userData.id, email: userData.email });
+    return { userId: userData.id, email: userData.email, error: null };
   } catch (err) {
-    console.error("Token parse error:", err);
-    return { userId: null, email: null, error: "Invalid token" };
+    console.error("Auth error:", err);
+    return { userId: null, email: null, error: "Authentication failed" };
   }
 }
 
@@ -147,8 +212,9 @@ async function createPaddleTransaction(
   console.log("[create-order] price_id:", product.price_id);
   console.log("[create-order] product:", productId);
 
-  if (!PADDLE_API_KEY) {
-    console.log("⚠️ Paddle API not configured, using mock mode");
+  // Mock 模式：仅在本地开发时可用
+  if (IS_MOCK_MODE) {
+    console.log("⚠️ MOCK MODE: Simulating Paddle checkout");
 
     const mockOrderId = `mock_${Date.now()}_${userId.slice(0, 8)}`;
     const mockCheckoutUrl = `${successUrl}?transaction_id=${mockOrderId}&status=completed&product=${productId}`;

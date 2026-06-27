@@ -79,7 +79,7 @@ BEGIN
       -- Calculate commission
       v_purchase_amount := CASE p_plan_key
         WHEN 'starter' THEN 6.99
-        WHEN 'standard' THEN 14.99
+        WHEN 'standard' THEN 15.99
         WHEN 'pro' THEN 39.00
         ELSE 0
       END;

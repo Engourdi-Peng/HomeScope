@@ -39,17 +39,22 @@ function getPriceIdEnvKey(planKey: string, isSandbox: boolean): string {
 }
 // ========== 配置结束 ==========
 
+// ========== 环境变量配置 ==========
+const PADDLE_ENV = Deno.env.get("PADDLE_ENV") || "sandbox";
+const IS_SANDBOX = PADDLE_ENV === "sandbox";
+
+// Paddle webhook 不需要 API key，但环境判断必须正确
+if (PADDLE_ENV === "production" && !Deno.env.get("PADDLE_WEBHOOK_SECRET")) {
+  console.warn("⚠️ PADDLE_ENV=production but PADDLE_WEBHOOK_SECRET is not set. Webhooks will be rejected.");
+}
+
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL") || "https://trteewgplkqiedonomzg.supabase.co";
 const SUPABASE_SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") || "";
 
 // Paddle webhook 签名验证
 const PADDLE_WEBHOOK_SECRET = Deno.env.get("PADDLE_WEBHOOK_SECRET") || "";
-// 沙盒环境下跳过签名验证（仅用于本地开发测试）
-const SKIP_SIGNATURE_VERIFICATION = Deno.env.get("PADDLE_SKIP_SIGNATURE") === "true";
-
-// 环境隔离：Sandbox 使用不同的 price_id env keys
-const PADDLE_API_KEY = Deno.env.get("PADDLE_API_KEY") || "";
-const IS_SANDBOX = PADDLE_API_KEY.startsWith("pdl_test_");
+// 仅在本地开发时跳过签名验证
+const SKIP_SIGNATURE_VERIFICATION = Deno.env.get("PADDLE_SKIP_SIGNATURE") === "true" || PADDLE_ENV === "local";
 
 const corsHeaders: Record<string, string> = {
   "Access-Control-Allow-Origin": "*",

@@ -214,11 +214,27 @@ DO NOT:
 - "Overall, this indicates"
 - "It is recommended that"
 - "In conclusion"
+- "dwelling" (sounds legal/formal — use "home" or "house" instead)
 
-AVOID:
-- Overly long explanations
-- Balanced essay-style sentences
-- Repetitive phrasing
+SPELLING & VOCABULARY - CRITICAL:
+- ALWAYS use American English spelling, NEVER British or Australian
+- "color" not "colour", "colored" not "coloured"
+- "mold" not "mould", "favor" not "favour"
+- "neighborhood" not "neighbourhood"
+- "vacant" not "empty" (for a home at closing)
+- "double-pane window" not "double-glazed", "single-pane" not "single-glazed"
+- "asphalt" not "bitumen", "sidewalk" not "pathway"
+
+VOCABULARY PREFERENCE:
+- PREFER "home", "house", or "property" over formal alternatives
+- "unit" is acceptable for condos/apartments/co-ops, but NOT for single-family homes
+- "residence" is acceptable but sounds formal; prefer casual alternatives
+- NEVER use "dwelling" — it sounds legal/formal and is unusual in US conversation
+
+RISK LABELS - ONLY USE VERIFIED:
+- Only use risk labels that appear in verified property data or MLS listings
+- NEVER invent or hallucinate risk categories such as: Probate, Title Risk, Foreclosure Status, Auction Status, etc.
+- If the data doesn't mention a risk, don't create one — just leave it out
 
 Make it feel like advice from someone who has bought property in the US.
 
@@ -395,6 +411,16 @@ DO NOT:
 - "Overall, this indicates"
 - "It is recommended that"
 - "In conclusion"
+- "dwelling" (sounds legal/formal — use "apartment", "unit", or "place" instead)
+
+SPELLING & VOCABULARY - CRITICAL:
+- ALWAYS use American English spelling, NEVER British or Australian
+- "color" not "colour", "colored" not "coloured"
+- "mold" not "mould", "favor" not "favour"
+- "neighborhood" not "neighbourhood"
+- "apartment" or "unit" not "flat"
+- "apartment complex" or "complex" not "village" or "estate"
+- "asphalt" not "bitumen", "sidewalk" not "pathway"
 
 Make it feel like advice from someone who has rented in the US.
 
