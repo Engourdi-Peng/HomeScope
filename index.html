@@ -38,9 +38,34 @@
       "operatingSystem": "Chrome",
       "description": "AI property analyzer for home buyers reviewing Zillow and realestate.com.au listings before booking a showing.",
       "offers": {
-        "@type": "Offer",
-        "price": "9.99",
-        "priceCurrency": "USD"
+        "@type": "AggregateOffer",
+        "lowPrice": "6.99",
+        "highPrice": "39.99",
+        "priceCurrency": "USD",
+        "offerCount": 3,
+        "offers": [
+          {
+            "@type": "Offer",
+            "name": "Starter",
+            "price": "6.99",
+            "priceCurrency": "USD",
+            "description": "1 Full Property Report"
+          },
+          {
+            "@type": "Offer",
+            "name": "Standard",
+            "price": "15.99",
+            "priceCurrency": "USD",
+            "description": "3 Full Property Reports"
+          },
+          {
+            "@type": "Offer",
+            "name": "Pro",
+            "price": "39.99",
+            "priceCurrency": "USD",
+            "description": "10 Full Property Reports"
+          }
+        ]
       }
     }
     </script>
