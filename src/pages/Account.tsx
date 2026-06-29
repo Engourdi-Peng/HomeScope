@@ -1,9 +1,9 @@
 import { useEffect, useState } from 'react';
 import { useNavigate, Link } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
-import { getAnalysisHistory, getAnalysisById } from '../lib/api';
+import { getAnalysisHistory, getAnalysisById, checkAffiliateStatus } from '../lib/api';
 import type { AnalysisSummary, AnalysisResult, ListingInfo } from '../types';
-import { User, Sparkles, Clock, ChevronRight, ChevronLeft, LogOut, AlertCircle, RefreshCw, RefreshCcw, FileText, Shield, Mail, ArrowLeft } from 'lucide-react';
+import { User, Sparkles, Clock, ChevronRight, ChevronLeft, LogOut, AlertCircle, RefreshCw, RefreshCcw, FileText, Shield, Mail, ArrowLeft, Gift } from 'lucide-react';
 
 export function AccountPage() {
   const navigate = useNavigate();
@@ -14,6 +14,24 @@ export function AccountPage() {
   const [lastAnalysisDate, setLastAnalysisDate] = useState<string | null>(null);
   const [currentPage, setCurrentPage] = useState(1);
   const itemsPerPage = 10;
+  const [isAffiliate, setIsAffiliate] = useState(false);
+
+  // Check if user is an affiliate
+  useEffect(() => {
+    if (!isAuthenticated) return;
+
+    const checkAffiliate = async () => {
+      try {
+        const result = await checkAffiliateStatus();
+        setIsAffiliate(result.isAffiliate);
+      } catch (err) {
+        console.error('Failed to check affiliate status:', err);
+        setIsAffiliate(false);
+      }
+    };
+
+    checkAffiliate();
+  }, [isAuthenticated]);
 
   // Redirect if not authenticated
   useEffect(() => {
@@ -406,6 +424,30 @@ export function AccountPage() {
             </div>
           )}
         </section>
+
+        {/* Section 3.5: Affiliate Dashboard (only for affiliates) */}
+        {isAffiliate && (
+          <section className="bg-gradient-to-r from-amber-50 to-orange-50 rounded-3xl p-8 mb-6 shadow-[0_1px_8px_rgba(0,0,0,0.06)] border border-amber-200">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-4">
+                <div className="w-12 h-12 rounded-xl bg-amber-100 flex items-center justify-center">
+                  <Gift size={24} className="text-amber-600" />
+                </div>
+                <div>
+                  <h3 className="text-lg font-semibold text-stone-900">Affiliate Dashboard</h3>
+                  <p className="text-sm text-stone-500">View your commissions and earnings</p>
+                </div>
+              </div>
+              <button
+                onClick={() => navigate('/affiliate')}
+                className="flex items-center gap-2 px-5 py-2.5 bg-stone-900 text-white text-sm font-medium rounded-xl hover:bg-stone-800 transition-colors"
+              >
+                Open Dashboard
+                <ChevronRight size={16} />
+              </button>
+            </div>
+          </section>
+        )}
 
         {/* Section 4: Support / Settings */}
         <section className="bg-white rounded-3xl p-8 shadow-[0_1px_8px_rgba(0,0,0,0.06)] border border-stone-200">

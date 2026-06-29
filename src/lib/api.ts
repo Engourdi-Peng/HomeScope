@@ -621,3 +621,126 @@ export async function getPublicAnalysis(slug: string): Promise<AnalysisSummary> 
 
   return data.analysis;
 }
+
+// ========== Affiliate Dashboard API ==========
+
+const AFFILIATE_API_URL = `https://${SUPABASE_PROJECT_REF}.supabase.co/functions/v1/affiliate-dashboard`;
+
+/**
+ * Check if current user is an affiliate
+ */
+export async function checkAffiliateStatus(): Promise<{ isAffiliate: boolean; affiliateId?: string }> {
+  const { session } = await getAuthenticatedSession();
+
+  if (!session?.access_token) {
+    return { isAffiliate: false };
+  }
+
+  const response = await fetch(`${AFFILIATE_API_URL}?action=check`, {
+    method: 'GET',
+    headers: {
+      'Content-Type': 'application/json',
+      'apikey': SUPABASE_ANON_KEY,
+      'Authorization': `Bearer ${session.access_token}`,
+    },
+  });
+
+  if (!response.ok) {
+    console.error('Failed to check affiliate status:', response.status);
+    return { isAffiliate: false };
+  }
+
+  return response.json();
+}
+
+export interface AffiliateDashboardData {
+  affiliate: {
+    id: string;
+    code: string;
+    name: string;
+    commission_rate: number;
+    is_active: boolean;
+  };
+  stats: {
+    totalCommission: number;
+    pendingCommission: number;
+    availableToWithdraw: number;
+    paidOut: number;
+    totalPurchases: number;
+    totalBuyers: number;
+  };
+  purchases: Array<{
+    id: string;
+    paddle_transaction_id: string;
+    plan_key: string;
+    purchase_amount: number;
+    commission_amount: number;
+    status: 'pending' | 'available' | 'paid' | 'reversed';
+    eligible_at: string;
+    created_at: string;
+    buyer_email: string;
+  }>;
+  currentWithdrawal: {
+    id: string;
+    amount: number;
+    status: string;
+    requested_at: string;
+  } | null;
+}
+
+/**
+ * Get full affiliate dashboard data
+ */
+export async function getAffiliateDashboard(): Promise<AffiliateDashboardData> {
+  const { session } = await getAuthenticatedSession();
+
+  if (!session?.access_token) {
+    throw new Error('Please sign in first.');
+  }
+
+  const response = await fetch(`${AFFILIATE_API_URL}?action=dashboard`, {
+    method: 'GET',
+    headers: {
+      'Content-Type': 'application/json',
+      'apikey': SUPABASE_ANON_KEY,
+      'Authorization': `Bearer ${session.access_token}`,
+    },
+  });
+
+  if (!response.ok) {
+    if (response.status === 403) {
+      throw new Error('You are not an affiliate.');
+    }
+    const error = await response.json().catch(() => ({ message: 'Failed to load dashboard' }));
+    throw new Error(error.message || 'Failed to load dashboard');
+  }
+
+  return response.json();
+}
+
+/**
+ * Request a withdrawal
+ */
+export async function requestAffiliateWithdrawal(): Promise<{ success: boolean; message: string }> {
+  const { session } = await getAuthenticatedSession();
+
+  if (!session?.access_token) {
+    throw new Error('Please sign in first.');
+  }
+
+  const response = await fetch(`${AFFILIATE_API_URL}?action=withdraw`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'apikey': SUPABASE_ANON_KEY,
+      'Authorization': `Bearer ${session.access_token}`,
+    },
+  });
+
+  if (!response.ok) {
+    const error = await response.json().catch(() => ({ message: 'Failed to submit withdrawal request' }));
+    throw new Error(error.message || 'Failed to submit withdrawal request');
+  }
+
+  return response.json();
+}

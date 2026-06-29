@@ -22,3 +22,67 @@ export interface Profile {
   created_at: string;
   updated_at: string;
 }
+
+// ========== Affiliate Types ==========
+
+export interface Affiliate {
+  id: string;
+  user_id: string | null;
+  code: string;
+  name: string;
+  email: string | null;
+  commission_rate: number;
+  is_active: boolean;
+  payout_method: string | null;
+  payout_account: string | null;
+  notes: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface AffiliateCommission {
+  id: string;
+  affiliate_id: string;
+  user_id: string;
+  paddle_transaction_id: string;
+  affiliate_code: string;
+  plan_key: string;
+  purchase_amount: number;
+  currency: string;
+  commission_rate: number;
+  commission_amount: number;
+  status: 'pending' | 'available' | 'paid' | 'reversed';
+  eligible_at: string;
+  paid_at: string | null;
+  created_at: string;
+  updated_at: string;
+  buyer_email?: string;
+}
+
+export interface AffiliateWithdrawal {
+  id: string;
+  affiliate_id: string;
+  amount: number;
+  status: 'pending' | 'approved' | 'paid' | 'rejected';
+  requested_at: string;
+  processed_at: string | null;
+  admin_note: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface AffiliateStats {
+  totalCommission: number;
+  pendingCommission: number;
+  availableToWithdraw: number;
+  paidOut: number;
+  totalPurchases: number;
+  totalBuyers: number;
+}
+
+export interface AffiliateDashboardData {
+  affiliate: Pick<Affiliate, 'id' | 'code' | 'name' | 'commission_rate' | 'is_active'>;
+  stats: AffiliateStats;
+  purchases: AffiliateCommission[];
+  currentWithdrawal: AffiliateWithdrawal | null;
+}

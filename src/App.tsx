@@ -4,6 +4,7 @@ import { Analytics } from '@vercel/analytics/react';
 import { Home } from './pages/Home';
 import { ResultPage } from './pages/Result';
 import { AccountPage } from './pages/Account';
+import { AffiliateDashboardPage } from './pages/AffiliateDashboard';
 import { PrivacyPolicy } from './pages/PrivacyPolicy';
 import { TermsOfService } from './pages/TermsOfService';
 import { SupportPage } from './pages/Support';
@@ -43,6 +44,7 @@ function AnimatedRoutes() {
         <Route path="/" element={<Home />} />
         <Route path="/result" element={<ResultPage />} />
         <Route path="/account" element={<AccountPage />} />
+        <Route path="/affiliate" element={<AffiliateDashboardPage />} />
         <Route path="/privacy" element={<PrivacyPolicy />} />
         <Route path="/terms" element={<TermsOfService />} />
         <Route path="/support" element={<SupportPage />} />
