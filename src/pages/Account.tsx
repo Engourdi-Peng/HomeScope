@@ -398,24 +398,74 @@ export function AccountPage() {
                 <ChevronLeft size={16} />
                 Previous
               </button>
-              <div className="flex items-center gap-2">
-                {Array.from({ length: Math.ceil(analyses.length / itemsPerPage) }, (_, i) => i + 1).map(page => (
+              <div className="flex items-center gap-1">
+                {/* First page */}
+                <button
+                  onClick={() => setCurrentPage(1)}
+                  className={`w-8 h-8 rounded-lg text-sm font-medium transition-colors ${
+                    currentPage === 1
+                      ? 'bg-stone-900 text-white'
+                      : 'text-stone-600 hover:bg-stone-100'
+                  }`}
+                >
+                  1
+                </button>
+
+                {/* Left ellipsis */}
+                {totalPages > 7 && currentPage > 3 && (
+                  <span className="w-8 h-8 flex items-center justify-center text-stone-400">...</span>
+                )}
+
+                {/* Middle pages */}
+                {Array.from({ length: Math.min(5, totalPages - 2) }, (_, i) => {
+                  let pageNum;
+                  if (totalPages <= 7) {
+                    pageNum = i + 2;
+                  } else if (currentPage <= 3) {
+                    pageNum = i + 2;
+                  } else if (currentPage >= totalPages - 2) {
+                    pageNum = totalPages - 4 + i;
+                  } else {
+                    pageNum = currentPage - 2 + i;
+                  }
+                  if (pageNum <= 1 || pageNum >= totalPages) return null;
+                  return (
+                    <button
+                      key={pageNum}
+                      onClick={() => setCurrentPage(pageNum)}
+                      className={`w-8 h-8 rounded-lg text-sm font-medium transition-colors ${
+                        currentPage === pageNum
+                          ? 'bg-stone-900 text-white'
+                          : 'text-stone-600 hover:bg-stone-100'
+                      }`}
+                    >
+                      {pageNum}
+                    </button>
+                  );
+                })}
+
+                {/* Right ellipsis */}
+                {totalPages > 7 && currentPage < totalPages - 2 && (
+                  <span className="w-8 h-8 flex items-center justify-center text-stone-400">...</span>
+                )}
+
+                {/* Last page (if more than 1 page) */}
+                {totalPages > 1 && (
                   <button
-                    key={page}
-                    onClick={() => setCurrentPage(page)}
+                    onClick={() => setCurrentPage(totalPages)}
                     className={`w-8 h-8 rounded-lg text-sm font-medium transition-colors ${
-                      currentPage === page
+                      currentPage === totalPages
                         ? 'bg-stone-900 text-white'
                         : 'text-stone-600 hover:bg-stone-100'
                     }`}
                   >
-                    {page}
+                    {totalPages}
                   </button>
-                ))}
+                )}
               </div>
               <button
-                onClick={() => setCurrentPage(p => Math.min(Math.ceil(analyses.length / itemsPerPage), p + 1))}
-                disabled={currentPage >= Math.ceil(analyses.length / itemsPerPage)}
+                onClick={() => setCurrentPage(p => Math.min(totalPages, p + 1))}
+                disabled={currentPage >= totalPages}
                 className="flex items-center gap-2 px-4 py-2 text-sm font-medium text-stone-600 hover:text-stone-900 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
               >
                 Next
