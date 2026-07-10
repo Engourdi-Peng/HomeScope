@@ -14,6 +14,7 @@ export function AccountPage() {
   const [lastAnalysisDate, setLastAnalysisDate] = useState<string | null>(null);
   const [currentPage, setCurrentPage] = useState(1);
   const itemsPerPage = 10;
+  const totalPages = Math.ceil(analyses.length / itemsPerPage);
   const [isAffiliate, setIsAffiliate] = useState(false);
 
   // Check if user is an affiliate
@@ -288,7 +289,8 @@ export function AccountPage() {
           {/* Loading State */}
           {isLoading && (
             <div className="flex items-center justify-center py-12">
-              <div className="animate-spin w-6 h-6 border-2 border-stone-300 border-t-stone-600 rounded-full"></div>
+              <div className="animate-spin w-6 h-6 border-2 border-stone-300 border-t-stone-600 rounded-full">              <div className="flex items-center justify-between mt-6 pt-4 border-t border-stone-200">
+              </div>
             </div>
           )}
 
