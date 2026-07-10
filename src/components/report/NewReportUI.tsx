@@ -19,11 +19,14 @@
  *  4. PropertySnapshotSection            — "Is the Price Fair?" + property facts
  *  5. CarryingCostsSection              — "What It May Really Cost Monthly"
  *  6. PhotoSpaceAnalysisCard             — shared component, "What Photos Reveal / Don't Show"
- *  7. AgentSpinDecoderSection           — listing language reality check
- *  8. WhoThisPropertyWorksForSection    — layout fit rename
- *  9. QuestionsToAskSection             — data gaps as action questions
- * 10. NextBestMoveSection               — verdict-based summary
- * 11. ReportClosingCTA                   — bottom value summary + share
+ *  7b. RiskCategoriesSection            — buyer-advocate 4-class risk signals
+ *  7c. ListingDoesNotProveSection       — dynamic checklist of unproven facts
+ *  7d. BeforeYouBookShowingSection      — questions derived from risk signals
+ *  8. AgentSpinDecoderSection           — listing language reality check
+ *  9. WhoThisPropertyWorksForSection    — layout fit rename
+ * 10. QuestionsToAskSection             — data gaps as action questions
+ * 11. NextBestMoveSection               — verdict-based summary
+ * 12. ReportClosingCTA                   — bottom value summary + share
  */
 import React from 'react';
 import {
@@ -56,6 +59,12 @@ import {
   ThumbsUp,
   Signal,
   ArrowLeft,
+  ShieldAlert,
+  HelpCircle,
+  House,
+  Droplets,
+  Layers,
+  Wallet,
 } from 'lucide-react';
 import type { NormalizedReport, ReportSection, ContradictionVM } from '../../lib/reportAdapters/types';
 import type { ReportViewModel } from '../../lib/reportAdapters';
@@ -511,14 +520,6 @@ function HeroSection({ report, isBasic }: { report: NormalizedReport; isBasic?: 
           <div className="inline-flex items-center gap-2 backdrop-blur border px-6 py-3 rounded-xl mb-4 border-[#DAA520]/60 bg-[rgba(218,165,32,0.12)]">
             <Activity className="w-4 h-4" style={{ color: '#DAA520' }} />
             <span className="font-semibold tracking-wide" style={{ color: '#DAA520' }}>{renderValue(hero.verdict)}</span>
-          </div>
-        )}
-
-        {/* Report Confidence — only in deep mode */}
-        {!isBasic && hero.confidence && (
-          <div className="flex items-center justify-center gap-2 text-[#BDBDBD] font-medium mb-6 sm:mb-8">
-            <div className="w-2 h-2 rounded-full bg-[#AAAAAA]" />
-            <span>Report Confidence: {renderValue(hero.confidence)}</span>
           </div>
         )}
 
@@ -1228,9 +1229,29 @@ function PropertySnapshotSection({ report, isBasic }: { report: NormalizedReport
     /verdict|assessment|fair|over|under/i.test(i.label)
   )?.value ?? '';
   const verdictIsUnknown = /unknown|uncertain|cannot|insufficient|no comp/i.test(verdictText);
+  // hasComps must reflect ACTUAL valuation data, not just label keywords — otherwise
+  // the copy will claim "no Zestimate / no sales range" even when raw.valuation has them.
+  const rawAny = (report as any)?.raw ?? {};
+  const valuation = rawAny.valuation ?? {};
+  const propertySnap = rawAny.property_snapshot ?? {};
+  const realZestimate = valuation.zestimate ?? rawAny.zestimate ?? propertySnap.zestimate ?? propertySnap.market_estimate ?? valuation.estimated_market_value ?? rawAny.estimated_market_value;
+  const realZestimateNum = typeof realZestimate === 'number' ? realZestimate : Number(String(realZestimate ?? '').replace(/[^0-9.]/g, '')) || 0;
+  const realSalesRange = valuation.sales_range ?? rawAny.sales_range
+    ?? (Array.isArray(rawAny.comparable_sales) ? rawAny.comparable_sales : null)
+    ?? (Array.isArray(propertySnap.comparable_sales) ? propertySnap.comparable_sales : null);
+  const realRentZestimate = rawAny.investment_potential?.estimated_monthly_rent
+    ?? rawAny.investmentPotential?.estimated_monthly_rent
+    ?? rawAny.investmentPotential?.estimatedMonthlyRent
+    ?? rawAny.rent_zestimate
+    ?? rawAny.rentZestimate;
+  const realCompsList = realSalesRange;
+  const realCompsCount = Array.isArray(realCompsList) ? realCompsList.filter((c: unknown) => c != null).length : 0;
   const hasComps = priceData.some((i) =>
     /comparable|comp|zestimate|zillow|redfin|market/i.test((i.label + ' ' + i.description).toLowerCase())
-  );
+  ) || realZestimateNum > 0 || realCompsCount > 0;
+  const hasRealZestimate = realZestimateNum > 0;
+  const hasRealSalesRange = realCompsCount > 0;
+  const hasRealRentZestimate = realRentZestimate != null && realRentZestimate !== '' && realRentZestimate !== 0;
   const verdictIsOverpriced = /overpriced|over|too high|above|high/i.test(verdictText);
   const verdictIsFair = /fair|reasonable|good.*value|undervalued|below/i.test(verdictText) && !/not fair|unfair/i.test(verdictText);
   const pricePerSqftText = priceData.find((i) => /price\/?sqft|\$\/sqft|price\/sqft/i.test(i.label))?.value ?? '';
@@ -1252,11 +1273,6 @@ function PropertySnapshotSection({ report, isBasic }: { report: NormalizedReport
   function getPriceConfidenceCopy(): string {
     const isMultiFamilyLike = /multi|two.?family|duplex|triplex|fourplex|income|rental/i.test(String((report as any)?.raw?.normalizedPropertyCategory ?? (report as any)?.raw?.reportProfile ?? ''))
       || /two.?family|duplex|multi.?family|rental unit|income unit/i.test(String((report as any)?.raw?.property_snapshot?.homeType ?? (report as any)?.raw?.property_snapshot?.home_type ?? ''));
-    const hasRentZestimate = !!(report as any)?.raw?.investment_potential?.estimated_monthly_rent
-      || !!(report as any)?.raw?.investmentPotential?.estimated_monthly_rent
-      || !!(report as any)?.raw?.investmentPotential?.estimatedMonthlyRent
-      || !!(report as any)?.raw?.rent_zestimate
-      || !!(report as any)?.raw?.rentZestimate;
 
     if (isCoop) {
       // Co-op: focus on maintenance cost verification, not interior condition
@@ -1271,12 +1287,29 @@ function PropertySnapshotSection({ report, isBasic }: { report: NormalizedReport
       }
       return 'Do not treat the asking price as a bargain until maintenance, assessments, and building financials are verified.';
     }
-    if (isMultiFamilyLike && (verdictIsUnknown || !hasComps || !hasRentZestimate)) {
+    // Multi-family: focus on rental verification, comps, condition. We do NOT
+    // reference "no Zestimate / no sales range" because those are extractor
+    // gaps (the listing page may have it; HomeScope just didn't capture it).
+    // Buyer's price confidence depends on rental verification + comps +
+    // condition + recent permits — not on whether we scraped Zillow.
+    if (isMultiFamilyLike && (verdictIsUnknown || !hasComps || !hasRealRentZestimate)) {
       const psfText = pricePerSqftText || (pricePerSqftValue ? `$${pricePerSqftValue.toLocaleString()}/sqft` : 'the asking price per sqft');
-      return `Price confidence is limited because there is no Zestimate, no estimated sales range, no Rent Zestimate, and the ${psfText} asking price depends heavily on verified legal two-family use, rental income, condition, and nearby comparable sales.`;
+      const missingParts: string[] = [];
+      if (!hasRealRentZestimate) missingParts.push('no Rent Zestimate');
+      const missingClause = missingParts.length
+        ? `there is ${missingParts.join(', ')}, and the ${psfText} asking price depends on verified legal two-family use, rental income, visible condition, recent permit history, and nearby comparable sales.`
+        : `the ${psfText} asking price depends on verified legal two-family use, rental income, visible condition, recent permit history, and nearby comparable sales.`;
+      return `Price confidence is limited because ${missingClause}`;
     }
     if (isSFOC && (highPricePerSqft || verdictIsOverpriced || verdictIsUnknown || !hasComps)) {
-      return 'Price confidence is limited because there is no Zestimate, no sales range, and the asking price needs nearby Cape / single-family comps to support it.';
+      // No "no Zestimate / no sales range" reference — those are extractor
+      // gaps, not the listing's fault. SFOC price confidence comes from comps /
+      // condition / permit history / inspection findings.
+      const missingParts: string[] = [];
+      const prefix = missingParts.length
+        ? `Price confidence is limited because there is ${missingParts.join(' and ')}, and the asking price needs nearby comparable single-family sales, visible condition, recent permit history, and inspection findings to support it.`
+        : 'Price confidence is limited; verify the asking price against nearby comparable single-family sales, visible condition, recent permit history, and inspection findings before relying on it.';
+      return prefix;
     }
     if (verdictIsOverpriced) {
       if (isSFOC) {
@@ -1925,19 +1958,44 @@ function normalizeFitSection(report: NormalizedReport): {
   // whyItMatters from summary field
   const summary = toText(layout.summary ?? '');
 
-  // ── Property-aware fallbacks ────────────────────────────────────────────
+  // ── Property-aware fallbacks — must NEVER carry data from another listing ──
+  // Every string below is derived at runtime from the actual report's raw fields.
+  // If a field is missing, we render a neutral placeholder, never a hardcoded
+  // city / year / system name from a prior report.
   if (bestFor.length === 0) {
+    // Pull representative facts from raw listing data
+    const snap = raw.property_snapshot ?? {};
+    const info = raw.listingInfo ?? {};
+    const beds = Number(snap.beds ?? snap.bedrooms ?? info.bedrooms ?? NaN);
+    const baths = Number(snap.baths ?? snap.bathrooms ?? info.bathrooms ?? NaN);
+    const bedroomBit = Number.isFinite(beds) && beds > 0
+      ? `${beds}-bedroom`
+      : 'multi-bedroom';
+    const bathBit = Number.isFinite(baths) && baths > 0
+      ? `${baths}-bath`
+      : 'single-bath';
+    const homeType = String(snap.homeType ?? snap.home_type ?? info.propertyType ?? '').trim();
+    const typeBit = homeType
+      ? homeType.toLowerCase().includes('multi')
+        ? 'multi-family layout'
+        : homeType.toLowerCase().includes('condo')
+          ? 'condo layout'
+          : homeType.toLowerCase().includes('co-op') || homeType.toLowerCase().includes('coop')
+            ? 'co-op layout'
+            : 'single-family layout'
+      : isSFOC ? 'single-family layout' : 'this layout';
+
     if (isSFOC) {
       bestFor = [
-        'Owner-occupants seeking a move-in-ready single-family home',
-        'Families wanting 3 bedrooms, private yard, and driveway parking',
-        'Buyers prioritizing Woodlawn transit access and neighborhood amenities',
+        `Owner-occupants looking for a ${bedroomBit} ${typeBit}`,
+        `Buyers prioritizing ${bathBit} layouts with private outdoor space`,
+        'Buyers prioritizing this neighborhood\'s amenities and commute access',
       ];
     } else {
       bestFor = [
-        'Owner-occupant seeking rental income offset',
-        'Multi-generational family needing separate living areas',
-        'Buyer comfortable with renovation and inspections',
+        `Owner-occupants seeking rental income to offset a ${bedroomBit} ${typeBit}`,
+        'Multi-generational households needing separate living areas',
+        'Buyers comfortable with renovation and permit verification',
       ];
     }
   }
@@ -1950,16 +2008,26 @@ function normalizeFitSection(report: NormalizedReport): {
       ];
     } else {
       notIdealFor = [
-        'Buyer wanting move-in-ready condition',
-        'Buyer with limited renovation budget',
-        'Buyer uncomfortable with legal use or rental income verification requirements',
+        'Buyers wanting move-in-ready condition with no renovation work',
+        'Buyers with limited renovation budget',
+        'Buyers uncomfortable with legal-use or rental-income verification',
       ];
     }
   }
 
-  const defaultWhyItMatters = isSFOC
-    ? 'Built in 1935 — electrical panel, plumbing, heating, roof age, basement moisture history, and possible lead-based paint risk due to pre-1978 construction should be verified. Recent boiler and tankless water heater updates may reduce some near-term risk, but installation dates, permits, and warranties should be confirmed.'
-    : 'This layout may support owner-occupy plus rental or multi-generational living, but legal use, unit separation, and renovation needs should be verified first.';
+  const defaultWhyItMatters = (() => {
+    const snap = raw.property_snapshot ?? {};
+    const info = raw.listingInfo ?? {};
+    const yearBuiltRaw = snap.year_built ?? snap.yearBuilt ?? info.yearBuilt;
+    const yearBuiltNum = Number(yearBuiltRaw);
+    if (Number.isFinite(yearBuiltNum) && yearBuiltNum > 1800 && yearBuiltNum < 2030) {
+      if (yearBuiltNum < 1978) {
+        return `Built in ${yearBuiltNum} — electrical panel, plumbing material, heating system, roof age, basement moisture history, and possible lead-based paint risk due to pre-1978 construction should all be verified before relying on this property. Permit history for any renovation work should also be confirmed.`;
+      }
+      return `Built in ${yearBuiltNum} — electrical panel, plumbing, heating, and roof age should be verified before relying on this property. Permit history for any renovation work should also be confirmed.`;
+    }
+    return 'Year built was not disclosed by the listing. Electrical, plumbing, heating, roof age, and permit history should be verified independently before relying on this property.';
+  })();
 
   return {
     bestFor,
@@ -2734,6 +2802,294 @@ function _DetailedRiskAnalysisSection({ report }: { report: NormalizedReport }) 
             </div>
           );
         })}
+      </div>
+    </div>
+  );
+}
+
+// ── Risk Categories — Buyer-Advocate 4-Class Risk Signal Framework ──────────
+
+type RiskCategoryKey = 'foundation_basement' | 'water_leaks' | 'roof_exterior' | 'hidden_ownership_cost';
+type RiskLevel = 'High' | 'Medium' | 'Low' | 'Unknown';
+
+function normalizeRiskLevel(raw: unknown, signal: string): RiskLevel {
+  const s = String(raw ?? '').trim();
+  if (s === 'High' || s === 'Medium' || s === 'Low' || s === 'Unknown') return s;
+  const sig = signal.toLowerCase();
+  if (sig.includes('risk signal')) return 'High';
+  if (sig.includes('needs verification')) return 'Medium';
+  if (sig.includes('listing shows evidence') || sig.includes('no listing evidence')) return 'Low';
+  return 'Unknown';
+}
+
+const RISK_CATEGORY_META: Record<RiskCategoryKey, { label: string; icon: React.ReactNode }> = {
+  foundation_basement:    { label: 'Foundation / Basement',    icon: <Layers size={18} strokeWidth={1.5} /> },
+  water_leaks:           { label: 'Water / Leaks',            icon: <Droplets size={18} strokeWidth={1.5} /> },
+  roof_exterior:         { label: 'Roof / Exterior',          icon: <House size={18} strokeWidth={1.5} /> },
+  hidden_ownership_cost: { label: 'Hidden Cost',              icon: <Wallet size={18} strokeWidth={1.5} /> },
+};
+
+function RiskCategoriesSection({ report }: { report: NormalizedReport }) {
+  const rc = (report.raw as any)?.risk_categories;
+  if (!rc || typeof rc !== 'object') return null;
+
+  const entries = (Object.keys(RISK_CATEGORY_META) as RiskCategoryKey[])
+    .map((key) => {
+      const meta = RISK_CATEGORY_META[key];
+      const c = rc[key];
+      if (!c || typeof c !== 'object') return null;
+      const signal = safeText((c as any).signal) || 'Needs verification';
+      const evidence = safeText((c as any).evidence) || 'Unknown — listing does not prove';
+      const missing = safeText((c as any).missing) || '';
+      const why = safeText((c as any).why_it_matters) || '';
+      const riskLevel = normalizeRiskLevel((c as any).risk_level, signal);
+      const qs: string[] = Array.isArray((c as any).questions)
+        ? (c as any).questions.filter((x: unknown) => typeof x === 'string' && (x as string).trim())
+        : [];
+      return { key, meta, signal, evidence, missing, why, riskLevel, qs };
+    })
+    .filter(Boolean) as Array<{
+      key: RiskCategoryKey;
+      meta: { label: string; icon: React.ReactNode };
+      signal: string;
+      evidence: string;
+      missing: string;
+      why: string;
+      riskLevel: RiskLevel;
+      qs: string[];
+    }>;
+
+  if (entries.length === 0) return null;
+
+  const badgeForLevel = (level: RiskLevel): { cls: string; label: string } => {
+    switch (level) {
+      case 'High':   return { cls: 'bg-red-50 text-red-700 border border-red-200',           label: 'Risk signal' };
+      case 'Medium': return { cls: 'bg-amber-50 text-amber-700 border border-amber-200',       label: 'Needs verification' };
+      case 'Low':    return { cls: 'bg-green-50 text-green-700 border border-green-200',      label: 'Listing shows evidence' };
+      default:       return { cls: 'bg-stone-100 text-stone-700 border border-stone-200',     label: 'Unknown' };
+    }
+  };
+
+  const dotForLevel = (level: RiskLevel): string => {
+    switch (level) {
+      case 'High':   return 'bg-red-500';
+      case 'Medium': return 'bg-amber-500';
+      case 'Low':    return 'bg-green-500';
+      default:       return 'bg-stone-400';
+    }
+  };
+
+  return (
+    <div className="bg-white rounded-2xl p-5 border border-stone-100 shadow-[0_1px_4px_rgba(0,0,0,0.04)] animate-in fade-in slide-in-from-bottom-8 duration-700 ease-out mb-4">
+      <div className="flex items-center gap-3 mb-3">
+        <div className="w-10 h-10 rounded-xl bg-stone-100 flex items-center justify-center shrink-0">
+          <ShieldAlert size={18} className="text-stone-600" strokeWidth={1.5} />
+        </div>
+        <div className="flex-1 min-w-0">
+          <h3 className="text-sm font-semibold text-stone-900">Risk Categories</h3>
+          <p className="text-xs text-stone-500">Buyer-advocate 4-class risk check. Each category shows risk level, listing evidence, what's missing, and why it matters.</p>
+        </div>
+      </div>
+      <div className="grid grid-cols-1 @container[size>=640px]:grid-cols-2 gap-3">
+        {entries.map(({ key, meta, signal, evidence, missing, why, riskLevel, qs }) => {
+          const badge = badgeForLevel(riskLevel);
+          return (
+            <div key={key} className="rounded-xl border border-stone-200 bg-stone-50/40 p-4">
+              <div className="flex items-center justify-between gap-2 mb-2">
+                <div className="flex items-center gap-2 min-w-0">
+                  <div className="w-7 h-7 rounded-lg bg-white border border-stone-200 flex items-center justify-center text-stone-600 shrink-0">
+                    {meta.icon}
+                  </div>
+                  <span className="text-sm font-semibold text-stone-800 truncate">{meta.label}</span>
+                  <span
+                    className={`shrink-0 w-2 h-2 rounded-full ${dotForLevel(riskLevel)}`}
+                    title={`Risk level: ${riskLevel}`}
+                    aria-label={`Risk level ${riskLevel}`}
+                  />
+                </div>
+                <span className={`shrink-0 text-[10px] font-semibold uppercase tracking-wider px-2 py-0.5 rounded-md ${badge.cls}`}>
+                  {badge.label}
+                </span>
+              </div>
+              <div className="space-y-2">
+                {signal && (
+                  <div>
+                    <div className="text-[10px] font-semibold uppercase tracking-wider text-stone-500 mb-0.5">Signal</div>
+                    <p className="text-xs text-stone-800 font-medium leading-relaxed">{signal}</p>
+                  </div>
+                )}
+                <div>
+                  <div className="text-[10px] font-semibold uppercase tracking-wider text-stone-500 mb-0.5">Listing evidence</div>
+                  <p className="text-xs text-stone-700 leading-relaxed">{evidence}</p>
+                </div>
+                {missing && (
+                  <div>
+                    <div className="text-[10px] font-semibold uppercase tracking-wider text-stone-500 mb-0.5">Not proven</div>
+                    <p className="text-xs text-stone-600 leading-relaxed">{missing}</p>
+                  </div>
+                )}
+                {why && (
+                  <div>
+                    <div className="text-[10px] font-semibold uppercase tracking-wider text-stone-500 mb-0.5">Why it matters</div>
+                    <p className="text-xs text-stone-600 leading-relaxed">{why}</p>
+                  </div>
+                )}
+                {qs.length > 0 && (
+                  <div>
+                    <div className="text-[10px] font-semibold uppercase tracking-wider text-stone-500 mb-0.5">Ask</div>
+                    <ul className="space-y-1">
+                      {qs.slice(0, 4).map((q, i) => (
+                        <li key={i} className="flex items-start gap-1.5 text-xs text-stone-700 leading-relaxed">
+                          <span className="text-stone-400 mt-0.5 shrink-0">•</span>
+                          <span>{q}</span>
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+      <div className="mt-3 text-[10px] text-stone-400 italic">
+        These are signals derived from listing facts and visible photos. They are not a structural inspection — verify with a licensed inspector and the listing agent before making an offer.
+      </div>
+    </div>
+  );
+}
+
+// ── Listing Does Not Prove ─────────────────────────────────────────────────────
+
+function ListingDoesNotProveSection({ report }: { report: NormalizedReport }) {
+  const arr = (report.raw as any)?.listing_does_not_prove;
+  if (!Array.isArray(arr) || arr.length === 0) return null;
+  const items = arr.filter((x: unknown): x is string => typeof x === 'string' && x.trim().length > 0);
+  if (items.length === 0) return null;
+
+  return (
+    <div className="bg-white rounded-2xl p-5 border border-stone-100 shadow-[0_1px_4px_rgba(0,0,0,0.04)] animate-in fade-in slide-in-from-bottom-8 duration-700 ease-out mb-4">
+      <div className="flex items-center gap-3 mb-3">
+        <div className="w-10 h-10 rounded-xl bg-stone-100 flex items-center justify-center shrink-0">
+          <HelpCircle size={18} className="text-stone-600" strokeWidth={1.5} />
+        </div>
+        <div className="flex-1 min-w-0">
+          <h3 className="text-sm font-semibold text-stone-900">What the Listing Does Not Prove</h3>
+          <p className="text-xs text-stone-500">Key buyer-relevant facts this listing has not disclosed or documented.</p>
+        </div>
+      </div>
+      <ul className="space-y-2">
+        {items.map((it, i) => (
+          <li key={i} className="flex items-start gap-2 p-3 bg-stone-50 rounded-xl">
+            <span className="shrink-0 mt-0.5 text-amber-500">•</span>
+            <span className="text-sm text-stone-700 leading-relaxed">{it}</span>
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
+// ── Before You Book a Showing ──────────────────────────────────────────────────
+
+const BYBS_MIN = 7;
+const BYBS_MAX = 10;
+
+const BYBS_STOPWORDS = new Set(['a', 'an', 'the', 'is', 'are', 'was', 'were', 'be', 'been',
+  'have', 'has', 'had', 'do', 'does', 'did', 'can', 'could', 'would', 'should',
+  'will', 'shall', 'may', 'might', 'to', 'of', 'in', 'for', 'on', 'with', 'at',
+  'by', 'from', 'as', 'that', 'this', 'these', 'those', 'what', 'which', 'who',
+  'whom', 'and', 'or', 'but', 'not', 'no', 'any', 'all', 'each', 'every', 'if',
+  'then', 'than', 'so', 'just', 'also', 'how', 'when', 'where', 'why']);
+
+function bybsTokenize(text: string): string[] {
+  return text.toLowerCase().replace(/[^\w\s]/g, ' ').split(/\s+/).filter(w => w.length > 1 && !BYBS_STOPWORDS.has(w));
+}
+
+function dedupeQuestions(input: string[]): string[] {
+  // Layer 1: substring dedup (keep longer)
+  const layer1: string[] = [];
+  for (const q of input) {
+    let dominated = false;
+    let moreSpecificIdx = -1;
+    for (let i = 0; i < layer1.length; i++) {
+      const ex = layer1[i];
+      if (ex.toLowerCase().includes(q.toLowerCase()) && ex.length > q.length) { dominated = true; break; }
+      if (q.toLowerCase().includes(ex.toLowerCase()) && q.length > ex.length) moreSpecificIdx = i;
+    }
+    if (dominated) continue;
+    if (moreSpecificIdx >= 0) layer1[moreSpecificIdx] = q; else layer1.push(q);
+  }
+  // Layer 2: prefix dedup
+  const layer2: string[] = [];
+  for (const q of layer1) {
+    const prefix = bybsTokenize(q).slice(0, 4).join(' ');
+    let replaced = false;
+    for (let i = 0; i < layer2.length; i++) {
+      const exPrefix = bybsTokenize(layer2[i]).slice(0, 4).join(' ');
+      if (prefix === exPrefix) {
+        if (q.length > layer2[i].length) layer2[i] = q;
+        replaced = true; break;
+      }
+    }
+    if (!replaced) layer2.push(q);
+  }
+  // Layer 3: token overlap (Jaccard > 0.5)
+  const layer3: string[] = [];
+  outer3: for (const q of layer2) {
+    const qt = new Set(bybsTokenize(q));
+    for (const ex of layer3) {
+      const et = new Set(bybsTokenize(ex));
+      let inter = 0;
+      for (const t of qt) if (et.has(t)) inter++;
+      const uni = new Set([...qt, ...et]).size;
+      const jacc = uni > 0 ? inter / uni : 0;
+      if (jacc > 0.5) {
+        if (q.length > ex.length) {
+          const idx = layer3.indexOf(ex);
+          layer3[idx] = q;
+        }
+        continue outer3;
+      }
+    }
+    layer3.push(q);
+  }
+  return layer3;
+}
+
+function BeforeYouBookShowingSection({ report, viewModel }: { report: NormalizedReport; viewModel?: ReportViewModel }) {
+  const raw = (report.raw as any) ?? {};
+  const fromBybs = Array.isArray(raw.before_you_book_showing)
+    ? raw.before_you_book_showing.filter((x: unknown): x is string => typeof x === 'string' && x.trim())
+    : [];
+  const vmQuestions = (viewModel?.questions ?? []).map(q => q.text).filter(Boolean);
+  const fromQta = Array.isArray(raw.questions_to_ask)
+    ? raw.questions_to_ask.filter((x: unknown): x is string => typeof x === 'string' && x.trim())
+    : [];
+
+  // Priority: bybs (most targeted) ∪ viewModel questions ∪ raw questions_to_ask
+  const merged = dedupeQuestions([...fromBybs, ...vmQuestions, ...fromQta]);
+  const items = merged.slice(0, BYBS_MAX);
+  if (items.length < BYBS_MIN) return null;
+
+  return (
+    <div className="bg-white rounded-2xl p-5 border border-stone-100 shadow-[0_1px_4px_rgba(0,0,0,0.04)] animate-in fade-in slide-in-from-bottom-8 duration-700 ease-out mb-4">
+      <div className="flex items-center gap-3 mb-3">
+        <div className="w-10 h-10 rounded-xl bg-stone-100 flex items-center justify-center shrink-0">
+          <HelpCircle size={18} className="text-stone-600" strokeWidth={1.5} />
+        </div>
+        <div className="flex-1 min-w-0">
+          <h3 className="text-sm font-semibold text-stone-900">Before You Book a Showing</h3>
+          <p className="text-xs text-stone-500">Ask the seller or listing agent before you book a showing. These questions target the risks the listing has not addressed.</p>
+        </div>
+      </div>
+      <div className="grid grid-cols-1 gap-3">
+        {items.map((q, i) => (
+          <div key={i} className="flex items-start gap-3 p-3 bg-stone-50 rounded-xl">
+            <span className="text-stone-400 text-sm font-medium shrink-0">Q{i + 1}.</span>
+            <span className="text-sm text-stone-700 leading-relaxed">{q}</span>
+          </div>
+        ))}
       </div>
     </div>
   );
@@ -4292,8 +4648,33 @@ export function NewReportUI({
 }: NewReportUIProps) {
   const { sections, highlights, quickFacts, hero } = report;
 
-  // Resolve isBasic: explicit prop wins; fall back to viewModel.meta.isBasic
-  const effectiveIsBasic = isBasicProp ?? viewModel?.meta?.isBasic ?? false;
+// Resolve isBasic: explicit prop wins; fall back to viewModel.meta.isBasic
+      const propIsBasic = isBasicProp ?? viewModel?.meta?.isBasic ?? false;
+
+      // Hard guard: any of the following MUST mean this is a Full report and we must
+  // never let it fall into the Basic layout, regardless of what normalizeReport's
+  // detectBasicResult() inferred from upstream signal loss.
+  //   1. The backend stamped analysisType: 'full' on the result object.
+  //   2. Full-only sections are present (risk_categories / listing_does_not_prove
+  //      / before_you_book_showing / maintenance_risk / carrying_costs).
+  //   3. The Full-only structured property_snapshot exists.
+  //   4. A US-market marker is present.
+  // Otherwise a US Sale Full report that loses a single upstream signal can be
+  // silently downgraded to the Basic layout and lose the Risk Categories,
+  // Before You Book a Showing, and other Full-only modules.
+  const rawObj: Record<string, unknown> = (report?.raw as Record<string, unknown>) ?? {};
+  const rawIsFull =
+    rawObj.analysisType === 'full' ||
+    rawObj.property_snapshot != null ||
+    rawObj.risk_categories != null ||
+    rawObj.listing_does_not_prove != null ||
+    rawObj.before_you_book_showing != null ||
+    rawObj.maintenance_risk != null ||
+    rawObj.carrying_costs != null ||
+    rawObj.market === 'US' ||
+    rawObj.market === 'AU';
+
+  const effectiveIsBasic = propIsBasic && !rawIsFull;
 
   const hasSections = sections && sections.length > 0;
   const hasHighlights = highlights.pros.length > 0 || highlights.cons.length > 0 || highlights.risks.length > 0;
@@ -4407,14 +4788,20 @@ export function NewReportUI({
             <PhotoSpaceAnalysisCard raw={report.raw} />
           ) : null}
 
+          {/* 7b. Buyer Risk Check (risk_categories) */}
+          <RiskCategoriesSection report={report} />
+
+          {/* 7c. What the Listing Does Not Prove */}
+          <ListingDoesNotProveSection report={report} />
+
+          {/* 7d. Before You Book a Showing */}
+          <BeforeYouBookShowingSection report={report} />
+
           {/* 8. Agent Spin Decoder */}
           <AgentSpinDecoderSection report={report} viewModel={viewModel} />
 
           {/* 9. Who This Property Works For */}
           <WhoThisPropertyWorksForSection report={report} />
-
-          {/* 10. Questions to Ask */}
-          <QuestionsToAskSection report={report} viewModel={viewModel} isBasic={false} />
 
           {/* 11. Next Best Move */}
           <NextBestMoveSection report={report} />

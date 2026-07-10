@@ -1,5 +1,5 @@
 import type { AnalysisResult } from '../../shared/types/analysis';
-import { DollarSign, TrendingUp, AlertTriangle, AlertCircle, Check, MessageSquare, MessageCircle, Eye, SquareCheck } from 'lucide-react';
+import { DollarSign, TrendingUp, AlertTriangle, AlertCircle, Check, MessageSquare, MessageCircle, Eye, SquareCheck, ShieldAlert, HelpCircle, Layers, Droplets, House, Wallet } from 'lucide-react';
 import { AnimatedNumber } from '../AnimatedNumber';
 import { RiskBadge } from './RiskBadge';
 import { ActionChecklist, buildChecklistItems } from './ActionChecklist';
@@ -851,6 +851,246 @@ function TopRisksSection({ result }: { result: AnalysisResult }) {
   );
 }
 
+// ── Risk Modules (buyer-advocate 4-class + dynamic checklists) ──────────────
+
+type RiskCategoryKey = 'foundation_basement' | 'water_leaks' | 'roof_exterior' | 'hidden_ownership_cost';
+type RiskLevel = 'High' | 'Medium' | 'Low' | 'Unknown';
+
+function normalizeRiskLevelUs(raw: unknown, signal: string): RiskLevel {
+  const s = String(raw ?? '').trim();
+  if (s === 'High' || s === 'Medium' || s === 'Low' || s === 'Unknown') return s;
+  const sig = signal.toLowerCase();
+  if (sig.includes('risk signal')) return 'High';
+  if (sig.includes('needs verification')) return 'Medium';
+  if (sig.includes('listing shows evidence') || sig.includes('no listing evidence')) return 'Low';
+  return 'Unknown';
+}
+
+const RISK_CATEGORY_META_US: Record<RiskCategoryKey, { label: string; icon: React.ReactNode }> = {
+  foundation_basement:    { label: 'Foundation / Basement',    icon: <Layers size={18} strokeWidth={1.5} /> },
+  water_leaks:           { label: 'Water / Leaks',            icon: <Droplets size={18} strokeWidth={1.5} /> },
+  roof_exterior:         { label: 'Roof / Exterior',          icon: <House size={18} strokeWidth={1.5} /> },
+  hidden_ownership_cost: { label: 'Hidden Ownership Cost',    icon: <Wallet size={18} strokeWidth={1.5} /> },
+};
+
+const US_BYBS_FALLBACK = [
+  'How old is the roof and when was it last replaced?',
+  'Has the basement ever had water intrusion, seepage, or sump-pump use?',
+  'If the basement is finished, are permits on file and is there an egress window?',
+  'What is the actual monthly HOA fee and what does it include?',
+  'How old are the electrical panel, plumbing, and HVAC, and have they been permitted?',
+  'Are there any open permits, code violations, or unpermitted additions?',
+  'Will the seller share a pre-listing inspection report and seller disclosure?',
+  'What recent comparable sales support the asking price?',
+];
+
+const US_BYBS_STOPWORDS = new Set(['a', 'an', 'the', 'is', 'are', 'was', 'were', 'be', 'been',
+  'have', 'has', 'had', 'do', 'does', 'did', 'can', 'could', 'would', 'should',
+  'will', 'shall', 'may', 'might', 'to', 'of', 'in', 'for', 'on', 'with', 'at',
+  'by', 'from', 'as', 'that', 'this', 'these', 'those', 'what', 'which', 'who',
+  'whom', 'and', 'or', 'but', 'not', 'no', 'any', 'all', 'each', 'every', 'if',
+  'then', 'than', 'so', 'just', 'also', 'how', 'when', 'where', 'why']);
+
+function usBybsTokenize(text: string): string[] {
+  return text.toLowerCase().replace(/[^\w\s]/g, ' ').split(/\s+/).filter(w => w.length > 1 && !US_BYBS_STOPWORDS.has(w));
+}
+
+function dedupeBybsQuestions(input: string[]): string[] {
+  const layer1: string[] = [];
+  for (const q of input) {
+    let dominated = false;
+    let moreSpecificIdx = -1;
+    for (let i = 0; i < layer1.length; i++) {
+      const ex = layer1[i];
+      if (ex.toLowerCase().includes(q.toLowerCase()) && ex.length > q.length) { dominated = true; break; }
+      if (q.toLowerCase().includes(ex.toLowerCase()) && q.length > ex.length) moreSpecificIdx = i;
+    }
+    if (dominated) continue;
+    if (moreSpecificIdx >= 0) layer1[moreSpecificIdx] = q; else layer1.push(q);
+  }
+  const layer2: string[] = [];
+  for (const q of layer1) {
+    const prefix = usBybsTokenize(q).slice(0, 4).join(' ');
+    let replaced = false;
+    for (let i = 0; i < layer2.length; i++) {
+      const exPrefix = usBybsTokenize(layer2[i]).slice(0, 4).join(' ');
+      if (prefix === exPrefix) {
+        if (q.length > layer2[i].length) layer2[i] = q;
+        replaced = true; break;
+      }
+    }
+    if (!replaced) layer2.push(q);
+  }
+  return layer2;
+}
+
+function RiskModulesSection({ result }: { result: AnalysisResult }) {
+  const rc = (result as any).risk_categories;
+  const ldp = (result as any).listing_does_not_prove;
+  const bybs = (result as any).before_you_book_showing;
+  const qta = (result as any).questions_to_ask;
+
+  const hasRc = rc && typeof rc === 'object';
+  const ldpItems: string[] = Array.isArray(ldp) ? ldp.filter((x: unknown): x is string => typeof x === 'string' && x.trim()) : [];
+  const bybsRaw: string[] = Array.isArray(bybs) ? bybs.filter((x: unknown): x is string => typeof x === 'string' && x.trim()) : [];
+  const qtaRaw: string[] = Array.isArray(qta) ? qta.filter((x: unknown): x is string => typeof x === 'string' && x.trim()) : [];
+  const bybsItems: string[] = dedupeBybsQuestions([...bybsRaw, ...qtaRaw, ...US_BYBS_FALLBACK]).slice(0, 10);
+
+  if (!hasRc && ldpItems.length === 0 && bybsItems.length === 0) return null;
+
+  const dotForLevel = (level: RiskLevel): string => {
+    switch (level) {
+      case 'High':   return 'bg-red-500';
+      case 'Medium': return 'bg-amber-500';
+      case 'Low':    return 'bg-green-500';
+      default:       return 'bg-stone-400';
+    }
+  };
+
+  const entries = hasRc
+    ? (Object.keys(RISK_CATEGORY_META_US) as RiskCategoryKey[])
+        .map((key) => {
+          const meta = RISK_CATEGORY_META_US[key];
+          const c = (rc as any)[key];
+          if (!c || typeof c !== 'object') return null;
+          const signal = String((c as any).signal ?? 'Needs verification');
+          const evidence = String((c as any).evidence ?? 'Unknown — listing does not prove');
+          const missing = String((c as any).missing ?? '');
+          const why = String((c as any).why_it_matters ?? '');
+          const riskLevel = normalizeRiskLevelUs((c as any).risk_level, signal);
+          const qs: string[] = Array.isArray((c as any).questions)
+            ? (c as any).questions.filter((x: unknown) => typeof x === 'string' && (x as string).trim())
+            : [];
+          return { key, meta, signal, evidence, missing, why, riskLevel, qs };
+        })
+        .filter(Boolean) as Array<{
+          key: RiskCategoryKey;
+          meta: { label: string; icon: React.ReactNode };
+          signal: string;
+          evidence: string;
+          missing: string;
+          why: string;
+          riskLevel: RiskLevel;
+          qs: string[];
+        }>
+    : [];
+
+  return (
+    <div className="space-y-4 mb-4">
+      {/* Risk Categories */}
+      {entries.length > 0 && (
+        <CardShell
+          icon={<ShieldAlert size={18} className="text-stone-600" strokeWidth={1.5} />}
+          title="Risk Categories"
+          delay={75}
+        >
+          <p className="text-xs text-stone-500 mb-4">
+            Buyer-advocate 4-class risk check. Each category shows risk level, listing evidence, what's missing, and why it matters.
+          </p>
+          <div className="grid grid-cols-1 @container[size>=640px]:grid-cols-2 gap-3">
+            {entries.map(({ key, meta, signal, evidence, missing, why, riskLevel, qs }) => (
+              <div key={key} className="rounded-xl border border-stone-200 bg-stone-50/40 p-4">
+                <div className="flex items-center justify-between gap-2 mb-2">
+                  <div className="flex items-center gap-2 min-w-0">
+                    <div className="w-7 h-7 rounded-lg bg-white border border-stone-200 flex items-center justify-center text-stone-600 shrink-0">
+                      {meta.icon}
+                    </div>
+                    <span className="text-sm font-semibold text-stone-800 truncate">{meta.label}</span>
+                    <span
+                      className={`shrink-0 w-2 h-2 rounded-full ${dotForLevel(riskLevel)}`}
+                      title={`Risk level: ${riskLevel}`}
+                      aria-label={`Risk level ${riskLevel}`}
+                    />
+                  </div>
+                  <span className="shrink-0 text-[10px] font-semibold uppercase tracking-wider px-2 py-0.5 rounded-md bg-stone-100 text-stone-700 border border-stone-200">
+                    {signal}
+                  </span>
+                </div>
+                <div className="space-y-2">
+                  <div>
+                    <div className="text-[10px] font-semibold uppercase tracking-wider text-stone-500 mb-0.5">Listing evidence</div>
+                    <p className="text-xs text-stone-700 leading-relaxed">{evidence}</p>
+                  </div>
+                  {missing && (
+                    <div>
+                      <div className="text-[10px] font-semibold uppercase tracking-wider text-stone-500 mb-0.5">Not proven</div>
+                      <p className="text-xs text-stone-600 leading-relaxed">{missing}</p>
+                    </div>
+                  )}
+                  {why && (
+                    <div>
+                      <div className="text-[10px] font-semibold uppercase tracking-wider text-stone-500 mb-0.5">Why it matters</div>
+                      <p className="text-xs text-stone-600 leading-relaxed">{why}</p>
+                    </div>
+                  )}
+                  {qs.length > 0 && (
+                    <div>
+                      <div className="text-[10px] font-semibold uppercase tracking-wider text-stone-500 mb-0.5">Ask</div>
+                      <ul className="space-y-1">
+                        {qs.slice(0, 4).map((q, i) => (
+                          <li key={i} className="flex items-start gap-1.5 text-xs text-stone-700 leading-relaxed">
+                            <span className="text-stone-400 mt-0.5 shrink-0">•</span>
+                            <span>{q}</span>
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+                  )}
+                </div>
+              </div>
+            ))}
+          </div>
+          <div className="mt-3 text-[10px] text-stone-400 italic">
+            These are signals derived from listing facts and visible photos. Verify with a licensed inspector and the listing agent before making an offer.
+          </div>
+        </CardShell>
+      )}
+
+      {/* What the Listing Does Not Prove */}
+      {ldpItems.length > 0 && (
+        <CardShell
+          icon={<HelpCircle size={18} className="text-stone-600" strokeWidth={1.5} />}
+          title="What the Listing Does Not Prove"
+          delay={85}
+        >
+          <p className="text-xs text-stone-500 mb-3">
+            Key buyer-relevant facts this listing has not disclosed or documented.
+          </p>
+          <ul className="space-y-2">
+            {ldpItems.map((it, i) => (
+              <li key={i} className="flex items-start gap-2 p-3 bg-stone-50 rounded-xl">
+                <span className="shrink-0 mt-0.5 text-amber-500">•</span>
+                <span className="text-sm text-stone-700 leading-relaxed">{it}</span>
+              </li>
+            ))}
+          </ul>
+        </CardShell>
+      )}
+
+      {/* Before You Book a Showing */}
+      {bybsItems.length >= 7 && (
+        <CardShell
+          icon={<HelpCircle size={18} className="text-stone-600" strokeWidth={1.5} />}
+          title="Before You Book a Showing"
+          delay={95}
+        >
+          <p className="text-xs text-stone-500 mb-3">
+            Ask the seller or listing agent before you book a showing. These questions target the risks the listing has not addressed.
+          </p>
+          <div className="grid grid-cols-1 gap-3">
+            {bybsItems.slice(0, 10).map((q, i) => (
+              <div key={i} className="flex items-start gap-3 p-3 bg-stone-50 rounded-xl">
+                <span className="text-stone-400 text-sm font-medium shrink-0">Q{i + 1}.</span>
+                <span className="text-sm text-stone-700 leading-relaxed">{q}</span>
+              </div>
+            ))}
+          </div>
+        </CardShell>
+      )}
+    </div>
+  );
+}
+
 // ── Final Recommendation Card ────────────────────────────────────────────────
 function RecommendationCard({ rec, decisionScore, scoreConfidence }: { 
   rec?: { 
@@ -871,8 +1111,6 @@ function RecommendationCard({ rec, decisionScore, scoreConfidence }: {
   
   // 置信度显示
   const confidenceLabel = scoreConfidence || rec.confidence || 'Medium';
-  const confidenceClass = confidenceLabel === 'High' ? 'text-green-400' :
-                         confidenceLabel === 'Medium' ? 'text-amber-400' : 'text-red-400';
 
   // Default Key Takeaway based on score
   const defaultTakeaway = hasScore && decisionScore! < 50
@@ -910,14 +1148,9 @@ function RecommendationCard({ rec, decisionScore, scoreConfidence }: {
           <span className="text-[10px] font-medium uppercase tracking-widest text-[#BDBDBD] ml-2">Decision Score</span>
         </div>
 
-        {/* Right: Verdict Badge + Confidence */}
+        {/* Right: Verdict Badge */}
         <div className="@container[size>=600px]:ml-auto @container[size>=600px]:text-right">
           <VerdictBadge verdict={rec.verdict} />
-          {confidenceLabel && (
-            <div className={`mt-2 text-xs ${confidenceClass}`}>
-              Report Confidence: {confidenceLabel}
-            </div>
-          )}
         </div>
       </div>
 
@@ -1049,6 +1282,9 @@ export function USSaleReport({ result }: { result: AnalysisResult }) {
 
       {/* ── 3. Photo & Space Analysis ── */}
       <PhotoSpaceAnalysisCard raw={result as any} />
+
+      {/* ── 3b. Buyer Risk Check / Listing Does Not Prove / Before You Book ── */}
+      <RiskModulesSection result={result} />
 
       {/* ── 4. Before You Proceed Checklist ── */}
       <ActionChecklist items={checklistItems} delay={80} />
