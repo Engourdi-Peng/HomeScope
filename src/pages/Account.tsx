@@ -289,8 +289,7 @@ export function AccountPage() {
           {/* Loading State */}
           {isLoading && (
             <div className="flex items-center justify-center py-12">
-              <div className="animate-spin w-6 h-6 border-2 border-stone-300 border-t-stone-600 rounded-full">              <div className="flex items-center justify-between mt-6 pt-4 border-t border-stone-200">
-              </div>
+              <div className="animate-spin w-6 h-6 border-2 border-stone-300 border-t-stone-600 rounded-full" />
             </div>
           )}
 
