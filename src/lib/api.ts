@@ -549,7 +549,7 @@ export async function getAllAnalysisHistory(): Promise<AnalysisSummary[]> {
     throw new Error('Please sign in first.');
   }
 
-  const url = `${API_BASE_URL}?action=list&limit=all`;
+  const url = `${API_BASE_URL}?action=list&limit=10000`;
 
   const response = await fetch(url, {
     method: 'GET',

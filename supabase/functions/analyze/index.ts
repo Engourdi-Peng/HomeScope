@@ -5546,7 +5546,7 @@ Deno.serve(async (req) => {
     }
 
     const limitRaw = url.searchParams.get("limit");
-    const limit = limitRaw === "all" ? 10000 : Number.parseInt(limitRaw || "20", 10);
+    const limit = Number.parseInt(limitRaw || "20", 10);
     const offset = Number.parseInt(url.searchParams.get("offset") || "0", 10);
 
     try {
@@ -5592,7 +5592,7 @@ Deno.serve(async (req) => {
       }
 
       const limitRaw = postBody.limit;
-      const limit = limitRaw === "all" ? 10000 : Number.parseInt(String(postBody.limit || "20"), 10);
+      const limit = Number.parseInt(String(postBody.limit || "20"), 10);
       const offset = Number.parseInt(String(postBody.offset || "0"), 10);
 
       try {
