@@ -2895,21 +2895,23 @@ function RiskCategoriesSection({ report }: { report: NormalizedReport }) {
           const badge = badgeForLevel(riskLevel);
           return (
             <div key={key} className="rounded-xl border border-stone-200 bg-stone-50/40 p-4">
-              <div className="flex items-center justify-between gap-2 mb-2">
-                <div className="flex items-center gap-2 min-w-0">
+              <div className="flex items-start justify-between gap-2 mb-2">
+                <div className="flex items-center gap-2">
                   <div className="w-7 h-7 rounded-lg bg-white border border-stone-200 flex items-center justify-center text-stone-600 shrink-0">
                     {meta.icon}
                   </div>
-                  <span className="text-sm font-semibold text-stone-800 truncate">{meta.label}</span>
+                  <span className="text-sm font-semibold text-stone-800 leading-tight">{meta.label}</span>
+                </div>
+                <div className="flex items-center gap-1.5">
                   <span
-                    className={`shrink-0 w-2 h-2 rounded-full ${dotForLevel(riskLevel)}`}
+                    className={`w-2 h-2 rounded-full ${dotForLevel(riskLevel)}`}
                     title={`Risk level: ${riskLevel}`}
                     aria-label={`Risk level ${riskLevel}`}
                   />
+                  <span className={`text-[10px] font-semibold uppercase tracking-wider px-2 py-0.5 rounded-md ${badge.cls}`}>
+                    {badge.label}
+                  </span>
                 </div>
-                <span className={`shrink-0 text-[10px] font-semibold uppercase tracking-wider px-2 py-0.5 rounded-md ${badge.cls}`}>
-                  {badge.label}
-                </span>
               </div>
               <div className="space-y-2">
                 {signal && (
