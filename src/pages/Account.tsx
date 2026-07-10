@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { useNavigate, Link } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
-import { getAnalysisHistory, getAnalysisById, checkAffiliateStatus } from '../lib/api';
+import { getAllAnalysisHistory, getAnalysisById, checkAffiliateStatus } from '../lib/api';
 import type { AnalysisSummary, AnalysisResult, ListingInfo } from '../types';
 import { User, Sparkles, Clock, ChevronRight, ChevronLeft, LogOut, AlertCircle, RefreshCw, RefreshCcw, FileText, Shield, Mail, ArrowLeft, Gift } from 'lucide-react';
 
@@ -48,7 +48,7 @@ export function AccountPage() {
       try {
         setIsLoading(true);
         setError(null);
-        const history = await getAnalysisHistory(20, 0);
+        const history = await getAllAnalysisHistory();
         // Filter out failed analyses
         const successfulHistory = history.filter(a => a.status !== 'failed');
         setAnalyses(successfulHistory);

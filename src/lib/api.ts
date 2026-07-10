@@ -540,6 +540,32 @@ export async function getAnalysisHistory(limit = 20, offset = 0): Promise<Analys
 }
 
 /**
+ * Get all analysis history (no limit)
+ */
+export async function getAllAnalysisHistory(): Promise<AnalysisSummary[]> {
+  const { session } = await getAuthenticatedSession();
+
+  if (!session?.access_token) {
+    throw new Error('Please sign in first.');
+  }
+
+  const url = `${API_BASE_URL}?action=list&limit=-1`;
+
+  const response = await fetch(url, {
+    method: 'GET',
+    headers: buildAuthHeaders(session),
+  });
+
+  if (!response.ok) {
+    const error = await response.json().catch(() => ({ message: 'Failed to fetch history' }));
+    throw new Error(error.message || 'Failed to fetch history');
+  }
+
+  const data: AnalysisHistoryResponse = await response.json();
+  return data.analyses || [];
+}
+
+/**
  * Get a single analysis by ID (for viewing from history)
  * @param id - Analysis ID
  */
