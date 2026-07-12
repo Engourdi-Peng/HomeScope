@@ -21,45 +21,45 @@ const PRODUCTS = [
     id: 'starter',
     title: 'Starter',
     price: '$6.99',
-    reportCount: '1 FULL PROPERTY REPORT',
-    description: 'Best for checking one property before you spend time on a showing.',
+    reportCount: 5,
+    description: 'Best for checking a few serious options before you spend time on a showing.',
     features: [
       'Full listing risk review',
       'Photo & condition review',
-      'Price confidence check',
-      'Questions to ask the agent',
+      'Price confidence & hidden-cost signals',
+      'Questions to ask before you tour',
     ],
-    buttonText: 'Buy 1 Report',
+    buttonText: 'Get 5 Reports',
     isPopular: false,
   },
   {
     id: 'standard',
     title: 'Standard',
     price: '$15.99',
-    reportCount: '3 FULL PROPERTY REPORTS',
-    description: 'Best for buyers reviewing a few homes on their shortlist.',
+    reportCount: 12,
+    description: 'Best for comparing homes and narrowing down your shortlist.',
     features: [
-      'Everything in Starter',
-      'Lower cost per report',
+      'Complete Full Property Report for every listing',
+      'Compare up to 12 properties',
       'Save reports for later review',
       'Shareable report links',
     ],
-    buttonText: 'Buy 3 Reports',
+    buttonText: 'Get 12 Reports',
     isPopular: true,
   },
   {
     id: 'pro',
     title: 'Pro',
     price: '$39.99',
-    reportCount: '10 FULL PROPERTY REPORTS',
-    description: 'Best for active buyers reviewing many listings during a serious home search.',
+    reportCount: 35,
+    description: 'Best for active buyers reviewing listings throughout a serious home search.',
     features: [
-      'Everything in Standard',
+      'Complete Full Property Report for every listing',
+      'Compare up to 35 properties',
       'Lowest cost per report',
-      'More reports for active searching',
-      'Review more properties before you tour',
+      'Save and share every report',
     ],
-    buttonText: 'Buy 10 Reports',
+    buttonText: 'Get 35 Reports',
     isPopular: false,
   },
 ];
@@ -189,6 +189,9 @@ export function Home() {
         listingInfo,
       };
 
+      // Clear any previous listing's cached result before writing the new one
+      // so a half-loaded /result tab from a prior listing cannot render stale data.
+      sessionStorage.removeItem('analysisResult');
       sessionStorage.setItem('analysisResult', JSON.stringify(resultWithListingInfo));
 
       setIsLoading(false);
@@ -280,12 +283,32 @@ export function Home() {
       console.log('Uploaded image URLs:', imageUrls);
 
       // ========== Step 3: Build request with imageUrls ==========
+      // If user did not paste a listingUrl, fall back to window.location.href
+      // when the user is already on a known listing site (Zillow / Realtor /
+      // Redfin). Otherwise leave empty. This helps Result.tsx cross-listing
+      // guard and the "Open listing" navigation.
+      const effectiveListingUrl = (() => {
+        const explicit = (optionalDetails as any)?.listingUrl as string | undefined;
+        if (explicit && explicit.trim()) return explicit.trim();
+        if (typeof window === 'undefined') return undefined;
+        try {
+          const host = window.location.host.toLowerCase();
+          if (/(zillow\.com|realtor\.com|redfin\.com|trulia\.com|homes\.com|compass\.com)/.test(host)) {
+            return window.location.href;
+          }
+        } catch { /* ignore */ }
+        return undefined;
+      })();
+
       const requestData = {
         reportMode: optionalDetails.reportMode || 'rent',
         analysisType,
         imageUrls,
         description,
-        optionalDetails: Object.keys(optionalDetails).length > 0 ? optionalDetails : undefined,
+        optionalDetails: (() => {
+          if (Object.keys(optionalDetails).length === 0) return undefined;
+          return { ...optionalDetails, listingUrl: effectiveListingUrl };
+        })(),
       };
 
       console.log('Submitting analysis...');
@@ -338,8 +361,19 @@ export function Home() {
             };
             const resultWithListingInfo = {
               ...progress.result,
+              // Persist the requested analysis mode into sessionStorage so that
+              // /result → ReportScreen → NewReportUI can confirm it's a Full
+              // report even when upstream polling/progress payloads don't
+              // include analysisType.
+              ...(progress.result && typeof progress.result === 'object'
+                ? { analysisType: (progress.result as any).analysisType ?? analysisType }
+                : { analysisType }),
               listingInfo,
             };
+            // Clear stale cache from any previous listing before storing the new
+            // result, so a half-loaded /result tab from a different listing
+            // cannot accidentally render old listing data.
+            sessionStorage.removeItem('analysisResult');
             sessionStorage.setItem('analysisResult', JSON.stringify(resultWithListingInfo));
             setIsComplete(true);
             setProgressPct(100);
@@ -658,10 +692,16 @@ export function Home() {
         <div className="mb-16 animate-in fade-in slide-in-from-bottom-8 duration-700 ease-out">
           <div className="text-center mb-10">
             <h2 className="text-center text-sm font-semibold uppercase tracking-widest text-stone-500 mb-4">
-              Spot Costly Property Risks Before You Tour
+              Spot Costly Risks Before You Fall for a Listing
             </h2>
-            <p className="text-center text-stone-400 font-light mb-8">
-              Review listing risks, photo signals, price confidence, and key questions before you book a showing.
+            <p className="text-center text-stone-600 font-light mb-3 max-w-2xl mx-auto">
+              Get an independent second look at listing details, photo signals, price confidence, and missing information before you book a showing.
+            </p>
+            <p className="text-center text-stone-700 text-sm font-medium mb-6 max-w-xl mx-auto">
+              HomeScope doesn’t sell homes or earn a commission from the sale.
+            </p>
+            <p className="text-center text-stone-700 text-sm font-medium mb-8 max-w-xl mx-auto">
+              Every plan includes the same complete Full Property Report. You're only choosing how many properties to review.
             </p>
           </div>
 

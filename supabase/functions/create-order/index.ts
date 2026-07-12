@@ -12,9 +12,9 @@ declare const Deno: {
 
 // ========== 内联共享配置 ==========
 const BASE_CREDITS: Record<string, number> = {
-  starter: 1,
-  standard: 3,
-  pro: 10,
+  starter: 5,
+  standard: 12,
+  pro: 35,
 };
 
 const PLAN_PRICES: Record<string, number> = {

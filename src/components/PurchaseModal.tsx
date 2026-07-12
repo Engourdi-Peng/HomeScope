@@ -11,7 +11,7 @@ export interface PurchaseModalProps {
     id: string;
     title: string;
     price: string;
-    reportCount: string;
+    reportCount: number;
   } | null;
 }
 
@@ -109,14 +109,21 @@ export function PurchaseModal({ isOpen, onClose, product }: PurchaseModalProps) 
 
   if (!isOpen || !product) return null;
 
+  const priceMatch = product.price.replace(/,/g, '').match(/-?\d+(\.\d+)?/);
+  const priceValue = priceMatch ? parseFloat(priceMatch[0]) : null;
+  const perReportLabel =
+    priceValue !== null && product.reportCount > 0
+      ? `$${(priceValue / product.reportCount).toFixed(2)} per report`
+      : null;
+
   const modalContent = (
     <div className="fixed inset-0 z-50 flex items-center justify-center">
       {/* Backdrop */}
-      <div 
+      <div
         className="absolute inset-0 bg-black/50 backdrop-blur-sm"
         onClick={onClose}
       />
-      
+
       {/* Modal */}
       <div className="relative bg-white rounded-2xl shadow-2xl w-full max-w-md mx-4 overflow-hidden animate-in fade-in zoom-in-95 duration-200">
         {/* Close button */}
@@ -140,7 +147,12 @@ export function PurchaseModal({ isOpen, onClose, product }: PurchaseModalProps) 
             <div className="flex justify-between items-start mb-3">
               <div>
                 <h3 className="font-semibold text-stone-900">{product.title}</h3>
-                <p className="text-sm text-stone-500">{product.reportCount}</p>
+                <p className="text-sm text-stone-500">
+                  {product.reportCount} FULL PROPERTY REPORTS
+                </p>
+                {perReportLabel && (
+                  <p className="text-xs text-stone-400 mt-0.5">{perReportLabel}</p>
+                )}
               </div>
               <span className="text-xl font-semibold text-stone-900">{product.price}</span>
             </div>

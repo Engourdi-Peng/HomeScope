@@ -14,45 +14,45 @@ const PRODUCTS = [
     id: 'starter',
     title: 'Starter',
     price: '$6.99',
-    reportCount: '1 FULL PROPERTY REPORT',
-    description: 'Best for checking one property before you spend time on a showing.',
+    reportCount: 5,
+    description: 'Best for checking a few serious options before you spend time on a showing.',
     features: [
       'Full listing risk review',
       'Photo & condition review',
-      'Price confidence check',
-      'Questions to ask the agent',
+      'Price confidence & hidden-cost signals',
+      'Questions to ask before you tour',
     ],
-    buttonText: 'Buy 1 Report',
+    buttonText: 'Get 5 Reports',
     isPopular: false,
   },
   {
     id: 'standard',
     title: 'Standard',
     price: '$15.99',
-    reportCount: '3 FULL PROPERTY REPORTS',
-    description: 'Best for buyers reviewing a few homes on their shortlist.',
+    reportCount: 12,
+    description: 'Best for comparing homes and narrowing down your shortlist.',
     features: [
-      'Everything in Starter',
-      'Lower cost per report',
+      'Complete Full Property Report for every listing',
+      'Compare up to 12 properties',
       'Save reports for later review',
       'Shareable report links',
     ],
-    buttonText: 'Buy 3 Reports',
+    buttonText: 'Get 12 Reports',
     isPopular: true,
   },
   {
     id: 'pro',
     title: 'Pro',
     price: '$39.99',
-    reportCount: '10 FULL PROPERTY REPORTS',
-    description: 'Best for active buyers reviewing many listings during a serious home search.',
+    reportCount: 35,
+    description: 'Best for active buyers reviewing listings throughout a serious home search.',
     features: [
-      'Everything in Standard',
+      'Complete Full Property Report for every listing',
+      'Compare up to 35 properties',
       'Lowest cost per report',
-      'More reports for active searching',
-      'Review more properties before you tour',
+      'Save and share every report',
     ],
-    buttonText: 'Buy 10 Reports',
+    buttonText: 'Get 35 Reports',
     isPopular: false,
   },
 ];
@@ -114,15 +114,18 @@ export function PricingPage() {
         </div>
 
         {/* 1. 标题区 */}
-        <div className="text-center mb-16">
-          <h1 className="text-[44px] font-light tracking-[-0.5px] text-[#1c1917] leading-[1.15] mb-4">
-            Simple pricing
+        <div className="text-center mb-12">
+          <h1 className="text-[44px] font-light tracking-[-0.5px] text-[#1c1917] leading-[1.15] mb-4 uppercase">
+            Spot Costly Risks Before You Fall for a Listing
           </h1>
-          <p className="text-[18px] text-[#57534e] max-w-2xl mx-auto leading-relaxed font-light">
-            Pay only for the Full Reports you use.
+          <p className="text-[18px] text-[#57534e] max-w-2xl mx-auto leading-relaxed font-light mb-3">
+            Get an independent second look at listing details, photo signals, price confidence, and missing information before you book a showing.
           </p>
-          <p className="text-[14px] text-[#a8a29e] max-w-lg mx-auto mt-3">
-            Run a free Basic Check first. Unlock a Full Report when a property is worth a closer look.
+          <p className="text-[15px] text-[#44403c] font-medium max-w-xl mx-auto mb-6">
+            HomeScope doesn’t sell homes or earn a commission from the sale.
+          </p>
+          <p className="text-[14px] text-[#44403c] font-medium max-w-xl mx-auto">
+            Every plan includes the same complete Full Property Report. You're only choosing how many properties to review.
           </p>
         </div>
 

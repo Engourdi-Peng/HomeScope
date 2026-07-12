@@ -4,7 +4,7 @@ import type { FormEvent } from 'react';
 interface PricingCardProps {
   title: string;
   price: string;
-  reportCount: string;
+  reportCount: number;
   description: string;
   features: string[];
   buttonText: string;
@@ -12,6 +12,13 @@ interface PricingCardProps {
   onBuy?: (productId: string, e?: FormEvent) => void;
   productId?: string;
   isLoading?: boolean;
+}
+
+function parsePriceToNumber(price: string): number | null {
+  const match = price.replace(/,/g, '').match(/-?\d+(\.\d+)?/);
+  if (!match) return null;
+  const value = parseFloat(match[0]);
+  return Number.isFinite(value) ? value : null;
 }
 
 export function PricingCard({
@@ -32,6 +39,12 @@ export function PricingCard({
     }
   };
 
+  const priceValue = parsePriceToNumber(price);
+  const perReportLabel =
+    priceValue !== null && reportCount > 0
+      ? `$${(priceValue / reportCount).toFixed(2)} per report`
+      : null;
+
   return (
     <div className="relative flex flex-col bg-[rgba(250,250,249,0.4)] border-[0.667px] border-solid border-[rgba(231,229,228,0.8)] rounded-[24px] p-8 h-full">
       {isPopular && (
@@ -43,7 +56,7 @@ export function PricingCard({
           </div>
         </div>
       )}
-      
+
       <div className="mb-6">
         <p className="font-medium text-[14px] tracking-[1.4px] uppercase text-[#292524] mb-2">
           {title}
@@ -53,9 +66,15 @@ export function PricingCard({
             {price}
           </span>
         </div>
-        <p className="text-sm tracking-[1px] uppercase text-black font-bold mb-3">
-          {reportCount}
+        <p className="text-sm tracking-[1px] uppercase text-black font-bold mb-1">
+          {reportCount} FULL PROPERTY REPORTS
         </p>
+        {perReportLabel && (
+          <p className="text-[12px] text-[#78716c] font-light mb-3">
+            {perReportLabel}
+          </p>
+        )}
+        {!perReportLabel && <div className="h-3" aria-hidden="true" />}
         <p className="text-[15px] font-light text-[#79716b] leading-[24.375px]">
           {description}
         </p>
