@@ -464,7 +464,15 @@ export interface AnalysisResult {
   listingInfo?: ListingInfo | null;
 
   // 核心评分
-  overallScore: number;          // 0-100
+  // Canonical primary field. Back-end writes the SAME value to three
+  // mirrored keys (score / evidence_score / overallScore) so older readers
+  // keep working. New code should read `score`.
+  // Range: 1..100 — 0 is RESERVED as a "no data" sentinel and must never be
+  // persisted or displayed.
+  score?: number;                  // primary canonical field (1..100)
+  evidence_score?: number;         // mirror (legacy LLM field name)
+  overallScore: number;            // mirror (legacy reader)
+  evidenceLevel?: 'Strong Listing Evidence' | 'Enough to Review' | 'Review With Caution' | 'Need More Evidence' | 'High Uncertainty';
   verdict: 'Worth Inspecting' | 'Proceed With Caution' | 'Likely Overpriced / Risky' | 'Need More Evidence';
   quickSummary: string;
   whatLooksGood: string[];
@@ -678,6 +686,45 @@ export interface AnalysisResult {
     why_it_matters?: string;
     suggested_source?: string;
   }>;
+
+  // ── Risk-Oriented Full Report Modules ──────────────────────────────────
+  // 4-class buyer-advocate risk signal framework. Each category maps to a
+  // specific concern domain and contains evidence-backed signal, missing-info
+  // proof, and questions for the listing agent. All fields are optional —
+  // adapters must treat undefined/null as "module not produced" rather than
+  // rendering empty cards.
+  risk_categories?: {
+    foundation_basement?: RiskCategorySignal | null;
+    water_leaks?: RiskCategorySignal | null;
+    roof_exterior?: RiskCategorySignal | null;
+    hidden_ownership_cost?: RiskCategorySignal | null;
+  } | null;
+
+  /** Dynamic checklist of facts the listing has not proven or disclosed.
+   *  Items are derived from the actual listing text, facts, and financial
+   *  snapshot — typical entries include roof age, finished-basement permit,
+   *  HOA fee, utilities, comps, etc. */
+  listing_does_not_prove?: string[] | null;
+
+  /** Buyer-advocate question list generated from risk_categories. Should be
+   *  asked before booking a showing or contacting the listing agent. */
+  before_you_book_showing?: string[] | null;
+
+  /** Buyer questions for deeper due diligence after showing — documents,
+   *  professional inspections, etc. This is for verification that matters
+   *  AFTER deciding to visit, not before. */
+  deeper_due_diligence?: string[] | null;
+}
+
+export interface RiskCategorySignal {
+  /** Headline signal label (e.g., "Risk signal", "Needs verification", "Unknown"). */
+  signal: string;
+  /** What the listing actually states that supports or contextualizes this signal. */
+  evidence: string;
+  /** What the listing has NOT proven but a buyer needs to know. */
+  missing: string;
+  /** Specific questions to ask the agent/seller. */
+  questions: string[];
 }
 
 // ===== 11. 分析进度 =====

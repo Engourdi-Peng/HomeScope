@@ -2,8 +2,44 @@
 // 转换 US Sale 报告原始字段 → NormalizedReport
 
 import type { NormalizedReport, HeroData, HighlightsData, QuickFact, ReportSection, SectionItem, ReportProfile } from './types';
+import { computeEvidenceScore, evidenceVerdict } from './reportViewModel';
 
 type USSaleResult = any;
+
+// ── hard limits for risk modules ──────────────────────────────────────────────
+const MAX_LISTING_DOES_NOT_PROVE = 4;
+const MAX_BEFORE_SHOWING = 4;
+const MAX_DEEPER_DILIGENCE = 6;
+const MAX_PER_AREA_FINDINGS = 2;
+
+// ── garbage patterns to filter ───────────────────────────────────────────────
+const GARBAGE_PATTERNS = [
+  'no risk signals visible',
+  'cannot be verified from photos',
+  'inspect in person',
+  'consult a professional',
+  'inspect in-person',
+  'consult a professional',
+  'needs professional inspection',
+  'requires in-person inspection',
+];
+
+function isGarbage(text: string): boolean {
+  const normalized = text.toLowerCase().replace(/[^\w\s]/g, '').trim();
+  return GARBAGE_PATTERNS.some(p => normalized === p || normalized === p.replace(/\s+/g, ' '));
+}
+
+// ── deduplication ────────────────────────────────────────────────────────────
+function deduplicateStrings(arr: string[]): string[] {
+  const seen = new Set<string>();
+  return arr.filter(text => {
+    if (!text || typeof text !== 'string') return false;
+    const normalized = text.toLowerCase().replace(/[^\w]/g, '').trim();
+    if (seen.has(normalized)) return false;
+    seen.add(normalized);
+    return true;
+  });
+}
 
 // ── safe text helpers ─────────────────────────────────────────────────────────
 
@@ -304,6 +340,44 @@ function buildHero(result: USSaleResult): HeroData {
     return '';
   })();
 
+  // ── Single source of truth for score (number | null, 1..100) ──────────────
+  // Read the canonical field from the backend (score) first, then legacy
+  // mirror fields (overallScore / overall_score). Anything outside 1..100
+  // (including 0, null, undefined, NaN, strings) is treated as MISSING and
+  // falls through to local evidence score. hero.score AND hero.confidence
+  // both consume this single computed value — they never disagree.
+  const computedScore: number | null = (() => {
+    const readValid = (v: unknown): number | null => {
+      if (v == null || v === '') return null;
+      const n = typeof v === 'number' ? v : Number(v);
+      if (!Number.isFinite(n) || n < 1 || n > 100) return null;
+      return Math.round(n);
+    };
+    const ai = readValid((result as any).score)
+      ?? readValid(result.overallScore)
+      ?? readValid((result as any).overall_score);
+    if (ai != null) return ai;
+    try {
+      const fb = computeEvidenceScore(result, result.listingInfo ?? result.listingInfoData ?? undefined);
+      if (Number.isFinite(fb) && fb >= 1) return Math.min(100, Math.round(fb));
+      return null;
+    } catch {
+      return null;
+    }
+  })();
+
+  // Map score → Report Confidence label. Single source of truth: the
+  // score-driven mapping wins so Report Confidence can NEVER disagree with
+  // the displayed number. The LLM's "confidence" field (intended as a photo
+  // clarity signal in Step1 prompt) is used only when score is unavailable.
+  const scoreToConfidence = (s: number | null): string => {
+    if (s == null) return '';
+    if (s >= 80) return 'High';
+    if (s >= 60) return 'Moderate';
+    if (s >= 40) return 'Low';
+    return 'Need More Evidence';
+  };
+
   return {
     title: title || '',  // normalizeReportResult will override; can be empty
     address: address || undefined,
@@ -313,12 +387,55 @@ function buildHero(result: USSaleResult): HeroData {
     sqft: sqft || undefined,
     zestimate: zestimate || undefined,
     monthlyPayment: monthlyPayment || undefined,
-    score: (() => {
-      const v = result.overall_score ?? result.overallScore;
-      return v != null && v !== '' ? Number(v) || null : null;
+    score: computedScore,
+    verdict: (() => {
+      // Prefer a meaningful (>=4 chars, non-placeholder) buyer-recommendation
+      // verdict from the AI. Never fall through to evidenceVerdict unless the
+      // AI gave us nothing usable, because score-driven verdict labels would
+      // semantically clash with recommendation verdicts like
+      // "Proceed With Caution".
+      const PLACEHOLDER_RE = /^(n\/?a|not enough data|unknown|null|undefined|-{1,3}|—?)$/i;
+      const aiVerdict = toText(
+        result.overall_verdict
+        ?? result.verdict
+        ?? (result as any).finalRecommendation?.verdict
+        ?? ''
+      );
+      if (aiVerdict && aiVerdict.length >= 4 && !PLACEHOLDER_RE.test(aiVerdict)) {
+        return aiVerdict;
+      }
+      // Fallback only when AI truly gave nothing — derive evidence level
+      try {
+        const fbScore = computeEvidenceScore(result, result.listingInfo ?? result.listingInfoData ?? undefined);
+        return evidenceVerdict(fbScore);
+      } catch {
+        return 'Not enough data';
+      }
     })(),
-    verdict: toText(result.overall_verdict ?? result.verdict ?? 'Not enough data'),
-    confidence: toText(result.recommendation?.confidence ?? result.scoreConfidence ?? result.confidence ?? ''),
+    confidence: (() => {
+      // Report Confidence is score-driven: it can NEVER disagree with the
+      // displayed score. Step1's "confidence" field is a photo-clarity
+      // signal from the LLM — semantically unrelated and confusing when
+      // shown next to a number, so we ignore it unless score is unavailable.
+      const PLACEHOLDER_RE = /^(n\/?a|unknown|null|undefined|-{1,3}|—?)$/i;
+
+      // 1. PRIMARY: derive confidence from the SAME score that hero.score uses.
+      const fromScore = scoreToConfidence(computedScore);
+      if (fromScore) return fromScore;
+
+      // 2. FALLBACK: when score is unavailable, honor an explicit LLM
+      //    confidence IF it isn't a placeholder.
+      const explicit = toText(
+        (result as any).recommendation?.confidence
+        ?? (result as any).scoreConfidence
+        ?? (result as any).confidence
+        ?? ''
+      );
+      if (explicit && explicit.length >= 3 && !PLACEHOLDER_RE.test(explicit)) {
+        return explicit;
+      }
+      return '';
+    })(),
     summary: toText(result.quick_summary ?? result.quickSummary ?? result.summary ?? ''),
     bottomLine: toText(result.bottom_line ?? result.bottomLine ?? '') || undefined,
     primaryLabel: toText(result.recommendation?.mainReasons?.[0] ?? ''),
@@ -698,6 +815,102 @@ function buildSections(result: USSaleResult): ReportSection[] {
   const questions = (Array.isArray(result.questions_to_ask ?? result.questionsToAsk) ? result.questions_to_ask ?? result.questionsToAsk : []).slice(0, 6);
   const qItems = objectItems(questions, { title: 'Question' });
   if (qItems.length > 0) sections.push({ id: 'questions-to-ask', title: 'Questions to Ask', subtitle: 'Before you make an offer', items: qItems });
+
+  // ── risk_categories (buyer-advocate 4-class risk signal framework) ──────
+  const rc = (result as any).risk_categories;
+  if (rc && typeof rc === 'object') {
+    const categoryLabels: Array<[string, string]> = [
+      ['foundation_basement', 'Foundation / Basement'],
+      ['water_leaks', 'Water / Leaks'],
+      ['roof_exterior', 'Roof / Exterior'],
+      ['hidden_ownership_cost', 'Hidden Ownership Cost'],
+    ];
+    const rcItems: SectionItem[] = [];
+    for (const [key, label] of categoryLabels) {
+      const c = rc[key];
+      if (!c || typeof c !== 'object') continue;
+      const signal = toText((c as any).signal) || 'Needs verification';
+      const evidence = toText((c as any).evidence) || 'Unknown — listing does not prove';
+      const missing = toText((c as any).missing) || '';
+      const qs: string[] = Array.isArray((c as any).questions)
+        ? (c as any).questions.filter((x: unknown) => typeof x === 'string' && x.trim())
+        : [];
+      const sev = severityOf(signal);
+      rcItems.push({
+        title: label,
+        description: evidence + (missing ? `\n\nNot proven: ${missing}` : ''),
+        badge: signal,
+        severity: sev ?? 'medium',
+      });
+      for (const q of qs) {
+        rcItems.push({ title: 'Ask: ' + q, severity: 'low' });
+      }
+    }
+    if (rcItems.length > 0) {
+      sections.push({
+        id: 'risk-categories',
+        title: 'Buyer Risk Check',
+        subtitle: 'Risk signals grouped from listing facts, photo evidence, and undisclosed gaps. Not a defect diagnosis.',
+        items: rcItems,
+      });
+    }
+  }
+
+  // ── listing_does_not_prove ────────────────────────────────────────────────
+  const ldp = (result as any).listing_does_not_prove;
+  if (Array.isArray(ldp) && ldp.length > 0) {
+    const items: SectionItem[] = ldp
+      .filter((x: unknown): x is string => typeof x === 'string' && x.trim().length > 0)
+      .filter((s) => !isGarbage(s)) // filter garbage
+      .filter((s) => !s.endsWith('?')) // no question marks per prompt rules
+      .filter((s) => !s.toLowerCase().includes('could ') && !s.toLowerCase().includes('may ') && !s.toLowerCase().includes('might ')) // no consequence explanations
+      .slice(0, MAX_LISTING_DOES_NOT_PROVE) // hard cap
+      .map((s) => ({ title: 'Not proven by listing', description: s, badge: 'Needs verification' }));
+    if (items.length > 0) {
+      sections.push({
+        id: 'listing-does-not-prove',
+        title: 'What the Listing Does Not Prove',
+        subtitle: 'Key buyer-relevant facts this listing has not disclosed or documented.',
+        items,
+      });
+    }
+  }
+
+  // ── before_you_book_showing ───────────────────────────────────────────────
+  const bybs = (result as any).before_you_book_showing;
+  if (Array.isArray(bybs) && bybs.length > 0) {
+    const items: SectionItem[] = bybs
+      .filter((x: unknown): x is string => typeof x === 'string' && x.trim().length > 0)
+      .filter((s) => !isGarbage(s)) // filter garbage
+      .slice(0, MAX_BEFORE_SHOWING) // hard cap
+      .map((q) => ({ title: q, badge: 'Ask before booking' }));
+    if (items.length > 0) {
+      sections.push({
+        id: 'before-you-book-showing',
+        title: 'Before You Book a Showing',
+        subtitle: 'Questions derived from the risk signals above — ask the listing agent or seller before scheduling.',
+        items,
+      });
+    }
+  }
+
+  // ── deeper_due_diligence ──────────────────────────────────────────────────
+  const ddd = (result as any).deeper_due_diligence;
+  if (Array.isArray(ddd) && ddd.length > 0) {
+    const items: SectionItem[] = ddd
+      .filter((x: unknown): x is string => typeof x === 'string' && x.trim().length > 0)
+      .filter((s) => !isGarbage(s)) // filter garbage
+      .slice(0, MAX_DEEPER_DILIGENCE) // hard cap
+      .map((s) => ({ title: s, badge: 'Verify deeper' }));
+    if (items.length > 0) {
+      sections.push({
+        id: 'deeper-due-diligence',
+        title: 'Deeper Due Diligence',
+        subtitle: 'Verification items to pursue after deciding to visit — documents, professional inspections, and detailed checks.',
+        items,
+      });
+    }
+  }
 
   return sections;
 }
