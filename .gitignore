@@ -36,3 +36,6 @@ supabase/config.toml
 
 # Misc
 新建文件夹/
+
+# Temporary refactor backups (see backups/README.md)
+backups/*.bak-*

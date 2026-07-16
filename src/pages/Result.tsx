@@ -23,7 +23,28 @@ export function ResultPage() {
     const stored = sessionStorage.getItem('analysisResult');
     if (stored) {
       try {
-        setResult(JSON.parse(stored));
+        const parsed = JSON.parse(stored) as AnalysisResult | BasicAnalysisResult;
+        // Cross-listing guard: a stored analysisResult from another listing would
+        // mix the wrong address / year / region into the current URL. If the
+        // stored listingInfo.listingUrl doesn't match the page URL, drop it.
+        const storedUrl = (parsed as any)?.listingInfo?.listingUrl;
+        if (storedUrl && typeof storedUrl === 'string') {
+          try {
+            const stored = new URL(storedUrl);
+            const here = new URL(window.location.href);
+            if (stored.host + stored.pathname !== here.host + here.pathname) {
+              console.warn('[Result] Stored analysisResult belongs to a different listing — clearing', {
+                storedUrl,
+                currentUrl: window.location.href,
+              });
+              sessionStorage.removeItem('analysisResult');
+              return;
+            }
+          } catch {
+            /* ignore URL parse errors */
+          }
+        }
+        setResult(parsed);
       } catch {
         // Invalid data
       }

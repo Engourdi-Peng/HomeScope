@@ -21,6 +21,7 @@ function getSpaceTypeLabel(spaceType: string): string {
     basement: 'Basement',
     pool: 'Pool',
     yard: 'Yard',
+    dining: 'Dining',
     dining_room: 'Dining Room',
     diningroom: 'Dining Room',
     office: 'Office',
@@ -195,24 +196,25 @@ function AreaReviewCard({ area }: { area: PhotoReviewArea }) {
   const hasConcerns = area.visibleConcerns && area.visibleConcerns.length > 0;
   const hasCannotVerify = area.cannotTellFromPhotos && area.cannotTellFromPhotos.length > 0;
   const hasNextSteps = area.whatToCheckNext && area.whatToCheckNext.length > 0;
+  const areaLabel = getSpaceTypeLabel(area.area) || area.area;
 
   return (
     <div className="bg-white rounded-xl border border-stone-200 p-4 shadow-sm">
-      {/* Area Header */}
-      <div className="flex items-start justify-between gap-3 mb-3">
-        <div className="flex items-center gap-2">
-          <h4 className="text-sm font-semibold text-stone-900">
-            {getSpaceTypeLabel(area.area) || area.area}
-          </h4>
+      {/* Area Header — title first, confidence badge below (not on the title row) */}
+      <div className="mb-3">
+        <h4 className="text-sm font-semibold text-stone-900 leading-tight">
+          {areaLabel}
           {area.photoCount && (
-            <span className="text-[10px] text-stone-400">
+            <span className="ml-1 text-[10px] text-stone-400 font-normal">
               ({area.photoCount} photo{area.photoCount !== 1 ? 's' : ''})
             </span>
           )}
+        </h4>
+        <div className="mt-2">
+          <span className={`inline-block text-[10px] font-medium px-2 py-0.5 rounded-full ${getConfidenceColor(area.confidence)}`}>
+            {area.confidence} confidence
+          </span>
         </div>
-        <span className={`text-[10px] font-medium px-2 py-0.5 rounded-full ${getConfidenceColor(area.confidence)}`}>
-          {area.confidence} confidence
-        </span>
       </div>
 
       {/* What It Looks Like */}
