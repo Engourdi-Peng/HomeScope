@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "HomeScope",
-  "version": "1.0.2",
+  "version": "1.0.18",
   "description": "AI-powered property analysis in your browser - Supports realestate.com.au and Zillow. For personal use only. Please respect each website's Terms of Service. Do not use for commercial bulk scraping.",
   "icons": {
     "16": "icon.png",
@@ -46,7 +46,9 @@
         "https://*.realestate.com.au/*",
         "https://*.tryhomescope.com/*"
       ],
-      "js": ["content.js"],
+      "js": [
+        "content.js"
+      ],
       "run_at": "document_idle"
     }
   ]

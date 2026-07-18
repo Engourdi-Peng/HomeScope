@@ -1,0 +1,36 @@
+{
+  "result": {
+    "propertyCategory": "single_family",
+    "risk_categories": {
+      "foundation_basement": null,
+      "water_leaks": null,
+      "roof_exterior": null,
+      "hidden_ownership_cost": null
+    },
+    "listing_does_not_prove": [],
+    "before_you_book_showing": [],
+    "photo_review": {
+      "overallSummary": "The home features lovely natural light and a cozy feel.",
+      "areas": [
+        {
+          "name": "exterior",
+          "visibleConcerns": [
+            "The exterior appears to be a semi-detached structure based on the shared wall in the photo",
+            "Older cabinets and small room",
+            "Limited natural light"
+          ],
+          "cannotTellFromPhotos": ["Foundation"],
+          "whatToCheckNext": ["Ask the seller"]
+        },
+        {
+          "name": "basement",
+          "visibleConcerns": [
+            "This is an illegal basement apartment — separate entrance visible in photo"
+          ],
+          "cannotTellFromPhotos": ["Permits"],
+          "whatToCheckNext": ["Verify permits"]
+        }
+      ]
+    }
+  }
+}

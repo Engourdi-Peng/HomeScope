@@ -1,0 +1,105 @@
+{
+  "result": {
+    "propertyCategory": "single_family",
+    "propertyType": "single_family",
+    "year_built": 1972,
+    "risk_categories": {
+      "foundation_basement": {
+        "risk_level": "Medium",
+        "signal": "Needs verification",
+        "evidence": "Basement appears finished in two photos with paneling and drop ceiling; no permit language in listing",
+        "missing": "Whether the finished basement has permits, whether egress windows exist, and any basement moisture history",
+        "why_it_matters": "Unpermitted finished basements can block financing, fail insurance inspection, and complicate resale for a 1972 home",
+        "questions": [
+          "Are there permits on file for the basement finish?",
+          "Has the basement ever had any moisture or water intrusion?",
+          "Do the basement bedrooms meet egress code?"
+        ]
+      },
+      "water_leaks": {
+        "risk_level": "Low",
+        "signal": "Listing shows evidence",
+        "evidence": "Recent roof replacement and water heater replacement disclosed in listing",
+        "missing": "Plumbing supply line material and age",
+        "why_it_matters": "Older 1972 home may still have galvanized supply lines that restrict flow and corrode internally",
+        "questions": [
+          "What material are the water supply lines and when were they last replaced?"
+        ]
+      },
+      "roof_exterior": {
+        "risk_level": "Low",
+        "signal": "Listing shows evidence",
+        "evidence": "Listing states roof replaced in 2023 with transferable warranty",
+        "missing": "Siding material age, soffit/fascia condition, gutter drainage pattern",
+        "why_it_matters": "Even with a new roof, exterior envelope (siding, flashing, drainage) determines long-term water intrusion risk",
+        "questions": [
+          "What is the age and material of the siding?",
+          "Where does the downspout discharge — does it slope away from the foundation?"
+        ]
+      },
+      "hidden_ownership_cost": {
+        "risk_level": "Medium",
+        "signal": "Needs verification",
+        "evidence": "Listing mentions oil heating; no permit or inspection history disclosed",
+        "missing": "Oil tank age, location (basement or buried), decommissioning status, and annual fuel cost",
+        "why_it_matters": "Oil heating is more expensive to operate and a buried tank can leak, triggering state cleanup funds and insurance issues",
+        "questions": [
+          "Where is the oil tank located and when was it last inspected?",
+          "What was the average annual heating fuel cost over the last 3 years?"
+        ]
+      }
+    },
+    "listing_does_not_prove": [
+      "Roof age or last replacement date (listing mentions recent work but does not give exact date)",
+      "Foundation condition — no engineer letter or visible inspection report",
+      "Basement water history — no disclosure of any past seepage or sump pump use",
+      "Finished-basement permits and code compliance for the 2-bed basement layout",
+      "Plumbing material and age (copper, galvanized, or PEX) is not stated",
+      "Electrical panel amperage and last inspection date",
+      "HVAC system age, brand, and last service date",
+      "Water heater age and type (tank vs tankless)",
+      "Actual HOA fee and what it covers (this is not an HOA property but worth confirming)",
+      "Average monthly utility cost for electric, gas, and oil heating",
+      "Recent renovation permits pulled in the last 10 years",
+      "Seller disclosure statement or pre-listing inspection report availability"
+    ],
+    "before_you_book_showing": [
+      "Are the basement finishes permitted and do the bedrooms meet egress code?",
+      "Has the basement ever had water intrusion, and is there a sump pump with battery backup?",
+      "Where is the oil tank located, what is its age, and when was it last inspected?",
+      "What material are the plumbing supply lines and what year were they last replaced?",
+      "What is the amperage of the electrical panel and when was it last inspected?",
+      "What is the age and service history of the HVAC system and water heater?",
+      "Is the seller willing to share a pre-listing inspection report or seller disclosure?"
+    ],
+    "photo_review": {
+      "overallSummary": "Photos show a 1972 single-family home with a finished basement and oil heating. Visible risks include potential unpermitted basement work, possible galvanized plumbing, and a buried oil tank that needs verification. Recommend verification before booking.",
+      "areas": [
+        {
+          "name": "basement",
+          "visibleConcerns": [
+            "Older wood paneling, drop ceiling, and carpet over concrete — photos do not prove moisture history or permit status"
+          ],
+          "cannotTellFromPhotos": ["Foundation crack pattern", "Sump pump presence", "Egress window compliance"],
+          "whatToCheckNext": ["Confirm permits on file", "Verify moisture history with the seller"]
+        },
+        {
+          "name": "kitchen",
+          "visibleConcerns": [
+            "Galvanized supply lines may be original and could restrict flow — verify plumbing material"
+          ],
+          "cannotTellFromPhotos": ["Under-sink condition", "Supply line material confirmation"],
+          "whatToCheckNext": ["Ask for plumbing permit history"]
+        },
+        {
+          "name": "exterior",
+          "visibleConcerns": [
+            "Photos do not prove siding age or whether any addition is permitted"
+          ],
+          "cannotTellFromPhotos": ["Oil tank location", "Buried tank risk"],
+          "whatToCheckNext": ["Confirm oil tank location during showing"]
+        }
+      ]
+    }
+  }
+}

@@ -9,6 +9,9 @@ import { useAuth } from '../contexts/AuthContext';
 import * as Accordion from '@radix-ui/react-accordion';
 
 // 产品配置
+// KEEP-IN-SYNC: see docs/pricing.md. This display-only table must mirror
+// BASE_CREDITS / PLAN_PRICES in supabase/functions/create-order and paddle-webhook,
+// and the CASE in migration 017.
 const PRODUCTS = [
   {
     id: 'starter',

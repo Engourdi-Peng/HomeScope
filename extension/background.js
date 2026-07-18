@@ -693,7 +693,32 @@ async function handleMessage(message, sender, sendResponse) {
       break;
     }
 
-    // ===== Lightweight Basic Analysis (Anonymous, no images, sync) =====
+    // ===== Helper: derive reportMode from listingData (strict, no default sale) =====
+  // Returns 'sale' | 'rent' | null. Never defaults to sale; if both fail we return null
+  // and the caller (store) should have blocked before reaching here.
+  function deriveReportModeStrict(listingData, tabUrl) {
+    if (!listingData && !tabUrl) return null;
+    // 1. Explicit reportMode set by the modal
+    if (listingData?.reportMode === 'sale' || listingData?.reportMode === 'rent') {
+      return listingData.reportMode;
+    }
+    // 2. listingType inferred by content script (rent | sale | unknown)
+    if (listingData?.listingType === 'sale' || listingData?.listingType === 'rent') {
+      return listingData.listingType;
+    }
+    // 3. pricePeriod
+    const pp = String(listingData?.pricePeriod || '').toLowerCase();
+    if (pp === 'month' || pp === 'week') return 'rent';
+    // 4. URL fallback (rent only — homedetails/ is NOT a default for sale)
+    const u = String(tabUrl || listingData?.url || '').toLowerCase();
+    if (u.includes('/rent/') || u.includes('/rental/') || u.includes('/apartments/') ||
+        u.includes('/for-rent/') || u.includes('/community/')) {
+      return 'rent';
+    }
+    return null;
+  }
+
+  // ===== Lightweight Basic Analysis (Anonymous, no images, sync) =====
     case 'analyze_basic': {
       const listingData = message.data;
 
@@ -712,15 +737,29 @@ async function handleMessage(message, sender, sendResponse) {
       const tabUrl = listingData?.tabUrl || listingData?.url || '';
       const { source, sourceDomain, market, listingUrl } = deriveListingSourceInfo(listingData, tabUrl);
       const description = listingData?.description || listingData?.rawText || listingData?.title || 'Property listing information';
-      // === LAYER 3a ===
-      const reportMode = listingData?.reportMode || 'rent';
+      // === LAYER 3a — strict derive; never default to sale ===
+      const reportMode = deriveReportModeStrict(listingData, tabUrl);
+      if (!reportMode) {
+        sendResponse({
+          status: 'error',
+          error: 'REPORT_MODE_REQUIRED: cannot determine if listing is for sale or for rent.',
+          code: 'REPORT_MODE_REQUIRED',
+          listingType: 'unknown',
+        });
+        return;
+      }
 
       // Build optionalDetails: pass ALL property info for comprehensive analysis
       const priceText = listingData?.priceText || listingData?.price || null;
       const optionalDetails = {};
       if (priceText) {
         if (reportMode === 'rent') {
-          optionalDetails.weeklyRent = priceText;
+          // US uses monthly rent; AU uses weekly rent — respect pricePeriod when available
+          if (market === 'US') {
+            optionalDetails.monthlyRent = priceText;
+          } else {
+            optionalDetails.weeklyRent = priceText;
+          }
         } else {
           optionalDetails.askingPrice = priceText;
         }
@@ -937,10 +976,20 @@ async function handleMessage(message, sender, sendResponse) {
       const listingData = message.data;
       const imageUrls = listingData?.imageUrls || listingData?.images || [];
       const description = listingData?.description || listingData?.rawText || '';
-      const reportMode = listingData?.reportMode || 'rent';
-
       // ── Unified source/market derivation ────────────────────────────────────────────
       const tabUrl = listingData?.tabUrl || listingData?.url || '';
+      // Strict derive; never default to sale
+      const reportMode = deriveReportModeStrict(listingData, tabUrl);
+      if (!reportMode) {
+        sendResponse({
+          status: 'error',
+          error: 'REPORT_MODE_REQUIRED: cannot determine if listing is for sale or for rent.',
+          code: 'REPORT_MODE_REQUIRED',
+          listingType: 'unknown',
+        });
+        return;
+      }
+
       const { source, sourceDomain, market, listingUrl } = deriveListingSourceInfo(listingData, tabUrl);
       const serverConfig = getAnalyzeApiUrl(sourceDomain);
 
@@ -950,7 +999,11 @@ async function handleMessage(message, sender, sendResponse) {
       const optionalDetails = {};
       if (priceText) {
         if (reportMode === 'rent') {
-          optionalDetails.weeklyRent = priceText;
+          if (market === 'US') {
+            optionalDetails.monthlyRent = priceText;
+          } else {
+            optionalDetails.weeklyRent = priceText;
+          }
         } else {
           optionalDetails.askingPrice = priceText;
         }
@@ -1479,6 +1532,34 @@ async function handleMessage(message, sender, sendResponse) {
         _tabListingMap.set(tabId, listingUrl);
       }
       sendResponse({ success: true });
+      break;
+    }
+
+    // ──────────────────────────────────────────────────────────────────
+    // FORCE_REEXTRACT — 转发到当前激活标签页的 content script
+    // content script 持有 document，调 ZillowExtractor.forceReextract(forcedType)
+    // store.tsx 不直接调 extractor（拿不到 DOM）
+    // ──────────────────────────────────────────────────────────────────
+    case 'FORCE_REEXTRACT': {
+      try {
+        const [activeTab] = await chrome.tabs.query({ active: true, currentWindow: true });
+        if (!activeTab?.id) {
+          sendResponse({ ok: false, error: 'No active tab for FORCE_REEXTRACT' });
+          return;
+        }
+        const forcedType = message.forcedListingType;
+        if (forcedType !== 'rent' && forcedType !== 'sale') {
+          sendResponse({ ok: false, error: 'forcedListingType must be rent or sale' });
+          return;
+        }
+        const contentResponse = await chrome.tabs.sendMessage(activeTab.id, {
+          action: 'FORCE_REEXTRACT',
+          forcedListingType: forcedType,
+        });
+        sendResponse(contentResponse);
+      } catch (err) {
+        sendResponse({ ok: false, error: String(err?.message || err) });
+      }
       break;
     }
 

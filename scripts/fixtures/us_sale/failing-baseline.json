@@ -1,0 +1,24 @@
+{
+  "result": {
+    "propertyCategory": "single_family",
+    "risk_categories": {
+      "foundation_basement": null,
+      "water_leaks": null,
+      "roof_exterior": null,
+      "hidden_ownership_cost": null
+    },
+    "listing_does_not_prove": [],
+    "before_you_book_showing": [],
+    "photo_review": {
+      "overallSummary": "The home features lovely natural light and a cozy feel.",
+      "areas": [
+        {
+          "name": "living_room",
+          "visibleConcerns": ["Older cabinets and small room", "Limited natural light"],
+          "cannotTellFromPhotos": ["Foundation"],
+          "whatToCheckNext": ["Ask the seller"]
+        }
+      ]
+    }
+  }
+}

@@ -772,6 +772,112 @@ const INSTANCE_ID = Math.random().toString(36).slice(2, 9);
         sendResponse({ success: true, data: pageData });
         return true;
 
+      // ──────────────────────────────────────────────────────────────────
+      // FORCE_REEXTRACT — 强制重提取（用户在 ReportModeModal 选定 Rent/Sale）
+      // content script 持有 document，调 ZillowExtractor.forceReextract(forcedType)
+      // 返回 { ok, data } 或 { ok:false, error }
+      // 不允许只 toggle listingType 后用之前的 common 数据直接发起分析。
+      // ──────────────────────────────────────────────────────────────────
+      case 'FORCE_REEXTRACT': {
+        const forcedType = message.forcedListingType;
+        if (forcedType !== 'rent' && forcedType !== 'sale') {
+          sendResponse({ ok: false, error: 'forcedListingType must be rent or sale' });
+          return true;
+        }
+
+        // 异步处理
+        (async () => {
+          try {
+            // 取最近一次提取结果（pageData）作为 common fields 基线
+            const baseData = pageData;
+            if (!baseData) {
+              sendResponse({ ok: false, error: 'No prior extraction data — please re-extract first' });
+              return;
+            }
+
+            // 复用现有 extractListingDataLight 拿到 lightListing（含 raw data）
+            // 然后基于当前 listingType 选定，调用 forceReextract
+            const lightResult = await extractListingDataLight();
+            const lightListing = lightResult?.listing;
+            if (!lightListing) {
+              sendResponse({ ok: false, error: 'Failed to re-read page data' });
+              return;
+            }
+
+            // 根据 forcedType 标记 listingType + 新字段
+            const out = { ...lightListing };
+            out.listingType = forcedType;
+            out.reportMode = forcedType;
+
+            if (forcedType === 'rent') {
+              // 把 price（页面原始文本）作为 displayPrice 保留
+              out.displayPrice = out.price || null;
+              // 价格字段映射: US rent 模式用 monthlyRent；priceAmount 即月租
+              if (out.price && /\/(?:mo|month|monthly)\b/i.test(out.price)) {
+                const m = out.price.match(/\$?\s?([\d,]+)/);
+                if (m) {
+                  out.monthlyRent = parseFloat(m[1].replace(/,/g, ''));
+                  out.priceAmount = out.monthlyRent;
+                }
+              }
+              // 售价相关字段清空（仅清新字段；旧字段保留兼容）
+              out.askingPrice = null;
+              out.saleZestimate = null;
+              out.pricePerSqft = null;
+              out.annualTax = null;
+              out.propertyTaxMonthly = null;
+              out.homeInsuranceMonthly = null;
+              out.monthlyPayment = null;
+              out.taxAssessedValue = null;
+              out.daysOnZillow = null;
+              out.dateOnMarket = null;
+              // pricePeriod 标记为 month
+              out.pricePeriod = 'month';
+            } else {
+              // sale 模式
+              out.displayPrice = out.price || null;
+              // 售价来自 priceAmount 或 price 文本
+              if (out.priceAmount != null) {
+                out.askingPrice = out.priceAmount;
+              } else if (out.price) {
+                const m = out.price.match(/\$?\s?([\d,]+)/);
+                if (m) {
+                  const v = parseFloat(m[1].replace(/,/g, ''));
+                  out.askingPrice = v;
+                  out.priceAmount = v;
+                }
+              }
+              // rent 专属字段清空（仅清新字段）
+              out.monthlyRent = null;
+              out.advertisedRentRange = null;
+              out.securityDeposit = null;
+              out.holdingDeposit = null;
+              out.applicationFee = null;
+              out.leaseTerm = null;
+              out.utilitiesIncluded = null;
+              out.landlordPays = null;
+              out.tenantPays = null;
+              out.petPolicy = null;
+              out.parkingFee = null;
+              out.amenityFee = null;
+              out.qualificationRequirements = null;
+              out.exactUnit = null;
+              out.availableDate = null;
+              // pricePeriod 标记为 total
+              out.pricePeriod = 'total';
+            }
+
+            // 写回 pageData 缓存（用于后续 GET_CACHED_DATA 读取）
+            pageData = out;
+
+            sendResponse({ ok: true, data: out });
+          } catch (err) {
+            sendResponse({ ok: false, error: String(err?.message || err) });
+          }
+        })();
+        return true;
+      }
+
       default:
         sendResponse({ success: false, error: 'UNKNOWN_ACTION' });
     }
@@ -1285,63 +1391,59 @@ function detectReportMode(listing, url) {
   const urlLower = url.toLowerCase();
   const priceText = (listing.priceText || '').toLowerCase();
   const bodyText = document.body.innerText || '';
-  
-  // ========== 第一优先级：URL ==========
-  // 租房 URL (通用)
-  if (urlLower.includes('/rent/') || 
-      urlLower.includes('/rental/') ||
-      urlLower.includes('/to-rent/')) {
+
+  // ============================================================================
+  // Hard signals from the rendered page body. These win over URL heuristics
+  // because multi-unit rental buildings on Zillow often share the
+  // /homedetails/<address-slug>/ URL pattern with for-sale properties.
+  // ============================================================================
+  const isRentListing =
+    /\$\s?[\d,]+(?:\.\d{2})?\s*\/\s*(?:mo|month|monthly)\b/i.test(bodyText) || // $/mo price chip
+    /apply\s*now|landlord'?s?\s+criteria|rent\s*zestimate|monthly\s+rent|tenant\s+(?:pays|is\s+responsib)/i.test(bodyText);
+  const isSaleListing =
+    /\bmake\s+an?\s+offer\b/i.test(bodyText) ||
+    (/\bfor\s+sale\b/i.test(bodyText) && !isRentListing);
+
+  if (isRentListing && isSaleListing) {
+    // Conflicting body signals (e.g. multi-unit homedetails where the page
+    // header says "For sale" but the listing body is tenant-facing).
+    // The presence of $/mo or landlord's criteria is authoritative — the
+    // listing IS a rental.
     return 'rent';
   }
-  
+  if (isRentListing) return 'rent';
+  if (isSaleListing) return 'sale';
+
+  // ========== 第二优先级：URL ==========
+  // 租房 URL (通用)
+  if (urlLower.includes('/rent/') ||
+      urlLower.includes('/rental/') ||
+      urlLower.includes('/to-rent/') ||
+      urlLower.includes('for-rent') ||
+      urlLower.includes('zillow.com/rent')) {
+    return 'rent';
+  }
+
   // 买房 URL (通用)
-  if (urlLower.includes('/buy/') || 
+  if (urlLower.includes('/buy/') ||
       urlLower.includes('/for-sale/') ||
       urlLower.includes('/sale/') ||
       urlLower.includes('/sold/')) {
     return 'sale';
   }
-  
-  // ========== Zillow 特定检测 ==========
-  if (isZillowPage()) {
-    // Zillow rent URL
-    if (urlLower.includes('zillow.com/rent') || urlLower.includes('for-rent')) {
-      return 'rent';
-    }
-    
-    // Zillow for sale URL patterns
-    if (urlLower.includes('homedetails') || 
-        urlLower.includes('/condo/') || 
-        urlLower.includes('/townhouse/') ||
-        urlLower.includes('/lot/') ||
-        urlLower.includes('for-sale')) {
-      return 'sale';
-    }
-    
-    // Zillow 特有特征
-    // 租房：Rent Zestimate 显示
-    if (/\bRent\s*Zestimate\b/i.test(bodyText)) {
-      return 'rent';
-    }
-    
-    // 买房：Zestimate 显示
-    if (/\bZestimate\b/i.test(bodyText)) {
-      return 'sale';
-    }
-  }
-  
-  // ========== 第二优先级：价格格式 ==========
+
+  // ========== 第三优先级：价格格式 ==========
   // 租房特征：per week / pw / p/w
   if (/\b(per\s*week|pw|p\/w|weekly)\b/i.test(priceText)) {
     return 'rent';
   }
-  
+
   // 租房特征：Bond + 金额（澳洲租房押金通常是 4 周房租）
   // 匹配 "Bond $2,000" 或 "Bond: 2000" 等格式
   if (/\bBond\b[:\s]*\$?\d+/i.test(bodyText)) {
     return 'rent';
   }
-  
+
   // 买房特征：大数字（>=50万）且无周期单位
   const priceNum = parseFloat(priceText.replace(/[^\d]/g, ''));
   if (priceNum >= 500000 && !/\b(per|pw|p\/w|weekly|month)\b/i.test(priceText)) {
@@ -2308,25 +2410,64 @@ function extractAddressZillow() {
  */
 function extractRoomsZillow() {
   const result = { bedrooms: null, bathrooms: null, sqft: null };
-  
-  // Method 1: data-testid bed-bath-sqft container
-  const bedBathEl = document.querySelector('[data-testid="bed-bath-beyond"]') || 
+
+  // ── Method 1: per-stat data-testid elements (preferred) ───────────────────
+  // Zillow renders each room stat as a discrete element with these testids.
+  const bedStatEl = document.querySelector('[data-testid="bed-bath-item--bed"]');
+  const bathStatEl = document.querySelector('[data-testid="bed-bath-item--bath"]');
+  const sqftStatEl = document.querySelector('[data-testid="bed-bath-item--sqft"]');
+
+  if (bedStatEl) {
+    const m = (bedStatEl.textContent || '').match(/(\d+(?:\.\d+)?)/);
+    if (m) result.bedrooms = parseFloat(m[1]);
+  }
+  if (bathStatEl) {
+    const m = (bathStatEl.textContent || '').match(/(\d+(?:\.\d+)?)/);
+    if (m) result.bathrooms = parseFloat(m[1]);
+  }
+  if (sqftStatEl) {
+    const m = (sqftStatEl.textContent || '').match(/([\d,]+)/);
+    if (m) result.sqft = parseInt(m[1].replace(/,/g, ''), 10);
+  }
+
+  // ── Method 2: container with label-aware parsing ─────────────────────────
+  // For each label, take the FIRST value immediately after the label.
+  // Don't blindly use text.match() — the container can include filter chips
+  // (e.g. "Beds 1+ 2 3 4 5+") that pollute matches.
+  const bedBathEl = document.querySelector('[data-testid="bed-bath-beyond"]') ||
                     document.querySelector('[data-testid="bed-bath-sqft"]') ||
                     document.querySelector('[data-testid="hdp-property-details"]');
   
-  if (bedBathEl) {
+if (bedBathEl) {
     const text = bedBathEl.textContent || '';
-    
-    const bedMatch = text.match(/(\d+)\s*bed/);
-    const bathMatch = text.match(/(\d+(?:\.\d+)?)\s*bath/);
-    const sqftMatch = text.match(/([\d,]+)\s*sq\s*ft|([\d,]+)\s*sqft/);
-    
-    if (bedMatch) result.bedrooms = parseInt(bedMatch[1]);
-    if (bathMatch) result.bathrooms = parseFloat(bathMatch[1]);
-    if (sqftMatch) result.sqft = parseInt((sqftMatch[1] || sqftMatch[2]).replace(/,/g, ''));
+
+    // For each label, take the FIRST value immediately after the label in the
+    // container text. We avoid plain text.match(...) because the container can
+    // include filter chips (e.g. "Beds 1+ 2 3 4 5+") or duplicate "1 ba"
+    // badges from adjacent similar-listing cards.
+    const labeledValue = (labelRe, valueRe) => {
+      const labelMatch = text.match(labelRe);
+      if (!labelMatch || labelMatch.index == null) return null;
+      const tail = text.slice(labelMatch.index + labelMatch[0].length);
+      const valueMatch = tail.match(valueRe);
+      return valueMatch ? valueMatch[1] : null;
+    };
+
+    if (result.bedrooms == null) {
+      const v = labeledValue(/\bbeds?\b/i, /(\d+(?:\.\d+)?)/);
+      if (v) result.bedrooms = parseFloat(v);
+    }
+    if (result.bathrooms == null) {
+      const v = labeledValue(/\bbaths?\b/i, /(\d+(?:\.\d+)?)/);
+      if (v) result.bathrooms = parseFloat(v);
+    }
+    if (result.sqft == null) {
+      const v = labeledValue(/\bsqft\b/i, /([\d,]+)/);
+      if (v) result.sqft = parseInt(v.replace(/,/g, ''), 10);
+    }
   }
-  
-  // Method 2: Individual data-testid elements
+
+  // ── Method 3: individual data-testid fallbacks ───────────────────────────
   if (!result.bedrooms) {
     const bedEl = document.querySelector('[data-testid="bedrooms"]');
     if (bedEl) {
@@ -2334,7 +2475,7 @@ function extractRoomsZillow() {
       if (match) result.bedrooms = parseInt(match[1]);
     }
   }
-  
+
   if (!result.bathrooms) {
     const bathEl = document.querySelector('[data-testid="bathrooms"]');
     if (bathEl) {
@@ -2342,23 +2483,26 @@ function extractRoomsZillow() {
       if (match) result.bathrooms = parseFloat(match[1]);
     }
   }
-  
-  // Method 3: Body text regex fallback
+
+  // ── Method 4: body text regex fallback (last resort) ─────────────────────
   if (!result.bedrooms || !result.bathrooms) {
     const bodyText = document.body.innerText || '';
-    
+
     if (!result.bedrooms) {
-      const bedMatch = bodyText.match(/(\d+)\s*(?:bed(?:s|room)?|bd)/i);
+      const bedMatch = bodyText.match(/(\d+)\s*(?:bd|bed(?:s|room)?)\b/i);
       if (bedMatch) result.bedrooms = parseInt(bedMatch[1]);
     }
-    
+
     if (!result.bathrooms) {
-      const bathMatch = bodyText.match(/(\d+(?:\.\d+)?)\s*(?:bath(?:s|room)?|ba)/i);
+      // Use word boundary on the right; left side anchored via non-word
+      // boundary so "5ba" / "5 ba" both match. Avoid `ba` alone — too
+      // ambiguous (matches "baseboard", "balcony", etc.).
+      const bathMatch = bodyText.match(/(\d+(?:\.\d+)?)\s*(?:bath(?:s|room)?)\b/i);
       if (bathMatch) result.bathrooms = parseFloat(bathMatch[1]);
     }
-    
+
     if (!result.sqft) {
-      const sqftMatch = bodyText.match(/([\d,]+)\s*(?:sq\s*ft|sqft|square\s*feet)/i);
+      const sqftMatch = bodyText.match(/([\d,]+)\s*(?:sq\s*ft|sqft|square\s*feet)\b/i);
       if (sqftMatch) result.sqft = parseInt(sqftMatch[1].replace(/,/g, ''));
     }
   }
@@ -2371,8 +2515,55 @@ function extractRoomsZillow() {
  * Targets the "What's special" section (not the full page body).
  * Strips MLS/IDX/disclaimer noise.
  * Returns up to 2500 characters of clean marketing copy, or empty string on failure.
+ *
+ * Strategy: prefer a DOM-level scoped read inside [data-testid="listing-overview"]
+ * (which preserves inter-word whitespace from sibling list items), falling back
+ * to a body innerText line scan.
  */
 function extractZillowAgentMarketingText() {
+  // ── Preferred: DOM-level scoped extraction ───────────────────────────────
+  const overview = document.querySelector('[data-testid="listing-overview"]');
+  if (overview) {
+    const headings = overview.querySelectorAll('h1, h2, h3');
+    let scopeEl = null;
+    for (const h of headings) {
+      if (/what['\u2019']?s\s*special/i.test(h.textContent || '')) {
+        scopeEl = h.parentElement || overview;
+        break;
+      }
+    }
+    if (scopeEl) {
+      // Collect highlight bullets first (each <span role="listitem"> is its own
+      // item, joined with a space — this fixes "PrivateYardLaundryHookUp...").
+      const bullets = [];
+      for (const li of scopeEl.querySelectorAll('span[role="listitem"]')) {
+        const t = (li.getAttribute('aria-label') || li.textContent || '').trim();
+        if (t && t.length >= 3) bullets.push(t);
+      }
+
+      // Then collect the body text (the agent paragraph below the bullets).
+      const bodyEl = scopeEl.querySelector('[data-testid="description"]') ||
+                     scopeEl.querySelector('article') ||
+                     scopeEl;
+      let body = '';
+      if (bodyEl) {
+        // Clone to avoid mutating live DOM, then drop the bullets so we don't
+        // double-count them.
+        const clone = bodyEl.cloneNode(true);
+        clone.querySelectorAll('span[role="listitem"], ul, ol').forEach(n => n.remove());
+        body = (clone.textContent || '').replace(/\s+/g, ' ').trim();
+      }
+
+      const combined = [...bullets, body].filter(Boolean).join(' ').replace(/\s+/g, ' ').trim();
+
+      const MLS_NOISE_RE = /internet data exchange|idx program|data relating to real estate|mls grid|all rights reserved|broker reciprocity/i;
+      if (combined.length >= 30 && !MLS_NOISE_RE.test(combined)) {
+        return combined.slice(0, 2500);
+      }
+    }
+  }
+
+  // ── Fallback: body innerText line scan (legacy behavior) ─────────────────
   const raw = document.body?.innerText || '';
   const lines = raw
     .split(/\n+/)
@@ -2427,8 +2618,43 @@ function normalizeTitleCase(text) {
 /**
  * Extract highlights (bullet-style phrases) from the "What's Special" section
  * of a Zillow listing page. Returns up to 8 title-cased phrases.
+ *
+ * Strategy:
+ *   1. Preferred: walk the DOM and pull each <span role="listitem"> value
+ *      individually. This avoids the "Private yardLaundry hook up..." run-
+ *      together problem that occurs when Zillow renders each highlight as
+ *      its own inline span and innerText doesn't insert separators.
+ *   2. Fallback: scan body innerText line-by-line (legacy behavior).
  */
 function extractZillowWhatsSpecialHighlights() {
+  // ── Preferred: DOM-level scoped extraction ───────────────────────────────
+  // Find the listing-overview container, then the "What's special" header
+  // inside it, then collect each <span role="listitem"> as a separate phrase.
+  const overview = document.querySelector('[data-testid="listing-overview"]');
+  if (overview) {
+    const headings = overview.querySelectorAll('h1, h2, h3');
+    let whatsSpecialScope = null;
+    for (const h of headings) {
+      if (/what['\u2019']?s\s*special/i.test(h.textContent || '')) {
+        whatsSpecialScope = h.parentElement || overview;
+        break;
+      }
+    }
+    if (whatsSpecialScope) {
+      const items = whatsSpecialScope.querySelectorAll('span[role="listitem"]');
+      const highlights = [];
+      for (const li of items) {
+        const text = (li.getAttribute('aria-label') || li.textContent || '').trim();
+        if (text.length >= 3 && text.length <= 80) {
+          highlights.push(normalizeTitleCase(text));
+        }
+        if (highlights.length >= 8) break;
+      }
+      if (highlights.length > 0) return Array.from(new Set(highlights));
+    }
+  }
+
+  // ── Fallback: body innerText line scan (legacy behavior) ─────────────────
   const bodyText = document.body?.innerText || '';
   const lines = bodyText
     .split(/\n+/)
@@ -2562,6 +2788,20 @@ async function extractListingDataLight() {
       bikeScore: zillowData.bikeScore || null,
       neighborhood: zillowData.neighborhood || null,
       architecturalStyle: zillowData.architecturalStyle || null,
+      // Property classification (also referenced from optionalDetails fallbacks)
+      propertyType: zillowData.propertyType || null,
+      homeType: zillowData.homeType || null,
+      propertySubtype: zillowData.propertySubtype || null,
+      // Heating / cooling / basement / parking / flood zone — kept at top
+      // level so the report + backend fallback can read them directly
+      // without depending on propertyFactsV2 nesting.
+      heating: zillowData.heating || null,
+      cooling: zillowData.cooling || null,
+      basement: zillowData.basement || null,
+      parkingFeatures: zillowData.parkingFeatures || null,
+      garageSpaces: zillowData.garageSpaces != null ? zillowData.garageSpaces : null,
+      floodZone: zillowData.floodZone || null,
+      region: zillowData.region || null,
     } : {}),
   };
 
@@ -2913,20 +3153,65 @@ function extractRooms() {
   return result;
 }
 
+/**
+ * Extract a free-form description body for a listing page.
+ *
+ * IMPORTANT: Previously this used overly-broad selectors like
+ * `[class*="content"]`, which on Zillow frequently matched the
+ * "Similar listings" / "More units in this building" carousel first and
+ * returned the wrong property's description. To avoid that, we now:
+ *
+ *  1. Prefer Zillow-specific scoped containers (listing-overview, structured
+ *     description testid) — these wrap the actual listing's text only.
+ *  2. Fall back to generic selectors, but only within the main page root
+ *     (skip sticky navs, carousels, modals) and reject containers that are
+ *     too short or look like card UI (containing multiple "$" amounts).
+ */
 function extractDescription() {
-  const descSelectors = ['[class*="description"]', '[class*="detail"]', '[class*="about"]', '[class*="content"]', 'article', 'main p'];
-  for (const sel of descSelectors) {
+  // ─── 1) Zillow-specific scoped selectors (preferred) ─────────────────────
+  const scopedSelectors = [
+    '[data-testid="listing-overview"] [data-testid="description"]',
+    '[data-testid="listing-overview"] article',
+    '[data-testid="description"]',
+    '[data-testid="structured-description"]',
+  ];
+  for (const sel of scopedSelectors) {
     const el = document.querySelector(sel);
-    if (el) {
-      const text = el.textContent.trim();
-      // Lower threshold to 30 chars to ensure we have some description
-      // (Edge Function requires either images OR description)
-      if (text.length > 30 && !text.toLowerCase().includes('cookie') && !text.toLowerCase().includes('sign in') && !text.toLowerCase().includes('login')) {
-        return text.slice(0, 5000);
-      }
+    if (!el) continue;
+    const text = (el.textContent || '').trim();
+    if (text.length >= 30 && isLikelyDescription(text)) {
+      return text.slice(0, 5000);
     }
   }
+
+  // ─── 2) Generic fallbacks inside main / article only ─────────────────────
+  const genericContainers = document.querySelectorAll('main article, main [class*="description"], main [class*="about"]');
+  for (const el of genericContainers) {
+    const text = (el.textContent || '').trim();
+    if (text.length >= 80 && isLikelyDescription(text)) {
+      return text.slice(0, 5000);
+    }
+  }
+
   return null;
+}
+
+/**
+ * Reject obvious "this is not the main listing description" candidates:
+ *  - Cookie / login / sign-in banners
+ *  - Carousel / multi-property UI (several $ prices in one block)
+ *  - MLS / IDX attribution noise
+ */
+function isLikelyDescription(text) {
+  if (!text) return false;
+  const lower = text.toLowerCase();
+  if (lower.includes('cookie') || lower.includes('sign in') || lower.includes('login')) return false;
+  if (/source[:.]|mls|onekey|idx program|all rights reserved|broker reciprocity/i.test(text)) return false;
+  // Reject card-like UI with multiple dollar amounts (e.g. similar-listing
+  // carousel: "$3,650+ $2,800+ $2,400+ ...").
+  const dollarHits = (text.match(/\$[\d,]+/g) || []).length;
+  if (dollarHits >= 4) return false;
+  return true;
 }
 
 function inferPricePeriod(priceStr) {

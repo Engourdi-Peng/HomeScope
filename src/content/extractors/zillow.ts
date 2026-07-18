@@ -11,7 +11,15 @@
  * 6. DOM ?????Facts & Features / Financial / Monthly payment?
  */
 
-import type { ListingExtractor, ExtractContext } from './base';
+import type {
+  ListingExtractor,
+  ExtractContext,
+  ModeAwareListingExtractor,
+  CommonListingFields,
+  RentListingFields,
+  SaleListingFields,
+  ListingTypeMeta,
+} from './base';
 import type { StandardizedListingData, SchoolRating } from './types';
 
 const ZILLOW_HOSTNAME = 'zillow.com';
@@ -350,7 +358,7 @@ interface ZillowRawData {
   hoaStatus?: string;
 }
 
-export class ZillowExtractor implements ListingExtractor {
+export class ZillowExtractor implements ListingExtractor, ModeAwareListingExtractor {
   readonly source = 'zillow' as const;
 
   canHandle(url: URL): boolean {
@@ -363,103 +371,225 @@ export class ZillowExtractor implements ListingExtractor {
     );
   }
 
+  // ==========================================================================
+  // Legacy entry: extract() — 保持原签名,内部走 detect + common + (sale|rent)
+  // ==========================================================================
   async extract(ctx: ExtractContext): Promise<StandardizedListingData> {
-    // ????????
+    const meta = await this.detectListingType(ctx);
+    const common = await this.extractCommonFields(ctx);
+
+    if (meta.type === 'rent') {
+      const rent = await this.extractRentSpecificFields(ctx, common);
+      return mergeCommonAndRent(common, rent, ctx, meta);
+    }
+    if (meta.type === 'sale') {
+      const sale = await this.extractSaleSpecificFields(ctx, common);
+      return mergeCommonAndSale(common, sale, ctx, meta);
+    }
+    // unknown: 只返回 common + listingType='unknown'，等待 ReportModeModal 选定
+    return mergeCommonAndUnknown(common, ctx, meta);
+  }
+
+  // ==========================================================================
+  // ModeAwareListingExtractor — 模式契约
+  // ==========================================================================
+
+  async detectListingType(ctx: ExtractContext): Promise<ListingTypeMeta> {
+    // 复用现有 4 步信号；保留全部 strict signal 逻辑
+    const doc = ctx.document;
+    const url = ctx.url;
+    // 收集 raw 触发 detectFromStructuredData/detectFromTargetedDom 等
+    // 这些方法原为 private，从 extract() 内取过 rawData。这里用最小 raw：
+    const raw = this.collectRawSignalsForDetection(doc);
+    const result = this.detectListingTypeInternal(doc, url, raw);
+    return result;
+  }
+
+  async extractCommonFields(ctx: ExtractContext): Promise<CommonListingFields> {
+    const data = await this.collectRawData(ctx);
+    const meta = await this.detectListingType(ctx);
+    return this.buildCommonFields(data, meta);
+  }
+
+  async extractRentSpecificFields(
+    ctx: ExtractContext,
+    common: CommonListingFields,
+  ): Promise<RentListingFields> {
+    const data = await this.collectRawData(ctx);
+    return this.buildRentFields(data, common);
+  }
+
+  async extractSaleSpecificFields(
+    ctx: ExtractContext,
+    common: CommonListingFields,
+  ): Promise<SaleListingFields> {
+    const data = await this.collectRawData(ctx);
+    return this.buildSaleFields(data, common);
+  }
+
+  async forceReextract(
+    ctx: ExtractContext,
+    common: CommonListingFields,
+    forcedListingType: 'rent' | 'sale',
+  ): Promise<StandardizedListingData> {
+    // 复用已经跑过的 common fields，避免重新扫描页面（content script 持有 document）
+    if (forcedListingType === 'rent') {
+      const rent = await this.extractRentSpecificFields(ctx, common);
+      return mergeCommonAndRent(common, rent, ctx, {
+        type: 'rent',
+        source: common.listingTypeSource ?? 'dom',
+        confidence: 'high',
+        conflicts: [],
+      });
+    }
+    if (forcedListingType === 'sale') {
+      const sale = await this.extractSaleSpecificFields(ctx, common);
+      return mergeCommonAndSale(common, sale, ctx, {
+        type: 'sale',
+        source: common.listingTypeSource ?? 'dom',
+        confidence: 'high',
+        conflicts: [],
+      });
+    }
+    throw new Error(`forceReextract: invalid forcedListingType=${forcedListingType}`);
+  }
+
+  // ==========================================================================
+  // Helpers — internal pipeline
+  // ==========================================================================
+
+  /**
+   * Re-run all 5 提取步骤(JSON-LD / NEXT_DATA / Apollo / TestID / Text / DOM).
+   * Used by both extract() and ModeAware methods.
+   * 保留所有现有 4 步信号逻辑（不删/不改）。
+   */
+  private async collectRawData(ctx: ExtractContext): Promise<ZillowRawData> {
     let rawData = this.extractFromJsonLd(ctx.document);
 
-    // Cascade: only skip a strategy if we already have the essential fields from it.
-    // Always run the JSON-LD step (method 0) regardless.
     if (!rawData.address && !rawData.price) {
       rawData = { ...rawData, ...this.extractFromNextData(ctx.document) };
     }
-
     if (!rawData.address && !rawData.price && !rawData.propertyType) {
       rawData = { ...rawData, ...this.extractFromApolloData(ctx.document) };
     }
-
     if (!rawData.address && !rawData.price && !rawData.propertyType) {
       rawData = { ...rawData, ...this.extractFromTestId(ctx.document) };
     }
-
     if (!rawData.address && !rawData.price && !rawData.propertyType) {
       rawData = { ...rawData, ...this.extractFromText(ctx.document, ctx.url) };
     }
 
-    // ??5: DOM ??????????section-scoped parsing?
     const domData = this.extractFromDom(ctx.document);
     rawData = { ...rawData, ...domData };
 
-    // ??????????????????
-    if (!rawData.address && !rawData.price) {
-      console.warn('[ZillowExtractor] Failed to extract data with any strategy');
-    }
+    return rawData;
+  }
 
-    // ?????
-    const confidence = this.calculateConfidence(rawData);
+  /**
+   * 最小 raw 数据用于 detectListingType 4 步信号。
+   * detectListingType 只需要几个信号字段（address/price/description），不调用完整 DOM。
+   */
+  private collectRawSignalsForDetection(doc: Document): Partial<ZillowRawData> {
+    const jsonld = this.extractFromJsonLd(doc);
+    return jsonld;
+  }
 
-    // ?????
+  /**
+   * Build CommonListingFields from raw + meta.
+   * 兼容：旧字段（parking/yearBuilt/homeType 等）也填充；新字段（parkingDescription）并存。
+   */
+  private buildCommonFields(
+    raw: ZillowRawData,
+    meta: ListingTypeMeta,
+  ): CommonListingFields {
     return {
-      source: 'zillow',
-      url: ctx.url.href,
-      address: rawData.address || '',
-      price: rawData.price || '',
-      priceAmount: rawData.priceAmount,
-      pricePeriod: this.determinePricePeriod(ctx.url.href),
-      bedrooms: rawData.bedrooms ?? null,
-      bathrooms: rawData.bathrooms ?? null,
-      propertyType: rawData.propertyType || '',
-      description: cleanDescription(rawData.description) || '',
-      whatsSpecialText: cleanDescription(rawData.whatsSpecialText) || '',
-      images: this.processImages(rawData.photoUrls || []),
-
-      // Zillow ??
-      sqft: rawData.sqft ?? null,
-      zestimate: rawData.zestimate,
-      rentZestimate: rawData.rentZestimate,
-      yearBuilt: rawData.yearBuilt ?? null,
-      lotSize: rawData.lotSize,
-      hoaFee: rawData.hoaFee,
-      propertyTax: rawData.propertyTax,
-      schoolRatings: rawData.schoolRatings,
-      daysOnZillow: rawData.daysOnZillow ?? null,
-
-      // DOM ??????
-      highlights: rawData.highlights,
-      heating: rawData.heating,
-      cooling: rawData.cooling,
-      basement: rawData.basement,
-      garageSpaces: rawData.garageSpaces ?? null,
-      carportSpaces: rawData.carportSpaces ?? null,
-      constructionMaterial: rawData.constructionMaterial,
-      parcelNumber: rawData.parcelNumber,
-      taxAssessedValue: rawData.taxAssessedValue ?? null,
-      annualTax: rawData.annualTax ?? null,
-      dateOnMarket: rawData.dateOnMarket,
-      region: rawData.region,
-      gasMeters: rawData.gasMeters ?? null,
-
-      // Home type and subtype (extracted from Facts & Features section)
-      homeType: rawData.homeType || rawData.propertyType || '',
-      propertySubtype: rawData.propertySubtype || '',
-
-      // Additional extracted fields
-      walkScore: rawData.walkScore,
-      bikeScore: rawData.bikeScore,
-      neighborhood: rawData.neighborhood,
-      architecturalStyle: rawData.architecturalStyle,
-      stories: rawData.stories,
-      hoaStatus: rawData.hoaStatus,
-
-      // ?????
-      extractionConfidence: confidence,
-      extractedAt: new Date().toISOString(),
+      address: raw.address || '',
+      title: '',
+      displayPrice: raw.price || '',
+      description: cleanDescription(raw.description) || '',
+      whatsSpecialText: cleanDescription(raw.whatsSpecialText) || '',
+      images: this.processImages(raw.photoUrls || []),
+      propertyType: raw.propertyType || '',
+      homeType: raw.homeType || raw.propertyType || '',
+      propertySubtype: raw.propertySubtype || '',
+      bedrooms: raw.bedrooms ?? null,
+      bathrooms: raw.bathrooms ?? null,
+      sqft: raw.sqft ?? null,
+      yearBuilt: raw.yearBuilt ?? null,
+      parkingDescription: raw.parkingFeatures || null,
+      contactInfo: undefined,
+      schoolRatings: raw.schoolRatings,
+      walkScore: raw.walkScore,
+      bikeScore: raw.bikeScore,
+      neighborhood: raw.neighborhood,
+      architecturalStyle: raw.architecturalStyle,
+      stories: raw.stories,
+      region: raw.region,
+      floodZone: raw.floodZone,
+      heating: raw.heating,
+      cooling: raw.cooling,
+      basement: raw.basement,
+      garageSpaces: raw.garageSpaces ?? null,
+      listingType: meta.type,
+      listingTypeSource: meta.source,
+      listingTypeConfidence: meta.confidence,
+      listingTypeConflicts: meta.conflicts,
     };
   }
 
   /**
-   * ??0: ?? JSON-LD RealEstateListing?schema.org ???
-   * Zillow ???????????????
+   * Build RentListingFields from raw + common.
+   * 严格互斥：不得出现 askingPrice/zestimate/monthlyPayment/annualTax 等。
    */
+  private buildRentFields(raw: ZillowRawData, common: CommonListingFields): RentListingFields {
+    // monthlyRent: 从 raw.price 解析（$/mo 文本）
+    const monthlyRent = parseMonthlyRent(raw.price, raw.priceAmount);
+    return {
+      monthlyRent,
+      // advertisedRentRange: 仅来自页面广告上下限（Zillow 偶尔展示 "$X - $Y/mo"）
+      advertisedRentRange: parseAdvertisedRentRange(raw),
+      exactUnit: undefined,
+      availableDate: undefined,
+      securityDeposit: undefined,
+      holdingDeposit: undefined,
+      applicationFee: undefined,
+      leaseTerm: undefined,
+      utilitiesIncluded: undefined,
+      landlordPays: undefined,
+      tenantPays: undefined,
+      petPolicy: undefined,
+      parkingFee: undefined,
+      amenityFee: undefined,
+      qualificationRequirements: undefined,
+    };
+  }
+
+  /**
+   * Build SaleListingFields from raw + common.
+   * 严格互斥：不得出现 monthlyRent/securityDeposit/leaseTerm/parkingFee 等。
+   */
+  private buildSaleFields(raw: ZillowRawData, common: CommonListingFields): SaleListingFields {
+    const askingPrice = raw.priceAmount ?? undefined;
+    return {
+      askingPrice,
+      // zestimate 严格用于 sale：数字版（与 rent 的 rentZestimate 区分）
+      zestimate: raw.zestimate ? parseNumberString(raw.zestimate) : undefined,
+      pricePerSqft: raw.pricePerSqft ? parseNumberString(raw.pricePerSqft) : undefined,
+      annualTax: raw.annualTax ?? undefined,
+      taxAssessedValue: raw.taxAssessedValue ?? undefined,
+      monthlyPayment: raw.monthlyPayment ? parseNumberString(raw.monthlyPayment) : undefined,
+      propertyTaxMonthly: raw.propertyTaxesMonthly ? parseNumberString(raw.propertyTaxesMonthly) : undefined,
+      homeInsuranceMonthly: raw.homeInsuranceMonthly ? parseNumberString(raw.homeInsuranceMonthly) : undefined,
+      hoaFee: raw.hoaFee,
+      hoaStatus: raw.hoaStatus,
+      priceHistory: undefined,
+      daysOnZillow: raw.daysOnZillow ?? undefined,
+      dateOnMarket: raw.dateOnMarket,
+      lotSize: raw.lotSize,
+      lotDimensions: raw.lotDimensions,
+    };
+  }
+
   private extractFromJsonLd(doc: Document): Partial<ZillowRawData> {
     try {
       const scripts = doc.querySelectorAll('script[type="application/ld+json"]');
@@ -872,6 +1002,414 @@ export class ZillowExtractor implements ListingExtractor {
     console.log('[extract] address:', data.address, '| price:', data.price, '| sqft:', data.sqft, '| yearBuilt:', data.yearBuilt);
 
     return data;
+  }
+
+  /**
+   * Strict rent / sale detection for US listings.
+   *
+   * Priority:
+   *   1) JSON-LD / __NEXT_DATA__ (high-confidence signals only; offers.price alone does NOT qualify)
+   *   2) Targeted DOM nodes (price / status / title / Facts-Policies / CTA), never full-page innerText
+   *   3) URL fallback (rent only — homedetails/ is NOT a default for sale)
+   *   4) Price-text fallback (rent only — no sale default)
+   *
+   * Returns 'unknown' whenever the strict signals are missing or conflicting.
+   */
+  private detectListingTypeInternal(
+    doc: Document,
+    url: URL,
+    raw: Partial<ZillowRawData>,
+  ): {
+    type: 'rent' | 'sale' | 'unknown';
+    source: 'jsonld' | 'dom' | 'url' | 'price' | 'fallback';
+    confidence: 'high' | 'medium' | 'low';
+    conflicts: Array<'rent' | 'sale'>;
+  } {
+    const conflicts: Array<'rent' | 'sale'> = [];
+
+    // Step 0: hard-truth body-text scan.
+    //   On multi-unit homedetails pages, Zillow's JSON-LD / __NEXT_DATA__ often marks a
+    //   property as FOR_SALE even when the listing itself is a tenant-facing rental. The
+    //   user's visible UI, however, is always correct: if the page shows "$2,300/mo" or
+    //   an "Apply now" CTA, the listing IS a rental. These signals are sourced from the
+    //   rendered DOM body, not from "What's special" agent marketing copy, so they win.
+    const hardSignal = this.detectHardTruthFromBody(doc, conflicts);
+    if (hardSignal === 'rent') {
+      return { type: 'rent', source: 'dom', confidence: 'high', conflicts };
+    }
+    if (hardSignal === 'sale') {
+      return { type: 'sale', source: 'dom', confidence: 'high', conflicts };
+    }
+
+    // Step 1: structured (JSON-LD + __NEXT_DATA__)
+    //   Only commit to 'rent' or 'sale' if structured data is unambiguous AND no DOM
+    //   description signals contradict it. Zillow's structured data sometimes marks a
+    //   property as FOR_SALE when the listing itself is a tenant-facing rental — in
+    //   that case the description will contain 2+ tenant signals that override.
+    const jsonldSignal = this.detectFromStructuredData(doc, conflicts);
+    if (jsonldSignal === 'rent') {
+      return { type: 'rent', source: 'jsonld', confidence: 'high', conflicts };
+    }
+    if (jsonldSignal === 'sale') {
+      // Before committing to 'sale' from structured data alone, run the DOM check to
+      // see if the listing description is tenant-facing. Multi-unit homedetails pages
+      // sometimes have wrong FOR_SALE metadata.
+      const domOverride = this.detectFromTargetedDom(doc, raw, conflicts);
+      if (domOverride === 'rent') {
+        return { type: 'rent', source: 'dom', confidence: 'medium', conflicts };
+      }
+      // DOM didn't find rent signals → trust structured data
+      return { type: 'sale', source: 'jsonld', confidence: 'high', conflicts };
+    }
+    if (conflicts.length > 0) {
+      // JSON-LD had both rent and sale signals — fall through to DOM for arbitration.
+    }
+
+    // ── Phase B: detect rent from targeted DOM/description (independent path).
+    //   Zillow's __NEXT_DATA__.gdpClientCache sometimes marks a property as FOR_SALE
+    //   even when the listing itself is a tenant-facing rental (multi-unit homedetails).
+    //   We treat DOM/description signals as authoritative for the "FOR_SALE" override
+    //   when 2+ tenant signals are present.
+    const domSignal = this.detectFromTargetedDom(doc, raw, conflicts);
+    if (domSignal === 'rent') {
+      // DOM found 2+ tenant signals — this wins over a "FOR_SALE" from structured data.
+      return { type: 'rent', source: 'dom', confidence: 'medium', conflicts };
+    }
+    if (domSignal === 'sale') {
+      return { type: 'sale', source: 'dom', confidence: 'medium', conflicts };
+    }
+
+    // Step 3: URL fallback (rent only)
+    const urlSignal = this.detectFromUrl(url);
+    if (urlSignal) {
+      return { type: urlSignal, source: 'url', confidence: 'low', conflicts };
+    }
+
+    // Step 4: price-text fallback (rent only)
+    const priceSignal = this.detectFromPriceText(raw);
+    if (priceSignal) {
+      return { type: priceSignal, source: 'price', confidence: 'low', conflicts };
+    }
+
+    return { type: 'unknown', source: 'fallback', confidence: 'low', conflicts };
+  }
+
+  /**
+   * Step 0 — scan the rendered page body (innerText) for hard-truth rent/sale signals
+   * that override structured data. These are signals the user can see directly:
+   *   - Rent:
+   *       * "$X,XXX/mo" or "$X,XXX/month" anywhere on the page (NOT price/sqft)
+   *       * "Apply now" CTA button text
+   *       * "For rent" / "Rental listing" status header
+   *       * Lease length/deposit language + tenant/landlord/owner-pays language
+   *         (combined; either alone is not enough)
+   *   - Sale:
+   *       * "Make an offer" CTA button text
+   *       * "For sale" status header (must NOT be accompanied by rent signals)
+   *
+   * Returns 'rent' | 'sale' | null. Returns null when no hard signal is found, in which
+   * case the caller falls through to structured-data + targeted-DOM checks.
+   */
+  private detectHardTruthFromBody(
+    doc: Document,
+    conflicts: Array<'rent' | 'sale'>,
+  ): 'rent' | 'sale' | null {
+    let sawRent = false;
+    let sawSale = false;
+
+    const bodyText = (doc.body?.innerText || doc.body?.textContent || '').toLowerCase();
+    if (!bodyText) return null;
+
+    // 1) $/mo price chip — strong rent signal. Require amount + unit suffix.
+    //    Excludes price/sqft ($NNN/sqft) and total price ($NNN,NNN alone).
+    //    Pattern: "$2,300 /mo" or "$2,300/mo" or "$2,300 month" — not just "$2,300".
+    const monthlyPriceRegex = /\$\s?[\d,]+(?:\.\d{2})?\s*\/\s*(?:mo|month|monthly)\b/;
+    if (monthlyPriceRegex.test(bodyText)) {
+      sawRent = true;
+    }
+
+    // 2) CTA buttons in the visible UI.
+    //    "Apply now" → rent, "Make an offer" → sale.
+    //    We scan every <button> and anchor inside a likely action bar, including any
+    //    element whose aria-label / innerText contains the trigger phrase.
+    const applyNowRegex = /\bapply\s*now\b/i;
+    const makeOfferRegex = /\bmake\s+an?\s+offer\b/i;
+
+    const ctaEls = Array.from(
+      doc.querySelectorAll(
+        'button, a[role="button"], a.Button, [role="button"], [class*="Button"]',
+      ),
+    );
+    for (const el of ctaEls) {
+      const txt = (
+        el.getAttribute('aria-label') ||
+        (el as HTMLElement).innerText ||
+        el.textContent ||
+        ''
+      ).trim();
+      if (!txt) continue;
+      if (applyNowRegex.test(txt)) {
+        sawRent = true;
+      }
+      if (makeOfferRegex.test(txt)) {
+        sawSale = true;
+      }
+    }
+    // Also search aria-label across the whole document — Apply Now can be on
+    // a button whose textContent is empty (icon-only button).
+    const allEls = Array.from(doc.querySelectorAll('*'));
+    for (const el of allEls) {
+      const aria = el.getAttribute('aria-label') || '';
+      if (applyNowRegex.test(aria)) {
+        sawRent = true;
+      }
+      if (makeOfferRegex.test(aria)) {
+        sawSale = true;
+      }
+    }
+
+    // 3) Status header text. Rent: "for rent" / "rental listing" / "this is a rental".
+    //    Sale: "for sale" — but only if no rent signal was seen.
+    const rentHeaderRegex = /\bfor\s+rent\b|\brental\s+listing\b|\bthis\s+home\s+is\s+for\s+rent\b/;
+    const saleHeaderRegex = /\bfor\s+sale\b|\bhome\s+for\s+sale\b/;
+    if (rentHeaderRegex.test(bodyText)) {
+      sawRent = true;
+    }
+    if (saleHeaderRegex.test(bodyText) && !monthlyPriceRegex.test(bodyText)) {
+      sawSale = true;
+    }
+
+    if (sawRent && !sawSale) {
+      return 'rent';
+    }
+    if (sawSale && !sawRent) {
+      return 'sale';
+    }
+    if (sawRent && sawSale) {
+      // Even on conflicting pages, if we found a $/mo price chip OR a Apply Now CTA,
+      // the listing IS a rental — the "For sale" is a stale multi-unit header artifact.
+      // This is the explicit override the bug demanded.
+      conflicts.push('rent', 'sale');
+      return 'rent';
+    }
+    return null;
+  }
+
+  /**
+   * Step 1 — read JSON-LD `RealEstateListing` and `__NEXT_DATA__.gdpClientCache`.
+   * Sale MUST be signalled by explicit ForSale / FOR_SALE / homeStatus markers; never by offers.price alone.
+   */
+  private detectFromStructuredData(
+    doc: Document,
+    conflicts: Array<'rent' | 'sale'>,
+  ): 'rent' | 'sale' | null {
+    let sawRent = false;
+    let sawSale = false;
+
+    // JSON-LD
+    try {
+      const scripts = doc.querySelectorAll('script[type="application/ld+json"]');
+      for (const script of scripts) {
+        try {
+          const data = JSON.parse(script.textContent || '');
+          const candidates = Array.isArray(data)
+            ? data
+            : (data['@graph'] ? data['@graph'] : [data]);
+
+          for (const item of candidates) {
+            const type = (item['@type'] || '').toString().toLowerCase();
+            if (!type.includes('realestate') && !type.includes('product')) continue;
+
+            const itemOffered = item.itemOffered || item;
+            const blob = JSON.stringify(item).toLowerCase();
+            const blob2 = JSON.stringify(itemOffered).toLowerCase();
+
+            // rent signal — explicit markers only
+            const priceSpec = item?.offers?.priceSpecification || itemOffered?.offers?.priceSpecification;
+            const unitText = String(priceSpec?.unitText || priceSpec?.unitCode || priceSpec?.referenceQuantity?.unitCode || '').toUpperCase();
+            if (unitText === 'MON') sawRent = true;
+            if (blob.includes('forrent') || blob.includes('for_rent') || blob.includes('rental listing')) sawRent = true;
+
+            // sale signal — explicit ForSale markers only
+            if (
+              blob.includes('forsale') ||
+              blob.includes('for_sale') ||
+              blob.includes('"additionalproperty"') && blob.includes('"name":"forsale"') ||
+              blob2.includes('forsale')
+            ) {
+              sawSale = true;
+            }
+
+            // NOTE: offers.price presence alone does NOT qualify as sale signal
+          }
+        } catch {
+          // skip unparseable ld+json
+        }
+      }
+    } catch {
+      // ignore
+    }
+
+    // __NEXT_DATA__.gdpClientCache
+    try {
+      const nextDataScript = doc.querySelector('script[id="__NEXT_DATA__"]');
+      if (nextDataScript) {
+        const nextData = JSON.parse(nextDataScript.textContent || '');
+        const gdpCache = nextData?.props?.pageProps?.componentProps?.gdpClientCache;
+        if (gdpCache && typeof gdpCache === 'object') {
+          for (const value of Object.values(gdpCache)) {
+            if (!value || typeof value !== 'object') continue;
+            const v = value as Record<string, unknown>;
+            const listingType = String(v.listingType || '').toUpperCase();
+            const homeStatus = String(v.homeStatus || '').toUpperCase();
+            if (listingType === 'FOR_RENT' || homeStatus === 'FOR_RENT') sawRent = true;
+            if (listingType === 'FOR_SALE' || homeStatus === 'FOR_SALE') sawSale = true;
+          }
+        }
+      }
+    } catch {
+      // ignore
+    }
+
+    if (sawRent && sawSale) {
+      conflicts.push('rent', 'sale');
+      return null;
+    }
+    if (sawRent) return 'rent';
+    if (sawSale) return 'sale';
+    return null;
+  }
+
+  /**
+   * Step 2 — read targeted DOM nodes (price node, status, h1, breadcrumbs, facts/policies, CTA).
+   * Treats "Request tour / Schedule tour / Get a tour / Listed by / Contact agent" as NEUTRAL.
+   */
+  private detectFromTargetedDom(
+    doc: Document,
+    raw: Partial<ZillowRawData>,
+    conflicts: Array<'rent' | 'sale'>,
+  ): 'rent' | 'sale' | null {
+    let sawRent = false;
+    let sawSale = false;
+
+    // 1) Price node — only the leading price chip
+    const priceNode =
+      doc.querySelector('[data-testid="price"]') ||
+      doc.querySelector('[data-testid="list-price"]') ||
+      doc.querySelector('h3[class*="price"]') ||
+      doc.querySelector('[class*="ListPrice"]');
+    if (priceNode) {
+      const txt = (priceNode.textContent || '').toLowerCase();
+      if (/\/(mo|month|monthly)\b/.test(txt) || /\bmonthly\b/.test(txt)) sawRent = true;
+    }
+
+    // 2) Status node
+    const statusNode =
+      doc.querySelector('[data-testid="status"]') ||
+      doc.querySelector('.status-message');
+    if (statusNode) {
+      const txt = (statusNode.textContent || '').toLowerCase();
+      if (/for\s*rent|rent\s*this\s*home/.test(txt)) sawRent = true;
+      if (/for\s*sale|sale\s*by\s*owner|listed\s*for\s*sale/.test(txt)) sawSale = true;
+    }
+
+    // 3) Title (h1) + breadcrumbs
+    const h1 = doc.querySelector('h1');
+    if (h1) {
+      const txt = (h1.textContent || '').toLowerCase();
+      if (/\bfor\s*rent\b|\bapartment\s*for\s*rent\b/.test(txt)) sawRent = true;
+      if (/\bfor\s*sale\b/.test(txt)) sawSale = true;
+    }
+    const breadcrumbs = doc.querySelector('[data-testid="breadcrumbs"]');
+    if (breadcrumbs) {
+      const txt = (breadcrumbs.textContent || '').toLowerCase();
+      if (/for\s*rent|rentals/.test(txt)) sawRent = true;
+      if (/for\s*sale|listings/.test(txt)) sawSale = true;
+    }
+
+    // 4) Facts/Policies — search for explicit lease/deposit/application keywords
+    const factsSection =
+      Array.from(doc.querySelectorAll('h2, h3, div'))
+        .find(el => /facts\s*(&|and)\s*features|lease\s*terms|rental\s*policies|pricing\s*(&|and)\s*availability/i.test(el.textContent || ''));
+    if (factsSection) {
+      const txt = (factsSection.parentElement?.textContent || '').toLowerCase();
+      if (/lease\s*length|security\s*deposit|pet\s*deposit|application\s*fee|move-?in\s*fee|holding\s*deposit/.test(txt)) {
+        sawRent = true;
+      }
+    }
+
+    // 4b) Listing description keywords — critical for multi-unit / homedetails listings
+    // where Zillow's structured data may say FOR_SALE while the listing itself is a
+    // tenant-facing rental description. We require at least TWO distinct rent signals
+    // (utility metering, tenant/landlord language, deposit language, lease language) to
+    // avoid false positives from a single incidental word.
+    const desc = String(raw.description || raw.whatsSpecialText || '').toLowerCase();
+    if (desc) {
+      const rentHits: string[] = [];
+      if (/\btenant\s+(pays|paid|responsib|is\s+responsib)\b/.test(desc)) rentHits.push('tenant-pays');
+      if (/\blandlord\s+(pays|responsib|is\s+responsib)\b/.test(desc)) rentHits.push('landlord-pays');
+      if (/\b(owner\s+pays|owner\s+is\s+responsible)\b/.test(desc)) rentHits.push('owner-pays');
+      if (/\b(monthly\s+rent|rent\s+covers|rent\s+includes)\b/.test(desc)) rentHits.push('rent-includes');
+      if (/\b(security\s+deposit|pet\s+deposit|holding\s+deposit|move-?in\s+fees?)\b/.test(desc)) rentHits.push('deposit-language');
+      if (/\b(lease\s+(length|term)|12-?month\s+lease|month-?to-?month)\b/.test(desc)) rentHits.push('lease-language');
+      if (/\b(application\s+fee|credit\s+check|background\s+check)\b/.test(desc)) rentHits.push('application-language');
+      if (/\b(reason\s+for\s+moving|tenant\s+is\s+relocating|landlord\s+is\s+relocating)\b/.test(desc)) rentHits.push('tenant-relocating');
+      if (/\b(utilities?\s+(are\s+)?included|water\s+and\s+gas|gas\s+and\s+electric)\b/.test(desc)) rentHits.push('utilities-language');
+      if (rentHits.length >= 2) {
+        sawRent = true;
+      }
+      // Sale signal: only strong phrases
+      if (/\b(for\s+sale|listed\s+for\s+sale|sale\s+by\s+owner|motivated\s+seller)\b/.test(desc) &&
+          !/\bfor\s+rent\b/.test(desc)) {
+        sawSale = true;
+      }
+    }
+
+    // 5) CTA buttons — only Apply now / Make offer count; tours are NEUTRAL
+    const ctaCandidates = Array.from(
+      doc.querySelectorAll('button, a[role="button"], a.Button')
+    );
+    for (const el of ctaCandidates) {
+      const txt = (el.textContent || '').trim().toLowerCase();
+      if (/^apply\s*now\b/.test(txt)) sawRent = true;
+      if (/^make\s*(an?\s*)?offer\b/.test(txt)) sawSale = true;
+      // Request/Schedule/Get a tour, Listed by, Contact agent/property → NEUTRAL (no decision)
+    }
+
+    // 6) Title text "List price" alone is NOT enough for sale; must combine with another sale signal
+    // (already covered by the title check above)
+
+    if (sawRent && sawSale) {
+      conflicts.push('rent', 'sale');
+      return null;
+    }
+    if (sawRent) return 'rent';
+    if (sawSale) return 'sale';
+    return null;
+  }
+
+  /**
+   * Step 3 — URL fallback (rent only). homedetails/ is NOT a default for sale.
+   */
+  private detectFromUrl(url: URL): 'rent' | 'sale' | null {
+    const path = (url.pathname || '').toLowerCase();
+    if (path.includes('/rent/') || path.includes('/rental/') || path.includes('/apartments/') ||
+        path.includes('/for-rent/') || path.includes('/community/')) {
+      return 'rent';
+    }
+    return null;
+  }
+
+  /**
+   * Step 4 — price-text fallback (rent only). Plain "$XXX,XXX" with no period hint is NOT a sale default.
+   */
+  private detectFromPriceText(raw: Partial<ZillowRawData>): 'rent' | 'sale' | null {
+    const txt = String(raw.price || '').toLowerCase();
+    if (!txt) return null;
+    if (/\/(mo|month)\b|\bmonthly\b/.test(txt) || /\blease\b/.test(txt)) return 'rent';
+    // sale only when explicitly mentioned (sale price / one-time payment)
+    if (/\bone-?time\b|\bsale\s*price\b/.test(txt)) return 'sale';
+    return null;
   }
 
   /**
@@ -1748,4 +2286,362 @@ export class ZillowExtractor implements ListingExtractor {
 
     return Math.min(1, confidence);
   }
+}
+
+// ============================================================================
+// Top-level helpers — used by ZillowExtractor merge pipeline
+// ============================================================================
+
+/**
+ * Strip $ + comma + /mo suffix from a price string and return a number.
+ * Falls back to undefined on parse failure.
+ */
+function parsePriceToNumber(priceStr: string | undefined): number | undefined {
+  if (!priceStr) return undefined;
+  const cleaned = priceStr
+    .replace(/\$/g, '')
+    .replace(/,/g, '')
+    .replace(/\s*\/\s*(?:mo|month|week|year)/gi, '')
+    .trim();
+  const match = cleaned.match(/[\d]+(?:\.\d+)?/);
+  if (!match) return undefined;
+  const n = parseFloat(match[0]);
+  return isNaN(n) ? undefined : n;
+}
+
+/**
+ * Parse a "$X,XXX" string into a number. Used for monthlyPayment / propertyTaxMonthly / etc.
+ */
+function parseNumberString(value: string | undefined | null): number | undefined {
+  if (value == null) return undefined;
+  const cleaned = String(value).replace(/[$,]/g, '').trim();
+  const match = cleaned.match(/[\d]+(?:\.\d+)?/);
+  if (!match) return undefined;
+  const n = parseFloat(match[0]);
+  return isNaN(n) ? undefined : n;
+}
+
+/**
+ * Parse monthlyRent from raw page text. Supports "$2,300/mo", "$2,300 /mo", "2300/mo".
+ * 优先 raw.priceAmount（已解析数字），否则从 raw.price 文本解析。
+ */
+function parseMonthlyRent(
+  priceText: string | undefined,
+  priceAmount: number | undefined,
+): number | null {
+  // 必须是 /mo 才算 rent；total 价格不能直接当 monthlyRent
+  if (priceText && /\/(?:mo|month|monthly)\b/i.test(priceText)) {
+    return priceAmount ?? parsePriceToNumber(priceText) ?? null;
+  }
+  return null;
+}
+
+/**
+ * Parse advertisedRentRange: 仅来自页面实际广告租金上下限。
+ * 例: "$2,200 - $2,800/mo" → { low: 2200, high: 2800 }
+ * 严格区分于 rentZestimate（rentZestimate 是 Zillow 估算，与广告上下限不混用）。
+ *
+ * Zillow 在大部分 Rent 列表只展示单一价格（$/mo），不展示区间。
+ * 当 raw 中没有区间数据时返回 null，不退化到 rentZestimate。
+ */
+function parseAdvertisedRentRange(
+  raw: Partial<ZillowRawData>,
+): { low?: number | null; high?: number | null } | null {
+  const txt = String(raw.price ?? '');
+  if (!txt) return null;
+  const match = txt.match(/\$\s?([\d,]+)\s*[-–—]\s*\$\s?([\d,]+)\s*(?:\/\s*(?:mo|month))?/i);
+  if (!match) return null;
+  const low = parseNumberString(match[1]);
+  const high = parseNumberString(match[2]);
+  if (low == null && high == null) return null;
+  return { low: low ?? null, high: high ?? null };
+}
+
+/**
+ * 合并 common + rent → StandardizedListingData（rent 路径）。
+ * 严格互斥：不得写入 sale 专属字段（askingPrice/zestimate/monthlyPayment/annualTax/...）。
+ * 旧字段 price/parking/rentZestimate 同时填充（兼容现有链路）。
+ */
+function mergeCommonAndRent(
+  common: CommonListingFields,
+  rent: RentListingFields,
+  ctx: ExtractContext,
+  meta: ListingTypeMeta,
+): StandardizedListingData {
+  const pricePeriod: StandardizedListingData['pricePeriod'] = 'month';
+  return {
+    // === 必填核心 ===
+    source: 'zillow',
+    url: ctx.url.href,
+
+    // === 标准化公共字段 ===
+    address: common.address,
+    title: common.title,
+    /** 旧字段 price: 仅保留 displayPrice 同源文本，不参与模式判断 */
+    price: common.displayPrice ?? '',
+    priceAmount: rent.monthlyRent ?? undefined,
+    pricePeriod,
+    bedrooms: common.bedrooms,
+    bathrooms: common.bathrooms,
+    propertyType: common.propertyType,
+    description: common.description,
+    whatsSpecialText: common.whatsSpecialText,
+    images: common.images,
+
+    // === 澳洲特有 ===
+    carSpaces: undefined,
+    /** 旧字段 parking: 与 Common.parkingDescription 并存 */
+    parking: common.garageSpaces ?? null,
+
+    // === 美国特有 ===
+    sqft: common.sqft,
+    zestimate: undefined,
+    /** 旧字段 rentZestimate: 保持原 string | null 类型 */
+    rentZestimate: undefined,
+    yearBuilt: common.yearBuilt ?? null,
+    lotSize: undefined,
+    hoaFee: undefined,
+    propertyTax: undefined,
+    schoolRatings: common.schoolRatings,
+    daysOnZillow: undefined,
+
+    // === DOM 扩展 ===
+    homeType: common.homeType,
+    propertySubtype: common.propertySubtype,
+    walkScore: common.walkScore,
+    bikeScore: common.bikeScore,
+    neighborhood: common.neighborhood,
+    architecturalStyle: common.architecturalStyle,
+    stories: common.stories,
+    hoaStatus: undefined,
+    floodZone: common.floodZone ?? null,
+    highlights: undefined,
+    heating: common.heating,
+    cooling: common.cooling,
+    basement: common.basement,
+    garageSpaces: common.garageSpaces ?? null,
+    carportSpaces: null,
+    constructionMaterial: undefined,
+    parcelNumber: undefined,
+    taxAssessedValue: undefined,
+    annualTax: undefined,
+    dateOnMarket: undefined,
+    region: common.region,
+    gasMeters: null,
+
+    // === 通用扩展 ===
+    facts: undefined,
+    rawJson: undefined,
+
+    // === 提取元数据 ===
+    extractionConfidence: 0.5,
+    extractedAt: new Date().toISOString(),
+
+    // === 模式识别 ===
+    listingType: 'rent',
+    listingTypeSource: meta.source,
+    listingTypeConfidence: meta.confidence,
+    listingTypeConflicts: meta.conflicts,
+
+    // ─── 新增字段（rent 路径）───
+    displayPrice: common.displayPrice,
+    parkingDescription: common.parkingDescription,
+    managementCompany: common.managementCompany,
+
+    monthlyRent: rent.monthlyRent ?? null,
+    advertisedRentRange: rent.advertisedRentRange ?? null,
+    exactUnit: rent.exactUnit ?? null,
+    availableDate: rent.availableDate ?? null,
+    securityDeposit: rent.securityDeposit ?? null,
+    holdingDeposit: rent.holdingDeposit ?? null,
+    applicationFee: rent.applicationFee ?? null,
+    leaseTerm: rent.leaseTerm ?? null,
+    utilitiesIncluded: rent.utilitiesIncluded ?? null,
+    landlordPays: rent.landlordPays ?? null,
+    tenantPays: rent.tenantPays ?? null,
+    petPolicy: rent.petPolicy ?? null,
+    parkingFee: rent.parkingFee ?? null,
+    amenityFee: rent.amenityFee ?? null,
+    qualificationRequirements: rent.qualificationRequirements ?? null,
+
+    // sale 字段在 rent 路径下不写入（undefined）— 由类型系统隐式表达
+  };
+}
+
+/**
+ * 合并 common + sale → StandardizedListingData（sale 路径）。
+ * 严格互斥：不得写入 rent 专属字段（monthlyRent/securityDeposit/leaseTerm/...）。
+ * 旧字段 price/parking/rentZestimate 同时填充（兼容现有链路）。
+ */
+function mergeCommonAndSale(
+  common: CommonListingFields,
+  sale: SaleListingFields,
+  ctx: ExtractContext,
+  meta: ListingTypeMeta,
+): StandardizedListingData {
+  const pricePeriod: StandardizedListingData['pricePeriod'] = 'total';
+  return {
+    // === 必填核心 ===
+    source: 'zillow',
+    url: ctx.url.href,
+
+    // === 标准化公共字段 ===
+    address: common.address,
+    title: common.title,
+    price: common.displayPrice ?? '',
+    priceAmount: sale.askingPrice ?? undefined,
+    pricePeriod,
+    bedrooms: common.bedrooms,
+    bathrooms: common.bathrooms,
+    propertyType: common.propertyType,
+    description: common.description,
+    whatsSpecialText: common.whatsSpecialText,
+    images: common.images,
+
+    // === 澳洲特有 ===
+    carSpaces: undefined,
+    parking: common.garageSpaces ?? null,
+
+    // === 美国特有 ===
+    sqft: common.sqft,
+    zestimate: sale.zestimate != null ? String(sale.zestimate) : undefined,
+    rentZestimate: undefined,
+    yearBuilt: common.yearBuilt ?? null,
+    lotSize: sale.lotSize ?? undefined,
+    hoaFee: sale.hoaFee ?? undefined,
+    propertyTax: undefined,
+    schoolRatings: common.schoolRatings,
+    daysOnZillow: sale.daysOnZillow ?? null,
+
+    // === DOM 扩展 ===
+    homeType: common.homeType,
+    propertySubtype: common.propertySubtype,
+    walkScore: common.walkScore,
+    bikeScore: common.bikeScore,
+    neighborhood: common.neighborhood,
+    architecturalStyle: common.architecturalStyle,
+    stories: common.stories,
+    hoaStatus: sale.hoaStatus ?? undefined,
+    floodZone: common.floodZone ?? null,
+    highlights: undefined,
+    heating: common.heating,
+    cooling: common.cooling,
+    basement: common.basement,
+    garageSpaces: common.garageSpaces ?? null,
+    carportSpaces: null,
+    constructionMaterial: undefined,
+    parcelNumber: undefined,
+    taxAssessedValue: sale.taxAssessedValue ?? null,
+    annualTax: sale.annualTax ?? null,
+    dateOnMarket: sale.dateOnMarket,
+    region: common.region,
+    gasMeters: null,
+
+    // === 通用扩展 ===
+    facts: undefined,
+    rawJson: undefined,
+
+    // === 提取元数据 ===
+    extractionConfidence: 0.5,
+    extractedAt: new Date().toISOString(),
+
+    // === 模式识别 ===
+    listingType: 'sale',
+    listingTypeSource: meta.source,
+    listingTypeConfidence: meta.confidence,
+    listingTypeConflicts: meta.conflicts,
+
+    // ─── 新增字段（sale 路径）───
+    displayPrice: common.displayPrice,
+    parkingDescription: common.parkingDescription,
+    managementCompany: common.managementCompany,
+
+    askingPrice: sale.askingPrice ?? null,
+    saleZestimate: sale.zestimate ?? null,
+    pricePerSqft: sale.pricePerSqft ?? null,
+    propertyTaxMonthly: sale.propertyTaxMonthly ?? null,
+    homeInsuranceMonthly: sale.homeInsuranceMonthly ?? null,
+    priceHistory: sale.priceHistory ?? null,
+    lotDimensions: sale.lotDimensions ?? null,
+
+    // rent 字段在 sale 路径下不写入（undefined）
+  };
+}
+
+/**
+ * 合并 common + unknown → StandardizedListingData。
+ * 等待 ReportModeModal 选定 Rent/Sale 后，通过 forceReextract 重新跑 specific。
+ * 不允许只 toggle listingType 用 common 数据直接发起分析。
+ */
+function mergeCommonAndUnknown(
+  common: CommonListingFields,
+  ctx: ExtractContext,
+  meta: ListingTypeMeta,
+): StandardizedListingData {
+  const pricePeriod: StandardizedListingData['pricePeriod'] = ctx.url.href.includes('/rent/')
+    ? 'month'
+    : 'total';
+  return {
+    source: 'zillow',
+    url: ctx.url.href,
+    address: common.address,
+    title: common.title,
+    price: common.displayPrice ?? '',
+    priceAmount: undefined,
+    pricePeriod,
+    bedrooms: common.bedrooms,
+    bathrooms: common.bathrooms,
+    propertyType: common.propertyType,
+    description: common.description,
+    whatsSpecialText: common.whatsSpecialText,
+    images: common.images,
+    carSpaces: undefined,
+    parking: common.garageSpaces ?? null,
+    sqft: common.sqft,
+    zestimate: undefined,
+    rentZestimate: undefined,
+    yearBuilt: common.yearBuilt ?? null,
+    lotSize: undefined,
+    hoaFee: undefined,
+    propertyTax: undefined,
+    schoolRatings: common.schoolRatings,
+    daysOnZillow: undefined,
+    homeType: common.homeType,
+    propertySubtype: common.propertySubtype,
+    walkScore: common.walkScore,
+    bikeScore: common.bikeScore,
+    neighborhood: common.neighborhood,
+    architecturalStyle: common.architecturalStyle,
+    stories: common.stories,
+    hoaStatus: undefined,
+    floodZone: common.floodZone ?? null,
+    highlights: undefined,
+    heating: common.heating,
+    cooling: common.cooling,
+    basement: common.basement,
+    garageSpaces: common.garageSpaces ?? null,
+    carportSpaces: null,
+    constructionMaterial: undefined,
+    parcelNumber: undefined,
+    taxAssessedValue: undefined,
+    annualTax: undefined,
+    dateOnMarket: undefined,
+    region: common.region,
+    gasMeters: null,
+    facts: undefined,
+    rawJson: undefined,
+    extractionConfidence: 0.3,
+    extractedAt: new Date().toISOString(),
+    listingType: 'unknown',
+    listingTypeSource: meta.source,
+    listingTypeConfidence: meta.confidence,
+    listingTypeConflicts: meta.conflicts,
+
+    // 新增字段（unknown 路径：只填 common 相关）
+    displayPrice: common.displayPrice,
+    parkingDescription: common.parkingDescription,
+    managementCompany: common.managementCompany,
+
+    // rent/sale specific 字段全部 undefined — 等待 forceReextract
+  };
 }

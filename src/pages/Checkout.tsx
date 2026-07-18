@@ -63,7 +63,11 @@ export function CheckoutPage() {
     }
 
     const urlParams = new URLSearchParams(window.location.search);
-    const txnIdFromUrl = urlParams.get('_ptxn');
+    // 统一用 transaction_id；同时兼容历史别名 _ptxn / txn，避免已发出的链接失效
+    const txnIdFromUrl =
+      urlParams.get('transaction_id') ||
+      urlParams.get('_ptxn') ||
+      urlParams.get('txn');
 
     console.log('[checkout] current url:', window.location.href);
     console.log('[checkout] txnId from url:', txnIdFromUrl);
@@ -129,7 +133,7 @@ export function CheckoutPage() {
 
             countdownTimer.current = window.setTimeout(() => {
               console.log('[checkout] redirecting to success page');
-              window.location.href = `/payment-success?txn=${completedTxnId}`;
+              window.location.href = `/payment-success?transaction_id=${completedTxnId}`;
             }, 3000);
           }
 
@@ -210,7 +214,7 @@ export function CheckoutPage() {
             <h2 className="text-2xl font-semibold text-gray-900">Payment successful!</h2>
             <p className="text-gray-600">Redirecting you in {countdown} seconds...</p>
             <a
-              href={`/payment-success?txn=${transactionId}`}
+              href={`/payment-success?transaction_id=${transactionId}`}
               className="text-blue-600 hover:text-blue-700 underline"
             >
               If not redirected, click here

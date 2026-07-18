@@ -6,8 +6,10 @@ export default defineConfig({
     include: [
       'src/lib/reportAdapters/reportRules.test.ts',
       'src/lib/reportAdapters/reportViewModel.test.ts',
+      'src/lib/reportAdapters/usRent.test.ts',
       'src/lib/reportAdapters/validateAndRepair.test.ts',
       'src/lib/reportAdapters/detectPropertyCategory.test.ts',
+      'src/content/extractors/contract.test.ts',
     ],
   },
 });

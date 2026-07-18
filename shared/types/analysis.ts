@@ -23,9 +23,15 @@ export interface Photo {
 }
 
 // ===== 3. 可选详情 =====
+// 兼容原则：
+//  - 所有 Rent/Sale 新增字段全部可选（`?:`），避免 Sale/AU/缺字段页面产生类型问题
+//  - 旧字段（askingPrice/weeklyRent/monthlyRent/sqft/yearBuilt/zestimate/rentZestimate/hoaFee/
+//    propertyTax/fullBaths/halfBaths/floodZone/heating/cooling/basement/monthlyPayment/
+//    monthlyTax/homeInsurance/pricePerSqft/lotDimensions 等）保持原类型不变
+//  - rentZestimate 类型保留 number | string | null 以兼容旧 string 类型
 export interface OptionalDetails {
   reportMode?: 'rent' | 'sale';
-  source?: ListingSource;  // 网站来源
+  source?: ListingSource;
   sourceDomain?: string;
   market?: string;
   listingUrl?: string;
@@ -67,6 +73,61 @@ export interface OptionalDetails {
   pricePerSqft?: string;
   /** 地块尺寸 */
   lotDimensions?: string;
+
+  // ─────────────────────────────────────────────────────────────────
+  // 新增字段（全部可选，兼容 Sale/Rent/AU/缺字段页面）
+  // ─────────────────────────────────────────────────────────────────
+
+  /** Rent 实际价格（real price）。US 链路 rent mode 用 */
+  monthlyRent?: number;
+  /** Rent Zillow 估算值，兼容 number | string 两种类型 */
+  rentZestimate?: number | string;
+  /** Rent 专属：单元号 */
+  exactUnit?: string;
+  /** Rent 专属：入住日期 */
+  availableDate?: string;
+  /** Rent 专属：保证金 */
+  securityDeposit?: string;
+  /** Rent 专属：预付定金 */
+  holdingDeposit?: string;
+  /** Rent 专属：申请费 */
+  applicationFee?: string;
+  /** Rent 专属：租期 */
+  leaseTerm?: string;
+  /** Rent 专属：含 utilities 列表 */
+  utilitiesIncluded?: string[];
+  /** Rent 专属：房东支付项 */
+  landlordPays?: string[];
+  /** Rent 专属：租客支付项 */
+  tenantPays?: string[];
+  /** Rent 专属：宠物政策 */
+  petPolicy?: string;
+  /** Rent 专属：停车费 */
+  parkingFee?: string;
+  /** Rent 专属：物业费 */
+  amenityFee?: string;
+  /** Rent 专属：资格要求 */
+  qualificationRequirements?: string;
+  /** 真实通用事实（两模式都允许） */
+  managementCompany?: string;
+  /** Sale 专属：年税（数字版，与 annualTax/annualTaxAmount 兼容） */
+  annualTax?: number;
+  /** Sale 专属：税估值 */
+  taxAssessedValue?: number;
+  /** Sale 专属：月税（数字版） */
+  propertyTaxMonthly?: number;
+  /** Sale 专属：月保险（数字版） */
+  homeInsuranceMonthly?: number;
+  /** Sale 专属：HOA 状态文本 */
+  hoaStatus?: string;
+  /** Sale 专属：价格历史 */
+  priceHistory?: string;
+  /** Sale 专属：在 Zillow 上的天数 */
+  daysOnZillow?: number;
+  /** Sale 专属：上市日期 */
+  dateOnMarket?: string;
+  /** Sale 专属：地块尺寸 */
+  lotSize?: string;
 }
 
 export type FactSource = 'bodyText' | 'dom' | 'jsonld' | 'script' | 'structured' | 'fallback';
@@ -926,4 +987,11 @@ export interface ListingDataV2 {
   listingId?: string;
   listingUrl: string;
   site: string;
+  // === rent/sale detection (mirrors StandardizedListingData) ===
+  listingType?: 'rent' | 'sale' | 'unknown';
+  listingTypeSource?: 'jsonld' | 'dom' | 'url' | 'price' | 'fallback';
+  listingTypeConfidence?: 'high' | 'medium' | 'low';
+  listingTypeConflicts?: Array<'rent' | 'sale'>;
+  // === user-confirmed mode (set after ReportModeModal interaction) ===
+  reportMode?: 'rent' | 'sale';
 }

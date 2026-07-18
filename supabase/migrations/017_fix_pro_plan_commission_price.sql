@@ -5,6 +5,10 @@
 -- was hardcoded to 39.00 (one cent off the actual $39.99 listing price), which
 -- produced slightly under-priced affiliate commissions. Patch the CASE to use
 -- 39.99 so commissions match the published plan price.
+--
+-- KEEP-IN-SYNC: see docs/pricing.md. The CASE block below must agree with
+-- src/pages/Pricing.tsx and the BASE_CREDITS / PLAN_PRICES tables in
+-- supabase/functions/create-order and supabase/functions/paddle-webhook.
 
 CREATE OR REPLACE FUNCTION public.process_paddle_completed_transaction(
   p_transaction_id TEXT,

@@ -68,10 +68,27 @@ function copyToExtension(distDir: string, extDir: string) {
     mkdirSync(extDir, { recursive: true });
   }
 
-  // 复制 manifest.json
+  // 复制 manifest.json (with auto-bumped version so Chrome invalidates cache)
   const manifestSrc = resolve(__dirname, 'extension', 'manifest.json');
   if (existsSync(manifestSrc)) {
-    copyFileSync(manifestSrc, resolve(extDir, 'manifest.json'));
+    let manifestRaw = readFileSync(manifestSrc, 'utf-8');
+    try {
+      const m = JSON.parse(manifestRaw);
+      const v = String(m.version || '0.0.0');
+      const parts = v.split('.').map((p) => parseInt(p, 10) || 0);
+      while (parts.length < 3) parts.push(0);
+      parts[2] = (parts[2] || 0) + 1;
+      // carryover if > 99
+      if (parts[2] >= 100) { parts[2] = 0; parts[1] = (parts[1] || 0) + 1; }
+      m.version = parts.join('.');
+      manifestRaw = JSON.stringify(m, null, 2) + '\n';
+      console.log(`[vite] Bumped manifest version to ${m.version}`);
+    } catch (e) {
+      console.warn('[vite] Could not bump manifest version:', e);
+    }
+    writeFileSync(resolve(extDir, 'manifest.json'), manifestRaw);
+    // also write back to source so re-running build doesn't double-bump on disk
+    writeFileSync(manifestSrc, manifestRaw);
     console.log('[vite] Copied manifest.json');
   }
 
