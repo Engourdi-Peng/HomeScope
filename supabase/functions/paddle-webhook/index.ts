@@ -11,6 +11,8 @@ declare const Deno: {
 };
 
 // ========== 内联共享配置 ==========
+// KEEP-IN-SYNC: see docs/pricing.md. Must agree with create-order/index.ts,
+// src/pages/Pricing.tsx, and migration 017's CASE expression.
 const BASE_CREDITS: Record<string, number> = {
   starter: 5,
   standard: 12,
@@ -268,6 +270,8 @@ async function handlePaymentTransaction(
     console.log(`Transaction already processed (idempotent): ${transactionId}`);
   } else {
     console.log(`Payment processed: user=${userId}, credits=${credits}, affiliate=${affiliateCode || 'none'}`);
+    // 推进 payments 表状态：pending → paid
+    await updatePaymentStatus(transactionId, "paid");
   }
 
   return { userId, planKey, credits, affiliateId, affiliateCode };
@@ -325,6 +329,37 @@ async function processPaymentWithRPC(
   } catch (err) {
     console.error("RPC call error:", err);
     return { success: false, error: String(err) };
+  }
+}
+
+/**
+ * 推进 payments 表的 status（pending → paid/failed）。
+ * 用 WHERE status = 'pending' 保证幂等：回放 webhook 时不会覆盖已 paid/failed 的行。
+ */
+async function updatePaymentStatus(transactionId: string, newStatus: "paid" | "failed"): Promise<void> {
+  try {
+    const response = await fetch(
+      `${SUPABASE_URL}/rest/v1/payments?order_id=eq.${encodeURIComponent(transactionId)}&status=eq.pending`,
+      {
+        method: "PATCH",
+        headers: {
+          "Content-Type": "application/json",
+          "apikey": SUPABASE_SERVICE_ROLE_KEY,
+          "Authorization": `Bearer ${SUPABASE_SERVICE_ROLE_KEY}`,
+          "Prefer": "return=minimal",
+        },
+        body: JSON.stringify({ status: newStatus }),
+      }
+    );
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      console.error(`[paddle-webhook] Failed to mark payment ${newStatus}:`, errorText);
+    } else {
+      console.log(`[paddle-webhook] Marked payment ${newStatus} for transaction: ${transactionId}`);
+    }
+  } catch (err) {
+    console.error(`[paddle-webhook] updatePaymentStatus(${newStatus}) error:`, err);
   }
 }
 
@@ -390,6 +425,8 @@ Deno.serve(async (req) => {
         const transaction = event.data;
         const transactionId = transaction.id;
         console.log(`Payment ${event.event_type}: transaction=${transactionId}`);
+        // 推进 payments 表状态：pending → failed
+        await updatePaymentStatus(transactionId, "failed");
         return new Response(
           JSON.stringify({ success: true }),
           { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } }

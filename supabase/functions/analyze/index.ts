@@ -10,11 +10,12 @@ import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 // base prompt with the risk-modules block (the dashboard inline version had
 // this suffix embedded; we now do the join explicitly).
 
-import { US_STEP1_SYSTEM_PROMPT, US_STEP2_SALE_PROMPT, US_STEP2_RISK_MODULES_BLOCK, US_STEP2_RENT_PROMPT } from "./prompts/us-prompts.ts";
+import { US_STEP1_SYSTEM_PROMPT, US_STEP2_SALE_PROMPT, US_STEP2_RISK_MODULES_BLOCK, US_STEP2_RENT_PROMPT, STEP1_RENT_SYSTEM_PROMPT } from "./prompts/us-prompts.ts";
 import { AU_STEP1_SYSTEM_PROMPT, AU_STEP2_RENT_PROMPT, AU_STEP2_SALE_PROMPT } from "./prompts/au-prompts.ts";
 
 const STEP1_SYSTEM_PROMPT = AU_STEP1_SYSTEM_PROMPT;
 const STEP1_US_SYSTEM_PROMPT = US_STEP1_SYSTEM_PROMPT;
+const STEP1_US_RENT_SYSTEM_PROMPT = STEP1_RENT_SYSTEM_PROMPT;
 const STEP2_US_RENT_PROMPT = US_STEP2_RENT_PROMPT;
 const STEP2_US_SALE_PROMPT = US_STEP2_SALE_PROMPT + US_STEP2_RISK_MODULES_BLOCK;
 const STEP2_RENT_PROMPT = AU_STEP2_RENT_PROMPT;
@@ -1347,28 +1348,163 @@ async function addDevCredits(userId: string, amount: number = 10): Promise<boole
  * Returns: { success: true, usageId } or { success: false, error }
  */
 /**
- * Unified fetch helper - reads body only once
+ * Unified fetch helper - reads body only once.
+ * Always carries an abort signal so a hung REST endpoint can't stall
+ * the whole invocation past the 150s ceiling.
  */
-async function fetchJson(url: string, options?: RequestInit): Promise<{ ok: boolean; status: number; payload: any }> {
-  const res = await fetch(url, options);
-  const raw = await res.text();
-
-  let payload: any = null;
+async function fetchJson(
+  url: string,
+  options?: RequestInit,
+  timeoutMs: number = TIMEOUT_LIMITS_MS.REST_DEFAULT,
+): Promise<{ ok: boolean; status: number; payload: any }> {
+  const startMs = Date.now();
+  const controller = new AbortController();
+  const timeoutSignal = AbortSignal.timeout(timeoutMs);
+  const signal = combinedSignal([controller.signal, timeoutSignal]);
   try {
-    payload = raw ? JSON.parse(raw) : null;
-  } catch {
-    payload = { raw };
-  }
+    const res = await fetch(url, { ...(options ?? {}), signal });
+    const raw = await res.text();
 
-  if (!res.ok) {
-    console.error("upstream error", {
-      url: url.replace(AUTH_URL, "***").replace(LOCAL_URL, "***"),
-      status: res.status,
-      payload,
-    });
-  }
+    let payload: any = null;
+    try {
+      payload = raw ? JSON.parse(raw) : null;
+    } catch {
+      payload = { raw };
+    }
 
-  return { ok: res.ok, status: res.status, payload };
+    if (!res.ok) {
+      console.error("upstream error", {
+        url: url.replace(AUTH_URL, "***").replace(LOCAL_URL, "***"),
+        status: res.status,
+        payload,
+        elapsedMs: Date.now() - startMs,
+      });
+    }
+
+    return { ok: res.ok, status: res.status, payload };
+  } catch (err) {
+    const elapsedMs = Date.now() - startMs;
+    const errName = (err as Error)?.name;
+    console.error(`[TIMEOUT] fetchJson FAILED after ${elapsedMs}ms (timeout=${timeoutMs}ms, url=${url.replace(AUTH_URL, "***").replace(LOCAL_URL, "***")}, name=${errName}): ${(err as Error)?.message ?? err}`);
+    throw err;
+  }
+}
+
+// ============================================================================
+// Deadline / per-request timeout helpers
+// ----------------------------------------------------------------------------
+// Supabase Edge Functions have a hard 150s wall-clock limit. Previously, none
+// of the LLM fetch() calls carried a timeout or abort signal, so a single
+// hung upstream call (or cumulative slow calls) could push past 150s and
+// trigger IDLE_TIMEOUT (504) — leaving analysis_states.status stuck at
+// "processing" and the client polling indefinitely.
+//
+// These helpers add two layers of protection:
+//   1. Per-call timeout (AbortSignal.timeout) — fail fast on a single hung call
+//   2. Shared per-invocation deadline (AbortController) — cancel everything
+//      when we approach the 150s ceiling, so cleanup runs and we can mark
+//      the analysis as failed.
+// ============================================================================
+
+/** Hard ceiling for a single invocation. Leaves a 5s buffer under Supabase's 150s wall-clock. */
+const INVOCATION_DEADLINE_MS = 145_000;
+
+/** Per-call timeouts for the known downstream calls in `run` (action=run). */
+const TIMEOUT_LIMITS_MS = {
+  REALITY_CHECK: 25_000,
+  STEP1_BATCH: 35_000,
+  STEP2_ATTEMPT: 80_000,
+  BASIC_SYNC: 60_000,
+  REST_DEFAULT: 15_000,
+};
+
+/**
+ * Polyfill for AbortSignal.any — combines multiple signals into one. Used
+ * only as a fallback when AbortSignal.any is not available in the runtime.
+ */
+function composeAbortSignals(signals: AbortSignal[]): AbortSignal {
+  const controller = new AbortController();
+  const onAbort = (s: AbortSignal) => {
+    if (s.reason) controller.abort(s.reason);
+    else controller.abort();
+  };
+  for (const s of signals) {
+    if (s.aborted) {
+      onAbort(s);
+      break;
+    }
+    s.addEventListener('abort', () => onAbort(s), { once: true });
+  }
+  return controller.signal;
+}
+
+/**
+ * Compose deadline + per-call timeout signals. Returns a single signal that
+ * fires whenever either upstream signal aborts.
+ */
+function combinedSignal(signals: AbortSignal[]): AbortSignal {
+  // AbortSignal.any is available in Deno >= 1.40
+  const anyFn = (AbortSignal as any).any;
+  if (typeof anyFn === 'function') return anyFn(signals);
+  return composeAbortSignals(signals);
+}
+
+/**
+ * Create a deadline signal that fires when the invocation approaches its
+ * hard ceiling. Use `combinedSignal([deadlineSignal, ...])` when calling fetch
+ * so cancellation propagates everywhere at once.
+ */
+function createInvocationDeadline(): { signal: AbortSignal; deadlineAt: number } {
+  const controller = new AbortController();
+  const deadlineAt = Date.now() + INVOCATION_DEADLINE_MS;
+  // Schedule a hard cap. setTimeout is fine — when it fires, the controller
+  // aborts and every fetch sharing the signal rejects immediately.
+  setTimeout(() => {
+    if (!controller.signal.aborted) {
+      console.error(`[DEADLINE] Invocation deadline (${INVOCATION_DEADLINE_MS}ms) reached — aborting all in-flight requests`);
+      controller.abort(new Error(`Invocation deadline ${INVOCATION_DEADLINE_MS}ms exceeded`));
+    }
+  }, INVOCATION_DEADLINE_MS).unref?.();
+  return { signal: controller.signal, deadlineAt };
+}
+
+/**
+ * Wrap fetch() with both a per-call timeout and the shared invocation deadline.
+ * Throws a descriptive Error on timeout so the caller's catch can distinguish
+ * upstream hangs from other errors.
+ */
+async function fetchWithTimeout(
+  url: string,
+  options: RequestInit,
+  timeoutMs: number,
+  label: string,
+  deadlineSignal?: AbortSignal,
+): Promise<Response> {
+  const timeoutSignal = AbortSignal.timeout(timeoutMs);
+  const signals: AbortSignal[] = [timeoutSignal];
+  if (deadlineSignal) signals.push(deadlineSignal);
+  const signal = combinedSignal(signals);
+
+  const startMs = Date.now();
+  try {
+    const res = await fetch(url, { ...options, signal });
+    const elapsedMs = Date.now() - startMs;
+    if (elapsedMs > timeoutMs * 0.8) {
+      console.warn(`[TIMEOUT] ${label} took ${elapsedMs}ms (>80% of ${timeoutMs}ms budget)`);
+    } else {
+      console.log(`[TIMEOUT] ${label} ok in ${elapsedMs}ms`);
+    }
+    return res;
+  } catch (err) {
+    const elapsedMs = Date.now() - startMs;
+    const errName = (err as Error)?.name;
+    const isAbort = errName === 'TimeoutError' || errName === 'AbortError';
+    console.error(`[TIMEOUT] ${label} FAILED after ${elapsedMs}ms (timeout=${timeoutMs}ms, name=${errName}): ${(err as Error)?.message ?? err}`);
+    if (isAbort) {
+      throw new Error(`${label} timed out after ${elapsedMs}ms (budget ${timeoutMs}ms)`);
+    }
+    throw err;
+  }
 }
 
 async function reserveCredits(userId: string, analysisId: string): Promise<{ success: boolean; usageId?: string; error?: string }> {
@@ -2934,7 +3070,8 @@ function normalizeRealityCheck(input: unknown): RealityCheck {
 async function runRealityCheck(
   openRouterApiKey: string,
   userText: string,
-  visibleListingText: string = ""
+  visibleListingText: string = "",
+  deadlineSignal?: AbortSignal,
 ): Promise<RealityCheck> {
   // Combine texts
   const combinedListingText = [userText, visibleListingText].filter(Boolean).join("\n\n");
@@ -2957,7 +3094,7 @@ async function runRealityCheck(
   };
 
   try {
-    const response = await fetch(
+    const response = await fetchWithTimeout(
       "https://openrouter.ai/api/v1/chat/completions",
       {
         method: "POST",
@@ -2968,7 +3105,10 @@ async function runRealityCheck(
           "X-Title": "Rental Property Analyzer",
         },
         body: JSON.stringify(requestBody),
-      }
+      },
+      TIMEOUT_LIMITS_MS.REALITY_CHECK,
+      "RealityCheck",
+      deadlineSignal,
     );
 
     if (!response.ok) {
@@ -3881,6 +4021,7 @@ export function computeFullSaleScore(input: FullSaleScoreInputs): FullSaleScoreB
   const rc = (result?.risk_categories ?? {}) as Record<string, unknown>;
   const ldp = result?.listing_does_not_prove;
   const bybs = result?.before_you_book_showing;
+  const ddd = result?.deeper_due_diligence;
   const photoReview = (result?.photoReview ?? visualAnalysis?.photoReview) as Record<string, unknown> | null | undefined;
   const priceAsmt = (result?.price_assessment ?? {}) as Record<string, unknown>;
   const inv = result?.investment_potential;
@@ -4418,6 +4559,7 @@ function classifyStep2ResponseIssue(data: any): string {
 async function callStep2Model(
   openRouterApiKey: string,
   step2Messages: any[],
+  deadlineSignal?: AbortSignal,
 ): Promise<{ rawText: string; parsed: Step2Decision }> {
   const step2RequestBody = {
     model: "openai/gpt-5-mini",
@@ -4426,10 +4568,35 @@ async function callStep2Model(
     max_tokens: 12000, // bumped from 5000 to handle expanded US sale schema
   };
 
-  async function attempt(attemptNumber: number): Promise<{ rawText: string; parsed: Step2Decision }> {
-    console.log(`[Step 2] attempt ${attemptNumber} start`);
+  // Track when Step 2 started so we can refuse the retry if we're already
+  // close to the invocation deadline — retrying under pressure is what
+  // produced 150s IDLE_TIMEOUTs in production.
+  const step2StartMs = Date.now();
+  // Hard ceiling for the total Step 2 budget: 2 attempts × 80s each,
+  // but capped at INVOCATION_DEADLINE_MS minus a 30s buffer for downstream work.
+  const STEP2_TOTAL_BUDGET_MS = 2 * TIMEOUT_LIMITS_MS.STEP2_ATTEMPT;
+  const STEP2_REMAINING_DEADLINE_MS = Math.max(15_000, INVOCATION_DEADLINE_MS - 30_000);
 
-    const response = await fetch(
+  function remainingBudgetMs(): number {
+    if (deadlineSignal?.aborted) return 0;
+    const byDeadline = deadlineSignal ? Math.max(0, STEP2_REMAINING_DEADLINE_MS - (Date.now() - step2StartMs)) : Infinity;
+    const byBudget = Math.max(0, STEP2_TOTAL_BUDGET_MS - (Date.now() - step2StartMs));
+    return Math.min(byDeadline, byBudget);
+  }
+
+  async function attempt(attemptNumber: number): Promise<{ rawText: string; parsed: Step2Decision }> {
+    const remaining = remainingBudgetMs();
+    if (remaining < 5_000) {
+      // Less than 5s of budget left — skip this attempt and surface the error.
+      const msg = `[Step 2] skipping attempt ${attemptNumber}: only ${remaining}ms of budget left (deadlineSignal aborted=${deadlineSignal?.aborted ?? false})`;
+      console.warn(msg);
+      throw new Error(msg);
+    }
+    // Clamp per-call timeout to remaining budget so we never request more time than we have.
+    const perCallTimeout = Math.min(TIMEOUT_LIMITS_MS.STEP2_ATTEMPT, remaining);
+    console.log(`[Step 2] attempt ${attemptNumber} start (perCallTimeout=${perCallTimeout}ms, remaining=${remaining}ms)`);
+
+    const response = await fetchWithTimeout(
       "https://openrouter.ai/api/v1/chat/completions",
       {
         method: "POST",
@@ -4441,6 +4608,9 @@ async function callStep2Model(
         },
         body: JSON.stringify(step2RequestBody),
       },
+      perCallTimeout,
+      `Step2-attempt-${attemptNumber}`,
+      deadlineSignal,
     );
 
     if (!response.ok) {
@@ -4553,6 +4723,7 @@ function buildStep1Messages(
   imageUrls: string[] = [],
   batchIndex = 0,
   market: Market = 'AU',
+  reportMode: 'sale' | 'rent' | 'unknown' = 'unknown',
   propertyContext?: {
     normalizedPropertyCategory?: string | null;
     homeType?: string | null;
@@ -4573,10 +4744,23 @@ function buildStep1Messages(
   // Adjust photoIndex to be global across batches
   const photoIndexOffset = start;
 
-  // Select prompt based on market
-  const systemPrompt = market === 'US' ? STEP1_US_SYSTEM_PROMPT : STEP1_SYSTEM_PROMPT;
-  const promptLabel = market === 'US' ? 'STEP1_US_SYSTEM_PROMPT' : 'STEP1_SYSTEM_PROMPT';
-  console.log(`[Step 1 Batch ${batchIndex + 1}] Using prompt: ${promptLabel} (market=${market})`);
+  // Select prompt based on market AND reportMode.
+  // US + rent uses STEP1_US_RENT_SYSTEM_PROMPT (renter-focused, no buyer risks).
+  // US + sale uses STEP1_US_SYSTEM_PROMPT (buyer-focused).
+  // AU uses STEP1_SYSTEM_PROMPT regardless of reportMode.
+  let systemPrompt: string;
+  let promptLabel: string;
+  if (market === 'US' && reportMode === 'rent') {
+    systemPrompt = STEP1_US_RENT_SYSTEM_PROMPT;
+    promptLabel = 'STEP1_US_RENT_SYSTEM_PROMPT';
+  } else if (market === 'US') {
+    systemPrompt = STEP1_US_SYSTEM_PROMPT;
+    promptLabel = 'STEP1_US_SYSTEM_PROMPT';
+  } else {
+    systemPrompt = STEP1_SYSTEM_PROMPT;
+    promptLabel = 'STEP1_SYSTEM_PROMPT';
+  }
+  console.log(`[Step 1 Batch ${batchIndex + 1}] Using prompt: ${promptLabel} (market=${market}, reportMode=${reportMode})`);
 
   const userContent: Step1UserContent[] = batchUrls.map((url) => ({
     type: "image_url",
@@ -4937,23 +5121,25 @@ function buildStep2Messages(
     if (reportMode === 'sale') {
       systemPrompt = STEP2_US_SALE_PROMPT;
       selectedPromptName = 'STEP2_US_SALE_PROMPT';
-    } else {
+    } else if (reportMode === 'rent') {
       systemPrompt = STEP2_US_RENT_PROMPT;
       selectedPromptName = 'STEP2_US_RENT_PROMPT';
+    } else {
+      throw new Error('REPORT_MODE_REQUIRED: cannot determine sale vs rent');
     }
   } else if (market === 'AU') {
-    systemPrompt = reportMode === 'sale' ? STEP2_SALE_PROMPT : STEP2_RENT_PROMPT;
-    selectedPromptName = reportMode === 'sale' ? 'STEP2_SALE_PROMPT' : 'STEP2_RENT_PROMPT';
-  } else {
-    // UNKNOWN → safe fallback: use US prompts (safer than accidentally routing US listings to AU)
     if (reportMode === 'sale') {
-      systemPrompt = STEP2_US_SALE_PROMPT;
-      selectedPromptName = 'STEP2_US_SALE_PROMPT (UNKNOWN→US fallback)';
+      systemPrompt = STEP2_SALE_PROMPT;
+      selectedPromptName = 'STEP2_SALE_PROMPT';
+    } else if (reportMode === 'rent') {
+      systemPrompt = STEP2_RENT_PROMPT;
+      selectedPromptName = 'STEP2_RENT_PROMPT';
     } else {
-      systemPrompt = STEP2_US_RENT_PROMPT;
-      selectedPromptName = 'STEP2_US_RENT_PROMPT (UNKNOWN→US fallback)';
+      throw new Error('REPORT_MODE_REQUIRED: cannot determine sale vs rent');
     }
-    console.warn(`[MARKET_ROUTING] Unknown market detected, using US fallback prompt`);
+  } else {
+    // Unknown market AND unknown reportMode — strict guard.
+    throw new Error('REPORT_MODE_REQUIRED: cannot determine market or report mode');
   }
 
   console.log("[DIAG] market routing — buildStep2Messages:", {
@@ -5007,8 +5193,12 @@ PHOTO EVIDENCE RULES (STRICT):
 
     // ── Core price ──
     if (reportMode === 'rent') {
-      const rentLabel = market === 'US' || market === 'UNKNOWN' ? 'Monthly Rent' : 'Weekly Rent';
-      addDetail(rentLabel, optionalDetails.weeklyRent);
+      // US rent → monthly; AU rent → weekly. Fall back to whichever field was sent.
+      const rentLabel = market === 'US' ? 'Monthly Rent' : 'Weekly Rent';
+      const rentValue = market === 'US'
+        ? (optionalDetails.monthlyRent ?? optionalDetails.weeklyRent)
+        : (optionalDetails.weeklyRent ?? optionalDetails.monthlyRent);
+      addDetail(rentLabel, rentValue);
     } else {
       addDetail('Asking Price', optionalDetails.askingPrice);
     }
@@ -5488,30 +5678,45 @@ Deno.serve(async (req) => {
         ((full_result as Record<string, unknown>)?.carrying_costs as Record<string, unknown>)?.['primary_monthly_estimate'],
     });
 
-    // ── Canonical reportMode resolution (Fix 1 + Fix 2) ─────────────────────────
-    // Priority: analyses.report_mode (authoritative) > inferred from market/domain
-    //           > full_result.report_mode > full_result.reportMode > 'rent'
-    //
-    // Inferred: US listings on Zillow (sale listings) must not fallback to 'rent'.
-    // If market=US or sourceDomain includes 'zillow', strongly bias toward 'sale'.
-    const marketStr = String((full_result as Record<string, unknown>)?.market || '').toUpperCase();
-    const sourceDomainStr = String(
-      (full_result as Record<string, unknown>)?.sourceDomain ||
-      (full_result as Record<string, unknown>)?.source_domain ||
-      ''
-    ).toLowerCase();
-    const isUSMarket = marketStr === 'US';
-    const isZillowListing = sourceDomainStr.includes('zillow');
+    // ── Canonical reportMode resolution (strict — no default to sale) ──────────────
+// Priority:
+//   1) DB record.report_mode when sale|rent (authoritative)
+//   2) full_result.reportMode / report_mode / listingType when sale|rent
+//   3) pricePeriod === 'month' → rent
+//   4) URL contains rent/rental/apartments/community → rent
+// Otherwise return null (never 'sale' default). The store should have blocked unknown
+// before this code is reached; we still surface REPORT_MODE_REQUIRED as the second-line guard.
+function inferReportModeStrictFromResult(fullResult: unknown): 'sale' | 'rent' | null {
+  const r = (fullResult || {}) as Record<string, unknown>;
+  const candidate = String(r.reportMode || r.report_mode || r.listingType || '').toLowerCase();
+  if (candidate === 'sale' || candidate === 'rent') return candidate as 'sale' | 'rent';
+  if (String(r.pricePeriod || '').toLowerCase() === 'month') return 'rent';
+  const u = String(r.listingUrl || r.url || '').toLowerCase();
+  if (u.includes('/rent/') || u.includes('/rental/') || u.includes('/apartments/') ||
+      u.includes('/for-rent/') || u.includes('/community/')) {
+    return 'rent';
+  }
+  return null;
+}
 
-    const inferredReportMode: string | null =
-      (isUSMarket || isZillowListing) ? 'sale' : null;
+    let canonicalReportMode: string | null = null;
 
-    const canonicalReportMode =
-      reportMode ||
-      inferredReportMode ||
-      (full_result as Record<string, unknown>)?.report_mode ||
-      (full_result as Record<string, unknown>)?.reportMode ||
-      'rent';
+    // 1) DB record wins
+    if (reportMode === 'sale' || reportMode === 'rent') {
+      canonicalReportMode = reportMode;
+    } else {
+      // 2) Infer from full_result
+      canonicalReportMode = inferReportModeStrictFromResult(full_result);
+    }
+
+    // When still unresolved, return REPORT_MODE_REQUIRED — do not default to sale or rent.
+    // We still surface historical data so users can read prior reports; for missing mode we
+    // expose it as 'unknown' but do NOT mark it as 'sale'/'rent' for downstream code.
+    const isResolved = canonicalReportMode === 'sale' || canonicalReportMode === 'rent';
+    if (!isResolved) {
+      // Historical records may legitimately have unknown; we expose that as-is.
+      canonicalReportMode = 'unknown';
+    }
 
     // Strip stale reportMode from state to prevent it leaking into the response.
     const { reportMode: _stateReportMode, ...cleanState } = state as unknown as Record<string, unknown>;
@@ -5888,7 +6093,23 @@ Deno.serve(async (req) => {
     console.log("=== BASIC SYNC START ===");
 
     const description = typeof body.description === "string" ? body.description : "Property listing information";
-    const reportMode: ReportMode = body.reportMode === 'sale' ? 'sale' : 'rent';
+    // Strict three-state: sale | rent | unknown. No default to rent.
+    const reportMode: 'sale' | 'rent' | 'unknown' =
+      body.reportMode === 'sale' || body.reportMode === 'rent'
+        ? body.reportMode
+        : body.listingType === 'sale' || body.listingType === 'rent'
+        ? body.listingType
+        : String(body.pricePeriod || (body.optionalDetails?.pricePeriod) || '').toLowerCase() === 'month'
+        ? 'rent'
+        : 'unknown';
+    if (reportMode === 'unknown') {
+      return jsonResponse({
+        message: 'REPORT_MODE_REQUIRED: cannot determine sale vs rent for this listing.',
+        code: 'REPORT_MODE_REQUIRED',
+        listingType: 'unknown',
+        hint: 'Confirm For Sale or For Rent on the listing page; backend requires an explicit signal.',
+      }, 400);
+    }
     const optionalDetails = body.optionalDetails ?? {};
     const zillowFinancials = (body as Record<string, unknown>).zillowFinancials || null;
 
@@ -6508,7 +6729,7 @@ ${optionalDetails.askingPrice ? `Asking Price: ${optionalDetails.askingPrice}\n`
       {
         const opts = optionalDetails as Record<string, unknown>;
 
-        const hasPrice = !!(opts.askingPrice || opts.weeklyRent);
+        const hasPrice = !!(opts.askingPrice || opts.weeklyRent || opts.monthlyRent);
         const hasBeds = !!(opts.bedrooms);
         const hasBaths = !!(opts.bathrooms);
         const hasSqft = !!(opts.sqft);
@@ -6562,6 +6783,8 @@ ${optionalDetails.askingPrice ? `Asking Price: ${optionalDetails.askingPrice}\n`
         setIfMissing('baths', opts.bathrooms ?? opts.baths);
         setIfMissing('property_type', opts.propertyType ?? opts.property_type);
         setIfMissing('asking_price', opts.askingPrice ?? opts.price);
+        // US rent: monthly_rent is the primary price signal
+        setIfMissing('monthly_rent', opts.monthlyRent ?? opts.weeklyRent);
 
         result.what_we_know = wwKnow;
       }
@@ -6793,7 +7016,23 @@ ${optionalDetails.askingPrice ? `Asking Price: ${optionalDetails.askingPrice}\n`
   if (resolvedAction === "submit" || !resolvedAction) {
     const imageUrls = Array.isArray(body.imageUrls) ? body.imageUrls.filter(isValidHttpUrl) : [];
     const description = typeof body.description === "string" ? body.description : "";
-    const reportMode: ReportMode = body.reportMode === 'sale' ? 'sale' : 'rent';
+    // Strict three-state reportMode; reject unknown at entry.
+    const reportMode: 'sale' | 'rent' | 'unknown' =
+      body.reportMode === 'sale' || body.reportMode === 'rent'
+        ? body.reportMode
+        : body.listingType === 'sale' || body.listingType === 'rent'
+        ? body.listingType
+        : String(body.pricePeriod || (body.optionalDetails?.pricePeriod) || '').toLowerCase() === 'month'
+        ? 'rent'
+        : 'unknown';
+    if (reportMode === 'unknown') {
+      return jsonResponse({
+        message: 'REPORT_MODE_REQUIRED: cannot determine sale vs rent for this listing.',
+        code: 'REPORT_MODE_REQUIRED',
+        listingType: 'unknown',
+        hint: 'Confirm For Sale or For Rent on the listing page; backend requires an explicit signal.',
+      }, 400);
+    }
 
     // ── Market / Source resolution ───────────────────────────────────────────
     const rawSource = body.source ?? body.sourceDomain ??
@@ -6878,7 +7117,26 @@ ${optionalDetails.askingPrice ? `Asking Price: ${optionalDetails.askingPrice}\n`
   if (resolvedAction === "run") {
     console.log("=== RUN ACTION START ===");
     console.log("Request body:", JSON.stringify(body));
-    
+
+    // ── Strict three-state guard: refuse to run analysis with unknown reportMode ──
+    {
+      const rm = body.reportMode;
+      const lt = body.listingType;
+      const pp = String(body.pricePeriod || (body.optionalDetails?.pricePeriod) || '').toLowerCase();
+      const validRm = rm === 'sale' || rm === 'rent';
+      const validLt = lt === 'sale' || lt === 'rent';
+      const inferredRent = !validRm && !validLt && pp === 'month';
+      if (!validRm && !validLt && !inferredRent) {
+        console.error('[run] REPORT_MODE_REQUIRED — refusing to invoke LLM');
+        return jsonResponse({
+          message: 'REPORT_MODE_REQUIRED: cannot determine sale vs rent for this listing.',
+          code: 'REPORT_MODE_REQUIRED',
+          listingType: 'unknown',
+          hint: 'Confirm For Sale or For Rent on the listing page; backend requires an explicit signal.',
+        }, 400);
+      }
+    }
+
     const id = body.id;
     if (!id) {
       console.error("Missing id in run action - body:", JSON.stringify(body));
@@ -6928,6 +7186,15 @@ ${optionalDetails.askingPrice ? `Asking Price: ${optionalDetails.askingPrice}\n`
     console.log("User ID:", currentUser.id);
     console.log("Analysis ID:", id);
     console.log("Usage Record ID:", usageId);
+
+    // ── Invocation deadline ──────────────────────────────────────────────────
+    // Supabase Edge Functions cap at 150s wall-clock. Create a deadline
+    // signal shared across all in-flight LLM / fetch calls so we abort
+    // proactively and run cleanup (mark failed, release credits) instead
+    // of being killed mid-flight with status stuck at "processing".
+    const invocationDeadline = createInvocationDeadline();
+    const deadlineSignal = invocationDeadline.signal;
+    console.log(`[DEADLINE] Created — ceiling at ${new Date(invocationDeadline.deadlineAt).toISOString()} (${INVOCATION_DEADLINE_MS}ms from now)`);
 
     const imageUrls = Array.isArray(body.imageUrls) ? body.imageUrls.filter(isValidHttpUrl) : [];
     const optionalDetails = body.optionalDetails ?? {};
@@ -6999,7 +7266,17 @@ ${optionalDetails.askingPrice ? `Asking Price: ${optionalDetails.askingPrice}\n`
       }
       return raw;
     })();
-    const reportMode: ReportMode = body.reportMode === 'sale' ? 'sale' : 'rent';
+    // Strict three-state resolution: sale | rent | unknown. No default fallback.
+    let reportMode: 'sale' | 'rent' | 'unknown';
+    if (body.reportMode === 'sale' || body.reportMode === 'rent') {
+      reportMode = body.reportMode;
+    } else if (body.listingType === 'sale' || body.listingType === 'rent') {
+      reportMode = body.listingType;
+    } else if (String((body as any)?.pricePeriod || (optionalDetails as any)?.pricePeriod || '').toLowerCase() === 'month') {
+      reportMode = 'rent';
+    } else {
+      reportMode = 'unknown';
+    }
 
     // Multi-source fallback: body > listingData > optionalDetails
     const rawZf = ((body as any)?.zillowFinancials)
@@ -7079,7 +7356,7 @@ ${optionalDetails.askingPrice ? `Asking Price: ${optionalDetails.askingPrice}\n`
       ? (reportMode === 'sale' ? 'STEP2_US_SALE_PROMPT' : 'STEP2_US_RENT_PROMPT')
       : detectedMarket === 'AU'
       ? (reportMode === 'sale' ? 'STEP2_SALE_PROMPT' : 'STEP2_RENT_PROMPT')
-      : (reportMode === 'sale' ? 'STEP2_US_SALE_PROMPT (UNKNOWN→US)' : 'STEP2_US_RENT_PROMPT (UNKNOWN→US)');
+      : 'REPORT_MODE_REQUIRED';
 
     console.log("[DIAG] market routing — run action:", {
       action: "run",
@@ -7160,7 +7437,7 @@ ${optionalDetails.askingPrice ? `Asking Price: ${optionalDetails.askingPrice}\n`
       if (spinText && !hasMlsNoise) {
         console.log("[Reality Check] Input source:", spinDesc ? 'whatsSpecialText/listingDescription/whatSpecial' : 'description (fallback)');
         console.log("[Reality Check] Input length:", spinText.length);
-        realityCheckPromise = runRealityCheck(openRouterApiKey, spinText, "").catch((rcError) => {
+        realityCheckPromise = runRealityCheck(openRouterApiKey, spinText, "", deadlineSignal).catch((rcError) => {
           console.error("[RealityCheck] Failed:", rcError);
           return { should_display: false };
         });
@@ -7191,7 +7468,7 @@ ${optionalDetails.askingPrice ? `Asking Price: ${optionalDetails.askingPrice}\n`
             propertySubtype: od?.propertySubtype as string | null ?? null,
           };
 
-          const { messages, photoIndexOffset } = buildStep1Messages(imageUrls, batchIndex, detectedMarket, propertyContext);
+          const { messages, photoIndexOffset } = buildStep1Messages(imageUrls, batchIndex, detectedMarket, reportMode, propertyContext);
 
           const step1RequestBody = {
             model: "google/gemini-2.5-flash",
@@ -7201,7 +7478,7 @@ ${optionalDetails.askingPrice ? `Asking Price: ${optionalDetails.askingPrice}\n`
           };
 
           try {
-            const step1Response = await fetch(
+            const step1Response = await fetchWithTimeout(
               "https://openrouter.ai/api/v1/chat/completions",
               {
                 method: "POST",
@@ -7213,6 +7490,9 @@ ${optionalDetails.askingPrice ? `Asking Price: ${optionalDetails.askingPrice}\n`
                 },
                 body: JSON.stringify(step1RequestBody),
               },
+              TIMEOUT_LIMITS_MS.STEP1_BATCH,
+              `Step1-Batch-${batchIndex + 1}`,
+              deadlineSignal,
             );
 
             if (!step1Response.ok) {
@@ -7502,7 +7782,7 @@ ${optionalDetails.askingPrice ? `Asking Price: ${optionalDetails.askingPrice}\n`
       });
 
       const step2Messages = buildStep2Messages(
-        reportMode,
+        (reportMode === 'sale' || reportMode === 'rent') ? reportMode : 'rent',
         detectedMarket,
         visualAnalysis,
         description,
@@ -7513,6 +7793,7 @@ ${optionalDetails.askingPrice ? `Asking Price: ${optionalDetails.askingPrice}\n`
       const { rawText: step2RawText, parsed: decision } = await callStep2Model(
         openRouterApiKey,
         step2Messages,
+        deadlineSignal,
       );
 
       console.log('[TRACE_ORIGIN_BACKEND_RAW_OUTPUT]', {
@@ -7531,13 +7812,14 @@ ${optionalDetails.askingPrice ? `Asking Price: ${optionalDetails.askingPrice}\n`
 
       // === STEP2 RAW OUTPUT SHAPE DIAGNOSTIC ===
       // Confirms whether the NEW prompt contract (risk_categories /
-      // listing_does_not_prove / before_you_book_showing) is actually in the LLM
+      // listing_does_not_prove / before_you_book_showing / deeper_due_diligence) is actually in the LLM
       // response. Helps diagnose "modules not visible in UI" caused by a stale
       // deployed prompt vs. an adapter/frontend issue.
       {
         const _rc = (decision as any)?.risk_categories;
         const _ldp = (decision as any)?.listing_does_not_prove;
         const _bybs = (decision as any)?.before_you_book_showing;
+        const _ddd = (decision as any)?.deeper_due_diligence;
         const _rcKeys = (_rc && typeof _rc === 'object') ? Object.keys(_rc) : [];
         console.log('[STEP2_RAW_KEYS]', {
           detectedMarket,
@@ -7552,6 +7834,7 @@ ${optionalDetails.askingPrice ? `Asking Price: ${optionalDetails.askingPrice}\n`
           },
           listing_does_not_prove_count: Array.isArray(_ldp) ? _ldp.length : null,
           before_you_book_showing_count: Array.isArray(_bybs) ? _bybs.length : null,
+          deeper_due_diligence_count: Array.isArray(_ddd) ? _ddd.length : null,
           rawTextLength: step2RawText.length,
         });
       }
@@ -8051,6 +8334,11 @@ ${optionalDetails.askingPrice ? `Asking Price: ${optionalDetails.askingPrice}\n`
           : null,
         before_you_book_showing: Array.isArray((decision as any).before_you_book_showing)
           ? ((decision as any).before_you_book_showing as unknown[]).filter(
+              (x): x is string => typeof x === 'string' && x.trim().length > 0,
+            )
+          : null,
+        deeper_due_diligence: Array.isArray((decision as any).deeper_due_diligence)
+          ? ((decision as any).deeper_due_diligence as unknown[]).filter(
               (x): x is string => typeof x === 'string' && x.trim().length > 0,
             )
           : null,
@@ -9092,20 +9380,6 @@ ${optionalDetails.askingPrice ? `Asking Price: ${optionalDetails.askingPrice}\n`
         progress: 90,
       });
 
-      // Final state update
-      await updateAnalysisState(id, {
-        stage: "done",
-        message: "Analysis complete!",
-        progress: 100,
-        status: "done",
-        result,
-      });
-
-      // Update analysis record in analyses table.
-      // `saleFields` (built above) already guarantees that `risk_categories`,
-      // `listing_does_not_prove`, and `before_you_book_showing` are safely
-      // normalized on the `result` object before it gets here, so we only need
-      // to stamp the Full-report marker on top.
       const fullResultWithType = {
         ...(result as Record<string, unknown>),
         // Triple-mirror the score so any reader sees the same value
@@ -9115,6 +9389,15 @@ ${optionalDetails.askingPrice ? `Asking Price: ${optionalDetails.askingPrice}\n`
         evidenceLevel: (result as any).evidenceLevel ?? evidenceLevelStr,
         analysisType: 'full',
       };
+
+      // ── FIX: write analyses.full_result BEFORE marking analysis_states
+      // as 'done'. The GET poller treats status===done as "isFinished" and
+      // reads full_result from the analyses table. If we flipped state first,
+      // a poll landing in the gap would see isFinished=true with hasFullResult
+      // = false, leaving the client spinning until its hard timeout fires
+      // ("Analysis timed out") even though the server-side result is already
+      // persisted and visible in history. See logs of fbd100f2-... for the
+      // 264 ms race window that produced that user-visible false-failure.
       await updateAnalysisRecord(
         id,
         result.overallScore,
@@ -9125,8 +9408,18 @@ ${optionalDetails.askingPrice ? `Asking Price: ${optionalDetails.askingPrice}\n`
           riskSignals: result.riskSignals,
         },
         fullResultWithType,
-        reportMode // 传递 reportMode 以同步到数据库
+        (reportMode === 'sale' || reportMode === 'rent' ? reportMode : 'rent') // 传递 reportMode 以同步到数据库
       );
+
+      // Final state update — done only after full_result is committed,
+      // so the GET poller's isFinished/full_result are observed together.
+      await updateAnalysisState(id, {
+        stage: "done",
+        message: "Analysis complete!",
+        progress: 100,
+        status: "done",
+        result,
+      });
 
       // Analysis succeeded - complete the credit usage
       await completeCredits(currentUser.id, usageId);
@@ -9140,7 +9433,17 @@ ${optionalDetails.askingPrice ? `Asking Price: ${optionalDetails.askingPrice}\n`
 
       console.error("===================");
       console.error("Analysis error:", err.message);
+      console.error("Error name:", err.name);
       console.error("===================");
+
+      // Distinguish timeout/deadline errors from generic failures so the client
+      // can show a more actionable message and operators can find these fast.
+      const errName = err.name ?? '';
+      const isTimeout = errName === 'TimeoutError' || errName === 'AbortError'
+        || /timed out|deadline/i.test(err.message);
+      const friendlyMessage = isTimeout
+        ? `Analysis timed out: ${err.message}. The LLM did not respond within the allowed budget. Please try again.`
+        : err.message || "Analysis failed";
 
       // Analysis failed - release the reserved credit
       await releaseCredits(currentUser.id, usageId);
@@ -9148,19 +9451,20 @@ ${optionalDetails.askingPrice ? `Asking Price: ${optionalDetails.askingPrice}\n`
 
       await updateAnalysisState(id, {
         stage: "failed",
-        message: err.message || "Analysis failed",
+        message: friendlyMessage,
         progress: 100,
         status: "failed",
-        error: err.message,
+        error: friendlyMessage,
       });
 
       // Mark analysis as failed in analyses table
-      await failAnalysisRecord(id, err.message);
+      await failAnalysisRecord(id, friendlyMessage);
 
-      return jsonResponse({ 
-        message: "Analysis failed",
-        error: err.message 
-      }, 500);
+      return jsonResponse({
+        message: isTimeout ? "Analysis timed out" : "Analysis failed",
+        error: friendlyMessage,
+        timedOut: isTimeout,
+      }, isTimeout ? 504 : 500);
     }
   }
 

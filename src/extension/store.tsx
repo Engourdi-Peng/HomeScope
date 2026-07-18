@@ -27,6 +27,21 @@ import { ExtractionErrorCode, getUserErrorMessage } from '../../shared/errors';
 // - Frontend listingData provides fallback values only when backend doesn't have them.
 // - For images: prefer backend's analysis images > frontend's thumbnail images.
 //
+// ===== Helper: Block on unknown listing type =====
+//
+// When the content-script detector returns listingType === 'unknown', we must NOT
+// send the first analyze request to the backend. Instead we set the phase to
+// 'needs_report_mode' so the UI can prompt the user. Only an explicit
+// listingType === 'sale' | 'rent' OR a user-set reportMode lets the request
+// proceed. Backend will additionally validate and return REPORT_MODE_REQUIRED
+// as a second-line guard.
+function hasResolvedListingType(data: ListingData | ListingDataV2 | null): boolean {
+  if (!data) return false;
+  if (data.reportMode === 'sale' || data.reportMode === 'rent') return true;
+  if (data.listingType === 'sale' || data.listingType === 'rent') return true;
+  return false;
+}
+
 function isV2Data(data: ListingData | ListingDataV2 | null): data is ListingDataV2 {
   // V2: 有 listingUrl 或同时有 images 和 source
   // V1: 没有 listingUrl，有 source 但没有 images
@@ -432,6 +447,20 @@ function appReducer(state: AppState, action: AppAction): AppState {
         readError: action.readError !== undefined ? action.readError : null,
       };
 
+    case 'SET_REPORT_MODE':
+      // User confirmed For Sale / For Rent from the modal.
+      // Persist into listingData so subsequent SW + backend calls see the explicit choice.
+      return {
+        ...state,
+        listingData: state.listingData
+          ? {
+              ...state.listingData,
+              reportMode: action.reportMode,
+              listingType: action.reportMode,
+            }
+          : state.listingData,
+      };
+
     case 'SET_AUTH_STATUS':
       return {
         ...state,
@@ -517,8 +546,12 @@ interface AppContextValue {
   actions: {
     refreshPageData: () => Promise<void>;
     refreshAll: () => Promise<void>;
-    startAnalysis: (options?: { bypassCache?: boolean }) => Promise<void>;
+    startAnalysis: (options?: { bypassCache?: boolean; analysisType?: 'basic' | 'full' }) => Promise<void>;
     retryAnalysis: () => Promise<void>;
+    /** Cancel/back out of the report-mode modal without sending an analyze request. */
+    resetAnalysis: () => void;
+    /** User picked For Sale / For Rent from the modal — persist the choice into listingData. */
+    setReportMode: (mode: 'sale' | 'rent') => void;
     refreshPhotos: () => Promise<void>;
     logout: () => Promise<void>;
     loadHistory: () => Promise<void>;
@@ -529,6 +562,8 @@ interface AppContextValue {
     sendMagicLink: (email: string) => Promise<{ success: boolean; error?: string }>;
     initiateGoogleOAuth: () => Promise<{ success: boolean; error?: string }>;
     shareAnalysis: (analysisId: string) => Promise<{ slug: string; shareUrl: string }>;
+    /** 强制重提取（用户 Modal 选定 Rent/Sale 后通过 content script 链路触发） */
+    forceReextract: (forcedListingType: 'rent' | 'sale') => Promise<boolean>;
   };
 }
 
@@ -1366,6 +1401,21 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       return;
     }
 
+    // Step 2b: Cross-listing cache guard.
+    // The extension remembers last extraction under state.lastExtractedUrl /
+    // extractionCached / listingData. If the user navigated to a different
+    // listing since the last extraction, the cached listingData is stale and
+    // reusing it causes "old-listing data leakage" (different address, photos,
+    // price, year built) into the new analysis. Force a re-extraction whenever
+    // the active URL changed OR no cache exists for this URL.
+    if (!bypassCache && state.extractionCached && state.lastExtractedUrl && state.lastExtractedUrl !== currentUrl) {
+      console.warn('[ExtApp] URL changed since last extraction, clearing stale cache', {
+        previousUrl: state.lastExtractedUrl,
+        currentUrl,
+      });
+      dispatch({ type: 'SET_EXTRACTION_CACHED', extractionCached: false, lastExtractedUrl: null });
+    }
+
     // Step 3: Check URL cache - validate cached data before reuse
     if (!bypassCache && state.lastExtractedUrl === currentUrl && state.extractionCached && state.listingData) {
       const cached = state.listingData as ListingData | ListingDataV2;
@@ -1374,6 +1424,15 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
 
       if (hasImages || hasValidDesc) {
         noop('[ExtApp] Cache HIT - valid:', { images: cached.imageUrls?.length, descLen: cached.description?.length });
+
+        // BLOCKING guard: unknown listing type must NOT proceed to analyze
+        if (!hasResolvedListingType(cached)) {
+          noop('[ExtApp] Cache HIT but listingType=unknown — showing report-mode modal');
+          dispatch({ type: 'SET_PROPERTY_STATUS', propertyStatus: 'detected', listingData: cached, propertyDetection: null });
+          dispatch({ type: 'SET_ANALYSIS_PHASE', phase: 'needs_report_mode' });
+          return;
+        }
+
         dispatch({ type: 'SET_ANALYSIS_PHASE', phase: 'sending_data' });
         await submitAnalysis(cached, analysisType);
         return;
@@ -1464,6 +1523,14 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
 
     // Mark URL as cached
     dispatch({ type: 'SET_EXTRACTION_CACHED', extractionCached: true, lastExtractedUrl: currentUrl });
+
+    // BLOCKING guard: unknown listing type must NOT proceed to analyze.
+    // Display the modal so the user can confirm For Sale / For Rent.
+    if (!hasResolvedListingType(listingData)) {
+      noop('[ExtApp] listingType=unknown — showing report-mode modal (no analyze request sent)');
+      dispatch({ type: 'SET_ANALYSIS_PHASE', phase: 'needs_report_mode' });
+      return;
+    }
 
     // Step 5: Submit to analyze API (passes analysisType)
     await submitAnalysis(listingData, analysisType);
@@ -1725,6 +1792,12 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     hasPrice: !!listingData.price,
     hasReportMode: !!listingData.reportMode,
     reportMode: listingData.reportMode,
+    listingType: (listingData as any).listingType,
+    listingTypeSource: (listingData as any).listingTypeSource,
+    listingTypeConfidence: (listingData as any).listingTypeConfidence,
+    listingTypeConflicts: (listingData as any).listingTypeConflicts,
+    pricePeriod: (listingData as any).pricePeriod,
+    url: listingData.url,
     allKeys: Object.keys(listingData)
   }));
 
@@ -1807,6 +1880,63 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     await startAnalysis({ bypassCache: true, analysisType: typeToRetry });
   }, [startAnalysis, state.currentAnalysisType]);
 
+  // Cancel / back out of the report-mode modal without sending an analyze request.
+  const resetAnalysis = useCallback(() => {
+    dispatch({ type: 'RESET_ANALYSIS' });
+  }, []);
+
+  // User picked For Sale / For Rent from the modal — persist the choice into listingData.
+  const setReportMode = useCallback((mode: 'sale' | 'rent') => {
+    dispatch({ type: 'SET_REPORT_MODE', reportMode: mode });
+  }, []);
+
+  /**
+   * FORCE_REEXTRACT — user picked Rent/Sale in ReportModeModal when listingType='unknown'.
+   * store.tsx 拿不到 DOM，必须通过 background → content script 链路：
+   *   1. store 调 chrome.runtime.sendMessage({ action:'FORCE_REEXTRACT', forcedListingType })
+   *   2. background 转发给 active tab 的 content script
+   *   3. content script 持有 document，调 ZillowExtractor re-extract
+   *   4. content script 返回新 listingData（listingType = forcedType）
+   *   5. store 写回 state,再发起分析
+   *
+   * 不允许只 toggle listingType 用之前只有 common 字段的数据发起分析。
+   */
+  const forceReextract = useCallback(async (forcedListingType: 'rent' | 'sale') => {
+    try {
+      const response = await sendMessage<{
+        ok: boolean;
+        data?: ListingData | ListingDataV2;
+        error?: string;
+      }>({
+        action: 'FORCE_REEXTRACT',
+        forcedListingType,
+      });
+      if (!response?.ok || !response.data) {
+        const errMsg = response?.error || 'forceReextract failed';
+        noop('[ExtApp] forceReextract:', errMsg);
+        dispatch({ type: 'SET_ANALYSIS_PHASE', phase: 'error', error: errMsg });
+        return false;
+      }
+      const newData = response.data as ListingData | ListingDataV2;
+      // 更新 listingData（listingType/新字段都被覆盖）
+      dispatch({
+        type: 'SET_PROPERTY_STATUS',
+        propertyStatus: 'detected',
+        listingData: newData,
+        propertyDetection: null,
+        readError: null,
+      });
+      // 把 mode 也写到 SET_REPORT_MODE 兼容现有链路
+      dispatch({ type: 'SET_REPORT_MODE', reportMode: forcedListingType });
+      noop('[ExtApp] forceReextract success: listingType=', (newData as any).listingType);
+      return true;
+    } catch (err) {
+      noop('[ExtApp] forceReextract exception:', err);
+      dispatch({ type: 'SET_ANALYSIS_PHASE', phase: 'error', error: String(err?.message || err) });
+      return false;
+    }
+  }, []);
+
   /** Force a fresh image extraction, bypassing the URL result cache */
   const refreshPhotos = useCallback(async () => {
     dispatch({ type: 'RESET_ANALYSIS' });
@@ -1875,7 +2005,22 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         // Silently ignore refresh failures
       });
     }
-  }, [state.user]);
+    // Re-fetch history so analyses completed during the report view (where the
+    // fire-and-forget fetch may have lost its SW round-trip) appear on home.
+    // Only logged-in users have a server-side history.
+    if (state.authStatus === 'logged_in') {
+      sendMessage<{
+        status: string;
+        analyses?: AnalysisSummary[];
+      }>({ action: 'get_analysis_history', limit: 8, offset: 0 }).then((response) => {
+        if (response?.status === 'success' && response.analyses) {
+          dispatch({ type: 'SET_HISTORY', history: response.analyses });
+        }
+      }).catch(() => {
+        // Silently ignore — HistorySection will retry on next mount / refresh
+      });
+    }
+  }, [state.user, state.authStatus]);
 
   const sendMagicLink = useCallback(async (email: string): Promise<{ success: boolean; error?: string }> => {
     try {
@@ -1938,6 +2083,9 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       refreshAll,
       startAnalysis,
       retryAnalysis,
+      resetAnalysis,
+      setReportMode,
+      forceReextract,
       refreshPhotos,
       logout,
       loadHistory,

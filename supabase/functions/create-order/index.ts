@@ -11,6 +11,9 @@ declare const Deno: {
 };
 
 // ========== 内联共享配置 ==========
+// KEEP-IN-SYNC: see docs/pricing.md. These three blocks (here, paddle-webhook,
+// and src/pages/Pricing.tsx) plus the CASE in migration 017 must all agree on
+// report counts and price per plan.
 const BASE_CREDITS: Record<string, number> = {
   starter: 5,
   standard: 12,
@@ -84,6 +87,16 @@ function validateApiKey(): void {
 
 // 启动时校验 API Key
 validateApiKey();
+
+// Echo product map on cold start so deploy-time logs immediately reveal any
+// drift between these constants and the matching blocks in paddle-webhook and
+// src/pages/Pricing.tsx. KEEP-IN-SYNC: see docs/pricing.md.
+console.log("[create-order] product map:", {
+  starter:  { credits: BASE_CREDITS.starter,  price: PLAN_PRICES.starter  },
+  standard: { credits: BASE_CREDITS.standard, price: PLAN_PRICES.standard },
+  pro:      { credits: BASE_CREDITS.pro,      price: PLAN_PRICES.pro      },
+});
+console.log("[create-order] environment:", IS_SANDBOX ? "sandbox" : "production");
 
 // 前端配置
 const APP_URL = Deno.env.get("APP_URL") || "https://www.tryhomescope.com";
@@ -258,7 +271,8 @@ async function createPaddleTransaction(
         ],
         custom_data: customData,
         checkout: {
-          return_url: `${APP_URL}/checkout?_ptxn={transaction_id}`,
+          // 统一 URL 参数名为 transaction_id；Checkout 页同时兼容 _ptxn/txn 历史别名
+          return_url: `${APP_URL}/checkout?transaction_id={transaction_id}`,
         },
       }),
     });
@@ -272,7 +286,8 @@ async function createPaddleTransaction(
     const data = await response.json();
 
     const transactionId = data.data.id;
-    const checkoutUrl = `${APP_URL}/checkout?_ptxn=${transactionId}`;
+    // 统一 URL 参数名为 transaction_id（Checkout 同时读取 _ptxn/txn 历史别名）
+    const checkoutUrl = `${APP_URL}/checkout?transaction_id=${transactionId}`;
 
     console.log("[create-order] checkout_url:", checkoutUrl);
     console.log("[create-order] transactionId:", transactionId);

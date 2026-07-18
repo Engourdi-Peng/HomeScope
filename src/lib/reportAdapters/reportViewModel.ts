@@ -10,6 +10,7 @@ import {
   QUESTION_FALLBACKS,
   QUESTIONS_TO_SUPPRESS_BY_CATEGORY,
 } from './Fallbacks';
+import { INTERIOR_AREAS_LIST, hasInteriorPhotos as hasInteriorPhotosShared } from './interiorPhotos';
 
 const CORE_FACT_FIELDS = ['address', 'year', 'propertyType', 'beds', 'baths', 'sqft', 'pricePerSqft'] as const;
 
@@ -487,12 +488,9 @@ export function isValidAction(action: string, summary: string): boolean {
 }
 
 // ── 照片一致性校验 ────────────────────────────────────────────────────────────
-
-const INTERIOR_AREAS = [
-  'living room', 'bedroom', 'bathroom', 'kitchen',
-  'hallway', 'dining room', 'basement', 'storage',
-  'attic', 'laundry', 'office', 'family room',
-];
+// INTERIOR_AREAS lives in interiorPhotos.ts so both usRent.ts and this viewModel
+// share one definition. Re-import here for any local readers that want the array
+// directly.
 
 function spaceTypeLabel(s: string): string {
   const map: Record<string, string> = {
@@ -537,7 +535,7 @@ export function normalizeEnhancedPhotoAnalysis(raw: any, imageUrls: string[] = [
   }));
 
   const normAreas = normalizedAreas.map(a => a.area.toLowerCase());
-  const hasInterior = normAreas.some(a => INTERIOR_AREAS.some(i => a.includes(i)));
+  const hasInterior = normAreas.some(a => INTERIOR_AREAS_LIST.some(i => a.includes(i)));
   const coverageNote = hasInterior
     ? (totalPhotos > 10 ? 'reasonable' : 'limited')
     : 'missing';
@@ -595,8 +593,19 @@ export interface PhotoAnalysisEnhancedVM {
 export function normalizePhotoAnalysis(raw: any, imageUrls: string[] = []): PhotoAnalysisVM {
   const rawAreas: string[] = (raw?.detectedAreas ?? raw?.areas ?? []).map(String);
   const normalized = rawAreas.map(a => a.toLowerCase());
-  const hasInterior = normalized.some(a =>
-    INTERIOR_AREAS.some(i => a.includes(i))
+  // Cross-check the three sources via the shared helper. This keeps the
+  // viewModel consistent with usRent.ts so the report never renders the
+  // visual analysis cards AND the "No interior photos" fallback at the
+  // same time.
+  const hasInterior = hasInteriorPhotosShared({
+    step1Areas: raw?.areas,
+    step1DetectedAreas: raw?.detectedAreas,
+    photoReview: raw?.photoReview,
+    visualAnalysis: raw?.visualAnalysis,
+    photoHabitabilityReview: raw?.photo_habitability_review,
+    imageUrls,
+  }) || normalized.some(a =>
+    INTERIOR_AREAS_LIST.some(i => a.includes(i))
   );
   const photoCount = imageUrls.length || rawAreas.length || 0;
 
@@ -1712,7 +1721,7 @@ export function buildReportViewModel(
     contradictions,
     meta: {
       market: result?.meta?.market ?? 'US',
-      reportMode: result?.meta?.reportMode ?? 'sale',
+      reportMode: result?.meta?.reportMode ?? 'unknown',
       sourceDomain: result?.meta?.sourceDomain,
       isBasic,
       isNYC,

@@ -44,6 +44,13 @@ export interface ListingData {
   description?: string;
   imageUrls?: string[];
   extractionConfidence?: number;
+  // === rent/sale detection (mirrors StandardizedListingData) ===
+  listingType?: 'rent' | 'sale' | 'unknown';
+  listingTypeSource?: 'jsonld' | 'dom' | 'url' | 'price' | 'fallback';
+  listingTypeConfidence?: 'high' | 'medium' | 'low';
+  listingTypeConflicts?: Array<'rent' | 'sale'>;
+  // === user-confirmed mode (set after ReportModeModal interaction) ===
+  reportMode?: 'rent' | 'sale';
 }
 
 // ===== Website-specific UI types =====

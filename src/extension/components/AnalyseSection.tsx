@@ -3,6 +3,7 @@ import { ArrowRight, Check, Camera, Zap } from 'lucide-react';
 import { useAppState, useActions } from '../store';
 import type { ListingSource } from '../../../shared/types/analysis';
 import { getAnalysisProgressSteps } from '../analysisProgressSteps';
+import { ReportModeModal } from './ReportModeModal';
 
 // ========== 网站来源配置 ==========
 const SOURCE_CONFIG: Record<ListingSource, {
@@ -122,7 +123,7 @@ interface AnalysisProgressPanelProps {
 function AnalysisProgressPanel({ phase, progress, isBasic }: AnalysisProgressPanelProps) {
   const phases = isBasic ? ANALYSIS_PHASES_BASIC : ANALYSIS_PHASES_FULL;
   const displayMap = isBasic ? PHASE_DISPLAY_BASIC : PHASE_DISPLAY_FULL;
-  const currentIdx = phases.indexOf(phase as typeof phases[number]);
+  const currentIdx = (phases as readonly string[]).indexOf(phase);
 
   return (
     <div className="ext-analysis-progress-panel ext-panel">
@@ -266,6 +267,7 @@ export function AnalyseSection() {
 
   return (
     <div className="ext-cta-block">
+      <ReportModeModal />
       {authStatus !== 'logged_in' ? (
         <>
           {/* 未登录：Basic Analysis 为 primary CTA */}

@@ -12,6 +12,11 @@
 
 export const MODULE_FALLBACKS = {
   HERO_BOTTOM_LINE: 'This listing provides some useful basic signals, but several important decision details are still missing or unverified.',
+  // US rent-specific fallback shown when the AI's bottom_line / quick_summary
+  // every candidate is poisoned with sale-flavored phrases (roof age, mortgage,
+  // comparable sales, etc.). Mirrors the tone of HERO_BOTTOM_LINE but uses
+  // renter vocabulary only.
+  RENT_BOTTOM_LINE_FALLBACK: 'Monthly rent is listed. Confirm mandatory fees, deposit, utility responsibility, and final lease terms before applying.',
   HERO_NEXT_BEST_MOVE_DEFAULT: 'Request additional details and verify key risks before your next step.',
   PRICE_ANALYSIS_UNKNOWN: 'Price cannot be judged confidently from the available data.',
   PRICE_ANALYSIS_OVERPRICED: 'The asking price appears high relative to visible condition, market time, or unverified assumptions.',
@@ -87,6 +92,8 @@ export function extractKnownFacts(wwKnow: any): Omit<BasicQuestionContext, 'isUS
     hasCosts:        has(wwKnow?.taxes ?? wwKnow?.annual_tax ?? wwKnow?.insurance ?? wwKnow?.hoa),
     // comps — 检查是否有 comparable sales 数据
     hasComps:        has(wwKnow?.comparable_sales ?? wwKnow?.comparableSales ?? wwKnow?.zestimate),
+    // zestimate monthly — Zillow 独有字段，标记为 false 表示尚未检测到
+    hasZillowMonthly: false,
   };
 }
 

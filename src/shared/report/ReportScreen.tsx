@@ -101,12 +101,64 @@ export function ReportScreen({
   try {
     const normalizedReport = normalizeReportResult(result);
     const isBasic = normalizedReport.meta.isBasic;
-    const viewModel = buildReportViewModel(result, result?.listingInfo, normalizedReport);
+    const viewModel = buildReportViewModel(result, (result as any)?.listingInfo, normalizedReport);
 
     // ── DEBUG: trace what sections were built ───────────────────────────────
-    console.log('[ReportScreen] isBasic:', isBasic, '| sections:', normalizedReport.sections.map(s => s.id).join(', '));
+    console.log('[ReportScreen] === US RENT/SALE DEBUG ===');
+    console.log('[ReportScreen] result.reportMode:', (result as any)?.reportMode);
+    console.log('[ReportScreen] result.report_mode:', (result as any)?.report_mode);
+    console.log('[ReportScreen] result.market:', (result as any)?.market);
+    console.log('[ReportScreen] result.analysisType:', (result as any)?.analysisType);
+    console.log('[ReportScreen] result.id:', (result as any)?.id);
+    console.log('[ReportScreen] normalizedReport.meta.reportMode:', normalizedReport.meta?.reportMode);
+    console.log('[ReportScreen] normalizedReport.meta.market:', normalizedReport.meta?.market);
+    console.log('[ReportScreen] normalizedReport.meta.isBasic:', normalizedReport.meta?.isBasic);
+    console.log('[ReportScreen] normalizedReport.sections:', normalizedReport.sections.map(s => s.id).join(' | '));
+    console.log('[ReportScreen] reportType:', reportType);
+    console.log('[ReportScreen] viewModel.meta.reportMode:', viewModel?.meta?.reportMode);
+    console.log('[ReportScreen] raw keys:', Object.keys((result as any)?.raw ?? {}).join(', '));
     console.log('[ReportScreen] result keys:', Object.keys(result).join(', '));
-    console.log('[ReportScreen] whats_missing from result:', JSON.stringify((result as any).whats_missing ?? []));
+    console.log('[ReportScreen] has risk_categories?', !!(result as any)?.risk_categories);
+    console.log('[ReportScreen] has rental_snapshot?', !!(result as any)?.rental_snapshot);
+    console.log('[ReportScreen] has rental_listing_score?', !!(result as any)?.rental_listing_score);
+    console.log('[ReportScreen] has property_snapshot?', !!(result as any)?.property_snapshot);
+    console.log('[ReportScreen] has what_we_know?', !!(result as any)?.what_we_know);
+    console.log('[ReportScreen] result.baths:', (result as any)?.baths);
+    console.log('[ReportScreen] result.property_snapshot?.baths:', (result as any)?.property_snapshot?.baths);
+    console.log('[ReportScreen] result.rental_snapshot?.baths:', (result as any)?.rental_snapshot?.baths);
+    console.log('[ReportScreen] result.what_we_know?.baths:', (result as any)?.what_we_know?.baths);
+    console.log('[ReportScreen] === END DEBUG ===');
+    console.log('[ReportScreen] === FULL RESULT DUMP ===');
+    try {
+      const r = result as any;
+      const dump = {
+        reportMode: r.reportMode,
+        report_mode: r.report_mode,
+        market: r.market,
+        analysisType: r.analysisType,
+        bottom_line: r.bottom_line,
+        rental_listing_score: r.rental_listing_score,
+        rental_snapshot: r.rental_snapshot,
+        rental_snapshot_baths: r.rental_snapshot?.baths,
+        what_we_know_baths: r.what_we_know?.baths,
+        property_snapshot_baths: r.property_snapshot?.baths,
+        property_snapshot: r.property_snapshot ? Object.keys(r.property_snapshot) : null,
+        carrying_costs: r.carrying_costs,
+        risk_categories_keys: r.risk_categories ? Object.keys(r.risk_categories) : null,
+        risk_categories_full: r.risk_categories,
+        listing_does_not_prove_count: Array.isArray(r.listing_does_not_prove) ? r.listing_does_not_prove.length : null,
+        listing_does_not_prove: r.listing_does_not_prove,
+        before_you_book_showing: r.before_you_book_showing,
+        maintenance_risk: r.maintenance_risk,
+        layout_fit_best_for: r.layout_fit?.best_for,
+        bottom_line_text: r.bottom_line,
+        rent_fairness_verdict: r.rent_fairness?.verdict,
+        rent_fairness: r.rent_fairness,
+      };
+      console.log(JSON.stringify(dump, null, 2));
+    } catch (e) {
+      console.log('[ReportScreen] dump error:', e);
+    }
 
     const newContent = (
       <NewReportUI

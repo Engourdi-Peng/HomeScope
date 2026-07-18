@@ -58,6 +58,7 @@ export type AnalysisPhase =
   | 'sending_data'         // submitting to analysis API
   | 'analysing'            // backend AI analysis
   | 'generating_report'    // building final report
+  | 'needs_report_mode'    // user must confirm sale/rent before analysis (BLOCKING)
   | 'done'
   | 'no_credits'
   | 'error';
@@ -118,4 +119,5 @@ export type AppAction =
   | { type: 'SET_EXTRACTION_CACHED'; extractionCached: boolean; lastExtractedUrl: string | null }
   | { type: 'SET_SOURCE_TAB_ID'; sourceTabId: number | null }
   | { type: 'SET_CURRENT_ANALYSIS_TYPE'; analysisType: 'basic' | 'full' }
-  | { type: 'RESET_ANALYSIS' };
+  | { type: 'RESET_ANALYSIS' }
+  | { type: 'SET_REPORT_MODE'; reportMode: 'sale' | 'rent' };

@@ -471,8 +471,26 @@ export function normalizeGenericReport(result: AnyResult, opts?: { analysisProfi
     meta: {
       market,
       reportMode: (() => {
-        const m = result.reportMode ?? result.report_mode ?? result.analysisType ?? 'unknown';
-        return toText(m) as 'sale' | 'rent' | 'unknown';
+        // ── Identify reportMode from explicit fields FIRST, then from
+        // schema markers in the result. Never default to 'sale' — that
+        // would silently trigger sale-only UI for rent reports.
+        const candidates = [
+          result.reportMode,
+          result.report_mode,
+          result.listingType,
+        ];
+        for (const c of candidates) {
+          const v = toText(c).toLowerCase();
+          if (v === 'sale' || v === 'rent' || v === 'unknown') return v as 'sale' | 'rent' | 'unknown';
+        }
+        // Schema-based inference for full results that never stamped reportMode.
+        if (result.rental_listing_score || result.rental_snapshot || result.rental_listing_trust || result.rent_fairness) {
+          return 'rent';
+        }
+        if (result.property_snapshot || result.carrying_costs || result.price_assessment) {
+          return 'sale';
+        }
+        return 'unknown';
       })(),
       source: toText(result.source ?? ''),
       sourceDomain: toText(result.sourceDomain ?? result.source_domain ?? ''),

@@ -224,7 +224,13 @@ function HeroSection({ report, isBasic }: { report: NormalizedReport; isBasic?: 
       /\bmulti\.?family\s+home\s+for\s+sale\b/i.test(text) ||
       /\bsingle\s+family\s+home\s+for\s+sale\b/i.test(text) ||
       /\bcondo\s+for\s+sale\b/i.test(text) ||
-      /\btownhouse\s+for\s+sale\b/i.test(text)
+      /\btownhouse\s+for\s+sale\b/i.test(text) ||
+      /\bhome\s+for\s+rent\b/i.test(text) ||
+      /\bapartment\s+for\s+rent\b/i.test(text) ||
+      /\bcondo\s+for\s+rent\b/i.test(text) ||
+      /\btownhouse\s+for\s+rent\b/i.test(text) ||
+      /\bhouse\s+for\s+rent\b/i.test(text) ||
+      /\bfor\s+rent\b/i.test(text)
     );
   }
 
@@ -249,6 +255,56 @@ function HeroSection({ report, isBasic }: { report: NormalizedReport; isBasic?: 
 
   const identityText = address || 'Address not detected';
 
+  // ── Buyer-flavored phrase patterns (rent-safe strip) ─────────────────────────
+  // Mirror of the list in usRent.ts adapter — kept local because
+  // HeroSection's `headline` useMemo runs in the browser where importing the
+  // adapter would create a module-cycle. Phrase-level regex with word
+  // boundaries; renter-OK phrases like "roof leak" / "egress window" are NOT
+  // matched and are preserved.
+  const RENT_SALE_FLAVORED_HEADLINE_PHRASES: RegExp[] = [
+    /\broof\s*age\b/i,
+    /\broof\s*replacement\b/i,
+    /\b(roof|foundation)\s*condition\b/i,
+    /\bnegotiate\s+(the\s+)?(price|offer|repair)\b/i,
+    /\bmake\s+an?\s+offer\b/i,
+    /\bbuyer'?s?\s+(market|advisor|agent|pool|remorse)\b/i,
+    /\bresale\s+value\b/i,
+    /\bresale\s+potential\b/i,
+    /\bfuture\s+resale\b/i,
+    /\b(comparable|comp)\s*sales?\b/i,
+    /\bcomps?\b/i,
+    /\bschool\s+district\s+resale\b/i,
+    /\b(mortgage|financing|down\s+payment|interest\s+rate)\b/i,
+    /\b(seller|landlord)\s*disclosure\b/i,
+    /\bseller\s+financing\b/i,
+    /\bHOA\s+reserve\s*study\b/i,
+    /\bspecial\s*assessment\b/i,
+    /\bhoa\s*reserve\b/i,
+    /\b(capital|cap)\s*rate\b/i,
+    /\bcash[\s-]*on[\s-]*cash\s*return\b/i,
+    /\bcap\s*rate\b/i,
+    /\bROI\b/i,
+    /\bproperty\s*tax(es)?\s+(amount|projection|liability|burden|impact|exposure)\b/i,
+    /\bclosing\s*costs?\b/i,
+    /\bseller'?s?\s+market\b/i,
+    /\binvestor\s+mindset\b/i,
+    /\bflip\s*tax\b/i,
+    /\bbuy\s*down\s*rate\b/i,
+  ];
+
+  function stripSaleFlavoredHeadline(text: string | undefined | null): string {
+    if (!text) return '';
+    const sentences = String(text)
+      .split(/(?<=[.!?])\s+(?=[A-Z])|(?<=[.!?])$/)
+      .map((s) => s.trim())
+      .filter(Boolean);
+    if (sentences.length === 0) return '';
+    const kept = sentences.filter(
+      (s) => !RENT_SALE_FLAVORED_HEADLINE_PHRASES.some((re) => re.test(s)),
+    );
+    return kept.join(' ').trim();
+  }
+
   // Sanitize hero.summary — replace unverified marketing phrases with "Listing claims / describes"
   // to prevent them from reading as HomeScope-verified facts.
   const rawSummary = renderValue(hero.summary ?? '');
@@ -269,6 +325,36 @@ function HeroSection({ report, isBasic }: { report: NormalizedReport; isBasic?: 
     }
     return s;
   }, [rawSummary]);
+
+  // Resolve rent mode once so useMemo bodies stay simple (manual memoization
+  // must be preserved verbatim — see react-hooks/preserve-manual-memoization).
+  const isRentMode = (() => {
+    const raw = (report as any).raw ?? {};
+    const candidate = (
+      (report.meta?.reportMode ?? '') ||
+      (raw?.meta?.reportMode ?? '') ||
+      (raw?.reportMode ?? '') ||
+      (raw?.report_mode ?? '') ||
+      ''
+    ).toString().toLowerCase();
+    if (candidate === 'rent' || candidate === 'sale') return candidate === 'rent';
+    // Schema fallback — if the rent-specific fields are populated, treat as rent
+    return Boolean(
+      raw?.rental_snapshot ||
+      raw?.rental_listing_score ||
+      raw?.rent_fairness,
+    );
+  })();
+
+  // Rent-mode headline — derived inline (no useMemo) so react-compiler's
+  // preserve-manual-memoization rule cannot trip over the dependency array.
+  // The result is ignored for non-rent reports.
+  const rentHeadline: string | null = isRentMode
+    ? (() => {
+        const sanitized = stripSaleFlavoredHeadline(hero.bottomLine ?? sanitizedSummary);
+        return sanitized && sanitized.trim() ? sanitized.trim() : null;
+      })()
+    : null;
 
   // Generate headline based on top risk
   const headline = React.useMemo(() => {
@@ -529,11 +615,12 @@ function HeroSection({ report, isBasic }: { report: NormalizedReport; isBasic?: 
             <ThumbsUp className="w-3.5 h-3.5 text-amber-400" />
             <span className="text-amber-300 uppercase tracking-wider text-xs font-semibold">Bottom Line</span>
           </div>
-          <p className="text-slate-100 text-base sm:text-lg leading-relaxed font-medium">{headline}</p>
+          <p className="text-slate-100 text-base sm:text-lg leading-relaxed font-medium">{rentHeadline ?? headline}</p>
         </div>
 
-        {/* Short explanation paragraph — hidden in basic mode (Bottom Line already shows) */}
-        {!isBasic && sanitizedSummary && (
+        {/* Short explanation paragraph — hidden in basic mode and rent mode
+            (rent: hero card shows bottom line; summary is redundant) */}
+        {!isBasic && sanitizedSummary && !isRentMode && (
           <p className="text-[#D6D6D6] text-sm sm:text-base leading-relaxed mb-6">
             {sanitizedSummary}
           </p>
@@ -700,15 +787,33 @@ const IMPACT_LABELS: Array<{ keywords: RegExp; label: string }> = [
   { keywords: /days on market|262|market time|fast.moving|buyer pressure/i, label: 'Check before offer' },
 ];
 
-function getImpactLabel(text: string): string {
-  for (const { keywords, label } of IMPACT_LABELS) {
+// Rent-mode variant — replaces offer/viewing-centric labels with applicant-friendly versions
+const RENT_IMPACT_LABELS: Array<{ keywords: RegExp; label: string }> = [
+  { keywords: /days on market|market time|fast.moving|competitive|rental.*demand|\d{2,}.*days.*market|listed.*days.*ago/i, label: 'Act quickly or confirm availability' },
+  { keywords: /rental|income|legal|co |occupancy|lease/i, label: 'Could affect rental cost or eligibility' },
+  { keywords: /roof|electrical|plumb|heating|boiler|maintenance|repair|cost|money|expense/i, label: 'Could increase monthly costs' },
+  { keywords: /price|overpriced|fair|value|estimate|rent.*high|rent.*low/i, label: 'Could affect your decision to apply' },
+  { keywords: /photo|interior|space|room|layout|flood|insurance|zone/i, label: 'Could change your decision' },
+  { keywords: /co verification|verify.*certificate|ask.*certificate|ask.*dob.*records|what permits.*pulled/i, label: 'Ask before scheduling a tour' },
+  { keywords: /\bopen\s+violations?|open\s+dob|open\s+hpd|has.*violations?|with.*violations?/i, label: 'Ask landlord to clarify' },
+  { keywords: /permit.*ask|ask.*permit|ask.*building\s+records/i, label: 'Ask before scheduling a tour' },
+  { keywords: /basement|moisture|water|drainage|foundation|crack/i, label: 'Ask before scheduling a tour' },
+  { keywords: /basement.*egress|egress.*basement|ceiling height.*basement|basement.*ceiling height|second apartment.*basement|basement.*second apartment/i, label: 'Ask before applying' },
+  { keywords: /kitchen|bathroom|renovation|\$\d+k|update|cosmetic/i, label: 'Could change your decision' },
+];
+
+function getImpactLabel(text: string, isRent = false): string {
+  const labels = isRent ? RENT_IMPACT_LABELS : IMPACT_LABELS;
+  for (const { keywords, label } of labels) {
     if (keywords.test(text)) return label;
   }
-  return 'Check before offer';
+  return isRent ? 'Ask before applying' : 'Check before offer';
 }
 
 function WhatCouldChangeYourDecisionSection({ report, viewModel, isBasic }: { report: NormalizedReport; viewModel?: ReportViewModel; isBasic?: boolean }) {
   const { highlights, sections } = report;
+  const isRentMode = (report.meta?.reportMode ?? '').toString().toLowerCase() === 'rent' ||
+    Boolean((report as any).raw?.rental_snapshot || (report as any).raw?.rental_listing_score);
 
   // Photo consistency: skip Missing Interior Photos card if interior photos are detected
   const hasInteriorPhotos = viewModel?.photos?.hasInteriorPhotos ?? false;
@@ -863,7 +968,7 @@ function WhatCouldChangeYourDecisionSection({ report, viewModel, isBasic }: { re
           // getRiskTitle fell through to "Key Verification Risk" — show the raw text as title.
           const displayTitle = cardTitle !== shortExplanation ? cardTitle : (risk.length > 60 ? risk.slice(0, 57) + '...' : risk);
 
-          const impact = getImpactLabel(risk);
+          const impact = getImpactLabel(risk, isRentMode);
           return (
             <div key={i} className="flex flex-col gap-3 p-5 rounded-xl bg-slate-50 border border-slate-200">
               <div className="font-bold text-slate-900 text-base leading-snug">{displayTitle}</div>
@@ -936,6 +1041,10 @@ function _makeSpecificAction(text: string, isNYC = false, reportProfile?: string
 }
 
 function DealChangingRisksSection({ report, viewModel }: { report: NormalizedReport; viewModel?: ReportViewModel }) {
+  // Sale-only section — built from sale risk_categories fields.
+  if (report.meta?.reportMode === 'rent') return null;
+  // Schema-based guard.
+  if ((report.raw as any)?.rental_snapshot || (report.raw as any)?.rental_listing_score) return null;
   const { sections, hero } = report;
 
   const isNYC = viewModel?.meta?.isNYC
@@ -1110,6 +1219,11 @@ function DealChangingRisksSection({ report, viewModel }: { report: NormalizedRep
 function PropertySnapshotSection({ report, isBasic }: { report: NormalizedReport; isBasic?: boolean }) {
   const { hero, quickFacts, sections, meta } = report;
 
+  // Sale-only section — never render for rent reports.
+  if (meta?.reportMode === 'rent') return null;
+  // Schema-based guard (defence in depth against meta loss).
+  if ((report.raw as any)?.rental_snapshot || (report.raw as any)?.rental_listing_score) return null;
+
   // Effective property category for display and routing
   const effectiveProfile = meta?.reportProfile ?? meta?.normalizedPropertyCategory ?? '';
   const isSFOC = effectiveProfile === 'single_family_owner_occupier';
@@ -1133,7 +1247,13 @@ function PropertySnapshotSection({ report, isBasic }: { report: NormalizedReport
       /\bmulti\.?family\s+home\s+for\s+sale\b/i.test(text) ||
       /\bsingle\s+family\s+home\s+for\s+sale\b/i.test(text) ||
       /\bcondo\s+for\s+sale\b/i.test(text) ||
-      /\btownhouse\s+for\s+sale\b/i.test(text)
+      /\btownhouse\s+for\s+sale\b/i.test(text) ||
+      /\bhome\s+for\s+rent\b/i.test(text) ||
+      /\bapartment\s+for\s+rent\b/i.test(text) ||
+      /\bcondo\s+for\s+rent\b/i.test(text) ||
+      /\btownhouse\s+for\s+rent\b/i.test(text) ||
+      /\bhouse\s+for\s+rent\b/i.test(text) ||
+      /\bfor\s+rent\b/i.test(text)
     );
   }
 
@@ -1495,6 +1615,10 @@ function PropertySnapshotSection({ report, isBasic }: { report: NormalizedReport
 // ─────────────────────────────────────────────────────────────────────────────
 
 function CarryingCostsSection({ report }: { report: NormalizedReport }) {
+  // Sale-only section — never render for rent reports.
+  if (report.meta?.reportMode === 'rent') return null;
+  // Schema-based guard.
+  if ((report.raw as any)?.rental_snapshot || (report.raw as any)?.rent_fairness) return null;
   const _sections = report.sections;
   const raw = report.raw ?? {};
 
@@ -1762,6 +1886,10 @@ function makeFallbackAsk(phrase: string, reportProfile?: string): string {
 }
 
 function AgentSpinDecoderSection({ report, viewModel }: { report: NormalizedReport; viewModel?: ReportViewModel }) {
+  // Sale-only section — "Agent Spin" is a sale concept.
+  if (report.meta?.reportMode === 'rent') return null;
+  // Schema-based guard.
+  if ((report.raw as any)?.rental_snapshot || (report.raw as any)?.rental_listing_score) return null;
   const { sections } = report;
 
   // ── Compute effectiveProfile from report raw data ───────────────────────────
@@ -2037,6 +2165,10 @@ function normalizeFitSection(report: NormalizedReport): {
 }
 
 function WhoThisPropertyWorksForSection({ report }: { report: NormalizedReport }) {
+  // Sale-only section — rent has its own "Who This Rental Works For" component.
+  if (report.meta?.reportMode === 'rent') return null;
+  // Schema-based guard.
+  if ((report.raw as any)?.rental_snapshot || (report.raw as any)?.rental_listing_score) return null;
   const { bestFor, notIdealFor, whyItMatters } = normalizeFitSection(report);
 
   // Render nothing only if there's no data and all fallbacks were used
@@ -2509,6 +2641,12 @@ function QuestionsToAskSection({ report, viewModel, isBasic }: { report: Normali
 function NextBestMoveSection({ report }: { report: NormalizedReport }) {
   const { hero, meta } = report;
 
+  // ── Rent-mode guard: rent has its own copy via usRent adapter (`next-best-move` section id).
+  if (meta?.reportMode === 'rent') return null;
+  // Schema-based guard (defence in depth against meta loss).
+  const _rawCheck = (report as any).raw ?? {};
+  if (_rawCheck.rental_snapshot || _rawCheck.rental_listing_score || _rawCheck.rent_fairness) return null;
+
   const verdict = hero.verdict.toLowerCase();
   const score = hero.score;
 
@@ -2830,6 +2968,13 @@ const RISK_CATEGORY_META: Record<RiskCategoryKey, { label: string; icon: React.R
 };
 
 function RiskCategoriesSection({ report }: { report: NormalizedReport }) {
+  // Sale-only section — uses foundation_basement/water_leaks/roof_exterior/hidden_ownership_cost.
+  // Rent has its own RentalRiskCategoriesSection that uses rent lanes.
+  if (report.meta?.reportMode === 'rent') return null;
+  // Schema-based guard: if the report has a rent schema (rental_risk_categories etc.),
+  // it is a rent report even if meta.reportMode was lost in transit.
+  const raw = (report.raw as any) ?? {};
+  if (raw.rental_snapshot || raw.rental_listing_score || raw.rental_listing_trust || raw.rent_fairness) return null;
   const rc = (report.raw as any)?.risk_categories;
   if (!rc || typeof rc !== 'object') return null;
 
@@ -2964,6 +3109,10 @@ function RiskCategoriesSection({ report }: { report: NormalizedReport }) {
 // ── Listing Does Not Prove ─────────────────────────────────────────────────────
 
 function ListingDoesNotProveSection({ report }: { report: NormalizedReport }) {
+  // Sale-only heading copy ("buyer-relevant facts") — rent uses GenericSectionCard.
+  if (report.meta?.reportMode === 'rent') return null;
+  // Schema-based guard — defence in depth against meta loss.
+  if ((report.raw as any)?.rental_snapshot || (report.raw as any)?.rental_listing_score || (report.raw as any)?.who_this_rental_works_for) return null;
   const arr = (report.raw as any)?.listing_does_not_prove;
   if (!Array.isArray(arr) || arr.length === 0) return null;
   const items = arr.filter((x: unknown): x is string => typeof x === 'string' && x.trim().length > 0);
@@ -3060,6 +3209,10 @@ function dedupeQuestions(input: string[]): string[] {
 }
 
 function BeforeYouBookShowingSection({ report, viewModel }: { report: NormalizedReport; viewModel?: ReportViewModel }) {
+  // Sale-only section — "Before You Book a Showing" is a purchase concept.
+  if (report.meta?.reportMode === 'rent') return null;
+  // Schema-based guard.
+  if ((report.raw as any)?.rental_snapshot || (report.raw as any)?.rental_listing_score || (report.raw as any)?.before_tour_apply_pay) return null;
   const raw = (report.raw as any) ?? {};
   const fromBybs = Array.isArray(raw.before_you_book_showing)
     ? raw.before_you_book_showing.filter((x: unknown): x is string => typeof x === 'string' && x.trim())
@@ -3100,6 +3253,10 @@ function BeforeYouBookShowingSection({ report, viewModel }: { report: Normalized
 // ── Location Reality Check ────────────────────────────────────────────────────
 
 function LocationRealityCheckSection({ report }: { report: NormalizedReport }) {
+  // Sale-only section — uses location-reality-check section id which only exists in sale reports.
+  if (report.meta?.reportMode === 'rent') return null;
+  // Schema-based guard.
+  if ((report.raw as any)?.rental_snapshot || (report.raw as any)?.location_daily_life || (report.raw as any)?.rental_listing_score) return null;
   const { sections } = report;
 
   // ── Compute effectiveProfile from report data ───────────────────────────────
@@ -3424,6 +3581,252 @@ function matchesPhase2Section(section: ReportSection): boolean {
   return false;
 }
 
+// ═══════════════════════════════════════════════════════════════════════════
+// RENT-SPECIFIC DEEP REPORT SECTIONS
+// ─────────────────────────────────────────────────────────────────────────
+// Each component reads the corresponding section emitted by
+// src/lib/reportAdapters/usRent.ts (section ids prefixed `rental-*` plus a
+// few shared ids like `listing-does-not-prove` and `next-best-move`).
+// They are deliberately narrow — no sale-only fields, no Zillow taxes, no
+// Roof/Foundation categories.
+// ═══════════════════════════════════════════════════════════════════════════
+
+const RENT_RISK_META: Record<string, { label: string }> = {
+  listing_trust: { label: 'Listing Trust' },
+  availability: { label: 'Availability' },
+  costs_and_payment: { label: 'Costs & Payment' },
+  habitability_and_lease: { label: 'Habitability & Lease' },
+};
+
+function normalizeRentRiskLevel(level: string | undefined): string {
+  if (!level) return 'Unknown';
+  const upper = level.toUpperCase();
+  if (upper === 'LOW') return 'Low';
+  if (upper === 'MODERATE' || upper === 'MEDIUM') return 'Medium';
+  if (upper === 'HIGH' || upper === 'CRITICAL') return 'High';
+  return level;
+}
+
+function _RentSection({
+  report,
+  sectionId,
+  title,
+  subtitle,
+  tone,
+  children,
+}: {
+  report: NormalizedReport;
+  sectionId: string;
+  title: string;
+  subtitle?: string;
+  tone?: 'warning' | 'info';
+  children: (s: { id: string; title: string; items: { title?: string; value?: string; description?: string; badge?: string; severity?: 'low' | 'medium' | 'high' }[] }) => React.ReactNode;
+}) {
+  const section = report.sections.find((s) => s.id === sectionId);
+  if (!section || section.items.length === 0) return null;
+
+  const toneClass = tone === 'warning' ? 'border-amber-200 bg-amber-50/30' : 'border-slate-200 bg-white';
+
+  return (
+    <>
+    {/* Register sectionId so _RemainingSections won't render it twice */}
+    <SectionRegistrar ids={[sectionId]} />
+    <div className={`rounded-2xl p-6 sm:p-8 md:p-10 mb-8 border ${toneClass}`}>
+      <div className="flex items-center gap-3 mb-2">
+        <h2 className="text-lg sm:text-xl font-bold text-slate-900">{title}</h2>
+      </div>
+      {subtitle && <p className="text-xs text-stone-400 mb-5 sm:mb-6">{subtitle}</p>}
+      {children(section as any)}
+    </div>
+    </>
+  );
+}
+
+function _RentKVBlock({ items }: { items: { title?: string; value?: string; description?: string; badge?: string; severity?: 'low' | 'medium' | 'high' }[] }) {
+  if (!items || items.length === 0) return null;
+  return (
+    <div className="divide-y divide-slate-100">
+      {items.map((it, i) => {
+        const sevKey = (it.severity ?? it.badge ?? '').toLowerCase();
+        const sevClass =
+          sevKey === 'high' || sevKey === 'critical'
+            ? 'bg-rose-50 text-rose-700 border-rose-200'
+            : sevKey === 'medium' || sevKey === 'moderate'
+              ? 'bg-amber-50 text-amber-700 border-amber-200'
+              : sevKey === 'low'
+                ? 'bg-emerald-50 text-emerald-700 border-emerald-200'
+                : 'bg-slate-50 text-slate-600 border-slate-200';
+        return (
+          <div key={i} className="py-3 first:pt-0 last:pb-0 flex items-start justify-between gap-3 flex-wrap">
+            <div className="flex-1 min-w-0">
+              {it.title && <span className="text-sm font-medium text-slate-700">{it.title}</span>}
+              {it.value && <span className="ml-2 text-sm font-semibold text-slate-900">{it.value}</span>}
+              {it.description && <p className="text-xs text-stone-500 mt-1 leading-relaxed">{it.description}</p>}
+            </div>
+            {it.badge && (
+              <span className={`inline-flex items-center text-[10px] font-bold uppercase tracking-wide px-2.5 py-1 rounded-full border ${sevClass}`}>
+                {it.badge}
+              </span>
+            )}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+function RentalListingScoreSection({ report }: { report: NormalizedReport }) {
+  return (
+    <_RentSection report={report} sectionId="rental-score" title="Rental Listing Score" subtitle="Is this listing worth your time?">
+      {(s) => <_RentKVBlock items={s.items} />}
+    </_RentSection>
+  );
+}
+
+function RentalBottomLineSection({ report }: { report: NormalizedReport }) {
+  return (
+    <_RentSection report={report} sectionId="bottom-line" title="Bottom Line">
+      {(s) => <_RentKVBlock items={s.items} />}
+    </_RentSection>
+  );
+}
+
+function RentalSnapshotSection({ report }: { report: NormalizedReport }) {
+  return (
+    <_RentSection report={report} sectionId="rental-snapshot" title="Rental Snapshot" subtitle="What the listing tells you up front">
+      {(s) => <_RentKVBlock items={s.items} />}
+    </_RentSection>
+  );
+}
+
+function RentalListingTrustSection({ report }: { report: NormalizedReport }) {
+  return (
+    <_RentSection report={report} sectionId="rental-listing-trust" title="Rental Listing Trust" subtitle="How consistent is the listing itself">
+      {(s) => <_RentKVBlock items={s.items} />}
+    </_RentSection>
+  );
+}
+
+function RentalAvailabilitySection({ report }: { report: NormalizedReport }) {
+  return (
+    <_RentSection report={report} sectionId="availability-check" title="Availability Check" subtitle="Live status from the listing only">
+      {(s) => <_RentKVBlock items={s.items} />}
+    </_RentSection>
+  );
+}
+
+function RentTrueCostSection({ report }: { report: NormalizedReport }) {
+  return (
+    <_RentSection report={report} sectionId="rent-true-cost" title="Rent & True Cost" subtitle="Monthly rent + recurring fees">
+      {(s) => <_RentKVBlock items={s.items} />}
+    </_RentSection>
+  );
+}
+
+function ApplicationPaymentRiskSection({ report }: { report: NormalizedReport }) {
+  return (
+    <_RentSection report={report} sectionId="application-payment-risk" title="Application & Payment Risk" subtitle="How money moves — and where the risk sits" tone="warning">
+      {(s) => <_RentKVBlock items={s.items} />}
+    </_RentSection>
+  );
+}
+
+function LeaseTermsRulesSection({ report }: { report: NormalizedReport }) {
+  return (
+    <_RentSection report={report} sectionId="lease-terms-rules" title="Lease Terms & Rules" subtitle="What you sign up for">
+      {(s) => <_RentKVBlock items={s.items} />}
+    </_RentSection>
+  );
+}
+
+function LocationDailyLifeSection({ report }: { report: NormalizedReport }) {
+  return (
+    <_RentSection report={report} sectionId="location-daily-life" title="Location & Daily Life Check" subtitle="What the area feels like day-to-day">
+      {(s) => <_RentKVBlock items={s.items} />}
+    </_RentSection>
+  );
+}
+
+function RentalRiskCategoriesSection({ report }: { report: NormalizedReport }) {
+  const raw = (report.raw as any) ?? {};
+  // Rent schema uses `rental_risk_categories` (different from sale's `risk_categories`).
+  const rc = raw.rental_risk_categories;
+  if (!rc || typeof rc !== 'object') return null;
+
+  const keys = ['listing_trust', 'availability', 'costs_and_payment', 'habitability_and_lease'] as const;
+  const present = keys.filter((k) => rc[k] && typeof rc[k] === 'object' && Object.keys(rc[k]).length > 0);
+  if (present.length === 0) return null;
+
+  const sevClass = (level: string) => {
+    const u = (level ?? '').toUpperCase();
+    if (u === 'HIGH' || u === 'CRITICAL') return 'bg-rose-50 text-rose-700 border-rose-200';
+    if (u === 'MEDIUM' || u === 'MODERATE') return 'bg-amber-50 text-amber-700 border-amber-200';
+    if (u === 'LOW') return 'bg-emerald-50 text-emerald-700 border-emerald-200';
+    return 'bg-slate-50 text-slate-600 border-slate-200';
+  };
+
+  return (
+    <>
+    <SectionRegistrar ids={['rental-risk-categories']} />
+    <div className="bg-white rounded-2xl p-6 sm:p-8 md:p-10 mb-8 border border-amber-200">
+      <div className="flex items-center gap-3 mb-2">
+        <h2 className="text-lg sm:text-xl font-bold text-slate-900">Rental Risk Categories</h2>
+      </div>
+      <p className="text-xs text-stone-400 mb-5 sm:mb-6">Four lanes to watch</p>
+      <div className="space-y-4">
+        {present.map((k) => {
+          const meta = RENT_RISK_META[k];
+          const bucket = rc[k] ?? {};
+          const level = normalizeRentRiskLevel(bucket.risk_level);
+          const signal = (bucket.signal ?? '').toString();
+          const evidence = (bucket.evidence ?? '').toString();
+          const missing = (bucket.missing ?? '').toString();
+          const why = (bucket.why_it_matters ?? '').toString();
+          const qs: string[] = Array.isArray(bucket.questions)
+            ? bucket.questions.filter((x: unknown) => typeof x === 'string' && (x as string).trim())
+            : [];
+          return (
+            <div key={k} className="rounded-xl border border-slate-200 bg-slate-50/40 p-4">
+              <div className="flex items-start justify-between gap-3 mb-2">
+                <h3 className="text-base font-bold text-slate-900">{meta.label}</h3>
+                <span className={`inline-flex items-center text-[10px] font-bold uppercase tracking-wide px-2.5 py-1 rounded-full border ${sevClass(level)}`}>
+                  {level}
+                </span>
+              </div>
+              {signal && <p className="text-sm text-slate-700 leading-relaxed mb-2">{signal}</p>}
+              {why && <p className="text-xs text-stone-500 leading-relaxed mb-2">{why}</p>}
+              {evidence && <p className="text-xs text-stone-500"><span className="font-medium">Evidence:</span> {evidence}</p>}
+              {missing && <p className="text-xs text-stone-500"><span className="font-medium">Missing:</span> {missing}</p>}
+              {qs.length > 0 && (
+                <ul className="mt-2 space-y-1 list-disc list-inside text-xs text-slate-600">
+                  {qs.map((q, i) => <li key={i}>{q}</li>)}
+                </ul>
+              )}
+            </div>
+          );
+        })}
+      </div>
+    </div>
+    </>
+  );
+}
+
+function BeforeYouTourApplyPaySection({ report }: { report: NormalizedReport }) {
+  return (
+    <_RentSection report={report} sectionId="before-tour-apply-pay" title="Before You Tour / Apply / Pay" subtitle="Three checkpoints, in order">
+      {(s) => <_RentKVBlock items={s.items} />}
+    </_RentSection>
+  );
+}
+
+function RentalWhoItWorksForSection({ report }: { report: NormalizedReport }) {
+  return (
+    <_RentSection report={report} sectionId="who-this-rental-works-for" title="Who This Rental Works For">
+      {(s) => <_RentKVBlock items={s.items} />}
+    </_RentSection>
+  );
+}
+
 function _RemainingSections({ report }: { report: NormalizedReport }) {
   const { sections } = report;
 
@@ -3507,6 +3910,30 @@ function ReportClosingCTA({
   const [selectedReasons, setSelectedReasons] = React.useState<string[]>([]);
   const [comment, setComment] = React.useState('');
   const [feedbackState, setFeedbackState] = React.useState<'idle' | 'saving' | 'submitted' | 'error'>('idle');
+
+  // ── Rent-mode awareness (P0-3: sale CTA strings must not leak into rent reports) ─
+  const isRent = (report.meta?.reportMode ?? (report as any).reportMode ?? '').toString().toLowerCase() === 'rent';
+  const ctaBuyMessage = isRent
+    ? 'HomeScope does not tell you whether to rent a home. It helps you spot what the listing may not make obvious — so you can move forward with more confidence, or skip a property that is not worth applying to.'
+    : 'HomeScope is not here to tell you what to buy. It helps you spot what the listing may not make obvious — so you can move forward with more confidence, or skip a property that is not worth the trip.';
+  const ctaAvoidItems = isRent
+    ? [
+        'Whether the rent looks fair',
+        'What the listing language may be hiding',
+        'Which photos or details are missing',
+        'What could increase your monthly costs',
+        'What to ask before scheduling a tour',
+      ]
+    : [
+        'Whether the price looks reasonable',
+        'What the listing language may be hiding',
+        'Which photos or details are missing',
+        'What could cost money later',
+        'What to ask before booking a viewing',
+      ];
+  const shareCtaMessage = isRent
+    ? 'Share this report with someone you trust before you make a decision.'
+    : 'Share this report with someone you trust before you make a call.';
 
   const effectiveShareResult = shareState !== undefined ? (shareState.shareResult ?? null) : localShareResult;
   const effectiveCopied = shareState !== undefined ? (shareState.copied ?? false) : false;
@@ -3699,20 +4126,14 @@ function ReportClosingCTA({
       </p>
 
       <p className="text-slate-600 text-sm sm:text-base leading-relaxed mb-6">
-        HomeScope is not here to tell you what to buy. It helps you spot what the listing may not make obvious — so you can move forward with more confidence, or skip a property that is not worth the trip.
+        {ctaBuyMessage}
       </p>
 
       {/* What this report helped you avoid guessing */}
       <div className="bg-amber-50 border border-amber-200 rounded-xl p-5 sm:p-6 mb-6">
         <div className="font-semibold text-slate-800 mb-3">What this report helped you avoid guessing</div>
         <ul className="space-y-2">
-          {[
-            'Whether the price looks reasonable',
-            'What the listing language may be hiding',
-            'Which photos or details are missing',
-            'What could cost money later',
-            'What to ask before booking a viewing',
-          ].map((item, i) => (
+          {ctaAvoidItems.map((item, i) => (
             <li key={i} className="flex items-start gap-2 text-sm text-slate-700">
               <CheckCircle2 className="w-4 h-4 text-amber-600/80 mt-0.5 shrink-0" />
               {item}
@@ -3723,7 +4144,7 @@ function ReportClosingCTA({
 
       {/* Share section */}
       <div className="border-t border-slate-200 pt-6">
-        <p className="text-slate-600 text-sm mb-4">Share this report with someone you trust before you make a call.</p>
+        <p className="text-slate-600 text-sm mb-4">{shareCtaMessage}</p>
         <div className="flex flex-col sm:flex-row gap-3">
           {effectiveShareResult === null ? (
             <button
@@ -4492,6 +4913,11 @@ function VerifiedFromListingSection({ report, viewModel: _viewModel }: {
   report: NormalizedReport;
   viewModel?: ReportViewModel;
 }) {
+  // Sale-only section — verified facts use zestimate/sales_range/property_snapshot fields.
+  // Rent has its own RentalSnapshotSection.
+  if (report.meta?.reportMode === 'rent') return null;
+  // Schema-based guard.
+  if ((report.raw as any)?.rental_snapshot || (report.raw as any)?.rental_listing_score) return null;
   const hero = report.hero;
   const { sections } = report;
 
@@ -4678,6 +5104,41 @@ export function NewReportUI({
 
   const effectiveIsBasic = propIsBasic && !rawIsFull;
 
+  // ── Resolve effective reportMode (sale | rent | unknown) ─────────────────
+  // Priority:
+  //   1) explicit prop (reportType passed from ReportScreen)
+  //   2) viewModel.meta.reportMode (built from normalizedReport.meta)
+  //   3) schema-based inference from raw data: the strongest signal.
+  //      Rent schema fields win over sale schema fields because rent reports
+  //      sometimes also expose stray sale fields (e.g. from a prior prompt run
+  //      that was overwritten). Schema-based inference is the final authority.
+  // We do NOT default to 'sale' here because that would silently route rent
+  // reports through sale-only UI sections (Carrying Costs, Roof Risk, etc.).
+  const effectiveReportMode: 'sale' | 'rent' | 'unknown' = (() => {
+    const fromProps = (reportType ?? '').toString().toLowerCase();
+    const fromViewModel = (viewModel?.meta?.reportMode ?? '').toString().toLowerCase();
+    const fromRaw = (rawObj.reportMode ?? rawObj.report_mode ?? '').toString().toLowerCase();
+    const candidates = [fromProps, fromViewModel, fromRaw].filter(Boolean);
+    for (const c of candidates) {
+      if (c === 'rent') return 'rent';
+      if (c === 'sale') return 'sale';
+      if (c === 'unknown') {
+        // Only accept 'unknown' if no schema signal disagrees with it.
+        const hasRentSchema = !!(rawObj.rental_listing_score || rawObj.rental_snapshot || rawObj.rental_listing_trust || rawObj.rent_fairness);
+        const hasSaleSchema = !!(rawObj.property_snapshot || rawObj.carrying_costs || rawObj.price_assessment);
+        if (hasRentSchema && !hasSaleSchema) return 'rent';
+        if (hasSaleSchema && !hasRentSchema) return 'sale';
+        return 'unknown';
+      }
+    }
+    // Schema-based fallback (any explicit candidate absent)
+    const hasRentSchema = !!(rawObj.rental_listing_score || rawObj.rental_snapshot || rawObj.rental_listing_trust || rawObj.rent_fairness);
+    const hasSaleSchema = !!(rawObj.property_snapshot || rawObj.carrying_costs || rawObj.price_assessment);
+    if (hasRentSchema && !hasSaleSchema) return 'rent';
+    if (hasSaleSchema && !hasRentSchema) return 'sale';
+    return 'unknown';
+  })();
+
   const hasSections = sections && sections.length > 0;
   const hasHighlights = highlights.pros.length > 0 || highlights.cons.length > 0 || highlights.risks.length > 0;
   const hasQuickFacts = quickFacts && quickFacts.length > 0;
@@ -4770,43 +5231,139 @@ export function NewReportUI({
           {/* 1c. Verified vs Need to Verify */}
           {viewModel && <VerifiedFromListingSection report={report} viewModel={viewModel} />}
 
-          {/* 2. What Could Change Your Decision */}
-          <WhatCouldChangeYourDecisionSection report={report} />
+          {effectiveReportMode === 'rent' ? (
+            <>
+              {/* ── Rent-specific deep layout ────────────────────────── */}
+              {/* 2. Rental Listing Score (verdict + reason) */}
+              <RentalListingScoreSection report={report} />
 
-          {/* 3. Deal-Changing Risks */}
-          <DealChangingRisksSection report={report} />
+              {/* 3. Bottom Line */}
+              <RentalBottomLineSection report={report} />
 
-          {/* 4. Property Snapshot (Is the Price Fair?) */}
-          <PropertySnapshotSection report={report} />
+              {/* 4. Rental Snapshot (monthly rent, beds, sqft, parking, pet policy, etc.) */}
+              <RentalSnapshotSection report={report} />
 
-          {/* 5. Carrying Costs */}
-          <CarryingCostsSection report={report} />
+              {/* 5. Rental Listing Trust (source consistency, signal breakdown) */}
+              <RentalListingTrustSection report={report} />
 
-          {/* 6. Location Reality Check */}
-          <LocationRealityCheckSection report={report} />
+              {/* 6. Availability Check */}
+              <RentalAvailabilitySection report={report} />
 
-          {/* 7. Photo & Space Analysis */}
-          {report.raw?.photoReview || report.raw?.spaceAnalysis || report.raw?.visualAnalysis || report.raw?.photos ? (
-            <PhotoSpaceAnalysisCard raw={report.raw} />
-          ) : null}
+              {/* 7. Rent & True Cost (asking rent + rent zestimate + recurring) */}
+              <RentTrueCostSection report={report} />
 
-          {/* 7b. Buyer Risk Check (risk_categories) */}
-          <RiskCategoriesSection report={report} />
+              {/* 8. Application & Payment Risk */}
+              <ApplicationPaymentRiskSection report={report} />
 
-          {/* 7c. What the Listing Does Not Prove */}
-          <ListingDoesNotProveSection report={report} />
+              {/* 9. Lease Terms & Rules */}
+              <LeaseTermsRulesSection report={report} />
 
-          {/* 7d. Before You Book a Showing */}
-          <BeforeYouBookShowingSection report={report} />
+              {/* 10. Location & Daily Life Check */}
+              <LocationDailyLifeSection report={report} />
 
-          {/* 8. Agent Spin Decoder */}
-          <AgentSpinDecoderSection report={report} viewModel={viewModel} />
+              {/* 11. Photo & Habitability Review (reuse sale's photo block when present) */}
+              {report.raw?.photoReview || report.raw?.spaceAnalysis || report.raw?.visualAnalysis || report.raw?.photos ? (
+                <PhotoSpaceAnalysisCard raw={report.raw} />
+              ) : null}
 
-          {/* 9. Who This Property Works For */}
-          <WhoThisPropertyWorksForSection report={report} />
+              {/* 12. Rental Risk Categories (4 rent lanes) */}
+              <RentalRiskCategoriesSection report={report} />
 
-          {/* 11. Next Best Move */}
-          <NextBestMoveSection report={report} />
+              {/* 13. What Could Change Your Decision (rent) */}
+              <WhatCouldChangeYourDecisionSection report={report} />
+
+              {/* 14. What the Listing Does Not Prove */}
+              <ListingDoesNotProveSection report={report} />
+
+              {/* 15. Before You Tour / Apply / Pay */}
+              <BeforeYouTourApplyPaySection report={report} />
+
+              {/* 16. Who This Rental Works For */}
+              <RentalWhoItWorksForSection report={report} />
+
+              {/* 17. Next Best Move */}
+              <NextBestMoveSection report={report} />
+
+              {/* 18. Any remaining generic sections from the rent adapter */}
+              <_RemainingSections report={report} />
+            </>
+          ) : (() => {
+            // ── Sale path. Defence-in-depth: even if meta.reportMode was lost
+            //    in transit and effectiveReportMode resolved to non-rent,
+            //    detect rent schema in raw data and re-route to the rent UI.
+            const rawHasRentSchema = !!(rawObj.rental_listing_score || rawObj.rental_snapshot || rawObj.rental_listing_trust || rawObj.rent_fairness);
+            if (rawHasRentSchema) {
+              return (
+                <>
+                  <RentalListingScoreSection report={report} />
+                  <RentalBottomLineSection report={report} />
+                  <RentalSnapshotSection report={report} />
+                  <RentalListingTrustSection report={report} />
+                  <RentalAvailabilitySection report={report} />
+                  <RentTrueCostSection report={report} />
+                  <ApplicationPaymentRiskSection report={report} />
+                  <LeaseTermsRulesSection report={report} />
+                  <LocationDailyLifeSection report={report} />
+                  {report.raw?.photoReview || report.raw?.spaceAnalysis || report.raw?.visualAnalysis || report.raw?.photos ? (
+                    <PhotoSpaceAnalysisCard raw={report.raw} />
+                  ) : null}
+                  <RentalRiskCategoriesSection report={report} />
+                  <WhatCouldChangeYourDecisionSection report={report} />
+                  <ListingDoesNotProveSection report={report} />
+                  <BeforeYouTourApplyPaySection report={report} />
+                  <RentalWhoItWorksForSection report={report} />
+                  <NextBestMoveSection report={report} />
+                  <_RemainingSections report={report} />
+                </>
+              );
+            }
+            return (
+              <>
+                {/* ── Sale deep layout (unchanged) ──────────────────────── */}
+
+                {/* 2. What Could Change Your Decision */}
+                <WhatCouldChangeYourDecisionSection report={report} />
+
+                {/* 3. Deal-Changing Risks */}
+                <DealChangingRisksSection report={report} />
+
+                {/* 4. Property Snapshot (Is the Price Fair?) */}
+                <PropertySnapshotSection report={report} />
+
+                {/* 5. Carrying Costs */}
+                <CarryingCostsSection report={report} />
+
+                {/* 6. Location Reality Check */}
+                <LocationRealityCheckSection report={report} />
+
+                {/* 7. Photo & Space Analysis */}
+                {report.raw?.photoReview || report.raw?.spaceAnalysis || report.raw?.visualAnalysis || report.raw?.photos ? (
+                  <PhotoSpaceAnalysisCard raw={report.raw} />
+                ) : null}
+
+                {/* 7b. Buyer Risk Check (risk_categories) */}
+                <RiskCategoriesSection report={report} />
+
+                {/* 7c. What the Listing Does Not Prove */}
+                <ListingDoesNotProveSection report={report} />
+
+                {/* 7d. Before You Book a Showing */}
+                <BeforeYouBookShowingSection report={report} />
+
+                {/* 8. Agent Spin Decoder */}
+                <AgentSpinDecoderSection report={report} viewModel={viewModel} />
+
+                {/* 9. Who This Property Works For */}
+                <WhoThisPropertyWorksForSection report={report} />
+
+                {/* 11. Next Best Move */}
+                <NextBestMoveSection report={report} />
+
+                {/* 9b. Any sections not consumed by sale-specific modules */}
+                <_RemainingSections report={report} />
+              </>
+            );
+          })()}
 
           {/* 12. Closing CTA — only shown for full reports */}
           {!effectiveIsBasic && (

@@ -3,6 +3,7 @@
 
 import type { NormalizedReport, Market, ReportMode } from './types';
 import { normalizeUSSaleReport } from './usSale';
+import { normalizeUSRentReport } from './usRent';
 import { normalizeAUSaleReport } from './auSale';
 import { normalizeAURentReport } from './auRent';
 import { normalizeGenericReport } from './generic';
@@ -68,6 +69,19 @@ function detectReportMode(result: AnyResult): ReportMode {
   const mode = getField(result, 'reportMode', 'report_mode', 'analysisType', 'mode');
   if (mode === 'sale') return 'sale';
   if (mode === 'rent') return 'rent';
+  // ── Schema-based inference: rent schema fields are decisive.
+  //   US Rent outputs: rental_listing_score / rental_snapshot / rental_listing_trust /
+  //                    rent_fairness / rent_zestimate / rental_risk_categories
+  //   US Sale outputs: property_snapshot / carrying_costs / price_assessment /
+  //                    risk_categories (foundation_basement/roof_exterior/etc.) /
+  //                    listing_does_not_prove / before_you_book_showing
+  if (result && typeof result === 'object') {
+    const rentHints = result.rental_listing_score ?? result.rental_snapshot ?? result.rental_listing_trust ?? result.rent_fairness;
+    if (rentHints) return 'rent';
+    // Only fall back to sale if we see NONE of the rent schema fields.
+    const saleHints = result.property_snapshot ?? result.carrying_costs ?? result.price_assessment;
+    if (saleHints) return 'sale';
+  }
   return 'unknown';
 }
 
@@ -77,7 +91,12 @@ function detectBasicResult(result: AnyResult): boolean {
   if ('decision' in result && result.decision !== undefined) return true;
   // US Basic v2 always emits `whats_missing`; if present, treat as basic.
   if (Array.isArray(result?.whats_missing) && result.whats_missing.length > 0) return true;
-  if (!result?.property_snapshot && !result?.carrying_costs && !result?.price_assessment && !result.overallScore) return true;
+  // ── Don't classify a Rent Full report as Basic just because it lacks
+  // sale-only fields like property_snapshot. Only fall back to Basic when
+  // BOTH sale-only AND rent-only fields are absent AND there's no overallScore.
+  const hasSaleSchema = result?.property_snapshot ?? result?.carrying_costs ?? result?.price_assessment;
+  const hasRentSchema = result?.rental_snapshot ?? result?.rental_listing_score ?? result?.rental_listing_trust ?? result?.rent_fairness;
+  if (!hasSaleSchema && !hasRentSchema && !result?.overallScore && !result?.evidence_score) return true;
   return false;
 }
 
@@ -254,7 +273,7 @@ export function normalizeReportResult(result: AnyResult): NormalizedReport {
   } else if (market === 'AU' && reportMode === 'rent') {
     normalized = normalizeAURentReport(result);
   } else if (market === 'US' && reportMode === 'rent') {
-    normalized = normalizeGenericReport(result, { analysisProfile });
+    normalized = normalizeUSRentReport(result);
   } else {
     normalized = normalizeGenericReport(result, { analysisProfile });
   }

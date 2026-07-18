@@ -1,3 +1,4 @@
+import { useEffect } from 'react';
 import { ChevronRight, ExternalLink } from 'lucide-react';
 import { useAppState, useActions } from '../store';
 import type { AnalysisResult, AnalysisSummary, ListingInfo } from '../../../shared/types/analysis';
@@ -45,7 +46,20 @@ function enrichWithListingInfo(result: AnalysisResult, summary: AnalysisSummary)
 
 export function HistorySection() {
   const { history, historyLoading, viewingHistoryId, authStatus } = useAppState();
-  const { navigateToReport } = useActions();
+  const { navigateToReport, loadHistory } = useActions();
+
+  // If the reducer has no history yet (e.g. first paint, or the initial fetch
+  // never completed) kick off a one-shot fetch so the section does not stay
+  // empty until the user presses the header refresh button.
+  // Hook runs unconditionally — placed BEFORE the auth early-return so React's
+  // rules-of-hooks are preserved across render paths.
+  useEffect(() => {
+    if (authStatus !== 'logged_in') return;
+    if (history.length === 0 && !historyLoading) {
+      void loadHistory();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [authStatus === 'logged_in', history.length === 0, historyLoading]);
 
   // 未登录时完全隐藏，不调用 history API
   if (authStatus !== 'logged_in') return null;
