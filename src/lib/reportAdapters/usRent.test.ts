@@ -623,14 +623,16 @@ describe('normalizeUSRentReport — buyer-flavored phrase suppression', () => {
     expect(blob).not.toMatch(/Garage included/);
   });
 
-  // H. totalMonthlyCost=665 is used directly.
-  it('H. totalMonthlyCost=665: preferred over computed rent+fees', () => {
+  // H. totalMonthlyCost=665 with fees_included=false → "advertised effective rent plus required monthly fees"
+  it('H. totalMonthlyCost=665 + fees_included=false: plus required monthly fees copy', () => {
     const normalized = normalizeUSRentReport(baseRoomRentResult());
     const tc = findSection(normalized.sections, 'rent-true-cost');
     const text = sectionText(tc!);
     expect(text).toMatch(/Average Monthly Total/i);
     expect(text).toMatch(/\$665\/mo/);
-    expect(text).toMatch(/average of advertised rent \+ required fees/i);
+    expect(text).toMatch(/advertised effective rent plus required monthly fees/i);
+    expect(text).not.toMatch(/required monthly fees included in the advertised effective rent/i);
+    expect(text).not.toMatch(/fee inclusion is not confirmed/i);
   });
 
   // I. totalMonthlyCost missing → only compute when both rent and fees are finite.
@@ -653,7 +655,7 @@ describe('normalizeUSRentReport — buyer-flavored phrase suppression', () => {
     const text = sectionText(tc!);
     expect(text).toMatch(/Average Monthly Total/i);
     expect(text).toMatch(/\$665\/mo/);
-    expect(text).toMatch(/average of advertised rent \+ required fees/i);
+    expect(text).toMatch(/advertised effective rent plus required monthly fees/i);
   });
 
   it('I. advertised_effective_rent missing: no Average Monthly Total row in adapter', () => {
@@ -698,6 +700,55 @@ describe('normalizeUSRentReport — buyer-flavored phrase suppression', () => {
     expect(qfs.find((f) => f.label === 'Listing Type')).toBeUndefined();
   });
 
+  // ── Average Monthly Total three-state copy contract ──────────────────────
+  // A. fees_included=false + total supplied → "advertised effective rent plus required monthly fees"
+  it('Average Total copy A: fees_included=false → "advertised effective rent plus required monthly fees"', () => {
+    const result = baseRoomRentResult();
+    (result.room_rental_facts as any).fees_included_in_advertised_price = false;
+    (result.room_rental_facts as any).average_monthly_total = 665;
+    const normalized = normalizeUSRentReport(result);
+    const text = sectionText(findSection(normalized.sections, 'rent-true-cost')!);
+    expect(text).toMatch(/Average Monthly Total\s*\|\s*\$665\/mo\s*—\s*advertised effective rent plus required monthly fees/i);
+    expect(text).not.toMatch(/required monthly fees included in the advertised effective rent/i);
+    expect(text).not.toMatch(/fee inclusion is not confirmed/i);
+  });
+
+  // B. fees_included=true + total supplied → "required monthly fees included in the advertised effective rent"
+  it('Average Total copy B: fees_included=true → "required monthly fees included in the advertised effective rent"', () => {
+    const result = baseRoomRentResult();
+    (result.room_rental_facts as any).fees_included_in_advertised_price = true;
+    // Per backend rule 2: total == advertised_effective_rent when totalMonthlyCost
+    // is missing and fees are included. The fixture mirrors the persisted state
+    // so we pass the rent-only value here (the adapter doesn't double-check).
+    (result.room_rental_facts as any).average_monthly_total = 415;
+    const normalized = normalizeUSRentReport(result);
+    const text = sectionText(findSection(normalized.sections, 'rent-true-cost')!);
+    expect(text).toMatch(/Average Monthly Total\s*\|\s*\$415\/mo\s*—\s*required monthly fees included in the advertised effective rent/i);
+    expect(text).not.toMatch(/plus required monthly fees/i);
+    expect(text).not.toMatch(/fee inclusion is not confirmed/i);
+  });
+
+  // C. fees_included=null + total supplied → "fee inclusion is not confirmed"
+  it('Average Total copy C: fees_included=null → "fee inclusion is not confirmed"', () => {
+    const result = baseRoomRentResult();
+    (result.room_rental_facts as any).fees_included_in_advertised_price = null;
+    (result.room_rental_facts as any).average_monthly_total = 665;
+    const normalized = normalizeUSRentReport(result);
+    const text = sectionText(findSection(normalized.sections, 'rent-true-cost')!);
+    expect(text).toMatch(/Average Monthly Total\s*\|\s*\$665\/mo\s*—\s*fee inclusion is not confirmed/i);
+    expect(text).not.toMatch(/advertised effective rent plus required monthly fees/i);
+    expect(text).not.toMatch(/required monthly fees included in the advertised effective rent/i);
+  });
+
+  // D. average_monthly_total=null → no Average Monthly Total row.
+  it('Average Total copy D: average_monthly_total=null → no Average Monthly Total row', () => {
+    const result = baseRoomRentResult();
+    (result.room_rental_facts as any).average_monthly_total = null;
+    const normalized = normalizeUSRentReport(result);
+    const text = sectionText(findSection(normalized.sections, 'rent-true-cost')!);
+    expect(text).not.toMatch(/Average Monthly Total/i);
+  });
+
   // K. promotionText still isolated.
   it('K. promotionText: never reads or derives regular paid-month rent', () => {
     const result = {
@@ -733,6 +784,7 @@ describe('normalizeUSRentReport — buyer-flavored phrase suppression', () => {
     expect(tcText).toMatch(/\$415\/mo/);
     expect(tcText).toMatch(/Average Monthly Total/i);
     expect(tcText).toMatch(/\$665\/mo/);
+    expect(tcText).toMatch(/advertised effective rent plus required monthly fees/i);
     expect(tcText).toMatch(/Regular Rent After Promotion/i);
     expect(tcText).toMatch(/Not captured in structured data/i);
     expect(tcText).toMatch(/Fee Treatment During Free Months/i);

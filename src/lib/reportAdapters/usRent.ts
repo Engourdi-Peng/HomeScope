@@ -596,11 +596,20 @@ function buildSections(result: USRentResult): ReportSection[] {
       });
     }
 
-    const totalText = roomFactsTC.average_monthly_total != null
-      ? `${formatMoney(roomFactsTC.average_monthly_total)}/mo (average of advertised rent + required fees)`
-      : null;
-    if (totalText !== null) {
-      trueCostItems.push({ title: 'Average Monthly Total', value: totalText });
+    const totalValue = roomFactsTC.average_monthly_total;
+    if (totalValue !== null) {
+      const totalText = `${formatMoney(totalValue)}/mo`;
+      let totalSuffix: string;
+      const inclusion = roomFactsTC.fees_included_in_advertised_price;
+      if (inclusion === true) {
+        // fees already in the advertised effective rent; total == advertised
+        totalSuffix = ' — required monthly fees included in the advertised effective rent';
+      } else if (inclusion === false) {
+        totalSuffix = ' — advertised effective rent plus required monthly fees';
+      } else {
+        totalSuffix = ' — fee inclusion is not confirmed';
+      }
+      trueCostItems.push({ title: 'Average Monthly Total', value: totalText + totalSuffix });
     }
 
     trueCostItems.push({ title: 'Utilities', value: 'Not confirmed' });

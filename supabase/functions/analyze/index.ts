@@ -5695,14 +5695,34 @@ function buildRoomRentalFacts(
 
   const required_monthly_fees = toFiniteNumberOrNull(roomRental.requiredMonthlyFees);
 
+  const fees_included_in_advertised_price = toBooleanOrNull(
+    roomRental.listPriceIncludesRequiredMonthlyFees,
+  );
+
   const total_monthly_cost = toFiniteNumberOrNull(roomRental.totalMonthlyCost);
-  let average_monthly_total = total_monthly_cost;
-  if (
-    average_monthly_total === null &&
-    advertised_effective_rent !== null &&
-    required_monthly_fees !== null
-  ) {
-    average_monthly_total = advertised_effective_rent + required_monthly_fees;
+  // Average monthly total fallback rules (priority order):
+  //   1. totalMonthlyCost is finite -> use it verbatim.
+  //   2. totalMonthlyCost is null AND rent is finite AND fees already
+  //      included (fees_included_in_advertised_price === true) ->
+  //      average_monthly_total = advertised_effective_rent. Do NOT add
+  //      required_monthly_fees again (would double-count).
+  //   3. totalMonthlyCost is null AND rent + fees are both finite AND
+  //      fees NOT included (fees_included_in_advertised_price === false) ->
+  //      average_monthly_total = rent + fees.
+  //   4. fees_included_in_advertised_price === null -> null. Do not guess.
+  //   5. advertised_effective_rent is null -> null.
+  let average_monthly_total: number | null = total_monthly_cost;
+  if (average_monthly_total === null && advertised_effective_rent !== null) {
+    if (fees_included_in_advertised_price === true) {
+      average_monthly_total = advertised_effective_rent;
+    } else if (
+      fees_included_in_advertised_price === false &&
+      required_monthly_fees !== null
+    ) {
+      average_monthly_total = advertised_effective_rent + required_monthly_fees;
+    } else {
+      average_monthly_total = null;
+    }
   }
 
   const furnished =
@@ -5724,9 +5744,7 @@ function buildRoomRentalFacts(
     advertised_effective_rent,
     required_monthly_fees,
     average_monthly_total,
-    fees_included_in_advertised_price: toBooleanOrNull(
-      roomRental.listPriceIncludesRequiredMonthlyFees,
-    ),
+    fees_included_in_advertised_price,
     housemate_count: toFiniteNumberOrNull(roomRental.housemateCount),
     has_private_bath: toBooleanOrNull(roomRental.hasPrivateBath),
     furnished,
