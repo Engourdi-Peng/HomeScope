@@ -133,6 +133,7 @@ function iconFor(id: string, className = 'w-4 h-4') {
     'price-assessment':       <DollarSign className={className} />,
     'carrying-costs':         <DollarSign className={className} />,
     'rent-fairness':          <DollarSign className={className} />,
+    'rent-true-cost':         <DollarSign className={className} />,
     'investment-potential':    <TrendingUp className={className} />,
     'maintenance-risk':       <Wrench className={className} />,
     'legal-compliance':       <Shield className={className} />,
@@ -5329,6 +5330,13 @@ export function NewReportUI({
 
                 {/* 4. Property Snapshot (Is the Price Fair?) */}
                 <PropertySnapshotSection report={report} />
+
+                {/* 4b. Rent & True Cost — rent reports only, between Property Snapshot and Location/Photo Review */}
+                {(() => {
+                  const rtc = report.sections.find((s) => s.id === 'rent-true-cost');
+                  if (!rtc) return null;
+                  return <GenericSectionCard section={rtc} />;
+                })()}
 
                 {/* 5. Carrying Costs */}
                 <CarryingCostsSection report={report} />
