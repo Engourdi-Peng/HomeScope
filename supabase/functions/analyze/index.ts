@@ -14,6 +14,7 @@ import { US_STEP1_SYSTEM_PROMPT, US_STEP2_SALE_PROMPT, US_STEP2_RISK_MODULES_BLO
 import { AU_STEP1_SYSTEM_PROMPT, AU_STEP2_RENT_PROMPT, AU_STEP2_SALE_PROMPT } from "./prompts/au-prompts.ts";
 
 import {
+  isStructuredListingValid,
   readStructuredTransactionType,
   resolveEffectiveReportMode,
 } from "./reportMode.ts";
@@ -5599,6 +5600,163 @@ If a field is not listed above, then treat it as unknown and add it to data_gaps
 // the entire Deno.serve module.
 // =============================================================================
 
+// =============================================================================
+// Room-rental structured facts — deterministic safe-subset extractor
+// -----------------------------------------------------------------------------
+// Mirrors a small, validated subset of body.structuredListing into the persisted
+// full_result under `room_rental_facts` so the front-end US Rent adapter can
+// surface authoritative Rental Snapshot / Rent & True Cost fields without
+// depending on free-text LLM extraction. We do NOT copy or relax
+// `isStructuredListingValid`: we only read it from `./reportMode.ts`.
+//
+// Save gate (all three must be true):
+//   1. effectiveReportMode === 'rent'
+//   2. structuredListing.classification.objectKind === 'room'
+//   3. isStructuredListingValid(structuredListing) === true
+//
+// We do NOT save: raw structuredListing, listingData, image URLs,
+// promotionText, lease copy, or anything we re-derive from description.
+// =============================================================================
+
+interface RoomRentalFactsShape {
+  object_kind: 'room';
+  advertised_effective_rent: number | null;
+  required_monthly_fees: number | null;
+  average_monthly_total: number | null;
+  fees_included_in_advertised_price: boolean | null;
+  housemate_count: number | null;
+  has_private_bath: boolean | null;
+  furnished: boolean | null;
+  pet_policy: string | null;
+  available_date: string | null;
+  lease_term: string | null;
+  parking_capacity_property_level: number | null;
+  parking_features: string[];
+  parking_allocation_confirmed: false;
+}
+
+function toFiniteNumberOrNull(value: unknown): number | null {
+  return typeof value === 'number' && Number.isFinite(value) ? value : null;
+}
+
+function toNonEmptyStringOrNull(value: unknown): string | null {
+  if (typeof value !== 'string') return null;
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : null;
+}
+
+function toBooleanOrNull(value: unknown): boolean | null {
+  return typeof value === 'boolean' ? value : null;
+}
+
+function toStringArray(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return value.filter((x): x is string => typeof x === 'string' && x.trim().length > 0);
+}
+
+function readAtAGlanceFact(roomRental: Record<string, unknown>, key: string): string | null {
+  const facts = roomRental.atAGlanceFacts;
+  if (!facts || typeof facts !== 'object') return null;
+  const v = (facts as Record<string, unknown>)[key];
+  return toNonEmptyStringOrNull(v);
+}
+
+/**
+ * Build the deterministic room-rental facts safe-subset for a structured
+ * US listing. Returns `null` when the gate conditions are not satisfied —
+ * callers must NOT persist anything in that case.
+ *
+ * IMPORTANT: parking_allocation_confirmed is always fixed to `false` because
+ * the plugin does not advertise per-tenant assignment. parkingCapacity is
+ * property-level only.
+ */
+function buildRoomRentalFacts(
+  body: Record<string, unknown>,
+  effectiveReportMode: 'sale' | 'rent' | 'unknown',
+): RoomRentalFactsShape | null {
+  if (effectiveReportMode !== 'rent') return null;
+
+  const listingData = body.listingData as Record<string, unknown> | undefined;
+  const rawStructured =
+    (body.structuredListing as Record<string, unknown> | undefined) ??
+    (listingData?.structuredListing as Record<string, unknown> | undefined);
+  if (!isStructuredListingValid(rawStructured)) return null;
+
+  const sl = rawStructured as Record<string, unknown>;
+  const classification = sl.classification as Record<string, unknown> | undefined;
+  if (classification?.objectKind !== 'room') return null;
+
+  const pricing = (sl.pricing ?? {}) as Record<string, unknown>;
+  const roomRental = (sl.roomRental ?? {}) as Record<string, unknown>;
+
+  const advertised_effective_rent =
+    toFiniteNumberOrNull(pricing.displayedPrice) ??
+    toFiniteNumberOrNull(pricing.baseRent);
+
+  const required_monthly_fees = toFiniteNumberOrNull(roomRental.requiredMonthlyFees);
+
+  const fees_included_in_advertised_price = toBooleanOrNull(
+    roomRental.listPriceIncludesRequiredMonthlyFees,
+  );
+
+  const total_monthly_cost = toFiniteNumberOrNull(roomRental.totalMonthlyCost);
+  // Average monthly total fallback rules (priority order):
+  //   1. totalMonthlyCost is finite -> use it verbatim.
+  //   2. totalMonthlyCost is null AND rent is finite AND fees already
+  //      included (fees_included_in_advertised_price === true) ->
+  //      average_monthly_total = advertised_effective_rent. Do NOT add
+  //      required_monthly_fees again (would double-count).
+  //   3. totalMonthlyCost is null AND rent + fees are both finite AND
+  //      fees NOT included (fees_included_in_advertised_price === false) ->
+  //      average_monthly_total = rent + fees.
+  //   4. fees_included_in_advertised_price === null -> null. Do not guess.
+  //   5. advertised_effective_rent is null -> null.
+  let average_monthly_total: number | null = total_monthly_cost;
+  if (average_monthly_total === null && advertised_effective_rent !== null) {
+    if (fees_included_in_advertised_price === true) {
+      average_monthly_total = advertised_effective_rent;
+    } else if (
+      fees_included_in_advertised_price === false &&
+      required_monthly_fees !== null
+    ) {
+      average_monthly_total = advertised_effective_rent + required_monthly_fees;
+    } else {
+      average_monthly_total = null;
+    }
+  }
+
+  const furnished =
+    toBooleanOrNull(roomRental.roomIsFurnished) ??
+    toBooleanOrNull(roomRental.furnished);
+
+  const allowedPets = toStringArray(roomRental.allowedPets);
+  const pet_policy =
+    allowedPets.length > 0
+      ? allowedPets.join(', ')
+      : readAtAGlanceFact(roomRental, 'Pets');
+
+  const lease_term =
+    toNonEmptyStringOrNull(roomRental.leaseTerm) ??
+    readAtAGlanceFact(roomRental, 'Lease');
+
+  return {
+    object_kind: 'room',
+    advertised_effective_rent,
+    required_monthly_fees,
+    average_monthly_total,
+    fees_included_in_advertised_price,
+    housemate_count: toFiniteNumberOrNull(roomRental.housemateCount),
+    has_private_bath: toBooleanOrNull(roomRental.hasPrivateBath),
+    furnished,
+    pet_policy,
+    available_date: readAtAGlanceFact(roomRental, 'Date available'),
+    lease_term,
+    parking_capacity_property_level: toFiniteNumberOrNull(roomRental.parkingCapacity),
+    parking_features: toStringArray(roomRental.parkingFeatures),
+    parking_allocation_confirmed: false,
+  };
+}
+
 // ========== Main Handler ==========
 
 Deno.serve(async (req) => {
@@ -9391,6 +9549,11 @@ ${optionalDetails.askingPrice ? `Asking Price: ${optionalDetails.askingPrice}\n`
         progress: 90,
       });
 
+      const roomRentalFacts = buildRoomRentalFacts(
+        body as Record<string, unknown>,
+        effectiveReportMode,
+      );
+
       const fullResultWithType = {
         ...(result as Record<string, unknown>),
         // Triple-mirror the score so any reader sees the same value
@@ -9399,6 +9562,7 @@ ${optionalDetails.askingPrice ? `Asking Price: ${optionalDetails.askingPrice}\n`
         overallScore: (result as any).overallScore ?? overallScoreNum,
         evidenceLevel: (result as any).evidenceLevel ?? evidenceLevelStr,
         analysisType: 'full',
+        ...(roomRentalFacts ? { room_rental_facts: roomRentalFacts } : {}),
       };
 
       // ── FIX: write analyses.full_result BEFORE marking analysis_states

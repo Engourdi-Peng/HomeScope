@@ -1,11 +1,64 @@
 // ===== US Rent Adapter =====
 // Converts US Rent Step 2 output → NormalizedReport with 16 sections.
+//
+// When the backend persists a `room_rental_facts` object inside the result
+// (only ever set for `effectiveReportMode === 'rent'` + `objectKind === 'room'`
+// after `isStructuredListingValid` from ./reportMode.ts succeeds), we treat its
+// deterministic fields as authoritative and let them override the equivalent
+// AI free-text fields inside the `rental-snapshot` and `rent-true-cost`
+// sections. Everything else (highlights, photo review, lease terms, etc.) is
+// left untouched so non-room apartments are unaffected.
 
 import type { NormalizedReport, HeroData, HighlightsData, QuickFact, ReportSection, SectionItem } from './types';
 import { MODULE_FALLBACKS } from './Fallbacks';
 import { hasInteriorPhotos } from './interiorPhotos';
 
 type USRentResult = any;
+
+// ---- deterministic room-rental facts -------------------------------------------------
+
+interface RoomRentalFacts {
+  object_kind: 'room';
+  advertised_effective_rent: number | null;
+  required_monthly_fees: number | null;
+  average_monthly_total: number | null;
+  fees_included_in_advertised_price: boolean | null;
+  housemate_count: number | null;
+  has_private_bath: boolean | null;
+  furnished: boolean | null;
+  pet_policy: string | null;
+  available_date: string | null;
+  lease_term: string | null;
+  parking_capacity_property_level: number | null;
+  parking_features: string[];
+  parking_allocation_confirmed: false;
+}
+
+function readRoomRentalFacts(result: USRentResult): RoomRentalFacts | null {
+  const candidate = result?.room_rental_facts;
+  if (!candidate || typeof candidate !== 'object') return null;
+  if (candidate.object_kind !== 'room') return null;
+  return candidate as RoomRentalFacts;
+}
+
+function formatMoney(n: number | null): string {
+  if (typeof n !== 'number' || !Number.isFinite(n)) return '';
+  return `$${n.toLocaleString('en-US')}`;
+}
+
+function buildParkingText(facts: RoomRentalFacts): string {
+  const n = facts.parking_capacity_property_level;
+  if (typeof n === 'number' && Number.isFinite(n)) {
+    return `${n} property-level spaces advertised — tenant allocation not confirmed`;
+  }
+  return 'Not confirmed';
+}
+
+function buildTriStateBoolean(value: boolean | null): string | null {
+  if (value === true) return 'Yes';
+  if (value === false) return 'No';
+  return null;
+}
 
 // Renter fallback shown when every model-provided Bottom Line candidate was
 // poisoned with sale-flavored phrases. Sourced from Fallbacks.ts so all renter
@@ -98,9 +151,52 @@ function buildHero(result: USRentResult): HeroData {
   };
 }
 
-// ── quick facts (from rental_snapshot) ───────────────────────────────────────
+// ── quick facts ──────────────────────────────────────────────────────────────────
+// When room_rental_facts is present: only emit deterministic fields. Do NOT
+// blend AI rental_snapshot fields (Security Deposit, Beds, Baths, Sqft,
+// Property Type, Pet Policy, Lease Term, Available, Parking) into room
+// Quick Facts because the structured extraction is authoritative and could
+// otherwise disagree with the AI free-text.
 
 function buildQuickFacts(result: USRentResult): QuickFact[] {
+  const roomFacts = readRoomRentalFacts(result);
+
+  if (roomFacts) {
+    const facts: QuickFact[] = [];
+    const add = (label: string, val: unknown) => {
+      const t = toText(val);
+      if (t) facts.push({ label, value: t });
+    };
+
+    add('Listing Type', 'Room Rental');
+    const rentText = roomFacts.advertised_effective_rent != null
+      ? `${formatMoney(roomFacts.advertised_effective_rent)}/mo`
+      : 'Not confirmed';
+    add('Advertised Effective Rent', rentText);
+    if (typeof roomFacts.housemate_count === 'number' && Number.isFinite(roomFacts.housemate_count)) {
+      add('Housemates', String(roomFacts.housemate_count));
+    } else {
+      add('Housemates', 'Not confirmed');
+    }
+    const privateBath = buildTriStateBoolean(roomFacts.has_private_bath);
+    if (privateBath !== null) {
+      add('Private Bathroom', privateBath);
+    } else {
+      add('Private Bathroom', 'Not confirmed');
+    }
+    const furnishedText = buildTriStateBoolean(roomFacts.furnished);
+    if (furnishedText !== null) {
+      add('Furnished', furnishedText);
+    } else {
+      add('Furnished', 'Not confirmed');
+    }
+    add('Pet Policy', roomFacts.pet_policy ?? 'Not confirmed');
+    add('Available', roomFacts.available_date ?? 'Not confirmed');
+    add('Lease Term', roomFacts.lease_term ?? 'Not confirmed');
+    add('Parking', buildParkingText(roomFacts));
+    return facts;
+  }
+
   const snap = result.rental_snapshot ?? {};
   const facts: QuickFact[] = [];
   const add = (label: string, val: unknown) => {
@@ -340,35 +436,71 @@ function buildSections(result: USRentResult): ReportSection[] {
   // The hero card at the top already shows the Bottom Line.
 
 
-  // 3. rental-snapshot
+  // 3. rental-snapshot (room_rental_facts override when present)
   const snap = result.rental_snapshot ?? {};
   const snapItems: SectionItem[] = [];
   const snapField = (label: string, val: unknown) => {
     const t = toText(val);
     if (t) snapItems.push({ title: label, value: t });
   };
-  snapField('Monthly Rent', snap.monthly_rent);
-  snapField('Security Deposit', snap.security_deposit);
-  snapField('Lease Term', snap.lease_term);
-  snapField('Available Date', snap.available_date);
-  snapField('Beds / Baths / Sqft', [snap.beds, snap.baths, snap.sqft].filter(Boolean).join(' / '));
-  if (Array.isArray(snap.included_utilities) && snap.included_utilities.length > 0) {
-    snapItems.push({ title: 'Utilities Included', value: snap.included_utilities.filter((x: unknown): x is string => typeof x === 'string').join(', ') });
-  }
-  snapField('Parking', snap.parking);
-  snapField('Pet Policy', snap.pet_policy);
-  snapField('Building', snap.building_name);
-  snapField('Property Type', snap.property_type);
-  snapField('Unit', snap.exact_unit);
-  snapField('Management', snap.management_company);
-  snapField('Contact', snap.contact_information);
-  snapField('Laundry', snap.laundry);
-  snapField('Heating / Cooling', snap.heating_cooling);
-  if (Array.isArray(snap.amenities) && snap.amenities.length > 0) {
-    snapItems.push({ title: 'Amenities', value: snap.amenities.filter((x: unknown): x is string => typeof x === 'string').join(', ') });
-  }
-  if (snap.source_status) {
-    snapItems.push({ title: 'Source Quality', value: toText(snap.source_status), badge: toText(snap.source_status) });
+  const roomFacts = readRoomRentalFacts(result);
+  if (roomFacts) {
+    snapItems.push({ title: 'Listing Type', value: 'Room Rental' });
+    if (roomFacts.advertised_effective_rent != null) {
+      snapItems.push({
+        title: 'Advertised Effective Rent',
+        value: `${formatMoney(roomFacts.advertised_effective_rent)}/mo`,
+      });
+    } else {
+      snapItems.push({ title: 'Advertised Effective Rent', value: 'Not confirmed' });
+    }
+    if (typeof roomFacts.housemate_count === 'number' && Number.isFinite(roomFacts.housemate_count)) {
+      snapItems.push({ title: 'Housemates', value: String(roomFacts.housemate_count) });
+    } else {
+      snapItems.push({ title: 'Housemates', value: 'Not confirmed' });
+    }
+    const privateBath = buildTriStateBoolean(roomFacts.has_private_bath);
+    if (privateBath === 'Yes') {
+      snapItems.push({ title: 'Private Bathroom', value: 'Yes' });
+    } else if (privateBath === 'No') {
+      snapItems.push({ title: 'Private Bathroom', value: 'No — sharing arrangement not confirmed' });
+    } else {
+      snapItems.push({ title: 'Private Bathroom', value: 'Not confirmed' });
+    }
+    const furnishedText = buildTriStateBoolean(roomFacts.furnished);
+    if (furnishedText !== null) {
+      snapItems.push({ title: 'Furnished', value: furnishedText });
+    } else {
+      snapItems.push({ title: 'Furnished', value: 'Not confirmed' });
+    }
+    snapItems.push({ title: 'Pet Policy', value: roomFacts.pet_policy ?? 'Not confirmed' });
+    snapItems.push({ title: 'Available', value: roomFacts.available_date ?? 'Not confirmed' });
+    snapItems.push({ title: 'Lease Term', value: roomFacts.lease_term ?? 'Not confirmed' });
+    snapItems.push({ title: 'Parking', value: buildParkingText(roomFacts) });
+  } else {
+    snapField('Monthly Rent', snap.monthly_rent);
+    snapField('Security Deposit', snap.security_deposit);
+    snapField('Lease Term', snap.lease_term);
+    snapField('Available Date', snap.available_date);
+    snapField('Beds / Baths / Sqft', [snap.beds, snap.baths, snap.sqft].filter(Boolean).join(' / '));
+    if (Array.isArray(snap.included_utilities) && snap.included_utilities.length > 0) {
+      snapItems.push({ title: 'Utilities Included', value: snap.included_utilities.filter((x: unknown): x is string => typeof x === 'string').join(', ') });
+    }
+    snapField('Parking', snap.parking);
+    snapField('Pet Policy', snap.pet_policy);
+    snapField('Building', snap.building_name);
+    snapField('Property Type', snap.property_type);
+    snapField('Unit', snap.exact_unit);
+    snapField('Management', snap.management_company);
+    snapField('Contact', snap.contact_information);
+    snapField('Laundry', snap.laundry);
+    snapField('Heating / Cooling', snap.heating_cooling);
+    if (Array.isArray(snap.amenities) && snap.amenities.length > 0) {
+      snapItems.push({ title: 'Amenities', value: snap.amenities.filter((x: unknown): x is string => typeof x === 'string').join(', ') });
+    }
+    if (snap.source_status) {
+      snapItems.push({ title: 'Source Quality', value: toText(snap.source_status), badge: toText(snap.source_status) });
+    }
   }
   if (snapItems.length > 0) {
     sections.push({ id: 'rental-snapshot', title: 'Rental Snapshot', subtitle: 'What the listing tells you up front', items: snapItems });
@@ -428,26 +560,85 @@ function buildSections(result: USRentResult): ReportSection[] {
     sections.push({ id: 'availability-check', title: 'Availability Check', subtitle: 'Live status from the listing only', items: avItems });
   }
 
-  // 7. rent-true-cost (rent_fairness + recurring_monthly_costs)
+  // 7. rent-true-cost (room_rental_facts override when present)
   const fair = result.rent_fairness ?? {};
   const recur = result.recurring_monthly_costs ?? {};
   const trueCostItems: SectionItem[] = [];
-  if (fair.asking_rent) trueCostItems.push({ title: 'Asking Rent', value: toText(fair.asking_rent) });
-  if (fair.rent_zestimate) trueCostItems.push({ title: 'Rent Zestimate', value: toText(fair.rent_zestimate) });
-  if (fair.comparable_signal) trueCostItems.push({ title: 'Comparable Signal', value: toText(fair.comparable_signal) });
-  if (fair.verdict) {
-    trueCostItems.push({ title: 'Verdict', value: toText(fair.verdict), badge: toText(fair.verdict) });
-  }
-  if (fair.evidence_quality) trueCostItems.push({ title: 'Evidence', value: toText(fair.evidence_quality), badge: toText(fair.evidence_quality) });
-  if (fair.explanation) trueCostItems.push({ title: 'Explanation', description: toText(fair.explanation) });
-  if (Array.isArray(recur.items)) {
-    for (const it of recur.items) {
-      const o = (it ?? {}) as Record<string, unknown>;
-      const desc = [toText(o.amount) ? `$${toText(o.amount)}` : '', toText(o.notes)].filter(Boolean).join(' — ');
-      trueCostItems.push({ title: toText(o.name), value: toText(o.amount), description: desc, badge: evidenceLabel(o.evidence) });
+  const roomFactsTC = readRoomRentalFacts(result);
+  if (roomFactsTC) {
+    // Authoritative room-rental True Cost. We never derive regular paid-month
+    // rent here — that requires promotionText / description re-extraction, which
+    // is out of scope. Parking is intentionally omitted; it is rendered in
+    // Rental Snapshot / Quick Facts only.
+    const rentText = roomFactsTC.advertised_effective_rent != null
+      ? `${formatMoney(roomFactsTC.advertised_effective_rent)}/mo`
+      : 'Not confirmed';
+    trueCostItems.push({ title: 'Advertised Effective Rent', value: rentText });
+
+    if (roomFactsTC.required_monthly_fees != null) {
+      const inclusion = roomFactsTC.fees_included_in_advertised_price;
+      let feeSuffix: string;
+      if (inclusion === false) {
+        feeSuffix = ' — additional to the advertised effective rent';
+      } else if (inclusion === true) {
+        feeSuffix = ' — included in the advertised effective rent';
+      } else {
+        feeSuffix = ' — whether this is included is not confirmed';
+      }
+      trueCostItems.push({
+        title: 'Required Monthly Fees',
+        value: `${formatMoney(roomFactsTC.required_monthly_fees)}/mo${feeSuffix}`,
+      });
+    } else {
+      trueCostItems.push({
+        title: 'Required Monthly Fees',
+        value: 'Not confirmed — fees may apply on top of advertised rent',
+      });
     }
+
+    const totalValue = roomFactsTC.average_monthly_total;
+    if (totalValue !== null) {
+      const totalText = `${formatMoney(totalValue)}/mo`;
+      let totalSuffix: string;
+      const inclusion = roomFactsTC.fees_included_in_advertised_price;
+      if (inclusion === true) {
+        // fees already in the advertised effective rent; total == advertised
+        totalSuffix = ' — required monthly fees included in the advertised effective rent';
+      } else if (inclusion === false) {
+        totalSuffix = ' — advertised effective rent plus required monthly fees';
+      } else {
+        totalSuffix = ' — fee inclusion is not confirmed';
+      }
+      trueCostItems.push({ title: 'Average Monthly Total', value: totalText + totalSuffix });
+    }
+
+    trueCostItems.push({ title: 'Utilities', value: 'Not confirmed' });
+    trueCostItems.push({
+      title: 'Regular Rent After Promotion',
+      value: 'Not captured in structured data',
+    });
+    trueCostItems.push({
+      title: 'Fee Treatment During Free Months',
+      value: 'Not confirmed',
+    });
+  } else {
+    if (fair.asking_rent) trueCostItems.push({ title: 'Asking Rent', value: toText(fair.asking_rent) });
+    if (fair.rent_zestimate) trueCostItems.push({ title: 'Rent Zestimate', value: toText(fair.rent_zestimate) });
+    if (fair.comparable_signal) trueCostItems.push({ title: 'Comparable Signal', value: toText(fair.comparable_signal) });
+    if (fair.verdict) {
+      trueCostItems.push({ title: 'Verdict', value: toText(fair.verdict), badge: toText(fair.verdict) });
+    }
+    if (fair.evidence_quality) trueCostItems.push({ title: 'Evidence', value: toText(fair.evidence_quality), badge: toText(fair.evidence_quality) });
+    if (fair.explanation) trueCostItems.push({ title: 'Explanation', description: toText(fair.explanation) });
+    if (Array.isArray(recur.items)) {
+      for (const it of recur.items) {
+        const o = (it ?? {}) as Record<string, unknown>;
+        const desc = [toText(o.amount) ? `$${toText(o.amount)}` : '', toText(o.notes)].filter(Boolean).join(' — ');
+        trueCostItems.push({ title: toText(o.name), value: toText(o.amount), description: desc, badge: evidenceLabel(o.evidence) });
+      }
+    }
+    if (recur.total_recurring_estimate) trueCostItems.push({ title: 'Total Recurring / mo (est.)', value: toText(recur.total_recurring_estimate) });
   }
-  if (recur.total_recurring_estimate) trueCostItems.push({ title: 'Total Recurring / mo (est.)', value: toText(recur.total_recurring_estimate) });
   if (trueCostItems.length > 0) {
     sections.push({ id: 'rent-true-cost', title: 'Rent & True Cost', subtitle: 'Monthly rent + recurring fees', items: trueCostItems });
   }
