@@ -24,6 +24,45 @@ const INTERIOR_AREAS = [
   'attic', 'laundry', 'office', 'family room',
 ];
 
+/**
+ * Extract and normalize an area name from a raw entry.
+ *
+ * photoReview.areas may be:
+ *   - string[]               → ["kitchen", "bedroom"]
+ *   - object[] with .area    → [{ area: "living_room", confidence: "Medium" }, ...]
+ *   - object[] with .name    → [{ name: "Kitchen" }]
+ *   - object[] with .label   → [{ label: "kitchen" }]
+ *   - object[] with .type    → [{ type: "kitchen" }]
+ *
+ * Field priority: area > name > label > type.
+ * Strings like "living_room" / "dining-room" are normalized to "living room" /
+ * "dining room" so they match INTERIOR_AREAS keywords.
+ *
+ * IMPORTANT: this only reads the dedicated area fields. It never stringifies
+ * the full object, so descriptive text fields like `description`, `concerns`,
+ * or `summary` cannot accidentally flip a non-interior area into an interior.
+ */
+function normalizeAreaName(value: unknown): string {
+  let raw = '';
+
+  if (typeof value === 'string') {
+    raw = value;
+  } else if (value && typeof value === 'object') {
+    const obj = value as Record<string, unknown>;
+    const candidate =
+      obj.area ?? obj.name ?? obj.label ?? obj.type ?? '';
+    if (typeof candidate === 'string') {
+      raw = candidate;
+    }
+  }
+
+  return raw
+    .toLowerCase()
+    .replace(/[_-]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
 interface InteriorDetectionSources {
   step1Areas?: unknown;
   step1DetectedAreas?: unknown;
@@ -55,7 +94,9 @@ export function hasInteriorPhotos(sources: InteriorDetectionSources = {}): boole
     ...(Array.isArray(sources.visualAnalysis?.areas) ? (sources.visualAnalysis!.areas as unknown[]) : []),
     ...(Array.isArray(sources.visualAnalysis?.detectedAreas) ? (sources.visualAnalysis!.detectedAreas as unknown[]) : []),
   ];
-  const areasLower = step1AreasRaw.map((a) => String(a ?? '').toLowerCase());
+  const areasLower = step1AreasRaw
+    .map(normalizeAreaName)
+    .filter((s) => s.length > 0);
   const step1HasInterior = areasLower.some((a) =>
     INTERIOR_AREAS.some((kw) => a.includes(kw))
   );

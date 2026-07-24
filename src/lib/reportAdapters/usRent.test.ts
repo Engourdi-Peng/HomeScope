@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { normalizeUSRentReport } from './usRent';
+import { hasInteriorPhotos } from './interiorPhotos';
 
 const MODULE_FALLBACKS = { RENT_BOTTOM_LINE_FALLBACK: 'Monthly rent not listed. Confirm the advertised price before applying.' };
 
@@ -428,5 +429,132 @@ describe('normalizeUSRentReport — buyer-flavored phrase suppression', () => {
     const normalized = normalizeUSRentReport(result);
     expect(normalized.hero.summary).toMatch(/Monthly rent is listed/i);
     expect(normalized.hero.summary).not.toMatch(/Key lease and payment details not listed/i);
+  });
+});
+
+describe('hasInteriorPhotos — area normalization', () => {
+  it('A. object array with area field — living_room / kitchen / bedroom → true', () => {
+    const result = hasInteriorPhotos({
+      photoReview: {
+        areas: [
+          { area: 'living_room', confidence: 'Medium', photoCount: 1 },
+          { area: 'kitchen' },
+          { area: 'bedroom' },
+        ],
+      },
+    });
+    expect(result).toBe(true);
+  });
+
+  it('B. string array — ["bathroom"] → true', () => {
+    const result = hasInteriorPhotos({
+      photoReview: {
+        areas: ['bathroom'],
+      },
+    });
+    expect(result).toBe(true);
+  });
+
+  it('C. object array with only exterior / yard / roof → false', () => {
+    const result = hasInteriorPhotos({
+      photoReview: {
+        areas: [
+          { area: 'exterior' },
+          { area: 'yard' },
+          { area: 'roof' },
+        ],
+      },
+    });
+    expect(result).toBe(false);
+  });
+
+  it('D. description text mentions "kitchen" but area is exterior → false (no false positive)', () => {
+    const result = hasInteriorPhotos({
+      photoReview: {
+        areas: [
+          {
+            area: 'exterior',
+            description: 'Kitchen window visible from outside',
+            concerns: ['kitchen sink not visible'],
+          },
+        ],
+      },
+    });
+    expect(result).toBe(false);
+  });
+
+  it('E. imageUrls present (no other sources) → true', () => {
+    const result = hasInteriorPhotos({
+      imageUrls: ['https://example.com/photo.webp'],
+    });
+    expect(result).toBe(true);
+  });
+
+  it('underscore area "living_room" is normalized to "living room"', () => {
+    const result = hasInteriorPhotos({
+      photoReview: {
+        areas: [{ area: 'living_room' }],
+      },
+    });
+    expect(result).toBe(true);
+  });
+
+  it('hyphen area "dining-room" is normalized to "dining room"', () => {
+    const result = hasInteriorPhotos({
+      photoReview: {
+        areas: [{ area: 'dining-room' }],
+      },
+    });
+    expect(result).toBe(true);
+  });
+
+  it('object with name field (no area field) is recognized', () => {
+    const result = hasInteriorPhotos({
+      photoReview: {
+        areas: [{ name: 'kitchen' }],
+      },
+    });
+    expect(result).toBe(true);
+  });
+
+  it('object with label field (no area/name field) is recognized', () => {
+    const result = hasInteriorPhotos({
+      photoReview: {
+        areas: [{ label: 'bedroom' }],
+      },
+    });
+    expect(result).toBe(true);
+  });
+
+  it('object with type field (no area/name/label field) is recognized', () => {
+    const result = hasInteriorPhotos({
+      photoReview: {
+        areas: [{ type: 'bathroom' }],
+      },
+    });
+    expect(result).toBe(true);
+  });
+
+  it('object without any area/name/label/type field is treated as empty', () => {
+    const result = hasInteriorPhotos({
+      photoReview: {
+        areas: [{ description: 'something' }],
+      },
+      imageUrls: [],
+    });
+    expect(result).toBe(false);
+  });
+
+  it('no sources at all → false', () => {
+    expect(hasInteriorPhotos({})).toBe(false);
+  });
+
+  it('null / undefined area entries are tolerated', () => {
+    const result = hasInteriorPhotos({
+      photoReview: {
+        areas: [null, undefined, { area: 'kitchen' }],
+      },
+    });
+    expect(result).toBe(true);
   });
 });
