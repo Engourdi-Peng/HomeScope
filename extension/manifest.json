@@ -39,6 +39,11 @@
   },
   "content_scripts": [
     {
+      "matches": ["https://www.zillow.com/*"],
+      "js": ["zillow-graphql-bridge.js"],
+      "run_at": "document_start"
+    },
+    {
       "matches": [
         "https://www.zillow.com/*",
         "https://*.zillow.com/*",
@@ -51,5 +56,8 @@
       ],
       "run_at": "document_idle"
     }
+  ],
+  "web_accessible_resources": [
+    { "resources": ["zillow-graphql-capture.js"], "matches": ["https://www.zillow.com/*"] }
   ]
 }

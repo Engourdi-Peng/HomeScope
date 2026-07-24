@@ -809,11 +809,10 @@ export interface AnalyzeRequest {
   // Pass-through handoff for deterministic structuredListing (e.g. Zillow GraphQL
   // room-rental facts). When the submit payload carries it, runAnalysis must
   // forward it to the backend so buildRoomRentalFacts can persist
-  // room_rental_facts into full_result.
+  // room_rental_facts into full_result. The web form does not currently produce
+  // structuredListing; only the browser extension does (via
+  // extension/zillow-graphql-capture.js).
   structuredListing?: Record<string, unknown> | null;
-  // Pass-through handoff for the full extracted listingData (used by deployed
-  // canonicalListing builder). Optional; null when not present.
-  listingData?: Record<string, unknown> | null;
 }
 
 // ===== 12b. 基础分析结果 =====

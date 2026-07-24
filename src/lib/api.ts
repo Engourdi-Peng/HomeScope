@@ -275,7 +275,6 @@ export async function runAnalysis(id: string, data: AnalyzeRequest, sourceDomain
       // does), so this is normally null — but the wiring must exist to support the
       // extension flow when it becomes available.
       structuredListing: data.structuredListing ?? null,
-      listingData: data.listingData ?? null,
     }),
   });
 
