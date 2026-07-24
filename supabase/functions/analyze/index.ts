@@ -14,6 +14,7 @@ import { US_STEP1_SYSTEM_PROMPT, US_STEP2_SALE_PROMPT, US_STEP2_RISK_MODULES_BLO
 import { AU_STEP1_SYSTEM_PROMPT, AU_STEP2_RENT_PROMPT, AU_STEP2_SALE_PROMPT } from "./prompts/au-prompts.ts";
 
 import {
+  isStructuredListingValid,
   readStructuredTransactionType,
   resolveEffectiveReportMode,
 } from "./reportMode.ts";
@@ -5599,6 +5600,133 @@ If a field is not listed above, then treat it as unknown and add it to data_gaps
 // the entire Deno.serve module.
 // =============================================================================
 
+// =============================================================================
+// Room-rental structured facts — deterministic safe-subset extractor
+// -----------------------------------------------------------------------------
+// Mirrors a small, validated subset of body.structuredListing into the persisted
+// full_result under `room_rental_facts` so the front-end US Rent adapter can
+// surface authoritative Rental Snapshot / Rent & True Cost fields without
+// depending on free-text LLM extraction. We do NOT copy or relax
+// `isStructuredListingValid`: we only read it from `./reportMode.ts`.
+//
+// Save gate (all three must be true):
+//   1. effectiveReportMode === 'rent'
+//   2. structuredListing.classification.objectKind === 'room'
+//   3. isStructuredListingValid(structuredListing) === true
+//
+// We do NOT save: raw structuredListing, listingData, image URLs,
+// promotionText, lease copy, or anything we re-derive from description.
+// =============================================================================
+
+interface RoomRentalFactsShape {
+  source: 'zillow_structured';
+  sourceVersion: string;
+  capturedAt: string | null;
+  hasPrivateBath: boolean;
+  advertisedEffectiveRent: number | null;
+  leaseTerm: string | null;
+  requiredMonthlyFees: number | null;
+  averageMonthlyTotal: number | null;
+  parkingSpaces: number | null;
+  parkingTenantAllocated: false;
+  moveInReady: boolean | null;
+  sqft: number | null;
+  bedrooms: number | null;
+  bathrooms: number | null;
+  utilitiesIncluded: string[] | null;
+  notes: string[];
+}
+
+function toFiniteNumberOrNull(value: unknown): number | null {
+  return typeof value === 'number' && Number.isFinite(value) ? value : null;
+}
+
+function toNonEmptyStringOrNull(value: unknown): string | null {
+  if (typeof value !== 'string') return null;
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : null;
+}
+
+function toBooleanOrNull(value: unknown): boolean | null {
+  return typeof value === 'boolean' ? value : null;
+}
+
+function toStringArrayOrNull(value: unknown): string[] | null {
+  if (!Array.isArray(value)) return null;
+  const strings = value.filter((x): x is string => typeof x === 'string' && x.trim().length > 0);
+  return strings.length > 0 ? strings : null;
+}
+
+/**
+ * Build the deterministic room-rental facts safe-subset for a structured
+ * US listing. Returns `null` when the gate conditions are not satisfied —
+ * callers must NOT persist anything in that case.
+ *
+ * IMPORTANT: parking allocation is always fixed to `false` because the plugin
+ * does not advertise per-tenant assignment; the structured payload exposes a
+ * property-level space count only. Tenants should ask the landlord.
+ */
+function buildRoomRentalFacts(
+  body: Record<string, unknown>,
+  effectiveReportMode: 'sale' | 'rent' | 'unknown',
+): RoomRentalFactsShape | null {
+  if (effectiveReportMode !== 'rent') return null;
+
+  const listingData = body.listingData as Record<string, unknown> | undefined;
+  const rawStructured =
+    (body.structuredListing as Record<string, unknown> | undefined) ??
+    (listingData?.structuredListing as Record<string, unknown> | undefined);
+  if (!isStructuredListingValid(rawStructured)) return null;
+
+  const sl = rawStructured as Record<string, unknown>;
+  const classification = sl.classification as Record<string, unknown> | undefined;
+  if (classification?.objectKind !== 'room') return null;
+
+  const pricing = (sl.pricing ?? {}) as Record<string, unknown>;
+  const layout = (sl.layout ?? {}) as Record<string, unknown>;
+  const rr = (sl.roomRental ?? {}) as Record<string, unknown>;
+
+  const advertisedEffectiveRent =
+    toFiniteNumberOrNull(pricing.baseRent) ??
+    toFiniteNumberOrNull(pricing.displayedPrice);
+  const requiredMonthlyFees = toFiniteNumberOrNull(rr.requiredMonthlyFees);
+  let averageMonthlyTotal = toFiniteNumberOrNull(rr.averageMonthlyTotal);
+  if (
+    averageMonthlyTotal === null &&
+    advertisedEffectiveRent !== null &&
+    requiredMonthlyFees !== null
+  ) {
+    averageMonthlyTotal = advertisedEffectiveRent + requiredMonthlyFees;
+  }
+
+  const notes: string[] = [];
+  if (advertisedEffectiveRent === null) {
+    notes.push('Advertised rent not present in structured listing.');
+  }
+  if (requiredMonthlyFees === null) {
+    notes.push('Required monthly fees not present in structured listing; fees may apply.');
+  }
+
+  return {
+    source: 'zillow_structured',
+    sourceVersion: toNonEmptyStringOrNull(sl.sourceVersion) ?? 'unknown',
+    capturedAt: toNonEmptyStringOrNull(sl.capturedAt),
+    hasPrivateBath: toBooleanOrNull(rr.hasPrivateBath) ?? false,
+    advertisedEffectiveRent,
+    leaseTerm: toNonEmptyStringOrNull(rr.leaseTerm),
+    requiredMonthlyFees,
+    averageMonthlyTotal,
+    parkingSpaces: toFiniteNumberOrNull(rr.parkingSpaces),
+    parkingTenantAllocated: false,
+    moveInReady: toBooleanOrNull(rr.moveInReady),
+    sqft: toFiniteNumberOrNull(layout.sqft),
+    bedrooms: toFiniteNumberOrNull(layout.bedrooms),
+    bathrooms: toFiniteNumberOrNull(layout.bathrooms),
+    utilitiesIncluded: toStringArrayOrNull(rr.utilitiesIncluded),
+    notes,
+  };
+}
+
 // ========== Main Handler ==========
 
 Deno.serve(async (req) => {
@@ -9391,6 +9519,11 @@ ${optionalDetails.askingPrice ? `Asking Price: ${optionalDetails.askingPrice}\n`
         progress: 90,
       });
 
+      const roomRentalFacts = buildRoomRentalFacts(
+        body as Record<string, unknown>,
+        effectiveReportMode,
+      );
+
       const fullResultWithType = {
         ...(result as Record<string, unknown>),
         // Triple-mirror the score so any reader sees the same value
@@ -9399,6 +9532,7 @@ ${optionalDetails.askingPrice ? `Asking Price: ${optionalDetails.askingPrice}\n`
         overallScore: (result as any).overallScore ?? overallScoreNum,
         evidenceLevel: (result as any).evidenceLevel ?? evidenceLevelStr,
         analysisType: 'full',
+        ...(roomRentalFacts ? { room_rental_facts: roomRentalFacts } : {}),
       };
 
       // ── FIX: write analyses.full_result BEFORE marking analysis_states
