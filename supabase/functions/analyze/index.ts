@@ -13,6 +13,11 @@ import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { US_STEP1_SYSTEM_PROMPT, US_STEP2_SALE_PROMPT, US_STEP2_RISK_MODULES_BLOCK, US_STEP2_RENT_PROMPT, STEP1_RENT_SYSTEM_PROMPT } from "./prompts/us-prompts.ts";
 import { AU_STEP1_SYSTEM_PROMPT, AU_STEP2_RENT_PROMPT, AU_STEP2_SALE_PROMPT } from "./prompts/au-prompts.ts";
 
+import {
+  readStructuredTransactionType,
+  resolveEffectiveReportMode,
+} from "./reportMode.ts";
+
 const STEP1_SYSTEM_PROMPT = AU_STEP1_SYSTEM_PROMPT;
 const STEP1_US_SYSTEM_PROMPT = US_STEP1_SYSTEM_PROMPT;
 const STEP1_US_RENT_SYSTEM_PROMPT = STEP1_RENT_SYSTEM_PROMPT;
@@ -7126,7 +7131,7 @@ ${optionalDetails.askingPrice ? `Asking Price: ${optionalDetails.askingPrice}\n`
     {
       const effectiveRunMode = resolveEffectiveReportMode(
         body as Record<string, unknown>,
-        (optionalDetails as Record<string, unknown>) ?? {},
+        (body.optionalDetails ?? {}) as Record<string, unknown>,
       );
       if (effectiveRunMode === 'unknown') {
         console.error('[run] REPORT_MODE_REQUIRED — refusing to invoke LLM');
