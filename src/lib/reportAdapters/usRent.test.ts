@@ -432,39 +432,44 @@ describe('normalizeUSRentReport — buyer-flavored phrase suppression', () => {
   });
 
   // ── Room rental deterministic facts override ─────────────────────────────
-  // The backend writes `room_rental_facts` only when effectiveReportMode==='rent'
-  // AND structuredListing.classification.objectKind==='room' AND
-  // isStructuredListingValid() (from ./reportMode.ts) accepts the payload.
+  // The backend persists `room_rental_facts` only when
+  // effectiveReportMode==='rent' AND structuredListing.classification.objectKind==='room'
+  // AND isStructuredListingValid() (from ./reportMode.ts) accepts the payload.
   // When the adapter sees that object it must surface the deterministic fields
-  // and replace AI free-text in rental-snapshot / rent-true-cost.
+  // and replace AI free-text in rental-snapshot / rent-true-cost and Quick Facts.
+  //
+  // The fixture below mirrors the real schema:
+  //   structuredListing.pricing.displayedPrice / baseRent
+  //   structuredListing.roomRental.{requiredMonthlyFees, totalMonthlyCost,
+  //     listPriceIncludesRequiredMonthlyFees, housemateCount, hasPrivateBath,
+  //     roomIsFurnished, allowedPets, atAGlanceFacts, parkingCapacity, parkingFeatures}
+  // The adapter must NOT read or surface the obsolete fields
+  //   averageMonthlyTotal / parkingSpaces / moveInReady / utilitiesIncluded.
   function baseRoomRentalFacts() {
     return {
-      source: 'zillow_structured' as const,
-      sourceVersion: 'zillow_structured_v1',
-      capturedAt: '2026-07-22T15:24:49.784Z',
-      hasPrivateBath: false,
-      advertisedEffectiveRent: 415,
-      leaseTerm: 'Contact For Details',
-      requiredMonthlyFees: 250,
-      averageMonthlyTotal: 665,
-      parkingSpaces: 6,
-      parkingTenantAllocated: false,
-      moveInReady: true,
-      sqft: null,
-      bedrooms: 1,
-      bathrooms: 1,
-      utilitiesIncluded: null,
-      notes: [],
+      object_kind: 'room' as const,
+      advertised_effective_rent: 415,
+      required_monthly_fees: 250,
+      average_monthly_total: 665,
+      fees_included_in_advertised_price: false,
+      housemate_count: 4,
+      has_private_bath: false,
+      furnished: false,
+      pet_policy: 'No Pets',
+      available_date: 'Available Now',
+      lease_term: 'Contact For Details',
+      parking_capacity_property_level: 6,
+      parking_features: ['Attached', 'Garage', 'Other'],
+      parking_allocation_confirmed: false,
     };
   }
 
   function baseRoomRentResult(): Record<string, unknown> {
     return {
       ...baseRentResult(),
-      // The backend writes room_rental_facts alongside the AI Step-2 result.
       room_rental_facts: baseRoomRentalFacts(),
-      // Intentional AI noise: must NOT surface in Rental Snapshot / True Cost
-      // when deterministic facts are present.
+      // Intentional AI noise — must NOT surface in Room Quick Facts / Snapshot
+      // / True Cost when deterministic facts are present.
       rental_snapshot: {
         monthly_rent: '$2,670',
         security_deposit: 'Not Disclosed / Cannot Verify',
@@ -490,174 +495,286 @@ describe('normalizeUSRentReport — buyer-flavored phrase suppression', () => {
     };
   }
 
-  it('room_rental_facts: Rental Snapshot surfaces Advertised Effective Rent and parking copy', () => {
+  function findQuickFacts(report: any): any[] {
+    return Array.isArray(report?.quickFacts) ? report.quickFacts : [];
+  }
+
+  // A. fees_included_in_advertised_price=false → "additional to"
+  it('A. false fee inclusion: true-cost must say "additional to", not "included in"', () => {
+    const normalized = normalizeUSRentReport(baseRoomRentResult());
+    const tc = findSection(normalized.sections, 'rent-true-cost');
+    const text = sectionText(tc!);
+    expect(text).toMatch(/Required Monthly Fees/i);
+    expect(text).toMatch(/\$250\/mo/);
+    expect(text).toMatch(/additional to the advertised effective rent/i);
+    expect(text).not.toMatch(/included in the advertised effective rent/i);
+  });
+
+  // B. fees_included_in_advertised_price=true → "included in"
+  it('B. true fee inclusion: true-cost says "included in"', () => {
+    const result = baseRoomRentResult();
+    (result.room_rental_facts as any).fees_included_in_advertised_price = true;
+    const normalized = normalizeUSRentReport(result);
+    const tc = findSection(normalized.sections, 'rent-true-cost');
+    const text = sectionText(tc!);
+    expect(text).toMatch(/\$250\/mo/);
+    expect(text).toMatch(/included in the advertised effective rent/i);
+    expect(text).not.toMatch(/additional to the advertised effective rent/i);
+  });
+
+  // C. fees_included_in_advertised_price=null → "inclusion not confirmed"
+  it('C. null fee inclusion: true-cost says "inclusion not confirmed"', () => {
+    const result = baseRoomRentResult();
+    (result.room_rental_facts as any).fees_included_in_advertised_price = null;
+    const normalized = normalizeUSRentReport(result);
+    const tc = findSection(normalized.sections, 'rent-true-cost');
+    const text = sectionText(tc!);
+    expect(text).toMatch(/\$250\/mo/);
+    expect(text).toMatch(/whether this is included is not confirmed/i);
+    expect(text).not.toMatch(/additional to the advertised effective rent/i);
+    expect(text).not.toMatch(/included in the advertised effective rent/i);
+  });
+
+  // D. parkingCapacity=6
+  it('D. parkingCapacity=6: snapshot shows property-level + allocation not confirmed', () => {
     const normalized = normalizeUSRentReport(baseRoomRentResult());
     const snap = findSection(normalized.sections, 'rental-snapshot');
-    expect(snap).toBeDefined();
     const text = sectionText(snap!);
-    expect(text).toMatch(/Advertised Effective Rent/i);
-    expect(text).toMatch(/\$415\/mo/);
+    expect(text).toMatch(/Parking/i);
     expect(text).toMatch(/6 property-level spaces advertised/i);
     expect(text).toMatch(/tenant allocation not confirmed/i);
-    // AI free-text must NOT win over the deterministic facts.
-    expect(text).not.toMatch(/Garage included/);
-    expect(text).not.toMatch(/$2,670/);
-    expect(text).not.toMatch(/Staten Island Towers/);
-    expect(text).not.toMatch(/Apartment/);
+    // Parking must NOT leak into rent-true-cost.
+    const tc = findSection(normalized.sections, 'rent-true-cost');
+    expect(sectionText(tc!)).not.toMatch(/property-level spaces advertised/);
   });
 
-  it('room_rental_facts: Rent & True Cost surfaces deterministic rent, fees, average total', () => {
+  // E. housemateCount=4, furnished=false, hasPrivateBath=false
+  it('E. housemateCount=4, furnished=false, hasPrivateBath=false: all rendered correctly', () => {
+    const normalized = normalizeUSRentReport(baseRoomRentResult());
+    const snap = findSection(normalized.sections, 'rental-snapshot');
+    const text = sectionText(snap!);
+    expect(text).toMatch(/Housemates/);
+    expect(text).toMatch(/Housemates\s*\|\s*4\b/);
+    expect(text).toMatch(/Furnished\s*\|\s*No\b/);
+    expect(text).toMatch(/Private Bathroom/);
+    expect(text).toMatch(/No — sharing arrangement not confirmed/i);
+  });
+
+  // F. has_private_bath missing → "Not confirmed", NOT "No"
+  it('F. has_private_bath missing: shows "Not confirmed", never "No"', () => {
+    const result = baseRoomRentResult();
+    (result.room_rental_facts as any).has_private_bath = null;
+    const normalized = normalizeUSRentReport(result);
+    const snap = findSection(normalized.sections, 'rental-snapshot');
+    const text = sectionText(snap!);
+    expect(text).toMatch(/Private Bathroom/);
+    expect(text).toMatch(/Not confirmed/);
+    expect(text).not.toMatch(/No — sharing arrangement not confirmed/);
+    // Quick Facts path also.
+    const qfs = findQuickFacts(normalized);
+    const bathFact = qfs.find((f) => f.label === 'Private Bathroom');
+    expect(bathFact?.value).toBe('Not confirmed');
+  });
+
+  // Same null-preservation for furnished.
+  it('F. furnished missing: shows "Not confirmed", never "No"', () => {
+    const result = baseRoomRentResult();
+    (result.room_rental_facts as any).furnished = null;
+    const normalized = normalizeUSRentReport(result);
+    const qfs = findQuickFacts(normalized);
+    const fact = qfs.find((f) => f.label === 'Furnished');
+    expect(fact?.value).toBe('Not confirmed');
+    const snap = findSection(normalized.sections, 'rental-snapshot');
+    expect(sectionText(snap!)).toMatch(/Furnished\s*\|\s*Not confirmed/);
+  });
+
+  // G. Room Quick Facts must NOT mix AI snapshot fields.
+  it('G. room Quick Facts: never reads AI Apartment/Cats allowed/12 months/Sqft', () => {
+    const normalized = normalizeUSRentReport(baseRoomRentResult());
+    const qfs = findQuickFacts(normalized);
+    const labels = qfs.map((f) => f.label);
+    // Required room Quick Facts.
+    expect(labels).toContain('Listing Type');
+    expect(labels).toContain('Advertised Effective Rent');
+    expect(labels).toContain('Housemates');
+    expect(labels).toContain('Private Bathroom');
+    expect(labels).toContain('Furnished');
+    expect(labels).toContain('Pet Policy');
+    expect(labels).toContain('Available');
+    expect(labels).toContain('Lease Term');
+    expect(labels).toContain('Parking');
+    // Forbidden labels — adapter must not import from AI snapshot.
+    expect(labels).not.toContain('Security Deposit');
+    expect(labels).not.toContain('Beds');
+    expect(labels).not.toContain('Baths');
+    expect(labels).not.toContain('Sqft');
+    expect(labels).not.toContain('Property Type');
+    expect(labels).not.toContain('Heating/Cooling');
+    expect(labels).not.toContain('Laundry');
+    expect(labels).not.toContain('Utilities Included');
+    expect(labels).not.toContain('Monthly Rent');
+    // Forbidden values from the AI rental_snapshot fixture.
+    const blob = JSON.stringify(qfs);
+    expect(blob).not.toMatch(/Apartment/);
+    expect(blob).not.toMatch(/Cats allowed/);
+    expect(blob).not.toMatch(/12 months/);
+    expect(blob).not.toMatch(/1,200/);
+    expect(blob).not.toMatch(/2,670/);
+    expect(blob).not.toMatch(/Garage included/);
+  });
+
+  // H. totalMonthlyCost=665 is used directly.
+  it('H. totalMonthlyCost=665: preferred over computed rent+fees', () => {
     const normalized = normalizeUSRentReport(baseRoomRentResult());
     const tc = findSection(normalized.sections, 'rent-true-cost');
-    expect(tc).toBeDefined();
     const text = sectionText(tc!);
-    expect(text).toMatch(/Advertised Effective Rent/i);
-    expect(text).toMatch(/\$415\/mo/);
-    expect(text).toMatch(/Required Monthly Fees/i);
-    expect(text).toMatch(/\$250\/mo/);
     expect(text).toMatch(/Average Monthly Total/i);
     expect(text).toMatch(/\$665\/mo/);
-    expect(text).toMatch(/6 property-level spaces advertised/i);
-    // AI free-text must NOT override.
-    expect(text).not.toMatch(/Overpriced/);
-    expect(text).not.toMatch(/Market says \$1,800/);
-    expect(text).not.toMatch(/Trash/);
+    expect(text).toMatch(/average of advertised rent \+ required fees/i);
   });
 
-  it('room_rental_facts: hasPrivateBath=false renders as "No" (preserves false semantics)', () => {
+  // I. totalMonthlyCost missing → only compute when both rent and fees are finite.
+  // Adapter is NOT responsible for math; it only reads average_monthly_total
+  // verbatim. The "compute on the fly" rule lives in the backend.
+  // Here we verify the adapter omits the row when total is null.
+  it('I. average_monthly_total=null in payload: adapter omits Average Monthly Total row', () => {
     const result = baseRoomRentResult();
-    (result.room_rental_facts as any).hasPrivateBath = false;
-    const normalized = normalizeUSRentReport(result);
-    const snap = findSection(normalized.sections, 'rental-snapshot');
-    const text = sectionText(snap!);
-    expect(text).toMatch(/Private Bath/);
-    expect(text).toMatch(/\bNo\b/);
-  });
-
-  it('room_rental_facts: hasPrivateBath=true renders as "Yes"', () => {
-    const result = baseRoomRentResult();
-    (result.room_rental_facts as any).hasPrivateBath = true;
-    const normalized = normalizeUSRentReport(result);
-    const snap = findSection(normalized.sections, 'rental-snapshot');
-    const text = sectionText(snap!);
-    expect(text).toMatch(/Private Bath/);
-    expect(text).toMatch(/\bYes\b/);
-  });
-
-  it('room_rental_facts: missing parkingSpaces renders "Not confirmed"', () => {
-    const result = baseRoomRentResult();
-    (result.room_rental_facts as any).parkingSpaces = null;
-    const normalized = normalizeUSRentReport(result);
-    const text = sectionText(findSection(normalized.sections, 'rental-snapshot')!);
-    expect(text).toMatch(/Parking/i);
-    expect(text).toMatch(/Not confirmed/);
-    expect(text).not.toMatch(/property-level spaces advertised/);
-  });
-
-  it('non-room apartment (no room_rental_facts): Rental Snapshot uses AI snapshot as before', () => {
-    // Regression: apartment rentals must continue using the AI rental_snapshot.
-    const result = baseRentResult();
-    const normalized = normalizeUSRentReport(result);
-    const snap = findSection(normalized.sections, 'rental-snapshot');
-    expect(snap).toBeDefined();
-    const text = sectionText(snap!);
-    expect(text).toMatch(/Monthly Rent/i);
-    expect(text).toMatch(/\$2,670/);
-    expect(text).not.toMatch(/Advertised Effective Rent/);
-  });
-
-  it('non-room apartment (no room_rental_facts): Rent & True Cost uses AI fairness/recurring', () => {
-    const result = baseRentResult();
+    (result.room_rental_facts as any).average_monthly_total = null;
     const normalized = normalizeUSRentReport(result);
     const tc = findSection(normalized.sections, 'rent-true-cost');
-    expect(tc).toBeDefined();
-    const text = sectionText(tc!);
-    expect(text).toMatch(/Asking Rent/i);
-    expect(text).toMatch(/\$2,670/);
-    expect(text).not.toMatch(/Advertised Effective Rent/);
-    expect(text).not.toMatch(/Required Monthly Fees/);
-    expect(text).not.toMatch(/Average Monthly Total/);
-  });
-
-  it('room_rental_facts: missing requiredMonthlyFees renders "Not confirmed — fees may apply on top"', () => {
-    const result = baseRoomRentResult();
-    (result.room_rental_facts as any).requiredMonthlyFees = null;
-    const normalized = normalizeUSRentReport(result);
-    const tc = findSection(normalized.sections, 'rent-true-cost');
-    const text = sectionText(tc!);
-    expect(text).toMatch(/Required Monthly Fees/i);
-    expect(text).toMatch(/Not confirmed/);
-    expect(text).toMatch(/fees may apply/i);
-  });
-
-  it('room_rental_facts: missing advertisedEffectiveRent renders "Not confirmed" (no guess)', () => {
-    const result = baseRoomRentResult();
-    const facts = (result.room_rental_facts as any);
-    facts.advertisedEffectiveRent = null;
-    // Clear the precomputed total so we can verify the adapter does NOT
-    // re-derive it from rent+fees when rent is missing.
-    facts.averageMonthlyTotal = null;
-    const normalized = normalizeUSRentReport(result);
-    const snap = findSection(normalized.sections, 'rental-snapshot');
-    const tc = findSection(normalized.sections, 'rent-true-cost');
-    expect(sectionText(snap!)).toMatch(/Not confirmed/);
-    expect(sectionText(tc!)).toMatch(/Not confirmed/);
-    // Average total must NOT be inferred from rent+fees when rent is null.
     expect(sectionText(tc!)).not.toMatch(/Average Monthly Total/i);
   });
 
-  it('room_rental_facts: utilitiesIncluded=null renders "Not confirmed — utilities may be billed separately"', () => {
+  it('I. average_monthly_total=665 in payload: adapter renders Average Monthly Total = $665', () => {
     const result = baseRoomRentResult();
-    (result.room_rental_facts as any).utilitiesIncluded = null;
+    (result.room_rental_facts as any).average_monthly_total = 665;
     const normalized = normalizeUSRentReport(result);
     const tc = findSection(normalized.sections, 'rent-true-cost');
     const text = sectionText(tc!);
-    expect(text).toMatch(/Utilities Included/i);
-    expect(text).toMatch(/Not confirmed/);
-    expect(text).toMatch(/utilities may be billed separately/i);
+    expect(text).toMatch(/Average Monthly Total/i);
+    expect(text).toMatch(/\$665\/mo/);
+    expect(text).toMatch(/average of advertised rent \+ required fees/i);
   });
 
-  it('room_rental_facts: ignores promotionText / description and does not derive regular paid-month rent', () => {
-    // Even when the surrounding result contains fields that could otherwise be
-    // used to derive a "regular paid-month rent" or total, the adapter must NOT
-    // consume them for room rentals. We seed temptation values and confirm
-    // neither the snapshot nor the true-cost sections mention them.
+  it('I. advertised_effective_rent missing: no Average Monthly Total row in adapter', () => {
+    const result = baseRoomRentResult();
+    const facts = (result.room_rental_facts as any);
+    facts.average_monthly_total = null;
+    facts.advertised_effective_rent = null;
+    const normalized = normalizeUSRentReport(result);
+    const tc = findSection(normalized.sections, 'rent-true-cost');
+    expect(sectionText(tc!)).not.toMatch(/Average Monthly Total/i);
+  });
+
+  it('I. required_monthly_fees missing: no Average Monthly Total row in adapter', () => {
+    const result = baseRoomRentResult();
+    const facts = (result.room_rental_facts as any);
+    facts.average_monthly_total = null;
+    facts.required_monthly_fees = null;
+    const normalized = normalizeUSRentReport(result);
+    const tc = findSection(normalized.sections, 'rent-true-cost');
+    expect(sectionText(tc!)).not.toMatch(/Average Monthly Total/i);
+  });
+
+  // J. non-room apartment regression.
+  it('J. non-room apartment: adapter uses AI rental_snapshot and rent_fairness, untouched', () => {
+    const result = baseRentResult();
+    const normalized = normalizeUSRentReport(result);
+    const snap = findSection(normalized.sections, 'rental-snapshot');
+    expect(snap).toBeDefined();
+    expect(sectionText(snap!)).toMatch(/Monthly Rent/i);
+    expect(sectionText(snap!)).toMatch(/\$2,670/);
+    expect(sectionText(snap!)).not.toMatch(/Listing Type\s*\|\s*Room Rental/);
+    expect(sectionText(snap!)).not.toMatch(/Advertised Effective Rent/);
+    const tc = findSection(normalized.sections, 'rent-true-cost');
+    expect(sectionText(tc!)).toMatch(/Asking Rent/i);
+    expect(sectionText(tc!)).not.toMatch(/Required Monthly Fees/);
+    expect(sectionText(tc!)).not.toMatch(/Average Monthly Total/);
+    expect(sectionText(tc!)).not.toMatch(/Regular Rent After Promotion/);
+    expect(sectionText(tc!)).not.toMatch(/Fee Treatment During Free Months/);
+    // Quick Facts for apartment still includes the AI fields.
+    const qfs = findQuickFacts(normalized);
+    expect(qfs.find((f) => f.label === 'Monthly Rent')).toBeDefined();
+    expect(qfs.find((f) => f.label === 'Listing Type')).toBeUndefined();
+  });
+
+  // K. promotionText still isolated.
+  it('K. promotionText: never reads or derives regular paid-month rent', () => {
     const result = {
       ...baseRoomRentResult(),
-      promotionText: '$332/mo for the first 3 months, then $665/mo regular',
+      promotionText: '$332/mo for the first 3 months, then $525/mo regular',
       description: 'Special promotion: first 3 months at $332',
       rent_fairness: {
         asking_rent: '$2,670',
         verdict: 'Overpriced',
+        explanation: 'Market says $1,800/mo for similar units.',
       },
     } as Record<string, unknown>;
     const normalized = normalizeUSRentReport(result);
     const tcText = sectionText(findSection(normalized.sections, 'rent-true-cost')!);
     const snapText = sectionText(findSection(normalized.sections, 'rental-snapshot')!);
-    // promotionText / description must not appear in either section.
+    const qfsBlob = JSON.stringify(findQuickFacts(normalized));
+    // Forbidden values from promotion / description / AI noise.
     expect(tcText).not.toMatch(/\$332/);
-    expect(tcText).not.toMatch(/promotion/i);
+    expect(tcText).not.toMatch(/\$525/);
+    // The seeded promotionText "first 3 months at $332" must not appear.
     expect(tcText).not.toMatch(/first 3 months/i);
+    expect(tcText).not.toMatch(/Special promotion/i);
     expect(tcText).not.toMatch(/\$2,670/);
     expect(tcText).not.toMatch(/Overpriced/);
+    expect(tcText).not.toMatch(/Market says/);
+    expect(snapText).not.toMatch(/\$332/);
+    expect(snapText).not.toMatch(/\$525/);
     expect(snapText).not.toMatch(/\$2,670/);
-    // Deterministic fields still anchor the section.
+    expect(qfsBlob).not.toMatch(/\$332/);
+    expect(qfsBlob).not.toMatch(/\$525/);
+    // Deterministic fields still anchor.
     expect(tcText).toMatch(/Advertised Effective Rent/i);
     expect(tcText).toMatch(/\$415\/mo/);
     expect(tcText).toMatch(/Average Monthly Total/i);
     expect(tcText).toMatch(/\$665\/mo/);
+    expect(tcText).toMatch(/Regular Rent After Promotion/i);
+    expect(tcText).toMatch(/Not captured in structured data/i);
+    expect(tcText).toMatch(/Fee Treatment During Free Months/i);
+    expect(tcText).toMatch(/Not confirmed/);
   });
 
-  it('room_rental_facts: parkingTenantAllocated is fixed to false in every emit (data shape contract)', () => {
+  // ── contract: obsolete keys are never read even if present in payload ──
+  it('contract: ignores obsolete averageMonthlyTotal / parkingSpaces / moveInReady / utilitiesIncluded', () => {
     const result = baseRoomRentResult();
-    // Even if a future payload mistakenly sets parkingTenantAllocated=true,
-    // the type & contract forbid it; the deterministic parking text must keep
-    // its neutral wording.
-    (result.room_rental_facts as any).parkingTenantAllocated = true;
+    // Plant legacy fields that must NOT be used.
+    (result.room_rental_facts as any).averageMonthlyTotal = 9999;
+    (result.room_rental_facts as any).parkingSpaces = 999;
+    (result.room_rental_facts as any).moveInReady = true;
+    (result.room_rental_facts as any).utilitiesIncluded = ['Water'];
     const normalized = normalizeUSRentReport(result);
-    const text = sectionText(findSection(normalized.sections, 'rental-snapshot')!);
-    expect(text).toMatch(/tenant allocation not confirmed/i);
-    expect(text).not.toMatch(/tenant allocated/i);
+    const tcText = sectionText(findSection(normalized.sections, 'rent-true-cost')!);
+    const snapText = sectionText(findSection(normalized.sections, 'rental-snapshot')!);
+    expect(tcText).not.toMatch(/\$9,999/);
+    expect(tcText).not.toMatch(/999 property-level spaces/);
+    expect(snapText).not.toMatch(/Move-In Ready/i);
+    expect(snapText).not.toMatch(/Water/);
+    // Genuine values still anchor.
+    expect(tcText).toMatch(/\$665\/mo/);
+    expect(snapText).toMatch(/6 property-level spaces advertised/);
+  });
+
+  // ── contract: parking not duplicated in rent-true-cost ────────────────────
+  it('contract: rent-true-cost for room rentals does not duplicate parking', () => {
+    const normalized = normalizeUSRentReport(baseRoomRentResult());
+    const tc = findSection(normalized.sections, 'rent-true-cost');
+    const titles = (tc!.items ?? []).map((i: any) => i.title);
+    expect(titles).not.toContain('Parking');
+  });
+
+  // ── contract: parking_allocation_confirmed is fixed to false ──────────────
+  it('contract: parking_allocation_confirmed is fixed to false in payload', () => {
+    const result = baseRoomRentResult();
+    (result.room_rental_facts as any).parking_allocation_confirmed = true;
+    const normalized = normalizeUSRentReport(result);
+    const snapText = sectionText(findSection(normalized.sections, 'rental-snapshot')!);
+    expect(snapText).toMatch(/tenant allocation not confirmed/i);
+    expect(snapText).not.toMatch(/tenant allocated/i);
   });
 });
 

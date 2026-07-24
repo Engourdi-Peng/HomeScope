@@ -18,28 +18,26 @@ type USRentResult = any;
 // ---- deterministic room-rental facts -------------------------------------------------
 
 interface RoomRentalFacts {
-  source: 'zillow_structured';
-  sourceVersion: string;
-  capturedAt: string | null;
-  hasPrivateBath: boolean;
-  advertisedEffectiveRent: number | null;
-  leaseTerm: string | null;
-  requiredMonthlyFees: number | null;
-  averageMonthlyTotal: number | null;
-  parkingSpaces: number | null;
-  parkingTenantAllocated: false;
-  moveInReady: boolean | null;
-  sqft: number | null;
-  bedrooms: number | null;
-  bathrooms: number | null;
-  utilitiesIncluded: string[] | null;
-  notes: string[];
+  object_kind: 'room';
+  advertised_effective_rent: number | null;
+  required_monthly_fees: number | null;
+  average_monthly_total: number | null;
+  fees_included_in_advertised_price: boolean | null;
+  housemate_count: number | null;
+  has_private_bath: boolean | null;
+  furnished: boolean | null;
+  pet_policy: string | null;
+  available_date: string | null;
+  lease_term: string | null;
+  parking_capacity_property_level: number | null;
+  parking_features: string[];
+  parking_allocation_confirmed: false;
 }
 
 function readRoomRentalFacts(result: USRentResult): RoomRentalFacts | null {
   const candidate = result?.room_rental_facts;
   if (!candidate || typeof candidate !== 'object') return null;
-  if (candidate.source !== 'zillow_structured') return null;
+  if (candidate.object_kind !== 'room') return null;
   return candidate as RoomRentalFacts;
 }
 
@@ -49,11 +47,17 @@ function formatMoney(n: number | null): string {
 }
 
 function buildParkingText(facts: RoomRentalFacts): string {
-  const n = facts.parkingSpaces;
+  const n = facts.parking_capacity_property_level;
   if (typeof n === 'number' && Number.isFinite(n)) {
     return `${n} property-level spaces advertised — tenant allocation not confirmed`;
   }
   return 'Not confirmed';
+}
+
+function buildTriStateBoolean(value: boolean | null): string | null {
+  if (value === true) return 'Yes';
+  if (value === false) return 'No';
+  return null;
 }
 
 // Renter fallback shown when every model-provided Bottom Line candidate was
@@ -147,26 +151,59 @@ function buildHero(result: USRentResult): HeroData {
   };
 }
 
-// ── quick facts (from rental_snapshot, with room_rental_facts override) ──
+// ── quick facts ──────────────────────────────────────────────────────────────────
+// When room_rental_facts is present: only emit deterministic fields. Do NOT
+// blend AI rental_snapshot fields (Security Deposit, Beds, Baths, Sqft,
+// Property Type, Pet Policy, Lease Term, Available, Parking) into room
+// Quick Facts because the structured extraction is authoritative and could
+// otherwise disagree with the AI free-text.
 
 function buildQuickFacts(result: USRentResult): QuickFact[] {
+  const roomFacts = readRoomRentalFacts(result);
+
+  if (roomFacts) {
+    const facts: QuickFact[] = [];
+    const add = (label: string, val: unknown) => {
+      const t = toText(val);
+      if (t) facts.push({ label, value: t });
+    };
+
+    add('Listing Type', 'Room Rental');
+    const rentText = roomFacts.advertised_effective_rent != null
+      ? `${formatMoney(roomFacts.advertised_effective_rent)}/mo`
+      : 'Not confirmed';
+    add('Advertised Effective Rent', rentText);
+    if (typeof roomFacts.housemate_count === 'number' && Number.isFinite(roomFacts.housemate_count)) {
+      add('Housemates', String(roomFacts.housemate_count));
+    } else {
+      add('Housemates', 'Not confirmed');
+    }
+    const privateBath = buildTriStateBoolean(roomFacts.has_private_bath);
+    if (privateBath !== null) {
+      add('Private Bathroom', privateBath);
+    } else {
+      add('Private Bathroom', 'Not confirmed');
+    }
+    const furnishedText = buildTriStateBoolean(roomFacts.furnished);
+    if (furnishedText !== null) {
+      add('Furnished', furnishedText);
+    } else {
+      add('Furnished', 'Not confirmed');
+    }
+    add('Pet Policy', roomFacts.pet_policy ?? 'Not confirmed');
+    add('Available', roomFacts.available_date ?? 'Not confirmed');
+    add('Lease Term', roomFacts.lease_term ?? 'Not confirmed');
+    add('Parking', buildParkingText(roomFacts));
+    return facts;
+  }
+
   const snap = result.rental_snapshot ?? {};
   const facts: QuickFact[] = [];
   const add = (label: string, val: unknown) => {
     const t = toText(val);
     if (t) facts.push({ label, value: t });
   };
-
-  const roomFacts = readRoomRentalFacts(result);
-  if (roomFacts) {
-    // For room rentals the monthly rent label must read "Advertised Effective Rent".
-    const rentText = roomFacts.advertisedEffectiveRent != null
-      ? `${formatMoney(roomFacts.advertisedEffectiveRent)}/mo`
-      : 'Not confirmed';
-    add('Advertised Effective Rent', rentText);
-  } else {
-    add('Monthly Rent', snap.monthly_rent);
-  }
+  add('Monthly Rent', snap.monthly_rent);
   add('Security Deposit', snap.security_deposit);
   add('Lease Term', snap.lease_term);
   add('Available', snap.available_date);
@@ -176,13 +213,10 @@ function buildQuickFacts(result: USRentResult): QuickFact[] {
   add('Property Type', snap.property_type);
   add('Heating/Cooling', snap.heating_cooling);
   add('Laundry', snap.laundry);
-  if (!roomFacts) add('Parking', snap.parking);
+  add('Parking', snap.parking);
   add('Pet Policy', snap.pet_policy);
   const incl = Array.isArray(snap.included_utilities) ? snap.included_utilities.filter((x: unknown): x is string => typeof x === 'string').join(', ') : '';
   if (incl) facts.push({ label: 'Utilities Included', value: incl });
-  if (roomFacts) {
-    add('Parking', buildParkingText(roomFacts));
-  }
   return facts;
 }
 
@@ -411,21 +445,38 @@ function buildSections(result: USRentResult): ReportSection[] {
   };
   const roomFacts = readRoomRentalFacts(result);
   if (roomFacts) {
-    // Room rental path: monthly rent label reads "Advertised Effective Rent".
-    if (roomFacts.advertisedEffectiveRent != null) {
-      snapField('Advertised Effective Rent', `${formatMoney(roomFacts.advertisedEffectiveRent)}/mo`);
+    snapItems.push({ title: 'Listing Type', value: 'Room Rental' });
+    if (roomFacts.advertised_effective_rent != null) {
+      snapItems.push({
+        title: 'Advertised Effective Rent',
+        value: `${formatMoney(roomFacts.advertised_effective_rent)}/mo`,
+      });
     } else {
-      snapField('Advertised Effective Rent', 'Not confirmed');
+      snapItems.push({ title: 'Advertised Effective Rent', value: 'Not confirmed' });
     }
-    if (roomFacts.leaseTerm) snapField('Lease Term', roomFacts.leaseTerm);
-    snapField('Parking', buildParkingText(roomFacts));
-    snapField('Private Bath', roomFacts.hasPrivateBath ? 'Yes' : 'No');
-    if (typeof roomFacts.moveInReady === 'boolean') {
-      snapField('Move-In Ready', roomFacts.moveInReady ? 'Yes' : 'No');
+    if (typeof roomFacts.housemate_count === 'number' && Number.isFinite(roomFacts.housemate_count)) {
+      snapItems.push({ title: 'Housemates', value: String(roomFacts.housemate_count) });
+    } else {
+      snapItems.push({ title: 'Housemates', value: 'Not confirmed' });
     }
-    if (roomFacts.utilitiesIncluded && roomFacts.utilitiesIncluded.length > 0) {
-      snapField('Utilities Included', roomFacts.utilitiesIncluded.join(', '));
+    const privateBath = buildTriStateBoolean(roomFacts.has_private_bath);
+    if (privateBath === 'Yes') {
+      snapItems.push({ title: 'Private Bathroom', value: 'Yes' });
+    } else if (privateBath === 'No') {
+      snapItems.push({ title: 'Private Bathroom', value: 'No — sharing arrangement not confirmed' });
+    } else {
+      snapItems.push({ title: 'Private Bathroom', value: 'Not confirmed' });
     }
+    const furnishedText = buildTriStateBoolean(roomFacts.furnished);
+    if (furnishedText !== null) {
+      snapItems.push({ title: 'Furnished', value: furnishedText });
+    } else {
+      snapItems.push({ title: 'Furnished', value: 'Not confirmed' });
+    }
+    snapItems.push({ title: 'Pet Policy', value: roomFacts.pet_policy ?? 'Not confirmed' });
+    snapItems.push({ title: 'Available', value: roomFacts.available_date ?? 'Not confirmed' });
+    snapItems.push({ title: 'Lease Term', value: roomFacts.lease_term ?? 'Not confirmed' });
+    snapItems.push({ title: 'Parking', value: buildParkingText(roomFacts) });
   } else {
     snapField('Monthly Rent', snap.monthly_rent);
     snapField('Security Deposit', snap.security_deposit);
@@ -509,7 +560,7 @@ function buildSections(result: USRentResult): ReportSection[] {
     sections.push({ id: 'availability-check', title: 'Availability Check', subtitle: 'Live status from the listing only', items: avItems });
   }
 
-  // 7. rent-true-cost (rent_fairness + recurring_monthly_costs; room_rental_facts override)
+  // 7. rent-true-cost (room_rental_facts override when present)
   const fair = result.rent_fairness ?? {};
   const recur = result.recurring_monthly_costs ?? {};
   const trueCostItems: SectionItem[] = [];
@@ -517,31 +568,50 @@ function buildSections(result: USRentResult): ReportSection[] {
   if (roomFactsTC) {
     // Authoritative room-rental True Cost. We never derive regular paid-month
     // rent here — that requires promotionText / description re-extraction, which
-    // is out of scope.
-    const rentText = roomFactsTC.advertisedEffectiveRent != null
-      ? `${formatMoney(roomFactsTC.advertisedEffectiveRent)}/mo`
+    // is out of scope. Parking is intentionally omitted; it is rendered in
+    // Rental Snapshot / Quick Facts only.
+    const rentText = roomFactsTC.advertised_effective_rent != null
+      ? `${formatMoney(roomFactsTC.advertised_effective_rent)}/mo`
       : 'Not confirmed';
     trueCostItems.push({ title: 'Advertised Effective Rent', value: rentText });
-    const feesText = roomFactsTC.requiredMonthlyFees != null
-      ? `${formatMoney(roomFactsTC.requiredMonthlyFees)}/mo (included in advertised rent)`
-      : 'Not confirmed — fees may apply on top of advertised rent';
-    trueCostItems.push({ title: 'Required Monthly Fees', value: feesText });
-    const totalText = roomFactsTC.averageMonthlyTotal != null
-      ? `${formatMoney(roomFactsTC.averageMonthlyTotal)}/mo (average of advertised rent + required fees)`
+
+    if (roomFactsTC.required_monthly_fees != null) {
+      const inclusion = roomFactsTC.fees_included_in_advertised_price;
+      let feeSuffix: string;
+      if (inclusion === false) {
+        feeSuffix = ' — additional to the advertised effective rent';
+      } else if (inclusion === true) {
+        feeSuffix = ' — included in the advertised effective rent';
+      } else {
+        feeSuffix = ' — whether this is included is not confirmed';
+      }
+      trueCostItems.push({
+        title: 'Required Monthly Fees',
+        value: `${formatMoney(roomFactsTC.required_monthly_fees)}/mo${feeSuffix}`,
+      });
+    } else {
+      trueCostItems.push({
+        title: 'Required Monthly Fees',
+        value: 'Not confirmed — fees may apply on top of advertised rent',
+      });
+    }
+
+    const totalText = roomFactsTC.average_monthly_total != null
+      ? `${formatMoney(roomFactsTC.average_monthly_total)}/mo (average of advertised rent + required fees)`
       : null;
     if (totalText !== null) {
       trueCostItems.push({ title: 'Average Monthly Total', value: totalText });
     }
-    const parkingText = buildParkingText(roomFactsTC);
-    trueCostItems.push({ title: 'Parking', value: parkingText });
-    if (roomFactsTC.utilitiesIncluded && roomFactsTC.utilitiesIncluded.length > 0) {
-      trueCostItems.push({ title: 'Utilities Included', value: roomFactsTC.utilitiesIncluded.join(', ') });
-    } else {
-      trueCostItems.push({ title: 'Utilities Included', value: 'Not confirmed — utilities may be billed separately' });
-    }
-    if (roomFactsTC.notes && roomFactsTC.notes.length > 0) {
-      trueCostItems.push({ title: 'Notes', description: roomFactsTC.notes.join(' · ') });
-    }
+
+    trueCostItems.push({ title: 'Utilities', value: 'Not confirmed' });
+    trueCostItems.push({
+      title: 'Regular Rent After Promotion',
+      value: 'Not captured in structured data',
+    });
+    trueCostItems.push({
+      title: 'Fee Treatment During Free Months',
+      value: 'Not confirmed',
+    });
   } else {
     if (fair.asking_rent) trueCostItems.push({ title: 'Asking Rent', value: toText(fair.asking_rent) });
     if (fair.rent_zestimate) trueCostItems.push({ title: 'Rent Zestimate', value: toText(fair.rent_zestimate) });

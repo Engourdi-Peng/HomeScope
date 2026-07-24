@@ -5619,22 +5619,20 @@ If a field is not listed above, then treat it as unknown and add it to data_gaps
 // =============================================================================
 
 interface RoomRentalFactsShape {
-  source: 'zillow_structured';
-  sourceVersion: string;
-  capturedAt: string | null;
-  hasPrivateBath: boolean;
-  advertisedEffectiveRent: number | null;
-  leaseTerm: string | null;
-  requiredMonthlyFees: number | null;
-  averageMonthlyTotal: number | null;
-  parkingSpaces: number | null;
-  parkingTenantAllocated: false;
-  moveInReady: boolean | null;
-  sqft: number | null;
-  bedrooms: number | null;
-  bathrooms: number | null;
-  utilitiesIncluded: string[] | null;
-  notes: string[];
+  object_kind: 'room';
+  advertised_effective_rent: number | null;
+  required_monthly_fees: number | null;
+  average_monthly_total: number | null;
+  fees_included_in_advertised_price: boolean | null;
+  housemate_count: number | null;
+  has_private_bath: boolean | null;
+  furnished: boolean | null;
+  pet_policy: string | null;
+  available_date: string | null;
+  lease_term: string | null;
+  parking_capacity_property_level: number | null;
+  parking_features: string[];
+  parking_allocation_confirmed: false;
 }
 
 function toFiniteNumberOrNull(value: unknown): number | null {
@@ -5651,10 +5649,16 @@ function toBooleanOrNull(value: unknown): boolean | null {
   return typeof value === 'boolean' ? value : null;
 }
 
-function toStringArrayOrNull(value: unknown): string[] | null {
-  if (!Array.isArray(value)) return null;
-  const strings = value.filter((x): x is string => typeof x === 'string' && x.trim().length > 0);
-  return strings.length > 0 ? strings : null;
+function toStringArray(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return value.filter((x): x is string => typeof x === 'string' && x.trim().length > 0);
+}
+
+function readAtAGlanceFact(roomRental: Record<string, unknown>, key: string): string | null {
+  const facts = roomRental.atAGlanceFacts;
+  if (!facts || typeof facts !== 'object') return null;
+  const v = (facts as Record<string, unknown>)[key];
+  return toNonEmptyStringOrNull(v);
 }
 
 /**
@@ -5662,9 +5666,9 @@ function toStringArrayOrNull(value: unknown): string[] | null {
  * US listing. Returns `null` when the gate conditions are not satisfied —
  * callers must NOT persist anything in that case.
  *
- * IMPORTANT: parking allocation is always fixed to `false` because the plugin
- * does not advertise per-tenant assignment; the structured payload exposes a
- * property-level space count only. Tenants should ask the landlord.
+ * IMPORTANT: parking_allocation_confirmed is always fixed to `false` because
+ * the plugin does not advertise per-tenant assignment. parkingCapacity is
+ * property-level only.
  */
 function buildRoomRentalFacts(
   body: Record<string, unknown>,
@@ -5683,47 +5687,55 @@ function buildRoomRentalFacts(
   if (classification?.objectKind !== 'room') return null;
 
   const pricing = (sl.pricing ?? {}) as Record<string, unknown>;
-  const layout = (sl.layout ?? {}) as Record<string, unknown>;
-  const rr = (sl.roomRental ?? {}) as Record<string, unknown>;
+  const roomRental = (sl.roomRental ?? {}) as Record<string, unknown>;
 
-  const advertisedEffectiveRent =
-    toFiniteNumberOrNull(pricing.baseRent) ??
-    toFiniteNumberOrNull(pricing.displayedPrice);
-  const requiredMonthlyFees = toFiniteNumberOrNull(rr.requiredMonthlyFees);
-  let averageMonthlyTotal = toFiniteNumberOrNull(rr.averageMonthlyTotal);
+  const advertised_effective_rent =
+    toFiniteNumberOrNull(pricing.displayedPrice) ??
+    toFiniteNumberOrNull(pricing.baseRent);
+
+  const required_monthly_fees = toFiniteNumberOrNull(roomRental.requiredMonthlyFees);
+
+  const total_monthly_cost = toFiniteNumberOrNull(roomRental.totalMonthlyCost);
+  let average_monthly_total = total_monthly_cost;
   if (
-    averageMonthlyTotal === null &&
-    advertisedEffectiveRent !== null &&
-    requiredMonthlyFees !== null
+    average_monthly_total === null &&
+    advertised_effective_rent !== null &&
+    required_monthly_fees !== null
   ) {
-    averageMonthlyTotal = advertisedEffectiveRent + requiredMonthlyFees;
+    average_monthly_total = advertised_effective_rent + required_monthly_fees;
   }
 
-  const notes: string[] = [];
-  if (advertisedEffectiveRent === null) {
-    notes.push('Advertised rent not present in structured listing.');
-  }
-  if (requiredMonthlyFees === null) {
-    notes.push('Required monthly fees not present in structured listing; fees may apply.');
-  }
+  const furnished =
+    toBooleanOrNull(roomRental.roomIsFurnished) ??
+    toBooleanOrNull(roomRental.furnished);
+
+  const allowedPets = toStringArray(roomRental.allowedPets);
+  const pet_policy =
+    allowedPets.length > 0
+      ? allowedPets.join(', ')
+      : readAtAGlanceFact(roomRental, 'Pets');
+
+  const lease_term =
+    toNonEmptyStringOrNull(roomRental.leaseTerm) ??
+    readAtAGlanceFact(roomRental, 'Lease');
 
   return {
-    source: 'zillow_structured',
-    sourceVersion: toNonEmptyStringOrNull(sl.sourceVersion) ?? 'unknown',
-    capturedAt: toNonEmptyStringOrNull(sl.capturedAt),
-    hasPrivateBath: toBooleanOrNull(rr.hasPrivateBath) ?? false,
-    advertisedEffectiveRent,
-    leaseTerm: toNonEmptyStringOrNull(rr.leaseTerm),
-    requiredMonthlyFees,
-    averageMonthlyTotal,
-    parkingSpaces: toFiniteNumberOrNull(rr.parkingSpaces),
-    parkingTenantAllocated: false,
-    moveInReady: toBooleanOrNull(rr.moveInReady),
-    sqft: toFiniteNumberOrNull(layout.sqft),
-    bedrooms: toFiniteNumberOrNull(layout.bedrooms),
-    bathrooms: toFiniteNumberOrNull(layout.bathrooms),
-    utilitiesIncluded: toStringArrayOrNull(rr.utilitiesIncluded),
-    notes,
+    object_kind: 'room',
+    advertised_effective_rent,
+    required_monthly_fees,
+    average_monthly_total,
+    fees_included_in_advertised_price: toBooleanOrNull(
+      roomRental.listPriceIncludesRequiredMonthlyFees,
+    ),
+    housemate_count: toFiniteNumberOrNull(roomRental.housemateCount),
+    has_private_bath: toBooleanOrNull(roomRental.hasPrivateBath),
+    furnished,
+    pet_policy,
+    available_date: readAtAGlanceFact(roomRental, 'Date available'),
+    lease_term,
+    parking_capacity_property_level: toFiniteNumberOrNull(roomRental.parkingCapacity),
+    parking_features: toStringArray(roomRental.parkingFeatures),
+    parking_allocation_confirmed: false,
   };
 }
 
