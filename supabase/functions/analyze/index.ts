@@ -5579,6 +5579,21 @@ If a field is not listed above, then treat it as unknown and add it to data_gaps
   ];
 }
 
+// =============================================================================
+// Report mode authority resolver
+// -----------------------------------------------------------------------------
+// The plugin-extracted structuredListing.classification.transactionType is
+// authoritative for US listings (sourced from /homedetails/* pages). When the
+// plugin sets it to a precise "rent" or "sale", it must override the legacy
+// body.reportMode / body.listingType / pricePeriod heuristic so we don't end
+// up running a sale prompt against a room-rental structured listing (or
+// vice-versa).
+//
+// The shared pure-function helpers live in ./reportMode.ts so they can be
+// imported by both this edge handler and the routing test without spinning up
+// the entire Deno.serve module.
+// =============================================================================
+
 // ========== Main Handler ==========
 
 Deno.serve(async (req) => {
@@ -6094,15 +6109,9 @@ function inferReportModeStrictFromResult(fullResult: unknown): 'sale' | 'rent' |
 
     const description = typeof body.description === "string" ? body.description : "Property listing information";
     // Strict three-state: sale | rent | unknown. No default to rent.
-    const reportMode: 'sale' | 'rent' | 'unknown' =
-      body.reportMode === 'sale' || body.reportMode === 'rent'
-        ? body.reportMode
-        : body.listingType === 'sale' || body.listingType === 'rent'
-        ? body.listingType
-        : String(body.pricePeriod || (body.optionalDetails?.pricePeriod) || '').toLowerCase() === 'month'
-        ? 'rent'
-        : 'unknown';
-    if (reportMode === 'unknown') {
+    const effectiveReportMode: 'sale' | 'rent' | 'unknown' =
+      resolveEffectiveReportMode(body as Record<string, unknown>, body.optionalDetails ?? {});
+    if (effectiveReportMode === 'unknown') {
       return jsonResponse({
         message: 'REPORT_MODE_REQUIRED: cannot determine sale vs rent for this listing.',
         code: 'REPORT_MODE_REQUIRED',
@@ -6110,6 +6119,7 @@ function inferReportModeStrictFromResult(fullResult: unknown): 'sale' | 'rent' |
         hint: 'Confirm For Sale or For Rent on the listing page; backend requires an explicit signal.',
       }, 400);
     }
+    const reportMode = effectiveReportMode;
     const optionalDetails = body.optionalDetails ?? {};
     const zillowFinancials = (body as Record<string, unknown>).zillowFinancials || null;
 
@@ -7017,15 +7027,9 @@ ${optionalDetails.askingPrice ? `Asking Price: ${optionalDetails.askingPrice}\n`
     const imageUrls = Array.isArray(body.imageUrls) ? body.imageUrls.filter(isValidHttpUrl) : [];
     const description = typeof body.description === "string" ? body.description : "";
     // Strict three-state reportMode; reject unknown at entry.
-    const reportMode: 'sale' | 'rent' | 'unknown' =
-      body.reportMode === 'sale' || body.reportMode === 'rent'
-        ? body.reportMode
-        : body.listingType === 'sale' || body.listingType === 'rent'
-        ? body.listingType
-        : String(body.pricePeriod || (body.optionalDetails?.pricePeriod) || '').toLowerCase() === 'month'
-        ? 'rent'
-        : 'unknown';
-    if (reportMode === 'unknown') {
+    const effectiveReportMode: 'sale' | 'rent' | 'unknown' =
+      resolveEffectiveReportMode(body as Record<string, unknown>, body.optionalDetails ?? {});
+    if (effectiveReportMode === 'unknown') {
       return jsonResponse({
         message: 'REPORT_MODE_REQUIRED: cannot determine sale vs rent for this listing.',
         code: 'REPORT_MODE_REQUIRED',
@@ -7065,7 +7069,7 @@ ${optionalDetails.askingPrice ? `Asking Price: ${optionalDetails.askingPrice}\n`
       resolvedSource: rawSource,
       resolvedSourceDomain,
       final_market: detectedMarket,
-      reportMode,
+      reportMode: effectiveReportMode,
     });
 
     if (imageUrls.length === 0 && !description.trim()) {
@@ -7084,7 +7088,7 @@ ${optionalDetails.askingPrice ? `Asking Price: ${optionalDetails.askingPrice}\n`
         imageUrls,
         description,
         body.optionalDetails,
-        reportMode,
+        effectiveReportMode,
         rawSource,
         resolvedSourceDomain,
       );
@@ -7120,13 +7124,11 @@ ${optionalDetails.askingPrice ? `Asking Price: ${optionalDetails.askingPrice}\n`
 
     // ── Strict three-state guard: refuse to run analysis with unknown reportMode ──
     {
-      const rm = body.reportMode;
-      const lt = body.listingType;
-      const pp = String(body.pricePeriod || (body.optionalDetails?.pricePeriod) || '').toLowerCase();
-      const validRm = rm === 'sale' || rm === 'rent';
-      const validLt = lt === 'sale' || lt === 'rent';
-      const inferredRent = !validRm && !validLt && pp === 'month';
-      if (!validRm && !validLt && !inferredRent) {
+      const effectiveRunMode = resolveEffectiveReportMode(
+        body as Record<string, unknown>,
+        (optionalDetails as Record<string, unknown>) ?? {},
+      );
+      if (effectiveRunMode === 'unknown') {
         console.error('[run] REPORT_MODE_REQUIRED — refusing to invoke LLM');
         return jsonResponse({
           message: 'REPORT_MODE_REQUIRED: cannot determine sale vs rent for this listing.',
@@ -7268,7 +7270,10 @@ ${optionalDetails.askingPrice ? `Asking Price: ${optionalDetails.askingPrice}\n`
     })();
     // Strict three-state resolution: sale | rent | unknown. No default fallback.
     let reportMode: 'sale' | 'rent' | 'unknown';
-    if (body.reportMode === 'sale' || body.reportMode === 'rent') {
+    const structuredForEntry = readStructuredTransactionType(body as Record<string, unknown>);
+    if (structuredForEntry === 'sale' || structuredForEntry === 'rent') {
+      reportMode = structuredForEntry;
+    } else if (body.reportMode === 'sale' || body.reportMode === 'rent') {
       reportMode = body.reportMode;
     } else if (body.listingType === 'sale' || body.listingType === 'rent') {
       reportMode = body.listingType;
@@ -7277,6 +7282,7 @@ ${optionalDetails.askingPrice ? `Asking Price: ${optionalDetails.askingPrice}\n`
     } else {
       reportMode = 'unknown';
     }
+    const effectiveReportMode = reportMode;
 
     // Multi-source fallback: body > listingData > optionalDetails
     const rawZf = ((body as any)?.zillowFinancials)
@@ -7349,13 +7355,13 @@ ${optionalDetails.askingPrice ? `Asking Price: ${optionalDetails.askingPrice}\n`
       optional_market: (optionalDetails as Record<string, unknown>).market as string | null,
       optional_listingUrl: (optionalDetails as Record<string, unknown>).listingUrl as string | null,
       final_market: detectedMarket,
-      reportMode,
+      reportMode: effectiveReportMode,
     });
 
     const selectedPromptName = detectedMarket === 'US'
-      ? (reportMode === 'sale' ? 'STEP2_US_SALE_PROMPT' : 'STEP2_US_RENT_PROMPT')
+      ? (effectiveReportMode === 'sale' ? 'STEP2_US_SALE_PROMPT' : 'STEP2_US_RENT_PROMPT')
       : detectedMarket === 'AU'
-      ? (reportMode === 'sale' ? 'STEP2_SALE_PROMPT' : 'STEP2_RENT_PROMPT')
+      ? (effectiveReportMode === 'sale' ? 'STEP2_SALE_PROMPT' : 'STEP2_RENT_PROMPT')
       : 'REPORT_MODE_REQUIRED';
 
     console.log("[DIAG] market routing — run action:", {
@@ -7367,7 +7373,7 @@ ${optionalDetails.askingPrice ? `Asking Price: ${optionalDetails.askingPrice}\n`
       optionalSource: (optionalDetails as Record<string, unknown>).source as string | null,
       resolvedSource: source,
       resolvedSourceDomain: sourceDomain,
-      reportMode,
+      reportMode: effectiveReportMode,
       final_market: detectedMarket,
       selectedPromptName,
     });
@@ -7468,7 +7474,7 @@ ${optionalDetails.askingPrice ? `Asking Price: ${optionalDetails.askingPrice}\n`
             propertySubtype: od?.propertySubtype as string | null ?? null,
           };
 
-          const { messages, photoIndexOffset } = buildStep1Messages(imageUrls, batchIndex, detectedMarket, reportMode, propertyContext);
+          const { messages, photoIndexOffset } = buildStep1Messages(imageUrls, batchIndex, detectedMarket, effectiveReportMode, propertyContext);
 
           const step1RequestBody = {
             model: "google/gemini-2.5-flash",
@@ -7782,7 +7788,7 @@ ${optionalDetails.askingPrice ? `Asking Price: ${optionalDetails.askingPrice}\n`
       });
 
       const step2Messages = buildStep2Messages(
-        (reportMode === 'sale' || reportMode === 'rent') ? reportMode : 'rent',
+        (effectiveReportMode === 'sale' || effectiveReportMode === 'rent') ? effectiveReportMode : 'rent',
         detectedMarket,
         visualAnalysis,
         description,
@@ -7823,7 +7829,7 @@ ${optionalDetails.askingPrice ? `Asking Price: ${optionalDetails.askingPrice}\n`
         const _rcKeys = (_rc && typeof _rc === 'object') ? Object.keys(_rc) : [];
         console.log('[STEP2_RAW_KEYS]', {
           detectedMarket,
-          reportMode,
+          reportMode: effectiveReportMode,
           hasRiskCategories: !!_rc,
           riskCategoriesKeys: _rcKeys,
           fourFourCoverage: {
@@ -7918,12 +7924,12 @@ ${optionalDetails.askingPrice ? `Asking Price: ${optionalDetails.askingPrice}\n`
 
       // Stable Zillow sale check — not just market === 'US'
       const isZillowSale = String((body as any)?.sourceDomain || '').includes('zillow')
-        && reportMode === 'sale';
+        && effectiveReportMode === 'sale';
 
       console.log('[analyze][carrying_costs override gates]', {
         sourceDomain: (body as any)?.sourceDomain,
         market: detectedMarket,
-        reportMode,
+        reportMode: effectiveReportMode,
         isZillowSale,
         hasZillowFinancials: !!zillowFinancials,
         monthlyEstimate: (zillowFinancials as any)?.monthlyPayment?.estimatedMonthlyPayment?.value,
@@ -8103,10 +8109,10 @@ ${optionalDetails.askingPrice ? `Asking Price: ${optionalDetails.askingPrice}\n`
 
       // Determine verdict based on report mode
       const verdictStr = recommendation.verdict || '';
-      const mappedVerdict = reportMode === 'sale' ? mapSaleVerdict(verdictStr) : mapVerdict(verdictStr);
+      const mappedVerdict = effectiveReportMode === 'sale' ? mapSaleVerdict(verdictStr) : mapVerdict(verdictStr);
 
       // Build mode-specific fields
-      const rentFields = reportMode === 'rent' ? {
+      const rentFields = effectiveReportMode === 'rent' ? {
         rent_fairness: (decision as any).rent_fairness ? {
           estimated_min: typeof (decision as any).rent_fairness.estimated_min === 'number'
             ? (decision as any).rent_fairness.estimated_min
@@ -8143,7 +8149,7 @@ ${optionalDetails.askingPrice ? `Asking Price: ${optionalDetails.askingPrice}\n`
       // Use normalized price_assessment (covers US/AU field name differences)
       const normPrice = normalizedDecision.price_assessment;
 
-      const saleFields = reportMode === 'sale' ? {
+      const saleFields = effectiveReportMode === 'sale' ? {
         price_assessment: normPrice ? {
           estimated_min: normPrice.estimated_min ?? null,
           estimated_max: normPrice.estimated_max ?? null,
@@ -8350,7 +8356,7 @@ ${optionalDetails.askingPrice ? `Asking Price: ${optionalDetails.askingPrice}\n`
 
       const result = {
         id, // Analysis ID for sharing functionality
-        reportMode, // NEW: report mode indicator
+        reportMode: effectiveReportMode, // NEW: report mode indicator
         source,     // market source for debugging
         sourceDomain, // domain extracted from URL or source for frontend routing
         market: detectedMarket, // market routing flag (replaces isUSMarket boolean)
@@ -8758,7 +8764,7 @@ ${optionalDetails.askingPrice ? `Asking Price: ${optionalDetails.askingPrice}\n`
         }
 
         // ── price_assessment: rent_context (US rent) ──
-        if (pa && reportMode === 'rent' && vf.rentZestimate != null && !pa.rent_context) {
+        if (pa && effectiveReportMode === 'rent' && vf.rentZestimate != null && !pa.rent_context) {
           pa.rent_context =
             `Rent Zestimate: ${vf.rentZestimate_display || '$' + vf.rentZestimate.toLocaleString()}/mo. ` +
             `Actual rental income must be verified with the owner/agent.`;
@@ -8773,7 +8779,7 @@ ${optionalDetails.askingPrice ? `Asking Price: ${optionalDetails.askingPrice}\n`
 
         // ── carrying_costs: deterministic fill for ALL US sale (not just Zillow sale) ──
         const isUS = detectedMarket === 'US';
-        const shouldForceCC = isUS && reportMode === 'sale' &&
+        const shouldForceCC = isUS && effectiveReportMode === 'sale' &&
           (vf.monthlyPayment != null || vf.annualTax != null || vf.principalAndInterest != null);
 
         if (shouldForceCC && cc) {
@@ -9288,7 +9294,7 @@ ${optionalDetails.askingPrice ? `Asking Price: ${optionalDetails.askingPrice}\n`
         (body as any)?.optionalDetails?.price,
         (body as any)?.price,
       );
-      if (reportMode === 'sale' && finalAskingPrice != null) {
+      if (effectiveReportMode === 'sale' && finalAskingPrice != null) {
         (result as any).price_assessment = {
           estimated_min: (result as any).price_assessment?.estimated_min ?? null,
           estimated_max: (result as any).price_assessment?.estimated_max ?? null,
@@ -9408,7 +9414,7 @@ ${optionalDetails.askingPrice ? `Asking Price: ${optionalDetails.askingPrice}\n`
           riskSignals: result.riskSignals,
         },
         fullResultWithType,
-        (reportMode === 'sale' || reportMode === 'rent' ? reportMode : 'rent') // 传递 reportMode 以同步到数据库
+        (effectiveReportMode === 'sale' || effectiveReportMode === 'rent' ? effectiveReportMode : 'rent') // 传递 reportMode 以同步到数据库
       );
 
       // Final state update — done only after full_result is committed,
