@@ -269,6 +269,13 @@ export async function runAnalysis(id: string, data: AnalyzeRequest, sourceDomain
       description: data.description,
       optionalDetails: data.optionalDetails,
       analysisType: data.analysisType || 'full',
+      // Carry through any structuredListing captured at submit time so the backend's
+      // buildRoomRentalFacts can write room_rental_facts into full_result. The web
+      // form does not currently produce structuredListing (only the browser extension
+      // does), so this is normally null — but the wiring must exist to support the
+      // extension flow when it becomes available.
+      structuredListing: data.structuredListing ?? null,
+      listingData: data.listingData ?? null,
     }),
   });
 

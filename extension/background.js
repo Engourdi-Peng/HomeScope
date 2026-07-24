@@ -932,6 +932,8 @@ async function handleMessage(message, sender, sendResponse) {
           market,
           listingUrl,
           zillowFinancials: listingData?.zillowFinancials || null,
+          structuredListing: listingData?.structuredListing ?? null,
+          listingData: listingData ?? null,
         };
         const response = await fetch(url, {
           method: 'POST',
@@ -1168,6 +1170,15 @@ async function handleMessage(message, sender, sendResponse) {
         market,
         listingUrl,
         zillowFinancials: listingData?.zillowFinancials || null,
+        // Pass through deterministic structuredListing (e.g. Zillow GraphQL room-rental
+        // facts) so the backend can persist room_rental_facts into full_result.
+        // The extension content script is the producer; background.js is the handoff
+        // carrier. If listingData.structuredListing is absent this stays null and
+        // does not affect any other flow.
+        structuredListing: listingData?.structuredListing ?? null,
+        // Also forward the full listingData so backend consumers reading
+        // body.listingData (e.g. canonicalListing builder) keep working.
+        listingData: listingData ?? null,
       };
 
       // Step 3: action=submit
