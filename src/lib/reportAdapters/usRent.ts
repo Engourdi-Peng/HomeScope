@@ -11,7 +11,9 @@
 
 import type { NormalizedReport, HeroData, HighlightsData, QuickFact, ReportSection, SectionItem } from './types';
 import { MODULE_FALLBACKS } from './Fallbacks';
-import { hasInteriorPhotos } from './interiorPhotos';
+// hasInteriorPhotos was previously imported for the photo-habitability fallback
+// block; the section has been removed so the helper is no longer needed here.
+// Re-import if you re-introduce the section.
 
 type USRentResult = any;
 
@@ -824,83 +826,17 @@ function buildSections(result: USRentResult): ReportSection[] {
   }
 
   // 11. photo-habitability — REMOVED.
-// The detailed photo module is rendered by PhotoSpaceAnalysisCard in NewReportUI
-// (it reads report.raw.photoReview / visualAnalysis.photoReview / spaceAnalysis).
-// Rendering a second, simpler "Photo & Habitability Review" block from
-// result.photo_habitability_review caused two photo sections to appear side by
-// side. Keep the buyer-flavor filter and the no-interior-photos fallback below
-// in case future work wants to re-use them.
+  // The detailed photo module is rendered by PhotoSpaceAnalysisCard in NewReportUI
+  // (it reads report.raw.photoReview / visualAnalysis.photoReview / spaceAnalysis).
+  // Rendering a second, simpler "Photo & Habitability Review" block from
+  // result.photo_habitability_review caused two photo sections to appear side by
+  // side. The old photoItemsRaw / listingSaysPrivateYard / hasAnyInteriorPhotos /
+  // imageUrlsArr collection logic has been deleted with the section; if we ever
+  // want a fallback hint list, re-introduce the data sources here.
 
   // P1-3: drop roof/foundation "Can't Tell From Photos" items (buyer-flavored for renters)
-  const photoItems: SectionItem[] = photoItemsRaw.filter((it) => {
-    const text = `${it.title ?? ''} ${it.description ?? ''}`.toLowerCase();
-    if (/photos do not show the condition of the roof/i.test(text)) return false;
-    if (/photos do not show the condition of the foundation/i.test(text)) return false;
-    return true;
-  });
-
-  // P1-4: override generic "confirm if yard is private or shared" when listing already says it
-  if (listingSaysPrivateYard) {
-    // Remove ALL garden-variety yard-shared/private phrasing — LLM output
-    // varies too much to enumerate every verb. Drop anything that:
-    //   (a) says the yard might be shared / not exclusively assigned, OR
-    //   (b) asks the user to verify/confirm/determine/check yard status
-    // once the listing already says "private yard".
-    const yardDoubtRegex = new RegExp(
-      [
-        // Generic "confirm/verify/determine/check ... yard ... private/shared/exclusive"
-        '\\b(confirm|verify|determine|check|clarify)\\b[\\s\\S]{0,80}?\\byard\\b[\\s\\S]{0,80}?\\b(private|shared|exclusiv)',
-        // "Photos do not show whether the yard is shared / exclusively assigned"
-        '\\bphotos?\\b[\\s\\S]{0,80}?\\byard\\b[\\s\\S]{0,80}?\\b(shared|exclusiv|assigned)',
-        // "Yard may be shared with neighbors / other units"
-        '\\byard\\b[\\s\\S]{0,80}?\\b(shared|not\\s+exclusiv|may\\s+be\\s+shared)',
-      ].join('|'),
-      'i',
-    );
-    // Walk in reverse so each splice doesn't shift later indexes.
-    for (let i = photoItems.length - 1; i >= 0; i--) {
-      if (yardDoubtRegex.test(`${photoItems[i].title ?? ''} ${photoItems[i].description ?? ''}`)) {
-        photoItems.splice(i, 1);
-      }
-    }
-    // Insert listing-accurate statement at the start of the exterior group
-    const firstExteriorIdx = photoItems.findIndex(
-      (it) => /exterior|rear exterior|side view/i.test(it.title ?? ''),
-    );
-    const accurateItem: SectionItem = {
-      title: 'Private Yard',
-      description:
-        'The listing describes the yard as private, but the photos do not prove whether it is exclusively assigned to this unit.',
-    };
-    if (firstExteriorIdx !== -1) {
-      photoItems.splice(firstExteriorIdx, 0, accurateItem);
-    } else {
-      photoItems.unshift(accurateItem);
-    }
-  }
-
-  // P1-3: add renter-priority defaults when filtered list is empty AND we have
-  // no evidence that any interior photos exist at all. Otherwise the fallback
-  // contradicts the visual analysis cards the rest of the report is showing.
-  // (photoItems is intentionally NOT pushed into `sections` — PhotoSpaceAnalysisCard
-  // owns the photo module. The fallback is still computed so we could surface
-  // these hints elsewhere in the future.)
-  if (photoItems.length === 0 && !hasAnyInteriorPhotos && imageUrlsArr.length === 0) {
-    photoItems.push(
-      {
-        title: 'No interior photos available',
-        description: 'No kitchen, bathroom, bedroom, or living room photos were detected. Ask for a full photo set before scheduling a tour.',
-      },
-      {
-        title: 'Ask about heating costs',
-        description: 'Confirm which heating type (electric baseboard, gas, oil) and ask for average monthly heating costs.',
-      },
-      {
-        title: 'Check window seals',
-        description: 'Verify all windows close and lock properly; drafty windows increase heating costs.',
-      },
-    );
-  }
+  const photoItems: SectionItem[] = [];
+  void photoItems; // intentionally unused; kept as an anchor for future fallback
 
   // The photo-habitability section was previously pushed here. It is now
   // intentionally omitted; see comment block at the top of this section.
