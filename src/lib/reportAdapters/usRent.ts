@@ -298,7 +298,10 @@ function buildHighlights(result: USRentResult): HighlightsData {
       ...stringArr(result.riskSignals),
       ...stringArr(result.risks),
       ...(toText(fair.verdict) ? [`Rent fairness: ${toText(fair.verdict)}`] : []),
-      ...stringArr(trust.concerns),
+      // NOTE: trust.concerns is intentionally NOT injected here — those are
+      // already rendered in the "Rental Listing Trust" section. Adding them
+      // to risks would cause them to also appear in "What Could Change Your
+      // Decision" via the generic WhatCouldChangeYourDecisionSection.
     ],
   };
 }
@@ -355,6 +358,19 @@ const RENT_SALE_FLAVORED_PHRASES: RegExp[] = [
   /\binvestor\s+mindset\b/i,
   /\bflip\s+tax\b/i,
   /\bbuy\s+down\s+rate\b/i,
+  // Sale-flavoured actor / process phrases observed in LLM Step 2 output
+  // even though the rent prompt forbids them. Caught at adapter level.
+  /\bproperty\s+being\s+(sold|purchased)\b/i,
+  /\blisting\s+agent\b/i,
+  /\bseller'?s?\s+(agent|representation)\b/i,
+  /\b(buyer'?s?|seller'?s?)\s+agent\b/i,
+  /\bfinancing\s+or\s+insurance\b/i,
+  /\bseller\s+disclosure\b/i,
+  /\brenovation\s+permit(s|history)\b/i,
+  /\bproperty\s+sale\b/i,
+  /\bclose\s+of\s+escrow\b/i,
+  /\binspection\s+contingency\b/i,
+  /\b(buy|purchase)\s+the\s+property\b/i,
 ];
 
 // Renter-relevant phrases — these mention roof/foundation/permit/egress but in
@@ -402,6 +418,27 @@ function matchesAny(text: string, patterns: RegExp[]): boolean {
 function containsForbidden(text: string): boolean {
   const lower = (text || '').toLowerCase();
   return RENT_FORBIDDEN_KEYWORDS.some((kw) => lower.includes(kw));
+}
+
+/**
+ * Soften assertive LLM action titles ("Negotiate the base rent down") to
+ * neutral, renter-actionable phrasing ("Compare the confirmed monthly cost
+ * with similar listings before applying"). Keeps the underlying reasoning
+ * but rewrites the imperative verb.
+ *
+ * Used by buildSections for before_you_tour_apply_pay items, next_best_move
+ * items, and any remaining per-item action text.
+ */
+function softenAction(s: string): string {
+  if (!s) return s;
+  return s
+    .replace(/\bnegotiate\s+(?:the\s+)?(?:base\s+)?(?:rent|price|effective\s+rent)\b/gi,
+      'Compare the confirmed monthly cost with similar listings before applying')
+    .replace(/\bnegotiate\b/gi, 'compare options for')
+    .replace(/\bwalk\s+away\b/gi, 'pause and re-evaluate')
+    .replace(/\bask\s+the\s+seller\s+to\b/gi, 'ask the property manager to')
+    .replace(/\bthe\s+seller\b/gi, 'the property manager')
+    .replace(/\bseller'?s?\s+disclosure\b/gi, 'landlord-provided disclosures');
 }
 
 /**
@@ -562,31 +599,20 @@ function buildSections(result: USRentResult): ReportSection[] {
     sections.push({ id: 'rental-snapshot', title: 'Rental Snapshot', subtitle: 'What the listing tells you up front', items: snapItems });
   }
 
-  // 4. what-could-change-decision
-  const wccd = Array.isArray(result.what_could_change_decision) ? result.what_could_change_decision : [];
-  const wccdItems: SectionItem[] = [];
-  for (const item of wccd) {
-    const obj = (item ?? {}) as Record<string, unknown>;
-    const rawTitle = toText(obj.title);
-    if (!rawTitle) continue;
-    // Drop the whole item if its title is poisoned with sale-flavored phrases
-    // (e.g. "Verify roof age before offering"). Items themselves are short
-    // structured strings, so dropping the item is safer than rewriting.
-    if (matchesAny(rawTitle, RENT_SALE_FLAVORED_PHRASES)) continue;
-    const evidence = evidenceLabel(obj.evidence);
-    const why = safeDescription(obj.why_it_matters, obj.description);
-    const action = toText(obj.action);
-    const desc = [why, action].filter(Boolean).join(' · ');
-    wccdItems.push({ title: rawTitle, description: desc || why, badge: evidence, action: action || undefined });
-  }
-  if (wccdItems.length > 0) {
-    sections.push({ id: 'what-could-change-decision', title: 'What Could Change Your Decision', subtitle: 'Things to verify before you commit', items: wccdItems });
-  }
+  // 4. what-could-change-decision — REMOVED.
+// NewReportUI (rent layout) renders the generic WhatCouldChangeYourDecisionSection
+// which aggregates risks from highlights.risks / rental-listing-trust /
+// risk_categories with proper deduplication. Building a separate section
+// here caused two cards with the same title ("What Could Change Your
+// Decision") to appear side by side in the rent report.
+  void result.what_could_change_decision;
 
   // 5. rental-listing-trust
   const trust = result.rental_listing_trust ?? {};
   const trustItems: SectionItem[] = [];
-  if (trust.source_consistency) trustItems.push({ title: 'Source Consistency', value: toText(trust.source_consistency), badge: toText(trust.source_consistency) });
+  // value+badge would double-render the same string in _RentKVBlock; keep badge only
+  // (badge has severity colour coding, value is the plain text).
+  if (trust.source_consistency) trustItems.push({ title: 'Source Consistency', badge: toText(trust.source_consistency) });
   if (trust.signal_source_breakdown && typeof trust.signal_source_breakdown === 'object') {
     for (const [k, v] of Object.entries(trust.signal_source_breakdown as Record<string, unknown>)) {
       trustItems.push({ title: k, value: toText(v) });
@@ -596,7 +622,9 @@ function buildSections(result: USRentResult): ReportSection[] {
     for (const c of trust.concerns) {
       if (typeof c !== 'string') continue;
       if (matchesAny(c, RENT_SALE_FLAVORED_PHRASES)) continue;
-      trustItems.push({ title: c, description: c });
+      // title only — description is a duplicate of title in _RentKVBlock and would
+      // double-render. concerns here are short labels, not paragraphs.
+      trustItems.push({ title: c });
     }
   }
   if (trustItems.length > 0) {
@@ -606,11 +634,12 @@ function buildSections(result: USRentResult): ReportSection[] {
   // 6. availability-check
   const av = result.availability_check ?? {};
   const avItems: SectionItem[] = [];
-  if (av.status) avItems.push({ title: 'Status', value: toText(av.status), badge: toText(av.status) });
+  // value+badge would double-render the same string in _RentKVBlock; keep badge only.
+  if (av.status) avItems.push({ title: 'Status', badge: toText(av.status) });
   if (av.available_date) avItems.push({ title: 'Available Date', value: toText(av.available_date) });
   if (av.lead_time) avItems.push({ title: 'Lead Time', value: toText(av.lead_time) });
   if (Array.isArray(av.caveats)) {
-    for (const c of av.caveats) avItems.push({ title: toText(c), description: toText(c) });
+    for (const c of av.caveats) avItems.push({ title: toText(c) });
   }
   if (avItems.length > 0) {
     sections.push({ id: 'availability-check', title: 'Availability Check', subtitle: 'Live status from the listing only', items: avItems });
@@ -794,56 +823,13 @@ function buildSections(result: USRentResult): ReportSection[] {
     sections.push({ id: 'location-daily-life', title: 'Location & Daily Life Check', subtitle: 'What the area feels like day-to-day', items: locItems });
   }
 
-  // 11. photo-habitability
-  const photo = result.photo_habitability_review ?? {};
-  const description = result.listingInfo?.description ?? (result as any).raw?.listingInfo?.description ?? '';
-  const listingSaysPrivateYard = /private\s*yard/i.test(description);
-
-  // ── Cross-check three sources for interior photo evidence ────────────────────
-  // Bug fix: previously the "No interior photos available" fallback fired
-  // whenever the Step 2 evidence array was empty, even when Step 1 had
-  // detected kitchen / bedroom / etc. The result was two contradictory
-  // cards rendered side-by-side. Now we consult all three sources and only
-  // show the fallback when ALL three are empty.
-  const imageUrlsArr: unknown[] = Array.isArray(result.imageUrls)
-    ? (result.imageUrls as unknown[])
-    : Array.isArray((result as any).raw?.imageUrls)
-      ? ((result as any).raw.imageUrls as unknown[])
-      : [];
-  const photoHabitabilityReview = result.photo_habitability_review ?? {};
-  const hasAnyInteriorPhotos = hasInteriorPhotos({
-    step1Areas: (result as any).spaceAnalysis?.areas,
-    step1DetectedAreas: (result as any).spaceAnalysis?.detectedAreas
-      ?? (result as any).visualAnalysis?.detectedAreas,
-    photoReview: (result as any).photoReview ?? (result as any).raw?.photoReview,
-    visualAnalysis: (result as any).visualAnalysis ?? (result as any).raw?.visualAnalysis,
-    photoHabitabilityReview: {
-      unit_specific_evidence: photoHabitabilityReview.unit_specific_evidence,
-      habitability_signals: photoHabitabilityReview.habitability_signals,
-    },
-    imageUrls: imageUrlsArr,
-  });
-
-  // Collect raw photo items, then filter buyer-flavored entries
-  const photoItemsRaw: SectionItem[] = [];
-  if (Array.isArray(photo.unit_specific_evidence)) {
-    for (const u of photo.unit_specific_evidence) {
-      const t = toText(u);
-      if (t && !containsForbidden(t)) photoItemsRaw.push({ title: t, description: t });
-    }
-  }
-  if (photo.model_home_or_staging_likelihood) {
-    photoItemsRaw.push({ title: 'Model Home / Staging Likelihood', value: toText(photo.model_home_or_staging_likelihood) });
-  }
-  if (Array.isArray(photo.habitability_signals)) {
-    for (const h of photo.habitability_signals) {
-      const t = toText(h);
-      if (t && !containsForbidden(t)) photoItemsRaw.push({ title: t, description: t });
-    }
-  }
-  if (Array.isArray(photo.missing_views)) {
-    for (const m of photo.missing_views) photoItemsRaw.push({ title: toText(m), description: toText(m) });
-  }
+  // 11. photo-habitability — REMOVED.
+// The detailed photo module is rendered by PhotoSpaceAnalysisCard in NewReportUI
+// (it reads report.raw.photoReview / visualAnalysis.photoReview / spaceAnalysis).
+// Rendering a second, simpler "Photo & Habitability Review" block from
+// result.photo_habitability_review caused two photo sections to appear side by
+// side. Keep the buyer-flavor filter and the no-interior-photos fallback below
+// in case future work wants to re-use them.
 
   // P1-3: drop roof/foundation "Can't Tell From Photos" items (buyer-flavored for renters)
   const photoItems: SectionItem[] = photoItemsRaw.filter((it) => {
@@ -896,6 +882,9 @@ function buildSections(result: USRentResult): ReportSection[] {
   // P1-3: add renter-priority defaults when filtered list is empty AND we have
   // no evidence that any interior photos exist at all. Otherwise the fallback
   // contradicts the visual analysis cards the rest of the report is showing.
+  // (photoItems is intentionally NOT pushed into `sections` — PhotoSpaceAnalysisCard
+  // owns the photo module. The fallback is still computed so we could surface
+  // these hints elsewhere in the future.)
   if (photoItems.length === 0 && !hasAnyInteriorPhotos && imageUrlsArr.length === 0) {
     photoItems.push(
       {
@@ -913,9 +902,8 @@ function buildSections(result: USRentResult): ReportSection[] {
     );
   }
 
-  if (photoItems.length > 0) {
-    sections.push({ id: 'photo-habitability', title: 'Photo & Habitability Review', subtitle: 'What photos tell you about the actual unit', items: photoItems });
-  }
+  // The photo-habitability section was previously pushed here. It is now
+  // intentionally omitted; see comment block at the top of this section.
 
   // 12. rental-risk-categories (STRICT four keys, no location)
   const rc = result.risk_categories ?? {};
@@ -947,13 +935,34 @@ function buildSections(result: USRentResult): ReportSection[] {
 
   // 13. listing-does-not-prove
   const ldp = Array.isArray(result.listing_does_not_prove) ? result.listing_does_not_prove : [];
+  // If we already derived the true average monthly total (rent + fees) from
+  // room_rental_facts, the LLM's "The actual total monthly cost including all
+  // fees" line is contradictory — we already know the total. Replace it with a
+  // more accurate remaining-unknown: utilities / additional charges on top of
+  // the confirmed total.
+  const ldpRoomFacts = readRoomRentalFacts(result);
+  const ldpAvgTotal: number | null = ldpRoomFacts?.average_monthly_total ?? null;
   const ldpItems: SectionItem[] = ldp
     .filter((x: unknown): x is string =>
       typeof x === 'string' &&
       !containsForbidden(x) &&
       !matchesAny(x, RENT_SALE_FLAVORED_PHRASES),
     )
-    .map((s: string) => ({ title: s, description: s }));
+    .map((s: string): SectionItem => {
+      // Replace generic "total monthly cost ... not proven" with a concrete
+      // remaining-unknown when we know the average total.
+      if (
+        ldpAvgTotal != null &&
+        ldpAvgTotal > 0 &&
+        /total\s+monthly\s+cost.*not.*proven/i.test(s)
+      ) {
+        const totalText = `$${ldpAvgTotal.toLocaleString('en-US')}/mo`;
+        return {
+          title: `Whether utilities or any additional charges are added to the confirmed ${totalText} monthly cost.`,
+        };
+      }
+      return { title: s };
+    });
   if (ldpItems.length > 0) {
     sections.push({ id: 'listing-does-not-prove', title: 'What the Listing Does Not Prove', items: ldpItems });
   }
@@ -970,7 +979,10 @@ function buildSections(result: USRentResult): ReportSection[] {
     const arr = Array.isArray(btap[g.key]) ? btap[g.key] : [];
     const strings = (arr as unknown[])
       .filter((x): x is string => typeof x === 'string')
-      .filter((s) => !matchesAny(s, RENT_SALE_FLAVORED_PHRASES));
+      .filter((s) => !matchesAny(s, RENT_SALE_FLAVORED_PHRASES))
+      // Soften assertive imperatives so they read as renter-actionable
+      // suggestions instead of negotiation scripts.
+      .map(softenAction);
     if (strings.length === 0) continue;
     for (const s of strings) {
       btapItems.push({ title: g.label, description: s, badge: g.badge });
@@ -1010,10 +1022,14 @@ function buildSections(result: USRentResult): ReportSection[] {
   const nbmItems: SectionItem[] = [];
   for (const item of nbm) {
     const obj = (item ?? {}) as Record<string, unknown>;
-    const action = toText(obj.action);
+    const rawAction = toText(obj.action);
     const reason = toText(obj.reason);
-    if (!action && !reason) continue;
-    if (matchesAny(action, RENT_SALE_FLAVORED_PHRASES)) continue;
+    if (!rawAction && !reason) continue;
+    if (matchesAny(rawAction, RENT_SALE_FLAVORED_PHRASES)) continue;
+    // Apply the same softening used for what_could_change_decision so
+    // imperative / buyer-flavored action text ("Negotiate the base rent down")
+    // becomes neutral and renter-actionable.
+    const action = softenAction(rawAction);
     nbmItems.push({ title: action || reason, description: reason, action: action || undefined });
   }
   if (nbmItems.length > 0) {

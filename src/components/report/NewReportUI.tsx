@@ -5270,10 +5270,23 @@ export function NewReportUI({
               <RentalRiskCategoriesSection report={report} />
 
               {/* 13. What Could Change Your Decision (rent) */}
+              {/* Note: rent reports do NOT include a `what-could-change-decision`
+                  section in usRent.buildSections — the generic
+                  WhatCouldChangeYourDecisionSection above already aggregates
+                  risks from highlights.risks, rental-listing-trust, and
+                  risk_categories. Building the section here too caused two
+                  cards with the same title to render side by side. */}
               <WhatCouldChangeYourDecisionSection report={report} />
 
-              {/* 14. What the Listing Does Not Prove */}
-              <ListingDoesNotProveSection report={report} />
+              {/* 14. What the Listing Does Not Prove — render via _RentSection
+                  so the rent-mode listing_does_not_prove items (filtered +
+                  room_rental_facts-aware) get a dedicated card and do NOT
+                  fall through to _RemainingSections (where they'd render
+                  twice if ListingDoesNotProveSection ever stops returning
+                  null for rent). */}
+              <_RentSection report={report} sectionId="listing-does-not-prove" title="What the Listing Does Not Prove">
+                {(s) => <_RentKVBlock items={s.items} />}
+              </_RentSection>
 
               {/* 15. Before You Tour / Apply / Pay */}
               <BeforeYouTourApplyPaySection report={report} />
@@ -5281,8 +5294,12 @@ export function NewReportUI({
               {/* 16. Who This Rental Works For */}
               <RentalWhoItWorksForSection report={report} />
 
-              {/* 17. Next Best Move */}
-              <NextBestMoveSection report={report} />
+              {/* 17. Next Best Move — register so the LLM next_best_move section
+                  in usRent.buildSections gets a dedicated card instead of
+                  falling through to GenericSectionCard. */}
+              <_RentSection report={report} sectionId="next-best-move" title="Your Next Best Move">
+                {(s) => <_RentKVBlock items={s.items} />}
+              </_RentSection>
 
               {/* 18. Any remaining generic sections from the rent adapter */}
               <_RemainingSections report={report} />
