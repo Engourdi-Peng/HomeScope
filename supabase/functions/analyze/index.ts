@@ -8270,6 +8270,23 @@ ${optionalDetails.askingPrice ? `Asking Price: ${optionalDetails.askingPrice}\n`
         return null;
       })();
 
+      // ── Rent verdict bucket → numeric midpoint fallback ─────────────
+      // US Rent Step 2 prompt emits `rental_listing_score.verdict` as a
+      // categorical label ("Strong Listing" / "Adequate" / "Thin Listing" /
+      // "Red Flag Heavy") but rarely a numeric score. Map the verdict to the
+      // midpoint of its bucket so the headline number is never null/0 when
+      // the LLM has given a categorical signal.
+      function verdictToRentScore(verdict: unknown): number | null {
+        if (!verdict) return null;
+        const v = String(verdict).trim();
+        if (/strong listing/i.test(v)) return 85;
+        if (/adequate/i.test(v)) return 65;
+        if (/thin listing/i.test(v)) return 45;
+        if (/red flag heavy/i.test(v)) return 25;
+        return null;
+      }
+      const rentVerdictScore = verdictToRentScore((decision as any)?.rental_listing_score?.verdict);
+
       // Determine verdict based on report mode
       const verdictStr = recommendation.verdict || '';
       const mappedVerdict = effectiveReportMode === 'sale' ? mapSaleVerdict(verdictStr) : mapVerdict(verdictStr);
@@ -8664,7 +8681,7 @@ ${optionalDetails.askingPrice ? `Asking Price: ${optionalDetails.askingPrice}\n`
           : [],
       });
 
-      const overallScoreNum: number = aiScoreCandidate ?? scoreBreakdown.score;
+      const overallScoreNum: number = aiScoreCandidate ?? rentVerdictScore ?? scoreBreakdown.score;
       const evidenceLevelStr: string = scoreBreakdown.evidenceLevel;
 
       // Mirror the canonical score onto result so full_result JSONB carries

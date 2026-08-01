@@ -122,6 +122,32 @@ function scoreVerdict(score: number | null | undefined): string {
   return 'High Uncertainty';
 }
 
+// Reverse-map verdict bucket → numeric midpoint. Used when LLM only emits
+// `rental_listing_score.verdict` (a categorical label) and no numeric score.
+// Source-aligned thresholds so the score stays in the same 0..100 range the
+// rest of the UI uses (>= 80 / >= 60 / >= 40 / < 40 buckets).
+function verdictToScore(verdict: string | null | undefined): number | null {
+  if (!verdict) return null;
+  const v = String(verdict).trim();
+  if (/strong listing/i.test(v)) return 85;
+  if (/adequate/i.test(v)) return 65;
+  if (/thin listing/i.test(v)) return 45;
+  if (/red flag heavy/i.test(v)) return 25;
+  return null;
+}
+
+// Single source of truth: prefer numeric top-level score; otherwise derive from
+// the rental_listing_score.verdict bucket so the page never shows —/100 when
+// the LLM has given a categorical signal.
+function deriveRentScore(result: USRentResult): number | null {
+  const direct = result.overallScore ?? result.score;
+  const directNum = typeof direct === 'number'
+    ? direct
+    : (direct != null && direct !== '' && Number.isFinite(Number(direct)) ? Number(direct) : null);
+  if (directNum != null && directNum >= 1 && directNum <= 100) return Math.round(directNum);
+  return verdictToScore((result as any)?.rental_listing_score?.verdict);
+}
+
 function buildHero(result: USRentResult): HeroData {
   const monthlyRent = toText(
     result.rental_snapshot?.monthly_rent ??
@@ -129,11 +155,11 @@ function buildHero(result: USRentResult): HeroData {
     result.monthlyRent ??
     ''
   );
-  const numericScore = result.overallScore ?? result.score;
+  const numericScore = deriveRentScore(result);
   return {
     title: toText(result.listingInfo?.title ?? result.title ?? ''),
     address: toText(result.listingInfo?.address ?? result.address ?? ''),
-    score: numericScore != null && numericScore !== '' ? Number(numericScore) || null : null,
+    score: numericScore,
     verdict: (() => {
       // If AI verdict is a real quality signal (not the generic "Need More Evidence"),
       // use it. Otherwise fall back to score-based verdict so score and verdict are consistent.
@@ -191,7 +217,23 @@ function buildQuickFacts(result: USRentResult): QuickFact[] {
       add('Furnished', 'Not confirmed');
     }
     add('Pet Policy', roomFacts.pet_policy ?? 'Not confirmed');
-    add('Available', roomFacts.available_date ?? 'Not confirmed');
+    // Available: prefer availability_check (status + available_date), fall back to roomFacts.available_date.
+    {
+      const ac = (result as any).availability_check ?? {};
+      const acStatus = toText(ac.status);
+      const acDate = toText(ac.available_date);
+      let availText = '';
+      if (acStatus && acDate) {
+        availText = acStatus.toLowerCase() === 'available' ? acDate : `${acStatus} (${acDate})`;
+      } else if (acStatus) {
+        availText = acStatus;
+      } else if (acDate) {
+        availText = acDate;
+      } else {
+        availText = roomFacts.available_date ?? 'Not confirmed';
+      }
+      add('Available', availText);
+    }
     add('Lease Term', roomFacts.lease_term ?? 'Not confirmed');
     add('Parking', buildParkingText(roomFacts));
     return facts;
@@ -206,7 +248,21 @@ function buildQuickFacts(result: USRentResult): QuickFact[] {
   add('Monthly Rent', snap.monthly_rent);
   add('Security Deposit', snap.security_deposit);
   add('Lease Term', snap.lease_term);
-  add('Available', snap.available_date);
+  // Available: prefer availability_check (status + available_date), fall back to snap.available_date.
+  {
+    const ac = (result as any).availability_check ?? {};
+    const acStatus = toText(ac.status);
+    const acDate = toText(ac.available_date);
+    let availText = '';
+    if (acStatus && acDate) {
+      availText = acStatus.toLowerCase() === 'available' ? acDate : `${acStatus} (${acDate})`;
+    } else if (acStatus) {
+      availText = acStatus;
+    } else if (acDate) {
+      availText = acDate;
+    }
+    add('Available', availText || snap.available_date);
+  }
   add('Beds', snap.beds);
   add('Baths', snap.baths);
   add('Sqft', snap.sqft);
@@ -417,7 +473,7 @@ function buildSections(result: USRentResult): ReportSection[] {
 
   // 1. rental-score — Verdict is always score-derived (not AI free-text)
   const score = result.rental_listing_score ?? {};
-  const numericScore = result.overallScore ?? result.score;
+  const numericScore = deriveRentScore(result);
   const scoreItems: SectionItem[] = [];
   scoreItems.push({ title: 'Verdict', value: scoreVerdict(numericScore) });
   if (typeof numericScore === 'number' || (numericScore != null && numericScore !== '')) {

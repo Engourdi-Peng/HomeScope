@@ -331,12 +331,19 @@ function LegacySpaceCard({ space }: {
 export function PhotoSpaceAnalysisCard({ raw }: PhotoSpaceAnalysisCardProps) {
   const { photoReview, spaceAnalysis, visualAnalysis, photos, analyzedPhotoCount, detectedRooms, roomCounts } = raw;
 
+  // ── Source priority: top-level fields > visualAnalysis.* (nested) ──
+  // Step 1 photo analysis may live at either location depending on the
+  // report path. The nested visualAnalysis.photoReview / visualAnalysis.spaceAnalysis
+  // are the canonical Zillow structured snapshot fields.
+  const effectivePhotoReview = photoReview ?? visualAnalysis?.photoReview ?? null;
+  const effectiveSpaceAnalysis = spaceAnalysis ?? visualAnalysis?.spaceAnalysis ?? null;
+
   // Check for new Photo Review format
-  const hasPhotoReview = photoReview && 
-    (photoReview.areas?.length > 0 || photoReview.overallSummary);
+  const hasPhotoReview = effectivePhotoReview &&
+    (effectivePhotoReview.areas?.length > 0 || effectivePhotoReview.overallSummary);
 
   // Check for legacy formats
-  const hasSpaceAnalysis = Array.isArray(spaceAnalysis) && spaceAnalysis.length > 0;
+  const hasSpaceAnalysis = Array.isArray(effectiveSpaceAnalysis) && effectiveSpaceAnalysis.length > 0;
   const hasVisualRead = visualAnalysis && (
     (visualAnalysis.renovationLevel && visualAnalysis.renovationLevel !== 'Unknown') ||
     (visualAnalysis.cosmeticFlipRisk && visualAnalysis.cosmeticFlipRisk !== 'Unknown') ||
@@ -355,15 +362,15 @@ export function PhotoSpaceAnalysisCard({ raw }: PhotoSpaceAnalysisCardProps) {
 
   // ── Render New Photo Review Format ──
   if (hasPhotoReview) {
-    const { overallSummary, areas, keyTakeaways } = photoReview!;
+    const { overallSummary, areas, keyTakeaways } = effectivePhotoReview!;
     const { solidSigns, needsAttention, cannotVerify } = keyTakeaways || {};
 
     return (
       <div className="bg-white rounded-2xl p-5 border border-stone-100 shadow-[0_1px_4px_rgba(0,0,0,0.04)] animate-in fade-in slide-in-from-bottom-8 duration-700 ease-out mb-8">
         {/* Header */}
-        <SectionHeader 
-          title={photoReview!.moduleTitle || "Photo & Condition Review"} 
-          subtitle={photoReview!.moduleSubtitle || "What the photos show, what looks solid, and what still needs checking."}
+        <SectionHeader
+          title={effectivePhotoReview!.moduleTitle || "Photo & Condition Review"}
+          subtitle={effectivePhotoReview!.moduleSubtitle || "What the photos show, what looks solid, and what still needs checking."}
         />
 
         {/* Overall Summary */}
@@ -427,7 +434,7 @@ export function PhotoSpaceAnalysisCard({ raw }: PhotoSpaceAnalysisCardProps) {
     addIf('Bathroom', visualAnalysis.bathroomCondition);
   }
 
-  const spaceCards = hasSpaceAnalysis ? spaceAnalysis!.map((space) => ({
+  const spaceCards = hasSpaceAnalysis ? effectiveSpaceAnalysis!.map((space) => ({
     spaceType: space.spaceType,
     label: getSpaceTypeLabel(space.spaceType ?? ''),
     score: space.score ?? 0,
