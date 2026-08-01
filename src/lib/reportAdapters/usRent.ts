@@ -281,8 +281,12 @@ function buildQuickFacts(result: USRentResult): QuickFact[] {
 // ── highlights (rent_fairness + listing trust + risk) ────────────────────────
 
 function buildHighlights(result: USRentResult): HighlightsData {
+  // Drop short field-name strings (< 20 chars) that leak from LLM output when
+  // it generates schema key labels instead of actual conclusions.
+  // Also strip sale-flavored phrases.
   const stringArr = (v: unknown): string[] =>
     (Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string') : [])
+      .filter((s) => s.length >= 20) // drop field-name labels
       .filter((s) => !matchesAny(s, RENT_SALE_FLAVORED_PHRASES));
   const fair = result.rent_fairness ?? {};
   const trust = result.rental_listing_trust ?? {};
@@ -298,12 +302,14 @@ function buildHighlights(result: USRentResult): HighlightsData {
     ],
     risks: [
       ...stringArr(result.riskSignals),
-      ...stringArr(result.risks),
+      // NOTE: result.risks (LLM free-text risks) is intentionally NOT injected here.
+      // Those strings tend to be field-name labels (e.g. "Payment Timing",
+      // "Qualification Requirements") rather than actionable risk descriptions.
+      // When they leak into highlights.risks they appear as noise in the
+      // "Why It Matters" / WhatCouldChangeYourDecisionSection cards.
+      // The individual field sections (Application & Payment Risk, Lease Terms,
+      // etc.) already render this information with proper labelling.
       ...(toText(fair.verdict) ? [`Rent fairness: ${toText(fair.verdict)}`] : []),
-      // NOTE: trust.concerns is intentionally NOT injected here — those are
-      // already rendered in the "Rental Listing Trust" section. Adding them
-      // to risks would cause them to also appear in "What Could Change Your
-      // Decision" via the generic WhatCouldChangeYourDecisionSection.
     ],
   };
 }
@@ -488,20 +494,34 @@ function stripSaleFlavoredSentences(text: string): string {
 }
 
 /**
- * Phrase-level sanitizer for the Bottom Line / hero.summary field. Tries:
- *   1. Clean `bottom_line` by stripping sale-flavored sentences.
- *   2. If that yields empty, try `quick_summary` with the same strip.
- *   3. If still empty, return the renter fallback so the section is never blank.
+ * Phrase-level + structural sanitizer for the Bottom Line / hero.summary field.
+ *
+ * Strategy:
+ *   1. Drop sale-flavored sentences (ownership, financing, resale, comps).
+ *   2. Drop pure field-name labels (short strings < 30 chars that read as
+ *      schema keys rather than conclusions, e.g. "Application Fee").
+ *   3. If nothing useful remains, fall back to the renter-accurate generic.
  */
 function sanitizeRentFinalLine(
   bottomLine: unknown,
   quickSummary: unknown,
   fallback: string,
 ): string {
-  const cleanedBL = stripSaleFlavoredSentences(toText(bottomLine));
-  if (cleanedBL) return cleanedBL;
-  const cleanedQS = stripSaleFlavoredSentences(toText(quickSummary));
-  if (cleanedQS) return cleanedQS;
+  const clean = (raw: string): string => {
+    if (!raw) return '';
+    // Strip sale-flavored sentences
+    const afterSaleStrip = stripSaleFlavoredSentences(raw);
+    if (!afterSaleStrip) return '';
+    // Drop pure field-name labels that are too short to be a real conclusion
+    // (e.g. "Application Fee", "Misleading effective rent math", etc.)
+    if (afterSaleStrip.length < 30) return '';
+    return afterSaleStrip;
+  };
+
+  const bl = clean(toText(bottomLine));
+  if (bl) return bl;
+  const qs = clean(toText(quickSummary));
+  if (qs) return qs;
   return fallback;
 }
 
@@ -783,7 +803,7 @@ function buildSections(result: USRentResult): ReportSection[] {
     for (const q of risk.questions) {
       const t = toText(q);
       if (!t || matchesAny(t, RENT_SALE_FLAVORED_PHRASES)) continue;
-      riskItems.push({ title: t, description: t });
+      riskItems.push({ title: t });
     }
   }
   if (riskItems.length > 0) {
@@ -801,10 +821,11 @@ function buildSections(result: USRentResult): ReportSection[] {
     for (const r of lt.restrictions) {
       const t = toText(r);
       if (!t || matchesAny(t, RENT_SALE_FLAVORED_PHRASES)) continue;
-      ltItems.push({ title: t, description: t });
+      // title only — description would be a duplicate in _RentKVBlock.
+      ltItems.push({ title: t });
     }
   }
-  if (lt.evidence_quality) ltItems.push({ title: 'Evidence', value: toText(lt.evidence_quality), badge: toText(lt.evidence_quality) });
+  if (lt.evidence_quality) ltItems.push({ title: 'Evidence', badge: toText(lt.evidence_quality) });
   if (ltItems.length > 0) {
     sections.push({ id: 'lease-terms-rules', title: 'Lease Terms & Rules', subtitle: 'What you sign up for', items: ltItems });
   }
@@ -817,10 +838,15 @@ function buildSections(result: USRentResult): ReportSection[] {
     for (const n of loc.noise_concerns) locItems.push({ title: 'Noise Concern', description: toText(n) });
   }
   if (Array.isArray(loc.daily_amenities)) {
-    for (const n of loc.daily_amenities) locItems.push({ title: toText(n), description: toText(n) });
+    for (const n of loc.daily_amenities) {
+      const t = toText(n);
+      if (!t) continue;
+      // title only — description would be a duplicate in _RentKVBlock.
+      locItems.push({ title: t });
+    }
   }
   if (loc.weather_or_seasonal) locItems.push({ title: 'Weather / Seasonal', value: toText(loc.weather_or_seasonal) });
-  if (loc.evidence_quality) locItems.push({ title: 'Evidence', value: toText(loc.evidence_quality), badge: toText(loc.evidence_quality) });
+  if (loc.evidence_quality) locItems.push({ title: 'Evidence', badge: toText(loc.evidence_quality) });
   if (locItems.length > 0) {
     sections.push({ id: 'location-daily-life', title: 'Location & Daily Life Check', subtitle: 'What the area feels like day-to-day', items: locItems });
   }
@@ -854,15 +880,22 @@ function buildSections(result: USRentResult): ReportSection[] {
     const bucket = (rc[key] ?? {}) as Record<string, unknown>;
     if (!bucket || Object.keys(bucket).length === 0) continue;
     const rl = toText(bucket.risk_level);
+    // value+badge same string double-renders in _RentKVBlock; keep badge only
+    // (badge has severity colour, value is the plain duplicate).
     rcItems.push({
       title: rcLabels[key] ?? key,
-      value: rl || 'Unknown',
       badge: rl || 'Unknown',
       severity: severityOf(rl),
       description: safeDescription(bucket.signal, bucket.evidence, bucket.why_it_matters),
     });
     if (Array.isArray(bucket.questions)) {
-      for (const q of bucket.questions) rcItems.push({ title: toText(q), description: toText(q) });
+      for (const q of bucket.questions) {
+        const t = toText(q);
+        if (!t) continue;
+        if (matchesAny(t, RENT_SALE_FLAVORED_PHRASES)) continue;
+        // title only — description would be a duplicate in _RentKVBlock.
+        rcItems.push({ title: t });
+      }
     }
   }
   if (rcItems.length > 0) {

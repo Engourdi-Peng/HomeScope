@@ -1,11 +1,70 @@
 /**
  * PhotoSpaceAnalysisCard — 共享组件
  * 被 NewReportUI (网站主链路) 和 USSaleReport (extension 备用链路) 共用。
- * 
+ *
  * 支持 Photo & Condition Review 格式（买家视角）
  * 同时保持向后兼容旧的 spaceAnalysis 格式
  */
 import { Camera, CheckCircle, AlertTriangle, HelpCircle, Search, ChevronRight } from 'lucide-react';
+
+// ── Buyer-flavored phrase filter ────────────────────────────────────────────
+// Filters sale-specific actor/process phrases that leak through from the Step 1
+// Zillow-structured output (originally written for US Sale reports).  In rent
+// reports these phrases appear in photo analysis text (e.g. "Ask the listing
+// agent", "property being sold") and must be replaced with renter-accurate
+// language or the whole item dropped.
+const BUYER_FLAVORED_PATTERNS: RegExp[] = [
+  /\bproperty\s+being\s+(sold|purchased)\b/i,
+  /\blisting\s+agent\b/i,
+  /\bseller'?s?\s+(agent|representation)\b/i,
+  /\b(buyer'?s?|seller'?s?)\s+agent\b/i,
+  /\bfinancing\s+or\s+insurance\b/i,
+  /\bseller\s+disclosure\b/i,
+  /\brenovation\s+permit(s|history)?\b/i,
+  /\bproperty\s+sale\b/i,
+  /\bclose\s+of\s+escrow\b/i,
+  /\binspection\s+contingency\b/i,
+  /\bbuy\s+the\s+property\b/i,
+  /\bmake\s+an?\s+offer\b/i,
+  /\bbuyer'?s?\s+market\b/i,
+];
+
+/**
+ * Returns a renter-safe version of `text` by replacing known buyer-flavored
+ * actor/process phrases. Drops the entire string if it consists only of those
+ * phrases (length < 15 after stripping). Used for `whatLooksLike` and
+ * `whatToCheckNext` fields where the core information should be preserved but
+ * the actor references need to be neutralised.
+ */
+function rentSafeText(text: string | undefined | null): string {
+  if (!text) return '';
+  let result = text;
+  // Replace buyer-flavored actor references with renter-appropriate ones
+  result = result
+    .replace(/\blisting\s+agent\b/gi, 'property manager or landlord')
+    .replace(/\bseller'?s?\s+(agent|representation)\b/gi, 'property manager or landlord')
+    .replace(/\b(buyer'?s?|seller'?s?)\s+agent\b/gi, 'property contact')
+    .replace(/\bproperty\s+being\s+(sold|purchased)\b/gi, 'rental listing')
+    .replace(/\brenovation\s+permit(s|history)?\b/gi, 'disclosure documents')
+    .replace(/\bseller\s+disclosure\b/gi, 'landlord disclosure')
+    .replace(/\bproperty\s+sale\b/gi, 'rental listing')
+    .replace(/\bfinancing\s+or\s+insurance\b/gi, 'insurance or lease terms')
+    .replace(/\bbuy\s+the\s+property\b/gi, 'apply for the rental')
+    .replace(/\bmake\s+an?\s+offer\b/gi, 'submit a rental application');
+  // Drop if the item is now empty or consists only of neutralised phrases
+  if (result.trim().length < 10) return '';
+  return result;
+}
+
+/**
+ * Returns true if `text` contains a buyer-flavored phrase that cannot be
+ * meaningfully neutralised (e.g. "close of escrow", "inspection contingency").
+ * Used to drop entire `cannotVerify` / `visibleConcerns` items.
+ */
+function hasBuyerFlavor(text: string | undefined | null): boolean {
+  if (!text) return false;
+  return BUYER_FLAVORED_PATTERNS.some((re) => re.test(text));
+}
 
 function getSpaceTypeLabel(spaceType: string): string {
   const map: Record<string, string> = {
@@ -139,6 +198,13 @@ function SectionHeader({ title, subtitle }: { title: string; subtitle?: string }
 function KeyTakeawayBadge({ type, items }: { type: 'solid' | 'attention' | 'verify'; items: string[] }) {
   if (!items || items.length === 0) return null;
 
+  // Filter buyer-flavored items so they don't pollute the rent report photo module
+  const cleanItems = items
+    .map((item) => rentSafeText(item))
+    .filter((item): item is string => Boolean(item));
+
+  if (cleanItems.length === 0) return null;
+
   const configs = {
     solid: {
       icon: CheckCircle,
@@ -181,7 +247,7 @@ function KeyTakeawayBadge({ type, items }: { type: 'solid' | 'attention' | 'veri
         </span>
       </div>
       <ul className="space-y-1">
-        {items.map((item, i) => (
+        {cleanItems.map((item, i) => (
           <li key={i} className="flex items-start gap-2">
             <span className={`w-1.5 h-1.5 rounded-full ${config.dotColor} mt-1.5 shrink-0`} />
             <span className="text-xs text-stone-700 leading-snug">{item}</span>
@@ -193,9 +259,30 @@ function KeyTakeawayBadge({ type, items }: { type: 'solid' | 'attention' | 'veri
 }
 
 function AreaReviewCard({ area }: { area: PhotoReviewArea }) {
-  const hasConcerns = area.visibleConcerns && area.visibleConcerns.length > 0;
-  const hasCannotVerify = area.cannotTellFromPhotos && area.cannotTellFromPhotos.length > 0;
-  const hasNextSteps = area.whatToCheckNext && area.whatToCheckNext.length > 0;
+  // Apply buyer-flavored phrase replacement / drop to all text fields
+  const cleanWhatLooksLike = rentSafeText(area.whatLooksLike);
+  if (!cleanWhatLooksLike) return null; // drop card if description is entirely buyer-flavored
+
+  const cleanConcerns = (area.visibleConcerns ?? [])
+    .map((c) => rentSafeText(c))
+    .filter(Boolean) as string[];
+  const hasConcerns = cleanConcerns.length > 0;
+
+  // Drop entirely buyer-flavored items from "Can't Verify"
+  const cleanCannotVerify = (area.cannotTellFromPhotos ?? [])
+    .filter((c) => !hasBuyerFlavor(c))
+    .map((c) => rentSafeText(c))
+    .filter(Boolean) as string[];
+  const hasCannotVerify = cleanCannotVerify.length > 0;
+
+  // Replace buyer-flavored phrases in "What to Check Next"
+  const cleanNextSteps = (area.whatToCheckNext ?? [])
+    .map((s) => rentSafeText(s))
+    .filter(Boolean) as string[];
+  const hasNextSteps = cleanNextSteps.length > 0;
+
+  if (!hasConcerns && !hasCannotVerify && !hasNextSteps) return null;
+
   const areaLabel = getSpaceTypeLabel(area.area) || area.area;
 
   return (
@@ -218,11 +305,13 @@ function AreaReviewCard({ area }: { area: PhotoReviewArea }) {
       </div>
 
       {/* What It Looks Like */}
-      <div className="mb-3">
-        <p className="text-xs text-stone-600 leading-relaxed">
-          {area.whatLooksLike}
-        </p>
-      </div>
+      {cleanWhatLooksLike && (
+        <div className="mb-3">
+          <p className="text-xs text-stone-600 leading-relaxed">
+            {cleanWhatLooksLike}
+          </p>
+        </div>
+      )}
 
       {/* Visible Concerns */}
       {hasConcerns && (
@@ -234,7 +323,7 @@ function AreaReviewCard({ area }: { area: PhotoReviewArea }) {
             </span>
           </div>
           <ul className="space-y-1">
-            {area.visibleConcerns.map((concern, i) => (
+            {cleanConcerns.map((concern, i) => (
               <li key={i} className="flex items-start gap-1.5">
                 <span className="w-1 h-1 rounded-full bg-amber-500 mt-1.5 shrink-0" />
                 <span className="text-xs text-amber-800 leading-snug">{concern}</span>
@@ -254,7 +343,7 @@ function AreaReviewCard({ area }: { area: PhotoReviewArea }) {
             </span>
           </div>
           <ul className="space-y-1">
-            {area.cannotTellFromPhotos.map((item, i) => (
+            {cleanCannotVerify.map((item, i) => (
               <li key={i} className="flex items-start gap-1.5">
                 <span className="w-1 h-1 rounded-full bg-stone-400 mt-1.5 shrink-0" />
                 <span className="text-xs text-stone-600 leading-snug">{item}</span>
@@ -274,7 +363,7 @@ function AreaReviewCard({ area }: { area: PhotoReviewArea }) {
             </span>
           </div>
           <ul className="space-y-1">
-            {area.whatToCheckNext.map((step, i) => (
+            {cleanNextSteps.map((step, i) => (
               <li key={i} className="flex items-start gap-1.5">
                 <ChevronRight size={12} className="text-blue-500 mt-0.5 shrink-0" />
                 <span className="text-xs text-blue-800 leading-snug">{step}</span>
@@ -365,6 +454,9 @@ export function PhotoSpaceAnalysisCard({ raw }: PhotoSpaceAnalysisCardProps) {
     const { overallSummary, areas, keyTakeaways } = effectivePhotoReview!;
     const { solidSigns, needsAttention, cannotVerify } = keyTakeaways || {};
 
+    // Apply buyer-flavored phrase replacement to the overall summary
+    const cleanSummary = rentSafeText(overallSummary);
+
     return (
       <div className="bg-white rounded-2xl p-5 border border-stone-100 shadow-[0_1px_4px_rgba(0,0,0,0.04)] animate-in fade-in slide-in-from-bottom-8 duration-700 ease-out mb-8">
         {/* Header */}
@@ -373,10 +465,10 @@ export function PhotoSpaceAnalysisCard({ raw }: PhotoSpaceAnalysisCardProps) {
           subtitle={effectivePhotoReview!.moduleSubtitle || "What the photos show, what looks solid, and what still needs checking."}
         />
 
-        {/* Overall Summary */}
-        {overallSummary && (
+        {/* Overall Summary — rent-safe version */}
+        {cleanSummary && (
           <div className="mb-5 p-4 bg-stone-50 rounded-xl border border-stone-200">
-            <p className="text-sm text-stone-700 leading-relaxed">{overallSummary}</p>
+            <p className="text-sm text-stone-700 leading-relaxed">{cleanSummary}</p>
           </div>
         )}
 
