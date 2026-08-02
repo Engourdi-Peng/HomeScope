@@ -932,6 +932,10 @@ async function handleMessage(message, sender, sendResponse) {
           market,
           listingUrl,
           zillowFinancials: listingData?.zillowFinancials || null,
+          // Pass through deterministic structuredListing (e.g. Zillow GraphQL
+          // room-rental facts) so the backend can persist room_rental_facts
+          // into full_result. See analyze action for full producer chain.
+          structuredListing: listingData?.structuredListing ?? null,
         };
         const response = await fetch(url, {
           method: 'POST',
@@ -1168,6 +1172,13 @@ async function handleMessage(message, sender, sendResponse) {
         market,
         listingUrl,
         zillowFinancials: listingData?.zillowFinancials || null,
+        // Pass through deterministic structuredListing (e.g. Zillow GraphQL room-rental
+        // facts) so the backend can persist room_rental_facts into full_result.
+        // The GraphQL capture layer (extension/zillow-graphql-capture.js) is the
+        // producer; content.js attaches it to listingData.structuredListing; this
+        // background worker is the handoff carrier. When listingData.structuredListing
+        // is absent this stays null and does not affect any other flow.
+        structuredListing: listingData?.structuredListing ?? null,
       };
 
       // Step 3: action=submit

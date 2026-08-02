@@ -11,6 +11,7 @@ export default defineConfig({
       'src/lib/reportAdapters/detectPropertyCategory.test.ts',
       'src/lib/reportAdapters/effectiveReportMode.test.ts',
       'src/content/extractors/contract.test.ts',
+      'src/lib/api.test.ts',
     ],
   },
 });

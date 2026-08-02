@@ -1,0 +1,55 @@
+{
+  "source": "zillow_structured",
+  "sourceVersion": "zillow_structured_v1",
+  "capturedAt": "2024-09-15T10:30:00.000Z",
+  "capturedPageUrl": "https://www.zillow.com/homedetails/1995-S-Logan-St-Denver-CO-80210/58686666_zpid/",
+  "identity": {
+    "zpid": "58686666",
+    "bdpUrl": null,
+    "hdpUrl": "/homedetails/1995-S-Logan-St-Denver-CO-80210/58686666_zpid/",
+    "address": "1995 S Logan St, Denver, CO 80210",
+    "name": null
+  },
+  "classification": {
+    "objectKind": "room",
+    "transactionType": "rent",
+    "priceUnit": "monthly",
+    "propertyType": null
+  },
+  "pricing": {
+    "displayedPrice": 415,
+    "baseRent": 415,
+    "priceText": "$415/mo"
+  },
+  "layout": {
+    "bedrooms": 1,
+    "bathrooms": 1,
+    "sqft": null,
+    "bedroomRange": null,
+    "availableUnitCount": null
+  },
+  "roomRental": {
+    "hasPrivateBath": false,
+    "roomIsFurnished": false,
+    "housemateCount": 4,
+    "leaseTerm": "Contact For Details",
+    "furnished": false,
+    "hasPetsAllowed": false,
+    "allowedPets": null,
+    "parkingCapacity": 6,
+    "parkingFeatures": "Garage",
+    "hasAttachedGarage": null,
+    "atAGlanceFacts": {
+      "Date available": "Now",
+      "Type": "Room in townhouse",
+      "Lease": "Contact For Details",
+      "Pets": "No Pets",
+      "Parking": "6 spaces"
+    },
+    "listPriceIncludesRequiredMonthlyFees": false,
+    "rentalCostsAndFees": null,
+    "requiredMonthlyFees": 250,
+    "totalMonthlyCost": 665,
+    "promotionText": null
+  }
+}

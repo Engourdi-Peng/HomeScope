@@ -2687,7 +2687,95 @@ function extractZillowWhatsSpecialHighlights() {
   return Array.from(new Set(highlights));
 }
 
+// ─── HomeScope Structured Listing Bridge ─────────────────────────────────────
+// Receives STRUCTURED_SNAPSHOT and ROUTE_CHANGED from zillow-graphql-capture.js
+// (MAIN world). The capture layer intercepts Zillow GraphQL traffic and produces
+// a normalized structuredListing (source: "zillow_structured", sourceVersion:
+// "zillow_structured_v1") used by the backend buildRoomRentalFacts to persist
+// deterministic room_rental_facts into full_result. This bridge is the ONLY
+// place the ISOLATED-world content script learns about the structured payload.
+
+var _HS_MSG = {
+  REQUEST_SNAPSHOT: 'REQUEST_STRUCTURED_SNAPSHOT',
+  SNAPSHOT: 'STRUCTURED_SNAPSHOT',
+  ROUTE_CHANGED: 'ROUTE_CHANGED'
+};
+
+var _hsStructuredSnapshot = null;
+var _hsLastSnapshotUrl = null;
+var _hsPendingRequestId = null;
+
+window.addEventListener('message', function(event) {
+  if (event.source !== window) return;
+  if (event.origin !== location.origin) return;
+  var data = event.data || {};
+  if (data.namespace !== 'HomeScope') return;
+
+  if (data.type === _HS_MSG.SNAPSHOT) {
+    var snap = data.payload;
+    // Only accept responses for the current pending requestId
+    if (_hsPendingRequestId === null || data.requestId !== _hsPendingRequestId) return;
+    _hsPendingRequestId = null;
+
+    if (!snap || snap.sourceVersion !== 'zillow_structured_v1') {
+      _hsStructuredSnapshot = null;
+      return;
+    }
+
+    var urlMatch = location.pathname.match(/(\d+)_zpid/);
+    var currentZpid = urlMatch ? urlMatch[1] : null;
+    var currentPathname = location.pathname;
+
+    var valid = false;
+    if (snap.identity) {
+      if (snap.identity.zpid && snap.identity.zpid === currentZpid) valid = true;
+      if (snap.identity.bdpUrl) {
+        try {
+          var snapPath = new URL(snap.identity.bdpUrl, location.href).pathname;
+          if (snapPath === currentPathname) valid = true;
+        } catch (_) {}
+      }
+    }
+
+    _hsStructuredSnapshot = valid ? snap : null;
+    _hsLastSnapshotUrl = valid ? data.capturedPageUrl : null;
+  }
+
+  if (data.type === _HS_MSG.ROUTE_CHANGED) {
+    _hsStructuredSnapshot = null;
+    _hsLastSnapshotUrl = null;
+    _hsPendingRequestId = null;
+  }
+});
+
 async function extractListingDataLight() {
+  // ── Request structured snapshot from MAIN world ────────────────────────────
+  // The capture layer (zillow-graphql-capture.js) runs in the MAIN world and
+  // intercepts Zillow GraphQL traffic. Wait up to 800ms for the snapshot,
+  // scoped to the current zpid/building. If not present, falls back to null.
+  var snapshot = null;
+  var requestId = String(Date.now()) + '_' + Math.random().toString(36).slice(2, 8);
+  _hsPendingRequestId = requestId;
+
+  window.postMessage({
+    namespace: 'HomeScope',
+    type: _HS_MSG.REQUEST_SNAPSHOT,
+    requestId: requestId
+  }, location.origin);
+
+  var waitStart = Date.now();
+  while (Date.now() - waitStart < 800) {
+    if (_hsPendingRequestId !== requestId) {
+      snapshot = _hsStructuredSnapshot;
+      break;
+    }
+    await new Promise(function(r) { setTimeout(r, 50); });
+  }
+
+  if (_hsPendingRequestId === requestId) {
+    _hsPendingRequestId = null;
+  }
+
   // ── 过滤搜索结果页 ──────────────────────────────────────────
   // 搜索结果页不应提取数据，否则会显示第一个房源卡片的信息
   // 而不是当前 tab 的真实内容
@@ -2803,6 +2891,12 @@ async function extractListingDataLight() {
       floodZone: zillowData.floodZone || null,
       region: zillowData.region || null,
     } : {}),
+    // Structured listing from GraphQL capture layer (MAIN world).
+    // When the capture layer (extension/zillow-graphql-capture.js) has published
+    // a snapshot for the current zpid/building, attach it here so background
+    // -> supabase analyze can forward it to buildRoomRentalFacts. Null on
+    // non-Zillow pages or before the capture layer publishes.
+    structuredListing: snapshot || null,
   };
 
   // ── propertyFactsV2: structured Zillow field normalization ──

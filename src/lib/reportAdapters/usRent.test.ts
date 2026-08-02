@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { normalizeUSRentReport } from './usRent';
+import { normalizeReportResult } from './normalizeReport';
 import { hasInteriorPhotos } from './interiorPhotos';
 
 const MODULE_FALLBACKS = { RENT_BOTTOM_LINE_FALLBACK: 'Monthly rent not listed. Confirm the advertised price before applying.' };
@@ -954,5 +955,182 @@ describe('hasInteriorPhotos — area normalization', () => {
       },
     });
     expect(result).toBe(true);
+  });
+});
+
+// =============================================================================
+// End-to-end normalizer regression for US Room Rental.
+// Goal: prove that the full_result shape produced by the deployed backend (which
+// includes market='US', reportMode='rent', overallScore=62 and the deterministic
+// `room_rental_facts` block) routes through normalizeReportResult →
+// normalizeUSRentReport and emits the Rental Snapshot / Rent & True Cost sections
+// with the user-spec copy. These tests guard against the "page shows generic
+// buyer/seller/comparable sales" regression where the adapter was silently skipped.
+// =============================================================================
+
+describe('end-to-end US Rent normalizer — room_rental_facts fixture', () => {
+  function roomRentalFixture(): Record<string, unknown> {
+    return {
+      market: 'US',
+      reportMode: 'rent',
+      source: 'zillow',
+      sourceDomain: 'zillow.com',
+      address: '1995 S Logan St, Denver, CO 80210',
+      listingInfo: {
+        address: '1995 S Logan St, Denver, CO 80210',
+      },
+      overallScore: 62,
+      evidenceLevel: 'Review With Caution',
+      evidence_score: 62,
+      verdict: 'Need More Evidence',
+      recommendation: { verdict: 'Need More Evidence' },
+      // Deterministic block written by the backend's buildRoomRentalFacts.
+      room_rental_facts: {
+        object_kind: 'room',
+        advertised_effective_rent: 415,
+        required_monthly_fees: 250,
+        average_monthly_total: 665,
+        fees_included_in_advertised_price: false,
+        housemate_count: 4,
+        has_private_bath: false,
+        furnished: false,
+        pet_policy: 'No Pets',
+        available_date: 'Available Now',
+        lease_term: 'Contact For Details',
+        parking_capacity_property_level: 6,
+        parking_features: ['Attached', 'Garage', 'Other'],
+        parking_allocation_confirmed: false,
+      },
+    };
+  }
+
+  function findSectionById(sections: { id: string }[], id: string) {
+    return sections.find((s) => s.id === id);
+  }
+
+  function sectionTitlesText(section: { items?: { title?: string; value?: string; description?: string }[] } | undefined): string {
+    if (!section || !section.items) return '';
+    return section.items
+      .flatMap((it) => [it.title, it.value, it.description].filter(Boolean))
+      .map((s) => String(s))
+      .join(' | ');
+  }
+
+  function quickFactsText(report: { quickFacts?: { label?: string; value?: string }[] }): string {
+    return (report.quickFacts ?? [])
+      .flatMap((qf) => [qf.label, qf.value].filter(Boolean))
+      .map((s) => String(s))
+      .join(' | ');
+  }
+
+  it('routes to the US Rent adapter (meta.market === US, meta.reportMode === rent)', () => {
+    const report = normalizeReportResult(roomRentalFixture());
+    expect(report.meta.market).toBe('US');
+    expect(report.meta.reportMode).toBe('rent');
+    expect(report.meta.isBasic).toBe(false);
+  });
+
+  it('emits "Review With Caution" verdict for score 62 (not "Need More Evidence")', () => {
+    const report = normalizeReportResult(roomRentalFixture());
+    expect(report.hero.verdict).toBe('Review With Caution');
+    expect(report.hero.score).toBe(62);
+  });
+
+  it('Quick Facts surface deterministic Listing Type / Advertised Effective Rent / Housemates / Private Bathroom / Furnished / Pet Policy / Available / Lease Term / Parking', () => {
+    const report = normalizeReportResult(roomRentalFixture());
+    const text = quickFactsText(report);
+    expect(text).toMatch(/Listing Type/);
+    expect(text).toMatch(/Room Rental/);
+    expect(text).toMatch(/Advertised Effective Rent/);
+    expect(text).toMatch(/\$415\/mo/);
+    expect(text).toMatch(/Housemates/);
+    expect(text).toMatch(/4/);
+    expect(text).toMatch(/Private Bathroom/);
+    expect(text).toMatch(/Furnished/);
+    expect(text).toMatch(/No Pets/);
+    expect(text).toMatch(/Available Now/);
+    expect(text).toMatch(/Contact For Details/);
+  });
+
+  it('emits rental-snapshot and rent-true-cost sections', () => {
+    const report = normalizeReportResult(roomRentalFixture());
+    expect(findSectionById(report.sections, 'rental-snapshot')).toBeDefined();
+    expect(findSectionById(report.sections, 'rent-true-cost')).toBeDefined();
+  });
+
+  it('rent-true-cost shows $250/mo "additional" plus $665/mo "advertised effective rent plus required monthly fees"', () => {
+    const report = normalizeReportResult(roomRentalFixture());
+    const tc = findSectionById(report.sections, 'rent-true-cost')!;
+    const text = sectionTitlesText(tc as any);
+    expect(text).toMatch(/\$250\/mo/);
+    expect(text).toMatch(/additional to the advertised effective rent/i);
+    expect(text).toMatch(/\$665\/mo/);
+    expect(text).toMatch(/advertised effective rent plus required monthly fees/i);
+  });
+
+  it('does NOT surface sale-only terms in Quick Facts / sections (Apartment / Cats allowed / 12 months / Parking: 6 / ownership expenses / comparable sales)', () => {
+    const fixture = roomRentalFixture();
+    (fixture as any).rental_snapshot = {
+      monthly_rent: '$2,670',
+      beds: '2',
+      baths: '2',
+      lease_term: '12 months',
+      pet_policy: 'Cats allowed',
+      building_name: 'Apartment Tower',
+      property_type: 'Apartment',
+      parking: 'Parking: 6',
+    };
+    (fixture as any).rent_fairness = {
+      comparable_signal: 'comparable sales suggest lower rent',
+    };
+    const report = normalizeReportResult(fixture);
+    const surfaces = [
+      quickFactsText(report),
+      sectionTitlesText(findSectionById(report.sections, 'rental-snapshot') as any),
+      sectionTitlesText(findSectionById(report.sections, 'rent-true-cost') as any),
+      String(report.hero?.summary ?? ''),
+      String(report.hero?.verdict ?? ''),
+    ].join(' | ');
+    expect(surfaces).not.toMatch(/Apartment/);
+    expect(surfaces).not.toMatch(/Cats allowed/);
+    expect(surfaces).not.toMatch(/12 months/);
+    expect(surfaces).not.toMatch(/Parking:\s*6\b/);
+    expect(surfaces).not.toMatch(/ownership expenses/);
+    expect(surfaces).not.toMatch(/comparable sales/);
+  });
+
+  it('Three-state fee inclusion copy: false → "additional to"', () => {
+    const report = normalizeReportResult(roomRentalFixture());
+    const tc = findSectionById(report.sections, 'rent-true-cost')!;
+    const text = sectionTitlesText(tc as any);
+    expect(text).toMatch(/additional to the advertised effective rent/i);
+    expect(text).not.toMatch(/included in the advertised effective rent/i);
+    expect(text).not.toMatch(/whether this is included is not confirmed/i);
+  });
+
+  it('Three-state fee inclusion copy: true → "included in"', () => {
+    const fixture = roomRentalFixture();
+    (fixture.room_rental_facts as any).fees_included_in_advertised_price = true;
+    const report = normalizeReportResult(fixture);
+    const tc = findSectionById(report.sections, 'rent-true-cost')!;
+    const text = sectionTitlesText(tc as any);
+    expect(text).toMatch(/included in the advertised effective rent/i);
+  });
+
+  it('Three-state fee inclusion copy: null → "whether this is included is not confirmed"', () => {
+    const fixture = roomRentalFixture();
+    (fixture.room_rental_facts as any).fees_included_in_advertised_price = null;
+    const report = normalizeReportResult(fixture);
+    const tc = findSectionById(report.sections, 'rent-true-cost')!;
+    const text = sectionTitlesText(tc as any);
+    expect(text).toMatch(/whether this is included is not confirmed/i);
+  });
+
+  it('Parking text uses "N property-level spaces advertised — tenant allocation not confirmed" (never bare "Parking: 6")', () => {
+    const report = normalizeReportResult(roomRentalFixture());
+    const snap = findSectionById(report.sections, 'rental-snapshot')!;
+    const snapText = sectionTitlesText(snap as any);
+    expect(snapText).toMatch(/6 property-level spaces advertised/i);
+    expect(snapText).toMatch(/tenant allocation not confirmed/i);
   });
 });
