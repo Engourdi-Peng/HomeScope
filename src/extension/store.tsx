@@ -27,6 +27,38 @@ import { ExtractionErrorCode, getUserErrorMessage } from '../../shared/errors';
 // - Frontend listingData provides fallback values only when backend doesn't have them.
 // - For images: prefer backend's analysis images > frontend's thumbnail images.
 //
+// ===== Listing-identity helpers =====
+//
+// `listingIdentity` is stable across cosmetic URL changes (trailing slash, query
+// params, UTMs) and across refreshes of the same listing. We derive it on the
+// store side from the canonical form of the listing URL / page URL when the
+// content script hasn't populated the explicit `listingIdentity` field yet.
+//
+function getListingIdentity(data: ListingData | ListingDataV2 | null | undefined): string {
+  if (!data) return '';
+  const explicit = (data as { listingIdentity?: string | null }).listingIdentity;
+  if (explicit) return explicit;
+  const candidate =
+    (data as { listingUrl?: string }).listingUrl ||
+    (data as { url?: string }).url ||
+    '';
+  return getCanonicalListingKey(candidate);
+}
+
+// Reuse urlUtils' canonical form when available; otherwise fall back to a
+// inline minimal canonicalizer so we don't double-bookkeep normalization.
+function getCanonicalListingKey(url: string | null | undefined): string {
+  if (!url) return '';
+  try {
+    const parsed = new URL(url);
+    const path = (parsed.pathname || '').replace(/\/+$/, '').toLowerCase() || '/';
+    const host = (parsed.hostname || '').toLowerCase();
+    return `${host}${path}`;
+  } catch {
+    return url.toLowerCase();
+  }
+}
+
 // ===== Helper: Block on unknown listing type =====
 //
 // When the content-script detector returns listingType === 'unknown', we must NOT
@@ -41,6 +73,8 @@ function hasResolvedListingType(data: ListingData | ListingDataV2 | null): boole
   if (data.listingType === 'sale' || data.listingType === 'rent') return true;
   return false;
 }
+
+import { getMultiUnitBuildingBlock } from './multiUnitGuard';
 
 function isV2Data(data: ListingData | ListingDataV2 | null): data is ListingDataV2 {
   // V2: 有 listingUrl 或同时有 images 和 source
@@ -439,6 +473,33 @@ function appReducer(state: AppState, action: AppAction): AppState {
       return { ...state, pageStatus: action.pageStatus };
 
     case 'SET_PROPERTY_STATUS':
+      // Cross-listing identity guard: if the new listingIdentity differs from
+      // the current one, the cached analysisResult / analysisPhase / cooled
+      // URLs belong to the previous listing. Reset them so the user never sees
+      // an old score on a new property.
+      const incomingIdentity = getListingIdentity(action.listingData);
+      const currentIdentity = getListingIdentity(state.listingData);
+      const identityChanged = action.listingData !== null && action.listingData !== undefined
+        && currentIdentity !== ''
+        && incomingIdentity !== ''
+        && currentIdentity !== incomingIdentity;
+      if (identityChanged) {
+        return {
+          ...state,
+          propertyStatus: action.propertyStatus,
+          listingData: action.listingData !== undefined ? action.listingData : state.listingData,
+          propertyDetection: action.propertyDetection !== undefined ? action.propertyDetection : state.propertyDetection,
+          readError: action.readError !== undefined ? action.readError : null,
+          // Clear all listing-bound derived state.
+          analysisPhase: 'idle',
+          analysisProgress: 0,
+          analysisError: null,
+          analysisResult: null,
+          viewingHistoryId: null,
+          extractionCached: false,
+          lastExtractedUrl: null,
+        };
+      }
       return {
         ...state,
         propertyStatus: action.propertyStatus,
@@ -510,11 +571,20 @@ function appReducer(state: AppState, action: AppAction): AppState {
       return { ...state, cooldownEndsAt: action.cooldownEndsAt };
 
     case 'SET_EXTRACTION_CACHED':
+      // Persist the canonical listing URL so cross-listing cache guards work
+      // even when the active tab URL has cosmetic differences (trailing slash,
+      // UTM params, etc.) vs. the canonical listingUrl.
       return {
         ...state,
         extractionCached: action.extractionCached,
-        lastExtractedUrl: action.lastExtractedUrl,
+        lastExtractedUrl: action.lastExtractedUrl != null
+          ? getCanonicalListingKey(action.lastExtractedUrl) || action.lastExtractedUrl
+          : null,
       };
+
+    // PR 2 (unified reporting + remove unknown modal) is intentionally deferred
+    // until PR 1A is validated. Do not introduce mode-persistence scaffolding
+    // here yet; only the identity-based clearing above is needed for PR 1A.
 
     case 'SET_SOURCE_TAB_ID':
       return { ...state, sourceTabId: action.sourceTabId };
@@ -1222,18 +1292,35 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
           const pingResult = { url: activeTab.url, title: activeTab.title, readyState: activeTab.status };
           const result = await ensureContentScriptThenExtractListing(activeTab.id);
 
-          // ── URL 校验：防止陈旧数据显示 ─────────────────────────────
-          // 在搜索结果页→房源详情页切换时，content script 可能在旧页面运行
-          // 导致提取到陈旧数据。通过比对提取结果的 URL 与当前 tab URL 来检测
+          // ── Identity-aware stale data guard ─────────────────────────────
+          // In the search → detail flow, the content script on the previous
+          // page can return its data into the new detail page and pollute the
+          // side panel. Two checks harden this:
+          //   1. Compare the extracted listingUrl/url against the active tab's
+          //      canonical URL.
+          //   2. If we already have a listingIdentity in memory, compare the
+          //      extraction's identity against it. A mismatch = the script is
+          //      still bound to the previous listing.
+          // Either guard failing means we discard the extraction and keep the
+          // currently-displayed listingData untouched.
+          const extractedListingIdentity = getListingIdentity(result.data);
+          const currentListingIdentity = getListingIdentity(state.listingData);
           const extractedUrl = (result.data as any)?.listingUrl || (result.data as any)?.url || '';
-          const normalizedExtracted = normalizeUrlForComparison(extractedUrl);
-          const normalizedTab = normalizeUrlForComparison(activeTab.url);
-          if (extractedUrl && normalizedExtracted !== normalizedTab) {
-            noop('[ExtApp] URL mismatch detected, skipping stale data', {
-              extracted: extractedUrl,
-              current: activeTab.url,
+          const normalizedExtracted = getCanonicalListingKey(extractedUrl);
+          const normalizedTab = getCanonicalListingKey(activeTab.url);
+          const identityMismatch =
+            currentListingIdentity &&
+            extractedListingIdentity &&
+            currentListingIdentity !== extractedListingIdentity;
+          const urlMismatch = extractedUrl && normalizedExtracted !== normalizedTab;
+          if (identityMismatch || urlMismatch) {
+            noop('[ExtApp] Stale extraction detected, skipping', {
+              extractedIdentity: extractedListingIdentity,
+              currentIdentity: currentListingIdentity,
+              extractedUrl,
+              currentTab: activeTab.url,
+              reason: identityMismatch ? 'identity_mismatch' : 'url_mismatch',
             });
-            // 不更新 listingData，保持当前显示的内容
             return;
           }
 
@@ -1408,7 +1495,11 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     // reusing it causes "old-listing data leakage" (different address, photos,
     // price, year built) into the new analysis. Force a re-extraction whenever
     // the active URL changed OR no cache exists for this URL.
-    if (!bypassCache && state.extractionCached && state.lastExtractedUrl && state.lastExtractedUrl !== currentUrl) {
+    // Both sides are compared in canonical form so cosmetic URL churn
+    // (trailing slash, UTM params, fragments) does not trigger a needless
+    // re-extraction.
+    const canonicalCurrentUrl = getCanonicalListingKey(currentUrl);
+    if (!bypassCache && state.extractionCached && state.lastExtractedUrl && state.lastExtractedUrl !== canonicalCurrentUrl) {
       console.warn('[ExtApp] URL changed since last extraction, clearing stale cache', {
         previousUrl: state.lastExtractedUrl,
         currentUrl,
@@ -1417,7 +1508,10 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     }
 
     // Step 3: Check URL cache - validate cached data before reuse
-    if (!bypassCache && state.lastExtractedUrl === currentUrl && state.extractionCached && state.listingData) {
+    // v6 minimal patch: old caches lack extractionSchemaVersion (v2).
+    // If cached data is pre-v6, treat as cache miss and re-extract.
+    const cachedSchemaVersion = Number((state.listingData as any)?.extractionSchemaVersion ?? 0);
+    if (!bypassCache && state.lastExtractedUrl === canonicalCurrentUrl && state.extractionCached && state.listingData && cachedSchemaVersion >= 2) {
       const cached = state.listingData as ListingData | ListingDataV2;
       const hasImages = Array.isArray(cached.imageUrls) && cached.imageUrls.length > 0;
       const hasValidDesc = cached.description && cached.description.trim().length > 30;
@@ -1430,6 +1524,15 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
           noop('[ExtApp] Cache HIT but listingType=unknown — showing report-mode modal');
           dispatch({ type: 'SET_PROPERTY_STATUS', propertyStatus: 'detected', listingData: cached, propertyDetection: null });
           dispatch({ type: 'SET_ANALYSIS_PHASE', phase: 'needs_report_mode' });
+          return;
+        }
+
+        // BLOCKING guard: multi-unit building overview page must NOT proceed to analyze.
+        // No analyze request is sent and no credits are deducted.
+        const multiUnit = getMultiUnitBuildingBlock(cached);
+        if (multiUnit.blocked) {
+          noop('[ExtApp] Cache HIT but listingScope=multi_unit_building — refusing submission');
+          dispatch({ type: 'SET_ANALYSIS_PHASE', phase: 'error', error: multiUnit.message ?? 'Building-page guard' });
           return;
         }
 
@@ -1529,6 +1632,16 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     if (!hasResolvedListingType(listingData)) {
       noop('[ExtApp] listingType=unknown — showing report-mode modal (no analyze request sent)');
       dispatch({ type: 'SET_ANALYSIS_PHASE', phase: 'needs_report_mode' });
+      return;
+    }
+
+    // BLOCKING guard: multi-unit building overview page must NOT proceed to analyze.
+    // This is a UI/submission guard — it stops the analyze request and does NOT
+    // deduct credits. The user is asked to open or select a specific unit first.
+    const multiUnit = getMultiUnitBuildingBlock(listingData);
+    if (multiUnit.blocked) {
+      noop('[ExtApp] listingScope=multi_unit_building — refusing submission (no analyze request, no credit deduction)');
+      dispatch({ type: 'SET_ANALYSIS_PHASE', phase: 'error', error: multiUnit.message ?? 'Building-page guard' });
       return;
     }
 

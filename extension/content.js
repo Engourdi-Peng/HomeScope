@@ -734,8 +734,9 @@ const INSTANCE_ID = Math.random().toString(36).slice(2, 9);
 
       case 'EXTRACT_LISTING':
         extractListingDataLight().then(({ listing, detection }) => {
-          pageData = listing;
-          sendResponse({ data: listing, error: null, detection });
+          const overridden = applyZillowStructuredOverride(listing);
+          pageData = overridden;
+          sendResponse({ data: overridden, error: null, detection });
         }).catch((err) => {
           sendResponse({ data: null, error: err.message, detection: null });
         });
@@ -867,10 +868,26 @@ const INSTANCE_ID = Math.random().toString(36).slice(2, 9);
               out.pricePeriod = 'total';
             }
 
-            // 写回 pageData 缓存（用于后续 GET_CACHED_DATA 读取）
-            pageData = out;
+            // Write back pageData cache (used by subsequent GET_CACHED_DATA)
+            const overridden = applyZillowStructuredOverride(out);
+            pageData = overridden;
+  // [LOG-B] FORCE_REEXTRACT result
+  console.log('[HomeScope-LOG-B] FORCE_REEXTRACT', JSON.stringify({
+    forcedType: forcedType,
+    url: window.location.href,
+    listingUrl: out && out.listingUrl,
+    zpid: (out && out.zpid) || (out && out.propertyFactsV2 && out.propertyFactsV2.zpid),
+    listingIdentity: out && out.listingIdentity,
+    reportMode: out && out.reportMode,
+    listingType: out && out.listingType,
+    price: out && out.price,
+    pricePeriod: out && out.pricePeriod,
+    monthlyRent: out && out.monthlyRent,
+    askingPrice: out && out.askingPrice,
+    priceAmount: out && out.priceAmount,
+  }));
 
-            sendResponse({ ok: true, data: out });
+            sendResponse({ ok: true, data: overridden });
           } catch (err) {
             sendResponse({ ok: false, error: String(err?.message || err) });
           }
@@ -1090,7 +1107,12 @@ async function startUserExtraction(bypassCache = false, analysisType = 'full') {
     }
 
     const detection = buildPropertyDetection(propertySignals, listing);
-    const result = { listing, detection };
+    // v6 minimal patch: apply Zillow structured override as the FINAL
+    // assembly step — after every fallback and image merge, before the
+    // session cache, pageData, and sendResponse are written. Prevents
+    // downstream fallbacks from overwriting structured fields.
+    const finalListing = applyZillowStructuredOverride(listing);
+    const result = { listing: finalListing, detection };
 
     // ── Step: Store in session cache ──
     result._cachedAt = Date.now();
@@ -1252,11 +1274,19 @@ function extractFromSingleJsonLd(json) {
 
   // Also check floorPlan / numberOfRooms for structured room counts
   // Zillow uses itemOffered.numberOfBedrooms
+  //
+  // IMPORTANT: bedrooms=0 (Studio) is a LEGAL value and MUST be preserved.
+  // The previous expression `parseInt('0', 10) || null` wrongly coerced 0
+  // back to null, which leaked DOM signals ("1 bedroom") into the Studio
+  // result. We now keep the parsed number unless the original wasn't a
+  // finite number.
   if (rooms.bedrooms == null && propertyInfo.numberOfBedrooms != null) {
-    rooms.bedrooms = parseInt(String(propertyInfo.numberOfBedrooms), 10) || null;
+    const n = Number(propertyInfo.numberOfBedrooms);
+    rooms.bedrooms = Number.isFinite(n) ? n : null;
   }
   if (rooms.bathrooms == null && propertyInfo.numberOfBathroomsTotal != null) {
-    rooms.bathrooms = parseInt(String(propertyInfo.numberOfBathroomsTotal), 10) || null;
+    const n = Number(propertyInfo.numberOfBathroomsTotal);
+    rooms.bathrooms = Number.isFinite(n) ? n : null;
   }
 
   // ---- Description ----
@@ -1387,93 +1417,148 @@ function extractAddressFromText(text) {
  * @param {string} url - 当前页面 URL
  * @returns {'sale' | 'rent'}
  */
+/**
+ * PR 1A hotfix: listing-mode detection for Zillow.
+ *
+ * Priority:
+ *   1. JSON-LD offers.businessFunction  — #Sell = sale, #LeaseOut = rent
+ *      (only the node whose url/@id matches current URL or zpid is trusted;
+ *       ItemList / nearby homes are ignored)
+ *   2. Current-listing status badge text + primary price chip
+ *   3. URL path fallback (rent only; /homedetails/ does NOT imply sale)
+ *
+ * FORBIDDEN:
+ *   - document.body.innerText / textContent
+ *   - Rent Zestimate / Nearby homes / Payment calculator / body description
+ *   - ItemList nodes or nodes whose zpid/url does not match current listing
+ *
+ * @param {Object} listing  - { priceText } for /mo check only
+ * @param {string} url     - window.location.href
+ * @returns {'sale'|'rent'|null}
+ */
 function detectReportMode(listing, url) {
-  const urlLower = url.toLowerCase();
-  const priceText = (listing.priceText || '').toLowerCase();
-  const bodyText = document.body.innerText || '';
+  // ── Source 1: JSON-LD offers.businessFunction ─────────────────────────────
+  {
+    const currentUrl = String(url || window.location.href || '');
+    let currentZpid = null;
+    try {
+      const parsed = new URL(currentUrl);
+      const m = parsed.pathname.match(/\/(\d+)_zpid\//);
+      if (m) currentZpid = m[1];
+    } catch (_) {}
 
-  // ============================================================================
-  // Hard signals from the rendered page body. These win over URL heuristics
-  // because multi-unit rental buildings on Zillow often share the
-  // /homedetails/<address-slug>/ URL pattern with for-sale properties.
-  // ============================================================================
-  const isRentListing =
-    /\$\s?[\d,]+(?:\.\d{2})?\s*\/\s*(?:mo|month|monthly)\b/i.test(bodyText) || // $/mo price chip
-    /apply\s*now|landlord'?s?\s+criteria|rent\s*zestimate|monthly\s+rent|tenant\s+(?:pays|is\s+responsib)/i.test(bodyText);
-  const isSaleListing =
-    /\bmake\s+an?\s+offer\b/i.test(bodyText) ||
-    (/\bfor\s+sale\b/i.test(bodyText) && !isRentListing);
+    const scripts = document.querySelectorAll('script[type="application/ld+json"]');
+    outer: for (const script of Array.from(scripts)) {
+      let data;
+      try { data = JSON.parse(script.textContent || ''); } catch (_) { continue; }
+      const candidates = Array.isArray(data)
+        ? data
+        : (data && Array.isArray(data['@graph'])) ? data['@graph'] : [data];
+      for (const item of candidates) {
+        if (!item || typeof item !== 'object') continue;
+        const t = item['@type'];
+        const types = Array.isArray(t) ? t.map(String) : [String(t || '')];
+        if (!types.some(s => s.includes('RealEstateListing') || s.toLowerCase() === 'realestate')) continue;
 
-  if (isRentListing && isSaleListing) {
-    // Conflicting body signals (e.g. multi-unit homedetails where the page
-    // header says "For sale" but the listing body is tenant-facing).
-    // The presence of $/mo or landlord's criteria is authoritative — the
-    // listing IS a rental.
-    return 'rent';
-  }
-  if (isRentListing) return 'rent';
-  if (isSaleListing) return 'sale';
+        // zpid match — reject nearby ItemList / different-zpid nodes
+        let itemZpid = null;
+        if (typeof item.zpid === 'number' || typeof item.zpid === 'string') {
+          itemZpid = String(item.zpid);
+        } else {
+          for (const k of ['url', '@id', 'hdpUrl']) {
+            const v = item[k];
+            if (typeof v === 'string') {
+              const m2 = v.match(/\/(\d+)_zpid\//);
+              if (m2) { itemZpid = m2[1]; break; }
+            }
+          }
+        }
+        let isCurrent = false;
+        if (currentZpid && itemZpid && currentZpid === itemZpid) isCurrent = true;
+        if (!isCurrent) {
+          try {
+            for (const k of ['url', '@id', 'hdpUrl']) {
+              const v = item[k];
+              if (typeof v !== 'string') continue;
+              const p = new URL(v, currentUrl);
+              const normPath = p.pathname.replace(/\/+$/, '').toLowerCase();
+              const currPath = new URL(currentUrl).pathname.replace(/\/+$/, '').toLowerCase();
+              if (normPath && normPath === currPath) { isCurrent = true; break; }
+            }
+          } catch (_) {}
+        }
+        if (!isCurrent) continue;
 
-  // ========== 第二优先级：URL ==========
-  // 租房 URL (通用)
-  if (urlLower.includes('/rent/') ||
-      urlLower.includes('/rental/') ||
-      urlLower.includes('/to-rent/') ||
-      urlLower.includes('for-rent') ||
-      urlLower.includes('zillow.com/rent')) {
-    return 'rent';
+        // Read businessFunction from offers
+        const offersRaw = item.offers;
+        const offers = Array.isArray(offersRaw) ? offersRaw
+          : (offersRaw != null) ? [offersRaw] : [];
+        const funcs = offers.map(o => {
+          if (!o || typeof o !== 'object') return null;
+          const raw = (typeof o.businessFunction === 'string') ? o.businessFunction
+            : (o['@id'] != null) ? String(o['@id']) : '';
+          const lower = raw.toLowerCase();
+          if (lower.endsWith('#sell') || lower === 'sell') return 'sell';
+          if (lower.endsWith('#leaseout') || lower === 'leaseout') return 'leaseout';
+          return null;
+        }).filter(Boolean);
+
+        if (funcs.length > 0) {
+          if (funcs.every(f => f === 'sell')) return 'sale';
+          if (funcs.every(f => f === 'leaseout')) return 'rent';
+          // Conflict (both sell + leaseout on same node) → fall through to Source 2
+        }
+      }
+    }
   }
 
-  // 买房 URL (通用)
-  if (urlLower.includes('/buy/') ||
-      urlLower.includes('/for-sale/') ||
-      urlLower.includes('/sale/') ||
-      urlLower.includes('/sold/')) {
-    return 'sale';
+  // ── Source 2: status badge + primary price chip ───────────────────────────
+  {
+    const statusEl = document.querySelector('[data-testid="status"]') ||
+                     document.querySelector('[class*="status-message"]');
+    if (statusEl) {
+      const t = (statusEl.textContent || '').trim().toLowerCase();
+      if (/^\s*for\s*rent\s*$/.test(t)) return 'rent';
+      if (/^\s*room\s*for\s*rent\s*$/.test(t)) return 'rent';
+      if (/^\s*for\s*sale\s*$/.test(t) || /^\s*sale\s*$/.test(t)) return 'sale';
+    }
+    // h1 — unambiguous only (must not contain the opposite signal)
+    const h1 = document.querySelector('h1');
+    if (h1) {
+      const t = (h1.textContent || '').toLowerCase();
+      if (/room\s*for\s*rent/.test(t) && !/for\s*sale/.test(t)) return 'rent';
+      if (/for\s*rent/.test(t) && !/for\s*sale/.test(t)) return 'rent';
+      if (/for\s*sale/.test(t) && !/for\s*rent/.test(t)) return 'sale';
+    }
+    // Primary price chip /mo — data-testid="price" / data-testid="list-price"
+    // NOT BuyAbility / Est. payment (different elements, filtered out by selector)
+    const priceEl = document.querySelector('[data-testid="price"]') ||
+                    document.querySelector('[data-testid="list-price"]') ||
+                    document.querySelector('h3[class*="price"]');
+    if (priceEl) {
+      const pt = (priceEl.textContent || '').toLowerCase();
+      if (/\/(?:mo|month|monthly)\b/.test(pt)) return 'rent';
+    }
+    // listing.priceText fallback for /mo (from extractor's price)
+    const listingPt = ((listing && listing.priceText) || '').toLowerCase();
+    if (/\/(?:mo|month|monthly)\b/.test(listingPt)) return 'rent';
   }
 
-  // ========== 第三优先级：价格格式 ==========
-  // 租房特征：per week / pw / p/w
-  if (/\b(per\s*week|pw|p\/w|weekly)\b/i.test(priceText)) {
-    return 'rent';
+  // ── Source 3: URL fallback (rent only) ─────────────────────────────────
+  {
+    const urlLower = String(url || window.location.href || '').toLowerCase();
+    if (urlLower.includes('/rent/') || urlLower.includes('/rental/') ||
+        urlLower.includes('/for-rent/') || urlLower.includes('/to-rent/') ||
+        urlLower.includes('/apartments/') || urlLower.includes('/community/')) {
+      return 'rent';
+    }
+    // /homedetails/ does NOT default to sale
   }
 
-  // 租房特征：Bond + 金额（澳洲租房押金通常是 4 周房租）
-  // 匹配 "Bond $2,000" 或 "Bond: 2000" 等格式
-  if (/\bBond\b[:\s]*\$?\d+/i.test(bodyText)) {
-    return 'rent';
-  }
-
-  // 买房特征：大数字（>=50万）且无周期单位
-  const priceNum = parseFloat(priceText.replace(/[^\d]/g, ''));
-  if (priceNum >= 500000 && !/\b(per|pw|p\/w|weekly|month)\b/i.test(priceText)) {
-    return 'sale';
-  }
-  
-  // ========== 第三优先级：页面特定元素 ==========
-  // 租房特征：Available + 日期（如 "Available 15 May"）
-  if (/\bAvailable\s+\d{1,2}\s+(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)/i.test(bodyText)) {
-    return 'rent';
-  }
-  
-  // 买房特征：土地面积（m² 或 sqm）
-  if (/\d+\s*(m²|sqm|sq\.?m|square\s*met)/i.test(bodyText)) {
-    return 'sale';
-  }
-  
-  // 买房特征：Get Contract 按钮
-  if (/\b(Get\s*Contract|Buy\s*Now|Submit\s*EOI)\b/i.test(bodyText)) {
-    return 'sale';
-  }
-  
-  // 租房特征：Apply Now 按钮
-  if (/\b(Apply\s*Now|Tenant\s*Application)\b/i.test(bodyText)) {
-    return 'rent';
-  }
-  
-  // ========== 默认值：Sale（买房模式） ==========
-  return 'sale';
+  // No evidence → null (caller treats as unknown → REPORT_MODE_REQUIRED)
+  return null;
 }
+
 
 // ─────────────────────────────────────────────────────────────
 // Zillow-specific extraction functions
@@ -2406,8 +2491,61 @@ function extractAddressZillow() {
 }
 
 /**
- * Extract rooms info from Zillow page (beds, baths, sqft)
+ * Read a labeled value from a Zillow Facts & Features-like row.
+ *
+ * Used as the LAST-RESORT fallback for `extractRoomsZillow`. Unlike
+ * `getStrictLabelValue` (which iterates ZillowRawData lines), this one walks
+ * the live DOM and accepts multiple label candidates. Returns a short text
+ * snippet that immediately follows the label, or null if nothing found.
+ *
+ * Goal: tolerate realistic variations like:
+ *   "Bedrooms: 0"
+ *   "Bedrooms    0"
+ *   "Bedrooms — 0"
+ *
+ * The snippet is then parsed for the FIRST number — so callers can use
+ * `parseFloat('0') === 0` without polluting Studio listings with marketing
+ * copy that mentions other unit types.
  */
+function extractLabeledScopeText(labelCandidates) {
+  // try DOM scoped to Facts & Features / property details
+  const scopedRoots = [
+    document.querySelector('[data-testid="bed-bath-beyond"]'),
+    document.querySelector('[data-testid="bed-bath-sqft"]'),
+    document.querySelector('[data-testid="hdp-property-details"]'),
+  ].filter(Boolean);
+
+  for (const root of scopedRoots) {
+    const text = (root.textContent || '').replace(/\s+/g, ' ');
+    for (const label of labelCandidates) {
+      // case-insensitive word boundary label, then capture the immediate tail
+      const re = new RegExp(
+        '\\b(?:bedrooms?|baths?)\\b[\\s\\-:—–]*([^\\n|]{0,40})',
+        'i',
+      );
+      const m = text.match(re);
+      if (m && m[1] != null) return m[1].trim();
+    }
+  }
+
+  // fall back: look in Facts-and-features blocks of line-organized text
+  try {
+    const all = Array.from(document.querySelectorAll('dl, [data-testid="facts-and-features"] li, [data-testid="facts-and-features"] div'));
+    for (const el of all) {
+      const t = (el.textContent || '').trim();
+      for (const label of labelCandidates) {
+        const re = new RegExp('^\\s*' + label + '[\\s\\-:—–]+(.+)$', 'i');
+        const m = t.match(re);
+        if (m) return m[1].trim();
+      }
+    }
+  } catch (_) {
+    // ignore — DOM may not expose all branches
+  }
+
+  return null;
+}
+
 function extractRoomsZillow() {
   const result = { bedrooms: null, bathrooms: null, sqft: null };
 
@@ -2484,29 +2622,42 @@ if (bedBathEl) {
     }
   }
 
-  // ── Method 4: body text regex fallback (last resort) ─────────────────────
-  if (!result.bedrooms || !result.bathrooms) {
-    const bodyText = document.body.innerText || '';
-
-    if (!result.bedrooms) {
-      const bedMatch = bodyText.match(/(\d+)\s*(?:bd|bed(?:s|room)?)\b/i);
-      if (bedMatch) result.bedrooms = parseInt(bedMatch[1]);
-    }
-
-    if (!result.bathrooms) {
-      // Use word boundary on the right; left side anchored via non-word
-      // boundary so "5ba" / "5 ba" both match. Avoid `ba` alone — too
-      // ambiguous (matches "baseboard", "balcony", etc.).
-      const bathMatch = bodyText.match(/(\d+(?:\.\d+)?)\s*(?:bath(?:s|room)?)\b/i);
-      if (bathMatch) result.bathrooms = parseFloat(bathMatch[1]);
-    }
-
-    if (!result.sqft) {
-      const sqftMatch = bodyText.match(/([\d,]+)\s*(?:sq\s*ft|sqft|square\s*feet)\b/i);
-      if (sqftMatch) result.sqft = parseInt(sqftMatch[1].replace(/,/g, ''));
+  // ── Method 4: scoped labeled fallback (last resort) ─────────────────────
+  // ⚠ IMPORTANT: the previous implementation used a body-wide regex like
+  // `/(\d+)\s*(?:bd|bed(?:s|room)?)/i` which is unreliable for Studio pages.
+  // Concretely, when the current listing has bedrooms=0 but the building's
+  // marketing copy contains phrases like "studios and one-bedroom apartments",
+  // the regex matched "1 bedroom" and OVERWROTE the structured 0 with 1.
+  //
+  // The new fallback:
+  //   (a) only fires when no labeled source produced a value;
+  //   (b) ONLY trusts matches that come from a labeled scope (Facts & Features
+  //       row, or an explicit "Bedrooms: N" label). A free-floating "1 bedroom"
+  //       in the body text is NOT trusted for Studio safety.
+  //   (c) preserves 0 (does NOT skip when result.bedrooms === 0).
+  if (result.bedrooms == null) {
+    const scopedText = extractLabeledScopeText(['bedrooms']);
+    if (scopedText) {
+      const m = scopedText.match(/(\d+(?:\.\d+)?)/);
+      if (m) result.bedrooms = parseFloat(m[1]);
     }
   }
-  
+  if (result.bathrooms == null) {
+    const scopedText = extractLabeledScopeText(['bathrooms']);
+    if (scopedText) {
+      const m = scopedText.match(/(\d+(?:\.\d+)?)/);
+      if (m) result.bathrooms = parseFloat(m[1]);
+    }
+  }
+
+  // sqft has no zero/Studio ambiguity, so a body-text fallback is safe and
+  // surfaces "230 sqft" reliably for Studio pages.
+  if (result.sqft == null) {
+    const bodyText = document.body?.innerText || '';
+    const sqftMatch = bodyText.match(/([\d,]+)\s*(?:sq\s*ft|sqft|square\s*feet)\b/i);
+    if (sqftMatch) result.sqft = parseInt(sqftMatch[1].replace(/,/g, ''), 10);
+  }
+
   return result;
 }
 
@@ -2730,9 +2881,11 @@ async function extractListingDataLight() {
   if (isZillowPage()) {
     // Use Zillow-specific rooms extraction
     const zillowRooms = extractRoomsZillow();
-    if (zillowRooms.bedrooms) rooms.bedrooms = zillowRooms.bedrooms;
-    if (zillowRooms.bathrooms) rooms.bathrooms = zillowRooms.bathrooms;
-    
+    // NOTE: a truthy check here would silently skip Studio (`bedrooms=0`).
+    // We MUST compare against null/undefined so the structured 0 survives.
+    if (zillowRooms.bedrooms != null) rooms.bedrooms = zillowRooms.bedrooms;
+    if (zillowRooms.bathrooms != null) rooms.bathrooms = zillowRooms.bathrooms;
+
     // Get Zillow-specific fields (includes zillowFinancials)
     zillowData = extractZillowData();
   }
@@ -2760,8 +2913,11 @@ async function extractListingDataLight() {
     description,
     imageUrls: [],   // gallery images only collected on user request
     extractionConfidence: confidence,
-    // 自动检测房源类型：买房(sale)还是租房(rent)
+    // PR 1A: populate listingUrl so background can use it
+    listingUrl: window.location.href || null,    // 自动检测房源类型：买房(sale)还是租房(rent)
     reportMode: detectReportMode({ priceText: price }, window.location.href),
+    // PR 1A: listingType mirrors reportMode (for background.js deriveReportModeStrict)
+    listingType: detectReportMode({ priceText: price }, window.location.href),
     // Include Zillow-specific fields if on Zillow
     ...(isZillowPage() ? {
       mlsSource: extractZillowMlsSource(),
@@ -2901,6 +3057,21 @@ async function extractListingDataLight() {
   }
 
   const detection = buildPropertyDetection(signals, listing);
+  // [LOG-A] extractListingDataLight EXIT
+  console.log('[HomeScope-LOG-A] extractListingDataLight', JSON.stringify({
+    url: window.location.href,
+    listingUrl: listing && listing.listingUrl,
+    zpid: (listing && listing.zpid) || (listing && listing.propertyFactsV2 && listing.propertyFactsV2.zpid),
+    listingIdentity: listing && listing.listingIdentity,
+    reportMode: listing && listing.reportMode,
+    listingType: listing && listing.listingType,
+    price: listing && listing.price,
+    pricePeriod: listing && listing.pricePeriod,
+    priceText: listing && listing.priceText,
+    monthlyRent: listing && listing.monthlyRent,
+    askingPrice: listing && listing.askingPrice,
+    priceAmount: listing && listing.priceAmount,
+  }));
 
   return { listing, detection };
 }
@@ -3138,13 +3309,70 @@ function extractPriceRealestate() {
   return null;
 }
 
+/**
+ * Generic page-level room count extractor (NOT Zillow-specific).
+ *
+ * ⚠ This is a last-resort fallback used by non-Zillow pages. On Zillow pages
+ * we route rooms through `extractRoomsZillow`, which preserves Studio
+ * bedrooms=0 and avoids marketing-copy contamination.
+ *
+ * The regex here is intentionally conservative — it ONLY accepts a number
+ * immediately before "bed" / "bedroom" with at most minimal whitespace
+ * separators, AND at most 6 characters of context ahead (rejecting
+ * marketing phrases like "spacious studios and thoughtfully designed
+ * one-bedroom apartments"). For Studio safety we keep a separate, stricter
+ * Studio check below that returns 0 if the page literally says
+ * "Studio" anywhere.
+ */
 function extractRooms() {
   const text = document.body.innerText;
   const result = { bedrooms: null, bathrooms: null, parking: null };
-  const bedMatch = text.match(/(\d+)\s*(?:bed|bedroom|bedrooms)/i);
-  if (bedMatch) result.bedrooms = parseInt(bedMatch[1], 10);
-  const bathMatch = text.match(/(\d+)\s*(?:bath|bathroom|bathrooms)/i);
-  if (bathMatch) result.bathrooms = parseInt(bathMatch[1], 10);
+
+  // Studio detection — only matched when an explicit "Studio" label appears
+  // together with a sentence context that is clearly the unit's own fact row
+  // (e.g. "Apartment Type: Studio", or "Bedrooms: Studio", or a JSON-LD-style
+  // "Studio" stat). Marketing copy like "spacious studios" is excluded
+  // because of the plural and the adjective prefix.
+  if (/\btype\b[\s:—\-]*studio\b/i.test(text) ||
+      /\bbedrooms?\b[\s:—\-]*studio\b/i.test(text) ||
+      /^\s*studio\s*$/im.test(text)) {
+    result.bedrooms = 0;
+  }
+
+  // Bedrooms — only trust strongly-attached numbers, e.g. "0 bed", "1 bedroom".
+  // Reject widely-separated numbers like "studios and 1 bedroom" or
+  // "designed 1-bedroom apartments" by requiring either a label OR a
+  // post-numeric unit word immediately adjacent.
+  if (result.bedrooms == null) {
+    const labeled = text.match(/\bbedrooms?\b\s*[:\-—]?\s*(\d+)\b/i);
+    if (labeled) {
+      result.bedrooms = parseInt(labeled[1], 10);
+    }
+  }
+  if (result.bedrooms == null) {
+    // Strong-attach: number + "bd/bed/bedroom(s)" with optional dots and a
+    // word boundary at the END of "bedroom(s)" so we don't grab unrelated
+    // sentences.
+    const m = text.match(/(?:^|[\s.,;:(\[])(\d{1,2})\s*(?:bd|bedrooms?)\b/i);
+    if (m) {
+      const n = parseInt(m[1], 10);
+      if (Number.isFinite(n)) result.bedrooms = n;
+    }
+  }
+
+  // Bathrooms — same conservative approach.
+  if (result.bathrooms == null) {
+    const labeled = text.match(/\bbathrooms?\b\s*[:\-—]?\s*(\d+(?:\.\d+)?)\b/i);
+    if (labeled) result.bathrooms = parseFloat(labeled[1]);
+  }
+  if (result.bathrooms == null) {
+    const m = text.match(/(?:^|[\s.,;:(\[])(\d{1,2}(?:\.\d+)?)\s*(?:bathrooms?|ba)\b/i);
+    if (m) {
+      const n = parseFloat(m[1]);
+      if (Number.isFinite(n)) result.bathrooms = n;
+    }
+  }
+
   const carRe = /(\d+)\s*(?:car(?:port|space)?s?|parking|garage)\b/gi;
   const carVals = [];
   let cm;
@@ -5916,6 +6144,369 @@ function upgradeToHiRes(url) {
     .replace(/[?&]fit=\w+/g, '')
     .replace(/[?&]downsample=\w+/g, '')
     .replace(/\?.*$/, '');
+}
+
+// =================================================================
+// Zillow structured override (v6 — minimal patch, no module split)
+// =================================================================
+// Locked-in field rules from two real dumps (2026-08-02):
+//   Apartments / b/ page: initialReduxState.gdp.building
+//     - building.floorPlans[i].units (nested) holds concrete units
+//     - building.units / ungroupedUnits are empty arrays
+//     - building.id / buildingId / slug are null — NOT required
+//     - Pricing: minPrice/maxPrice (incl. required monthly fees),
+//               minBaseRent/maxBaseRent (excl.)
+//     - 5 photo arrays may share URLs — hash dedupe deferred
+//   /homedetails/<...>/<digits>_zpid/ page: gdpClientCache is JSON string
+//     - Must JSON.parse; iterate entries, match by property.zpid to URL zpid
+//     - Do NOT rely on cache key fixed format
+//     - Cache key shape: ForRentShopperPlatformFullRenderQuery{"zpid":...}
+//
+// Hard requirements (2026-08-02):
+//   1. APT 5 monthlyRent remains in current STRING contract ("$800/mo");
+//      do NOT overwrite price string with Number.
+//   2. Anonymous units (no unitId/zpid/hdpUrl) MUST NOT borrow
+//      bestMatchedUnit.unitNumber. Governor's Park West may emit
+//      availableUnits: []; floorPlanSummaries still carries plan info.
+//   3. multiUnitGuard: if it still blocks multi_unit_building, allow
+//      complete building-level data through. (Guard edit handled in
+//      src/extension/multiUnitGuard.ts.)
+//
+// Scope-limited: NO store.tsx, NO vite/manifest, NO backend changes,
+// NO image hash dedupe, NO single tests (those are deferred).
+// =================================================================
+
+const ZPID_URL_RE = /\/(\d+)_zpid\/?$/;
+const ZILLOW_HOST_RE = /^https?:\/\/(?:www\.)?zillow\.com\//i;
+
+function zillowIsHost(url) {
+  return typeof url === 'string' && ZILLOW_HOST_RE.test(url);
+}
+
+function zillowParseZpidFromUrl(url) {
+  if (!zillowIsHost(url)) return null;
+  try {
+    const m = new URL(url).pathname.match(ZPID_URL_RE);
+    return m ? m[1] : null;
+  } catch (_) { return null; }
+}
+
+function zillowReadNextData() {
+  const s = document.getElementById('__NEXT_DATA__');
+  if (!s) return null;
+  try { return JSON.parse(s.textContent); } catch (_) { return null; }
+}
+
+function zillowDeepGet(o, path) {
+  let cur = o;
+  for (const k of path) {
+    if (cur == null || typeof cur !== 'object') return undefined;
+    cur = cur[k];
+  }
+  return cur;
+}
+
+function zillowFormatAddress(a) {
+  if (!a || typeof a !== 'object') return null;
+  const parts = [a.streetAddress, a.city, a.state, a.zipcode].filter(Boolean);
+  return parts.length ? parts.join(', ') : null;
+}
+
+function zillowReadNumber(p, key) {
+  const v = p == null ? undefined : p[key];
+  return typeof v === 'number' ? v : null;
+}
+
+function zillowReadBoolean(p, key) {
+  const v = p == null ? undefined : p[key];
+  return v === true || v === false ? v : null;
+}
+
+function zillowReadLivingArea(p) {
+  if (typeof p?.livingArea === 'number') return p.livingArea;
+  if (typeof p?.livingAreaValue === 'number') return p.livingAreaValue;
+  return null;
+}
+
+function zillowReadPriceFromProperty(p) {
+  if (typeof p?.price === 'number') return p.price;
+  if (typeof p?.listPriceLow === 'number') return p.listPriceLow;
+  return null;
+}
+
+function zillowReadBaseRentFromProperty(p) {
+  return typeof p?.baseRent === 'number' ? p.baseRent : null;
+}
+
+function zillowInferUnitNumber(property) {
+  const street = property?.address?.streetAddress;
+  if (typeof street === 'string') {
+    const m = street.match(/\b(APT|UNIT|STE)\s+([A-Za-z0-9-]+)/i);
+    if (m) return m[2];
+  }
+  return null;
+}
+
+function zillowDecideScopeFromHomedetails(property) {
+  if (property?.homeStatus === 'FOR_SALE') return 'single_property';
+  if (property?.homeStatus === 'FOR_RENT') {
+    if (property?.roomForRent === true) return 'private_room';
+    const hasBuilding = property?.buildingId != null
+                        && String(property.buildingId).length > 0;
+    const street = property?.address?.streetAddress ?? '';
+    const hasUnitHint = /\b(APT|UNIT|STE|#)\s*\w+/i.test(street);
+    if (hasBuilding && hasUnitHint) return 'selected_unit';
+    if (hasBuilding) return 'selected_unit';
+    return 'entire_home';
+  }
+  return 'entire_home';
+}
+
+function zillowToFloorPlanSummary(plan) {
+  if (!plan || typeof plan !== 'object') return null;
+  return {
+    planName: typeof plan.name === 'string' ? plan.name : null,
+    bedrooms: zillowReadNumber(plan, 'beds'),
+    bathrooms: zillowReadNumber(plan, 'baths'),
+    sqft: zillowReadNumber(plan, 'sqft'),
+    minPrice: zillowReadNumber(plan, 'minPrice'),
+    maxPrice: zillowReadNumber(plan, 'maxPrice'),
+    minBaseRent: zillowReadNumber(plan, 'minBaseRent'),
+    maxBaseRent: zillowReadNumber(plan, 'maxBaseRent'),
+    requiredMonthlyFeeMin: zillowReadNumber(plan, 'totalRequiredMonthlyMinFee'),
+    requiredMonthlyFeeMax: zillowReadNumber(plan, 'totalRequiredMonthlyMaxFee'),
+    listPriceIncludesRequiredMonthlyFees:
+      zillowReadBoolean(plan, 'listPriceIncludesRequiredMonthlyFees'),
+    availableFrom: typeof plan.availableFrom === 'string' ? plan.availableFrom : null,
+    leaseTerm: typeof plan.leaseTerm === 'string' ? plan.leaseTerm : null,
+    unitCount: Array.isArray(plan.units) ? plan.units.length : null,
+    source: 'gdp.building.floorPlans[i]',
+  };
+}
+
+function zillowFlattenUnitsApartments(floorPlans, _bestMatched) {
+  // Hard requirement 2: anonymous units MUST NOT borrow bestMatchedUnit.unitNumber.
+  // Governor's Park West: availableUnits may be [].
+  const out = [];
+  if (!Array.isArray(floorPlans)) return out;
+  for (const plan of floorPlans) {
+    const planUnits = Array.isArray(plan?.units) ? plan.units : [];
+    for (const u of planUnits) {
+      const hasIdentity = u?.unitId != null
+                          || u?.zpid != null
+                          || typeof u?.hdpUrl === 'string';
+      // Only emit units with explicit identity. No borrowing from bestMatched.
+      if (!hasIdentity) continue;
+      out.push({
+        unitId: u?.unitId != null ? String(u.unitId) : null,
+        unitNumber: typeof u?.unitNumber === 'string' ? u.unitNumber : null,
+        zpid: u?.zpid != null ? String(u.zpid) : null,
+        planName: typeof plan?.name === 'string' ? plan.name : null,
+        bedrooms: zillowReadNumber(u, 'beds') ?? zillowReadNumber(plan, 'beds'),
+        bathrooms: zillowReadNumber(u, 'baths') ?? zillowReadNumber(plan, 'baths'),
+        sqft: zillowReadNumber(u, 'sqft') ?? zillowReadNumber(plan, 'sqft'),
+        monthlyRent: zillowReadNumber(u, 'minPrice') ?? zillowReadNumber(plan, 'minPrice'),
+        baseRent: zillowReadNumber(u, 'minBaseRent') ?? zillowReadNumber(plan, 'minBaseRent'),
+        availableFrom: typeof u?.availableFrom === 'string'
+                        ? u.availableFrom
+                        : (typeof plan?.availableFrom === 'string' ? plan.availableFrom : null),
+        hdpUrl: typeof u?.hdpUrl === 'string' ? u.hdpUrl : null,
+        hasExplicitIdentity: true,
+        source: 'gdp.building.floorPlans[i].units[j]',
+      });
+    }
+  }
+  return out;
+}
+
+function zillowBuildApartmentPatch(building) {
+  const floorPlans = Array.isArray(building?.floorPlans) ? building.floorPlans : [];
+  return {
+    listingScope: 'multi_unit_building',
+    buildingName: typeof building?.name === 'string' ? building.name : null,
+    buildingId: (building?.id ?? building?.buildingId) != null
+                  ? String(building.id ?? building.buildingId) : null,
+    buildingAddress: zillowFormatAddress(building?.address),
+    zpid: null,
+    unitNumber: null,
+    hdpUrl: null,
+    monthlyRent: null,
+    baseRent: null,
+    sqft: null,
+    bedrooms: null,
+    bathrooms: null,
+    listPriceIncludesRequiredMonthlyFees: null,
+    floorPlanSummaries: floorPlans.map(zillowToFloorPlanSummary).filter(Boolean),
+    availableUnits: zillowFlattenUnitsApartments(floorPlans, null),
+    rawAddress: building?.address?.streetAddress ?? null,
+  };
+}
+
+function zillowBuildHomedetailsPatch(property, urlZpid) {
+  const zpid = String(property.zpid);
+  const buildingId = property.buildingId != null ? String(property.buildingId) : null;
+  const unitNumber = zillowInferUnitNumber(property);
+  const scope = zillowDecideScopeFromHomedetails(property);
+  const monthlyRent = zillowReadPriceFromProperty(property);
+  const baseRent = zillowReadBaseRentFromProperty(property);
+  const sqft = zillowReadLivingArea(property);
+  const beds = zillowReadNumber(property, 'bedrooms');
+  const baths = zillowReadNumber(property, 'bathrooms');
+
+  const availableUnits = (scope === 'selected_unit' && unitNumber) ? [{
+    unitId: null,
+    unitNumber,
+    zpid,
+    planName: null,
+    bedrooms: beds,
+    bathrooms: baths,
+    sqft,
+    monthlyRent,
+    baseRent,
+    availableFrom: null,
+    hdpUrl: typeof property.hdpUrl === 'string' ? property.hdpUrl : null,
+    hasExplicitIdentity: true,
+    source: 'property',
+  }] : [];
+
+  return {
+    listingScope: scope,
+    buildingName: property.buildingName ?? null,
+    buildingId,
+    buildingAddress: zillowFormatAddress(property.address),
+    zpid,
+    unitNumber,
+    hdpUrl: typeof property.hdpUrl === 'string' ? property.hdpUrl : null,
+    monthlyRent,
+    baseRent,
+    sqft,
+    bedrooms: beds,
+    bathrooms: baths,
+    listPriceIncludesRequiredMonthlyFees:
+      zillowReadBoolean(property, 'listPriceIncludesRequiredMonthlyFees'),
+    floorPlanSummaries: [],
+    availableUnits,
+    rawAddress: property.address?.streetAddress ?? null,
+  };
+}
+
+function zillowBuildPatchFromNextData(nextData, url) {
+  if (!nextData || typeof nextData !== 'object') return null;
+  const urlZpid = zillowParseZpidFromUrl(url);
+  let urlPath = '';
+  try { urlPath = new URL(url).pathname; } catch (_) { urlPath = ''; }
+
+  if (/\/homedetails\//.test(urlPath) && urlZpid) {
+    const raw = zillowDeepGet(nextData,
+      ['props','pageProps','componentProps','gdpClientCache']);
+    if (typeof raw !== 'string') return null;
+    let parsed;
+    try { parsed = JSON.parse(raw); } catch (_) { return null; }
+    for (const k of Object.keys(parsed)) {
+      const v = parsed[k];
+      if (v && typeof v === 'object' && v.property?.zpid != null
+          && String(v.property.zpid) === urlZpid) {
+        return zillowBuildHomedetailsPatch(v.property, urlZpid);
+      }
+    }
+    return null;
+  }
+
+  if (/\/(apartments|b)\//.test(urlPath)) {
+    const building = zillowDeepGet(nextData,
+      ['props','pageProps','componentProps','initialReduxState','gdp','building']);
+    if (!building || typeof building !== 'object') return null;
+    if (!Array.isArray(building.floorPlans)) return null;
+    return zillowBuildApartmentPatch(building);
+  }
+
+  return null;
+}
+
+/**
+ * Apply Zillow structured patch on top of an existing extraction result.
+ *
+ * Rules:
+ *   - HARD REQ 1: do NOT touch existingResult.price (string contract "$800/mo").
+ *                 monthlyRent is overwritten ONLY when patch.monthlyRent is a number.
+ *   - HARD REQ 2: anonymous units (no identity) are NOT emitted; floorPlanSummaries
+ *                 still carries the plan info.
+ *   - HARD REQ 3: multi_unit_building forces top-level monthlyRent/bedrooms/
+ *                 bathrooms/sqft to null; other scopes only overwrite when
+ *                 patch has non-null values.
+ *   - All existing fields (description, imageUrls, listingType, reportMode,
+ *     structuredListing, financials, rentZestimate, leaseTerm, etc.)
+ *     are preserved via spread.
+ *   - Idempotent. Failure returns the original result.
+ */
+function applyZillowStructuredOverride(existingResult) {
+  if (!existingResult || typeof existingResult !== 'object') return existingResult;
+  let patch = null;
+  try {
+    const url = (existingResult && existingResult.listingUrl)
+                  || (typeof window !== 'undefined' ? window.location.href : '');
+    if (!zillowIsHost(url)) return existingResult;
+    const nextData = zillowReadNextData();
+    if (!nextData) return existingResult;
+    patch = zillowBuildPatchFromNextData(nextData, url);
+  } catch (_) {
+    return existingResult;
+  }
+  if (!patch) return existingResult;
+
+  const scope = patch.listingScope;
+  const isBuilding = scope === 'multi_unit_building';
+  const out = { ...existingResult };
+
+  // New fields — always written
+  out.listingScope = scope;
+  out.buildingName = patch.buildingName;
+  out.buildingId = patch.buildingId;
+  out.buildingAddress = patch.buildingAddress;
+  out.zpid = patch.zpid;
+  out.unitNumber = patch.unitNumber;
+  out.hdpUrl = patch.hdpUrl;
+  out.floorPlanSummaries = patch.floorPlanSummaries;
+  out.availableUnits = patch.availableUnits;
+  out.baseRent = patch.baseRent;
+  out.listPriceIncludesRequiredMonthlyFees = patch.listPriceIncludesRequiredMonthlyFees;
+  out.extractionSchemaVersion = 2;
+
+  // Top-level pricing/sizing fix
+  if (isBuilding) {
+    out.monthlyRent = null;
+    out.askingPrice = null;
+    out.bedrooms = null;
+    out.bathrooms = null;
+    out.sqft = null;
+    // v6 minimal fix: clear price/priceText/priceAmount so background.js
+    // (which always reads listingData.priceText || listingData.price
+    //  without knowing about listingScope) does not leak a raw
+    // building-page price into optionalDetails.monthlyRent.
+    out.price = null;
+    out.priceText = null;
+    out.priceAmount = null;
+    // price (string "$800/mo" etc.) intentionally left untouched (HARD REQ 1).
+  } else {
+    // HARD REQ 1: number-typed monthlyRent only; do NOT overwrite price string.
+    if (patch.monthlyRent !== null) {
+      out.monthlyRent = patch.monthlyRent;
+      // If existingResult has no price string at all (e.g. no displayPrice),
+      // synthesize a display-only string so the UI has something to render.
+      // Otherwise leave the existing price string contract intact.
+      if (!out.price || typeof out.price !== 'string') {
+        out.price = `$${patch.monthlyRent}/mo`;
+      }
+    }
+    if (patch.bedrooms !== null) out.bedrooms = patch.bedrooms;
+    if (patch.bathrooms !== null) out.bathrooms = patch.bathrooms;
+    if (patch.sqft !== null) out.sqft = patch.sqft;
+  }
+
+  // Existing fields (description, imageUrls, images, listingType, reportMode,
+  // structuredListing, financials, rentZestimate, leaseTerm, etc.) are
+  // preserved by the spread above.
+  return out;
 }
 
 // ── Mark as ready ──
