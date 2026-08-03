@@ -28,6 +28,80 @@ const STEP2_RENT_PROMPT = AU_STEP2_RENT_PROMPT;
 const STEP2_SALE_PROMPT = AU_STEP2_SALE_PROMPT;
 // (STEP2_SYSTEM_PROMPT alias removed: it was unused dead code)
 
+// ── factsAndFeaturesToText (PR: schema-agnostic Facts & features renderer) ──
+// Accepts both legacy Array shape [{label,value}] and new { groups: [...] }
+// shape emitted by extension/content.js readZillowFactsAndFeatures().
+// Returns a compact multi-line plain-text representation:
+//   Interior > Heating: Other
+//   Property > Parking > Parking features: Other
+//   Building > Management > Pets allowed: Yes
+// Rules:
+//   - Preserves duplicates (Features / Details entries that share a label).
+//   - Skips null / empty / whitespace-only fields.
+//   - Never dumps the raw JSON; never rewrites or interprets values.
+//   - Caps at maxLines entries to keep prompt size bounded.
+function factsAndFeaturesToText(input: unknown, maxLines = 60): string {
+  const out: string[] = [];
+  const pushLine = (s: string) => {
+    if (out.length >= maxLines) return;
+    if (!s || !s.trim()) return;
+    out.push(s.trim());
+  };
+
+  if (Array.isArray(input)) {
+    // Legacy shape: [{label, value, raw?}, ...]
+    for (const item of input) {
+      if (!item || typeof item !== "object") continue;
+      const o = item as Record<string, unknown>;
+      const label = typeof o.label === "string" ? o.label.trim() : "";
+      const value = typeof o.value === "string" ? o.value.trim() : "";
+      const raw = typeof o.raw === "string" ? o.raw.trim() : "";
+      if (label && value) pushLine(`${label}: ${value}`);
+      else if (value) pushLine(value);
+      else if (raw) pushLine(raw);
+    }
+    return out.join("\n");
+  }
+
+  if (input && typeof input === "object") {
+    const groups = (input as Record<string, unknown>).groups;
+    if (Array.isArray(groups)) {
+      for (const g of groups) {
+        if (!g || typeof g !== "object") continue;
+        const section = typeof (g as Record<string, unknown>).section === "string"
+          ? ((g as Record<string, unknown>).section as string).trim()
+          : "";
+        const cats = (g as Record<string, unknown>).categories;
+        if (!Array.isArray(cats)) continue;
+        for (const c of cats) {
+          if (!c || typeof c !== "object") continue;
+          const category = typeof (c as Record<string, unknown>).category === "string"
+            ? ((c as Record<string, unknown>).category as string).trim()
+            : "";
+          const items = (c as Record<string, unknown>).items;
+          if (!Array.isArray(items)) continue;
+          const prefix = [section, category].filter(Boolean).join(" > ");
+          for (const it of items) {
+            if (!it || typeof it !== "object") continue;
+            const o = it as Record<string, unknown>;
+            const label = typeof o.label === "string" ? o.label.trim() : "";
+            const value = typeof o.value === "string" ? o.value.trim() : "";
+            const raw = typeof o.raw === "string" ? o.raw.trim() : "";
+            if (label && value) {
+              pushLine(prefix ? `${prefix} > ${label}: ${value}` : `${label}: ${value}`);
+            } else if (value) {
+              pushLine(prefix ? `${prefix}: ${value}` : value);
+            } else if (raw) {
+              pushLine(prefix ? `${prefix}: ${raw}` : raw);
+            }
+          }
+        }
+      }
+    }
+  }
+  return out.join("\n");
+}
+
 type ReportMode = 'rent' | 'sale';
 
 type AnalysisStage =
@@ -1412,8 +1486,8 @@ async function fetchJson(
 //      the analysis as failed.
 // ============================================================================
 
-/** Hard ceiling for a single invocation. Leaves a 5s buffer under Supabase's 150s wall-clock. */
-const INVOCATION_DEADLINE_MS = 145_000;
+/** Hard ceiling for a single invocation. Leaves a 12s buffer under Supabase's 150s wall-clock. */
+const INVOCATION_DEADLINE_MS = 138_000;
 
 /** Per-call timeouts for the known downstream calls in `run` (action=run). */
 const TIMEOUT_LIMITS_MS = {
@@ -5391,6 +5465,77 @@ If a field is not listed above, then treat it as unknown and add it to data_gaps
 |- If a field is listed above, it is KNOWN — do NOT list it as a question to ask.
 `;
       }
+    }
+  }
+
+  // ── Inject rental-specific listing facts (PR) ─────────────────────────────
+  if (reportMode === 'rent' && optionalDetails) {
+    const od = optionalDetails as Record<string, unknown>;
+    const rentalFacts: string[] = [];
+
+    // Fee semantics
+    const monthlyRentStr = typeof od.monthlyRent === 'string' ? od.monthlyRent.trim() : '';
+    const baseRentNum = typeof od.baseRent === 'number' && Number.isFinite(od.baseRent) ? od.baseRent : null;
+    const feeIncludedBool = od.listPriceIncludesRequiredMonthlyFees === true;
+    const feeMinNum = typeof od.requiredMonthlyFeeMin === 'number' && Number.isFinite(od.requiredMonthlyFeeMin) ? od.requiredMonthlyFeeMin : null;
+    const feeMaxNum = typeof od.requiredMonthlyFeeMax === 'number' && Number.isFinite(od.requiredMonthlyFeeMax) ? od.requiredMonthlyFeeMax : null;
+
+    if (monthlyRentStr) rentalFacts.push(`- Displayed Total Monthly Price: ${monthlyRentStr}`);
+    if (baseRentNum != null) rentalFacts.push(`- Base Rent: $${baseRentNum}/mo`);
+    if (feeIncludedBool) {
+      rentalFacts.push(`- Required Monthly Fees: Included in displayed total price`);
+    } else if (od.listPriceIncludesRequiredMonthlyFees === false) {
+      rentalFacts.push(`- Required Monthly Fees: NOT included in displayed total price (must be added separately)`);
+    } else if (feeMinNum != null || feeMaxNum != null) {
+      const lo = feeMinNum != null ? `$${feeMinNum}` : 'unknown min';
+      const hi = feeMaxNum != null ? `$${feeMaxNum}` : 'unknown max';
+      rentalFacts.push(`- Required Monthly Fees Range: ${lo} - ${hi}/mo (inclusion status not confirmed)`);
+    }
+
+    // Lease terms
+    const leaseTermStr = typeof od.leaseTerm === 'string' ? od.leaseTerm.trim() : '';
+    if (leaseTermStr) rentalFacts.push(`- Lease Term: ${leaseTermStr}`);
+
+    // DOM-extracted features
+    if (typeof od.laundry === 'string' && od.laundry.trim()) rentalFacts.push(`- Laundry: ${od.laundry.trim()}`);
+    if (typeof od.petPolicy === 'string' && od.petPolicy.trim()) rentalFacts.push(`- Pet Policy: ${od.petPolicy.trim()}`);
+    if (typeof od.buildingName === 'string' && od.buildingName.trim()) rentalFacts.push(`- Building Name: ${od.buildingName.trim()}`);
+    if (typeof od.homeType === 'string' && od.homeType.trim()) rentalFacts.push(`- Home Type: ${od.homeType.trim()}`);
+    if (typeof od.propertySubtype === 'string' && od.propertySubtype.trim()) rentalFacts.push(`- Property Subtype: ${od.propertySubtype.trim()}`);
+    if (typeof od.heating === 'string' && od.heating.trim()) rentalFacts.push(`- Heating: ${od.heating.trim()}`);
+    if (typeof od.flooring === 'string' && od.flooring.trim()) rentalFacts.push(`- Flooring: ${od.flooring.trim()}`);
+    if (typeof od.parkingFeatures === 'string' && od.parkingFeatures.trim()) rentalFacts.push(`- Parking Features: ${od.parkingFeatures.trim()}`);
+    if (typeof od.parkingDetails === 'string' && od.parkingDetails.trim()) rentalFacts.push(`- Parking Details: ${od.parkingDetails.trim()}`);
+    if (typeof od.interiorFeatures === 'string' && od.interiorFeatures.trim()) rentalFacts.push(`- Interior Features: ${od.interiorFeatures.trim()}`);
+    if (typeof od.exteriorFeatures === 'string' && od.exteriorFeatures.trim()) rentalFacts.push(`- Exterior Features: ${od.exteriorFeatures.trim()}`);
+    if (typeof od.amenitiesIncluded === 'string' && od.amenitiesIncluded.trim()) rentalFacts.push(`- Amenities Included: ${od.amenitiesIncluded.trim()}`);
+    if (typeof od.security === 'string' && od.security.trim()) rentalFacts.push(`- Security: ${od.security.trim()}`);
+    if (typeof od.patioPorch === 'string' && od.patioPorch.trim()) rentalFacts.push(`- Patio / Porch: ${od.patioPorch.trim()}`);
+
+    // Full structured Facts & features groups (schema-agnostic)
+    const factsText = factsAndFeaturesToText(od.factsAndFeatures, 60);
+    if (factsText) {
+      rentalFacts.push(`- Facts & Features (structured groups, schema-agnostic):`);
+      for (const line of factsText.split('\n')) rentalFacts.push(`    ${line}`);
+    }
+
+    if (rentalFacts.length > 0) {
+      textContent += `
+|RENTAL LISTING FACTS (STRUCTURED, ZILLOW DOM-EXTRACTED):
+|${rentalFacts.join('\n')}
+|
+|FEE SEMANTICS RULE (CRITICAL):
+|- Displayed Total Monthly Price = Base Rent + Required Monthly Fees (when "Required Monthly Fees: Included" is listed above).
+|- Do NOT describe required monthly fees as "unknown", "not disclosed", or "all fees unconfirmed" when the fee-inclusion flag is "Included".
+|- When fee inclusion is "Included", bottom_line, rent_fairness.explanation, and rental_snapshot must reflect that the displayed total already incorporates required monthly fees. Only confirm utilities, security deposit, application fees, and optional services.
+|- When fee inclusion is "NOT included", the report must say so and remind the tenant to add the required monthly fees on top of the displayed total.
+|
+|PRICE-VALUE LANGUAGE RULE (CRITICAL):
+|- If rentZestimate is null AND no other reliable comparable-rent evidence exists, do NOT emit any value-judgment adjective about the price. Forbidden words: cheap, affordable, inexpensive, low-priced, low price, bargain, good value, fair price, fair rent, great deal, overpriced, below market, above market, below average, above average, competitive pricing.
+|- In that case, use neutral phrasing such as: "$<amount> monthly price, but comparable-rent evidence is not available." or "There is not enough comparison data to judge whether the rent is unusually low or high."
+|- This rule applies to bottom_line, rental_snapshot, rent_fairness.explanation, rental_listing_score.reason, and any other text field. It MUST be consistent with rent_fairness.verdict = "Needs More Evidence" when no comparison evidence exists.
+|- Rent Zestimate, when present, is the only acceptable price-value signal.
+`;
     }
   }
 
@@ -9628,35 +9773,229 @@ ${optionalDetails.askingPrice ? `Asking Price: ${optionalDetails.askingPrice}\n`
       console.error("Error name:", err.name);
       console.error("===================");
 
-      // Distinguish timeout/deadline errors from generic failures so the client
-      // can show a more actionable message and operators can find these fast.
+      // Distinguish timeout/deadline errors from generic failures.
+      // Deadline / AbortError = recoverable. Do NOT write failed.
       const errName = err.name ?? '';
-      const isTimeout = errName === 'TimeoutError' || errName === 'AbortError'
-        || /timed out|deadline/i.test(err.message);
-      const friendlyMessage = isTimeout
-        ? `Analysis timed out: ${err.message}. The LLM did not respond within the allowed budget. Please try again.`
-        : err.message || "Analysis failed";
+      const isDeadline = errName === 'TimeoutError' || errName === 'AbortError'
+        || /timed out|deadline|aborted|signal aborted/i.test(err.message);
 
-      // Analysis failed - release the reserved credit
+      if (isDeadline) {
+        // Persist a recoverable state instead of writing failed.
+        await updateAnalysisState(id, {
+          stage: "step1_pending" as any,
+          message: `Deadline exceeded at ${new Date().toISOString()}. Task is recoverable.`,
+          status: "processing",
+          progress: 10,
+        });
+
+        return jsonResponse({
+          ok: true,
+          id,
+          status: "processing",
+          recoverable: true,
+          message: "Analysis deadline exceeded. Task is recoverable and will be retried.",
+        }, 202);
+      }
+
+      // True unrecoverable error — write failed.
       await releaseCredits(currentUser.id, usageId);
-      console.log("=== Analysis failed, credits released ===");
+      console.log("=== Analysis failed (unrecoverable), credits released ===");
 
       await updateAnalysisState(id, {
         stage: "failed",
-        message: friendlyMessage,
+        message: err.message || "Analysis failed",
         progress: 100,
         status: "failed",
-        error: friendlyMessage,
+        error: err.message || "Unknown error",
       });
 
-      // Mark analysis as failed in analyses table
-      await failAnalysisRecord(id, friendlyMessage);
+      await failAnalysisRecord(id, err.message || "Unknown error");
 
       return jsonResponse({
-        message: isTimeout ? "Analysis timed out" : "Analysis failed",
-        error: friendlyMessage,
-        timedOut: isTimeout,
-      }, isTimeout ? 504 : 500);
+        message: err.message || "Analysis failed",
+        error: err.message || "Unknown error",
+      }, 500);
+    }
+  }
+
+  // ========== Cron Handlers (service-role only) ==================================
+  // These actions are called by pg_cron every minute. They use the service-role
+  // key so auth is bypassed via service_key. Cron jobs call with no body and
+  // no user session.
+
+  if (resolvedAction === "resume_due" || resolvedAction === "finalize_due") {
+    // Cron handlers must accept service-role calls without requiring user auth.
+    // Guard: only proceed if the request has the service-role key (set in env).
+    const serviceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") || "";
+    const authHeader = req.headers.get("Authorization") || "";
+    const isServiceRole =
+      (authHeader === `Bearer ${serviceKey}` && serviceKey.length > 0)
+      || (authHeader === `Bearer ${LOCAL_SERVICE_KEY}` && LOCAL_SERVICE_KEY.length > 0);
+
+    if (!isServiceRole) {
+      return jsonResponse({ message: "Unauthorized" }, 401);
+    }
+
+    try {
+      if (resolvedAction === "resume_due") {
+        // Find analyses that are stuck in processing state (deadline exceeded).
+        // We look for any analysis_states with status=processing and no recent
+        // update — these are candidates for recovery by a new run invocation.
+        // Since we have no batch queue RPC, we rely on the analysis_states table.
+        const staleThreshold = new Date(Date.now() - 3 * 60 * 1000).toISOString(); // 3 min ago
+
+        const response = await fetch(
+          `${LOCAL_URL}/rest/v1/analysis_states?status=eq.processing&updated_at=lt.${staleThreshold}&order=updated_at.asc&limit=10&select=id`,
+          {
+            headers: {
+              "apikey": LOCAL_SERVICE_KEY,
+              "Authorization": `Bearer ${LOCAL_SERVICE_KEY}`,
+            },
+          }
+        );
+
+        if (!response.ok) {
+          return jsonResponse({ message: "DB error" }, 500);
+        }
+
+        const staleRecords: Array<{ id: string }> = await response.json();
+
+        if (staleRecords.length === 0) {
+          return jsonResponse({ ok: true, action: "resume_due", found: 0, message: "No stale processing records" }, 200);
+        }
+
+        // For each stale record, advance its stage to a recoverable state.
+        // The next cron tick (or a new user-triggered run) will continue from there.
+        const updatedIds: string[] = [];
+        for (const record of staleRecords) {
+          // Check the analysis record to see what stage it's at.
+          const analysisRes = await fetch(
+            `${LOCAL_URL}/rest/v1/analyses?id=eq.${record.id}&select=id,status,full_result&limit=1`,
+            {
+              headers: {
+                "apikey": LOCAL_SERVICE_KEY,
+                "Authorization": `Bearer ${LOCAL_SERVICE_KEY}`,
+              },
+            }
+          );
+
+          if (!analysisRes.ok) continue;
+          const analyses: Array<{ id: string; status: string; full_result: unknown }> = await analysisRes.json();
+          if (!analyses || analyses.length === 0) continue;
+
+          const analysis = analyses[0];
+          const result = analysis.full_result as Record<string, unknown> | null;
+          const hasStep1Result = result && typeof result === 'object' && (
+            (result as any).photos !== undefined ||
+            (result as any).photoSpaces !== undefined ||
+            (result as any).visualAnalysis !== undefined
+          );
+          const hasStep2Result = result && typeof result === 'object' && (
+            (result as any).price_assessment !== undefined ||
+            (result as any).overall_score !== undefined
+          );
+
+          let recoverableStage: string;
+          if (hasStep2Result) {
+            // Step 2 is done — only finalization remains.
+            recoverableStage = "step2_pending";
+          } else if (hasStep1Result) {
+            // Step 1 done, Step 2 not yet started.
+            recoverableStage = "step2_pending";
+          } else {
+            // Nothing meaningful completed — reset to submitted so a fresh run can pick it up.
+            recoverableStage = "step1_pending";
+          }
+
+          await updateAnalysisState(record.id, {
+            stage: recoverableStage as any,
+            status: "processing",
+            message: `Recovered by resume_due at ${new Date().toISOString()}.`,
+          });
+
+          updatedIds.push(record.id);
+        }
+
+        return jsonResponse({
+          ok: true,
+          action: "resume_due",
+          found: staleRecords.length,
+          recovered: updatedIds.length,
+          recoveredIds: updatedIds,
+        }, 200);
+      }
+
+      // ── finalize_due ──────────────────────────────────────────────────────────
+      // Find analyses in step2_pending that are ready to complete (Step 1 done,
+      // no ongoing work). Mark them done so the user poll receives a result.
+      if (resolvedAction === "finalize_due") {
+        const staleThreshold = new Date(Date.now() - 2 * 60 * 1000).toISOString(); // 2 min ago
+
+        const response = await fetch(
+          `${LOCAL_URL}/rest/v1/analysis_states?stage=eq.step2_pending&updated_at=lt.${staleThreshold}&order=updated_at.asc&limit=10&select=id`,
+          {
+            headers: {
+              "apikey": LOCAL_SERVICE_KEY,
+              "Authorization": `Bearer ${LOCAL_SERVICE_KEY}`,
+            },
+          }
+        );
+
+        if (!response.ok) {
+          return jsonResponse({ message: "DB error" }, 500);
+        }
+
+        const pendingRecords: Array<{ id: string }> = await response.json();
+
+        if (pendingRecords.length === 0) {
+          return jsonResponse({ ok: true, action: "finalize_due", found: 0, message: "No stale step2_pending records" }, 200);
+        }
+
+        const finalizedIds: string[] = [];
+        for (const record of pendingRecords) {
+          const analysisRes = await fetch(
+            `${LOCAL_URL}/rest/v1/analyses?id=eq.${record.id}&select=id,full_result,overall_score,status&limit=1`,
+            {
+              headers: {
+                "apikey": LOCAL_SERVICE_KEY,
+                "Authorization": `Bearer ${LOCAL_SERVICE_KEY}`,
+              },
+            }
+          );
+
+          if (!analysisRes.ok) continue;
+          const analyses: Array<{ id: string; full_result: unknown; overall_score: number | null; status: string }> = await analysisRes.json();
+          if (!analyses || analyses.length === 0) continue;
+
+          const analysis = analyses[0];
+          const hasResult = analysis.full_result !== null && analysis.full_result !== undefined;
+          const hasScore = analysis.overall_score !== null && analysis.overall_score !== undefined;
+
+          if (hasResult && hasScore) {
+            // Already has complete data — mark done.
+            await updateAnalysisState(record.id, {
+              stage: "done",
+              status: "done",
+              message: "Completed via finalize_due.",
+              progress: 100,
+            });
+            finalizedIds.push(record.id);
+          }
+          // If no result yet, leave it in step2_pending for next tick.
+        }
+
+        return jsonResponse({
+          ok: true,
+          action: "finalize_due",
+          found: pendingRecords.length,
+          finalized: finalizedIds.length,
+          finalizedIds,
+        }, 200);
+      }
+    } catch (err) {
+      const e = err instanceof Error ? err : new Error(String(err));
+      console.error("[cron handler] error:", e.message);
+      return jsonResponse({ message: "Internal error: " + e.message }, 500);
     }
   }
 

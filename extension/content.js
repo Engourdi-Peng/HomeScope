@@ -765,6 +765,12 @@ const INSTANCE_ID = Math.random().toString(36).slice(2, 9);
           noop('[DIAG] START_USER_EXTRACTION sendResponse called successfully');
         }).catch((err) => {
           noop('[DIAG] START_USER_EXTRACTION promise rejected:', err.message, 'code:', err.code);
+          console.error('[HS_EXTRACTION_REJECTED]', {
+            message: err?.message,
+            code: err?.code,
+            name: err?.name,
+            stack: err?.stack
+          });
           sendResponse({ success: false, error: err.message, code: err.code || 'EXTRACTION_ERROR' });
         });
         return true;
@@ -1041,46 +1047,88 @@ async function startUserExtraction(bypassCache = false, analysisType = 'full') {
     let imageUrls = [];
     if (analysisType !== 'basic') {
       noop('[DIAG] startUserExtraction: calling openGallery...');
-      try {
-        opened = await openGallery();
-      } catch (err) {
-        noop('[DIAG] startUserExtraction: openGallery threw:', err.message);
-        opened = false;
-      }
-      noop('[DIAG] startUserExtraction: openGallery returned:', opened);
 
-      // ── Step: Simulate human behavior after opening gallery ──
-      if (opened) {
-        try {
-          await simulateHumanBehavior();
-        } catch (err) {
-          noop('[DIAG] startUserExtraction: simulateHumanBehavior threw:', err.message);
+      if (isZillowPage()) {
+        noop('[DIAG] startUserExtraction: Zillow page detected, using new 4-collector path');
+        const pageContext = detectZillowPageScope();
+
+        let galleryResult = await extractZillowGallery({
+          pageContext,
+          listing: lightListing
+        });
+
+        // 只重试一次
+        if (galleryResult.status === GALLERY_RESULT_STATUS.PARTIAL) {
+          const preservedTotal = galleryResult.expectedTotal;
+          noop('[DIAG] startUserExtraction: gallery partial, retrying with preservedTotal:', preservedTotal);
+          galleryResult = await extractZillowGallery({
+            pageContext,
+            listing: lightListing,
+            retry: true,
+            preservedExpectedTotal: preservedTotal
+          });
         }
-      }
 
-      noop('[DIAG] openGallery returned:', opened);
-
-      // ── Step: Collect images via PhotoSwipe paging ──
-      if (opened) {
-        noop('[DIAG] PhotoSwipe gallery opened, starting to collect images...');
-        try {
-          imageUrls = await collectByPhotoSwipePaging();
-        } catch (err) {
-          noop('[DIAG] startUserExtraction: collectByPhotoSwipePaging threw:', err.message);
-          imageUrls = [];
+        if (galleryResult.status !== GALLERY_RESULT_STATUS.COMPLETE) {
+          const error = new Error(
+            galleryResult.status === GALLERY_RESULT_STATUS.PARTIAL
+              ? `Photo collection incomplete: ${galleryResult.uniqueCount}/${galleryResult.expectedTotal}`
+              : `Unable to collect Zillow listing photos: ${galleryResult.reason || 'unknown'}`
+          );
+          error.code = galleryResult.status === GALLERY_RESULT_STATUS.PARTIAL
+            ? 'GALLERY_INCOMPLETE'
+            : 'GALLERY_EXTRACTION_FAILED';
+          noop('[DIAG] startUserExtraction: gallery not complete:', galleryResult);
+          console.error('[HS_GALLERY_NOT_COMPLETE]', {
+            status: galleryResult?.status,
+            reason: galleryResult?.reason,
+            galleryType: galleryResult?.galleryType,
+            expectedTotal: galleryResult?.expectedTotal,
+            uniqueCount: galleryResult?.uniqueCount,
+            imageCount: Array.isArray(galleryResult?.images)
+              ? galleryResult.images.length
+              : (Array.isArray(galleryResult?.imageUrls) ? galleryResult.imageUrls.length : undefined),
+            currentIndex: galleryResult?.currentIndex,
+            iterations: galleryResult?.iterations
+          });
+          throw error;
         }
-        noop('[DIAG] collectByPhotoSwipePaging returned:', imageUrls.length, 'images');
-      }
 
-      // ── 备用策略: 如果 PhotoSwipe 失败，尝试从页面数据提取图片 ──
-      if (imageUrls.length === 0) {
-        noop('[DIAG] PhotoSwipe failed, trying page data extraction...');
+        imageUrls = galleryResult.images.map(image => image.url);
+        opened = true;
+        noop('[DIAG] startUserExtraction: Zillow gallery extraction complete:', imageUrls.length, 'images');
+      } else {
+        // 非 Zillow 页面继续走原 PhotoSwipe 路径
         try {
-          imageUrls = await extractImagesFromPageDataZillow();
+          opened = await openGallery();
         } catch (err) {
-          noop('[DIAG] Page data extraction failed:', err.message);
+          noop('[DIAG] startUserExtraction: openGallery threw:', err.message);
+          opened = false;
         }
-        noop('[DIAG] Page data extraction returned:', imageUrls.length, 'images');
+        noop('[DIAG] startUserExtraction: openGallery returned:', opened);
+
+        // ── Step: Simulate human behavior after opening gallery ──
+        if (opened) {
+          try {
+            await simulateHumanBehavior();
+          } catch (err) {
+            noop('[DIAG] startUserExtraction: simulateHumanBehavior threw:', err.message);
+          }
+        }
+
+        noop('[DIAG] openGallery returned:', opened);
+
+        // ── Step: Collect images via PhotoSwipe paging ──
+        if (opened) {
+          noop('[DIAG] PhotoSwipe gallery opened, starting to collect images...');
+          try {
+            imageUrls = await collectByPhotoSwipePaging();
+          } catch (err) {
+            noop('[DIAG] startUserExtraction: collectByPhotoSwipePaging threw:', err.message);
+            imageUrls = [];
+          }
+          noop('[DIAG] collectByPhotoSwipePaging returned:', imageUrls.length, 'images');
+        }
       }
 
       lightListing.imageUrls = imageUrls;
@@ -1801,6 +1849,104 @@ function extractZillowData() {
     };
   }
 
+  // ── v7 helper: read "Label: value" facts directly from the Facts & features
+  //     DOM container (data-testid="fact-category" > li > span). Independent of
+  //     document.body.innerText and not affected by "Show more" folding.
+  //     Returns a flat {Label: value} map of the first occurrence per label.
+  //     No retries, no waiting, no clicking — single synchronous pass.
+  function readZillowFactsDict() {
+    const out = {};
+    try {
+      const headings = document.querySelectorAll('h2');
+      let root = null;
+      for (const h of headings) {
+        if (/^Facts & features$/i.test(h.textContent || '')) {
+          root = h.closest('[data-c11n-component="Box"]') || h.parentElement;
+          break;
+        }
+      }
+      if (!root) return out;
+      const categories = root.querySelectorAll('[data-testid="fact-category"]');
+      categories.forEach((cat) => {
+        const spans = cat.querySelectorAll('li > span');
+        spans.forEach((sp) => {
+          const text = (sp.textContent || '').replace(/\s+/g, ' ').trim();
+          if (!text) return;
+          const m = text.match(/^([^:]{1,40}?):\s*(.+)$/);
+          if (m) {
+            const k = m[1].trim();
+            const v = m[2].trim();
+            if (k && v && out[k] === undefined) out[k] = v;
+          }
+        });
+      });
+    } catch (_) {
+      // never throw — returns partial or empty dict
+    }
+    return out;
+  }
+
+  // === PR: full structured Facts & features groups (schema-agnostic) ===
+  // Walks the Facts & features module structurally and emits:
+  //   groups: [{ section, categories: [{ category, items: [{label, value, raw}] }] }]
+  // - section   = <h3> text inside [data-testid="category-group"]
+  // - category  = <h6> text inside [data-testid="fact-category"] (may be "")
+  // - item      = each <li><span>...</span></li>
+  //     - "Label: value" -> { label: "Label", value: "value", raw: "Label: value" }
+  //     - otherwise      -> { label: null,      value: <text>, raw: <text> }
+  // Returns plain JSON-serializable object (no Map).
+  function readZillowFactsAndFeatures() {
+    const empty = { groups: [] };
+    try {
+      const headings = document.querySelectorAll('h2');
+      let root = null;
+      for (const h of headings) {
+        if (/^Facts & features$/i.test(h.textContent || '')) {
+          root = h.closest('[data-c11n-component="Box"]') || h.parentElement;
+          break;
+        }
+      }
+      if (!root) return empty;
+      const groupEls = root.querySelectorAll('[data-testid="category-group"]');
+      const groups = [];
+      groupEls.forEach((groupEl) => {
+        const sectionEl = groupEl.querySelector('h3');
+        const section = sectionEl ? (sectionEl.textContent || '').replace(/\s+/g, ' ').trim() : '';
+        const catEls = groupEl.querySelectorAll('[data-testid="fact-category"]');
+        const categories = [];
+        catEls.forEach((catEl) => {
+          const h6 = catEl.querySelector('h6');
+          const category = h6 ? (h6.textContent || '').replace(/\s+/g, ' ').trim() : '';
+          const items = [];
+          const spans = catEl.querySelectorAll('li > span');
+          spans.forEach((sp) => {
+            const text = (sp.textContent || '').replace(/\s+/g, ' ').trim();
+            if (!text) return;
+            const m = text.match(/^([^:]{1,80}?):\s*(.+)$/);
+            if (m) {
+              const label = m[1].trim();
+              const value = m[2].trim();
+              if (label && value) {
+                items.push({ label, value, raw: text });
+              }
+            } else {
+              items.push({ label: null, value: text, raw: text });
+            }
+          });
+          if (items.length > 0) {
+            categories.push({ category, items });
+          }
+        });
+        if (categories.length > 0) {
+          groups.push({ section, categories });
+        }
+      });
+      return { groups };
+    } catch (_) {
+      return empty;
+    }
+  }
+
   function extractDescription() {
     const start = lines.findIndex(l => /^What's special$/i.test(l));
     if (start < 0) return null;
@@ -1910,6 +2056,8 @@ function extractZillowData() {
   const factsLines = facts.lines;
   const financialLines = financial.lines;
   const monthlyLines = monthly.lines;
+  const factsDict = readZillowFactsDict();
+  const factsAndFeatures = readZillowFactsAndFeatures();
 
   const result = {
     // Top summary
@@ -2002,6 +2150,12 @@ function extractZillowData() {
       "Lot",
     ]),
 
+    // === v7: DOM-facts-dict fallback for rental facts (non-destructive).
+    // Inner-text path is tried first; DOM dictionary only fills in when the
+    // inner-text read returned null (e.g. Show more collapsed content).
+    parking: factsDict['Parking features'] ?? null,
+    buildingName: factsDict['Building name'] ?? null,
+
     garageSpaces: parseNumber(getStrictLabelValue(factsLines, ["Garage spaces"], [
       "Lot",
       "Size",
@@ -2029,7 +2183,7 @@ function extractZillowData() {
       "Architectural style",
       "Property subtype",
       "Materials",
-    ]),
+    ]) ?? factsDict['Home type'] ?? null,
 
     architecturalStyle: getStrictLabelValue(factsLines, ["Architectural style"], [
       "Property subtype",
@@ -2084,6 +2238,144 @@ function extractZillowData() {
     region: getStrictLabelValue(factsLines, ["Region"], [
       "Financial & listing details",
     ]),
+
+    // === Rental facts (Facts & features section) ===
+    // Strict-label reads only — no full-page regex.
+    // Sources (priority): gdpClientCache property > DOM facts container.
+    leaseTerm: getStrictLabelValue(factsLines, [
+      "Lease term",
+      "Lease length",
+    ], [
+      "Pets allowed",
+      "Parking features",
+      "Laundry",
+      "Interior area",
+      "Property",
+    ]) ?? factsDict['Lease term'] ?? null,
+
+    petPolicy: getStrictLabelValue(factsLines, [
+      "Pets allowed",
+      "Pet policy",
+      "Pets",
+    ], [
+      "Laundry",
+      "Parking features",
+      "Lease term",
+      "Property",
+    ]) ?? factsDict['Pets allowed'] ?? null,
+
+    laundry: getStrictLabelValue(factsLines, [
+      "Laundry",
+      "Laundry features",
+    ], [
+      "Pets allowed",
+      "Parking features",
+      "Lease term",
+      "Property",
+    ]) ?? factsDict['Laundry'] ?? null,
+
+    availabilityStatus: (() => {
+      const raw = getStrictLabelValue(factsLines, [
+        "Available now",
+        "Availability",
+        "Date available",
+        "Available date",
+      ], [
+        "Lease term",
+        "Pets allowed",
+        "Laundry",
+        "Property",
+      ]);
+      if (!raw) return null;
+      const lower = raw.toLowerCase();
+      if (/now|today|immediately/.test(lower)) return "available_now";
+      if (/coming\s*soon|future/.test(lower)) return "coming_soon";
+      // Date-like string: keep raw text
+      return raw;
+    })(),
+
+    // === PR: high-value fields promoted from Facts & features (DOM fallback
+    //     only — do not overwrite innerText-derived values above). ===
+    fullBathrooms: parseNumber(getStrictLabelValue(factsLines, [
+      "Full bathrooms",
+      "Full bathroom",
+      "Full baths",
+      "Full bath",
+    ], [
+      "1/2 bathrooms",
+      "Half bathrooms",
+      "Heating",
+      "Cooling",
+    ])),
+
+    interiorFeatures: getStrictLabelValue(factsLines, [
+      "Interior features",
+    ], [
+      "Appliances",
+      "Features",
+      "Interior area",
+      "Property",
+    ]),
+
+    flooring: getStrictLabelValue(factsLines, [
+      "Flooring",
+      "Floor covering",
+    ], [
+      "Cooling",
+      "Appliances",
+      "Features",
+      "Interior area",
+    ]),
+
+    parkingDetails: getStrictLabelValue(factsLines, [
+      "Parking",
+      "Parking details",
+    ], [
+      "Garage spaces",
+      "Lot",
+      "Features",
+    ]),
+
+    patioPorch: getStrictLabelValue(factsLines, [
+      "Patio & porch",
+      "Patio and porch",
+      "Patio",
+      "Porch",
+    ], [
+      "Pool",
+      "Features",
+      "Property",
+    ]),
+
+    exteriorFeatures: getStrictLabelValue(factsLines, [
+      "Exterior features",
+      "Other exterior features",
+    ], [
+      "Lot",
+      "Features",
+      "Property",
+    ]),
+
+    amenitiesIncluded: getStrictLabelValue(factsLines, [
+      "Amenities included",
+      "Community amenities",
+    ], [
+      "Features",
+      "Property",
+      "Community & HOA",
+    ]),
+
+    security: getStrictLabelValue(factsLines, [
+      "Security",
+      "Security features",
+    ], [
+      "Features",
+      "Property",
+    ]),
+
+    // === PR: full structured Facts & features groups (schema-agnostic).
+    //     Always populated — independent of which fields are promoted above. ===
+    factsAndFeaturesGroups: factsAndFeatures,
 
     // Financial & listing details
     pricePerSqft: getStrictLabelValue(financialLines, ["Price per square foot"], [
@@ -2955,9 +3247,26 @@ async function extractListingDataLight() {
       cooling: zillowData.cooling || null,
       basement: zillowData.basement || null,
       parkingFeatures: zillowData.parkingFeatures || null,
+      // === Rental facts (DOM facts container; non-destructive: do not
+      // overwrite number rooms.parking already on top-level listing). ===
+      leaseTerm: zillowData.leaseTerm || null,
+      petPolicy: zillowData.petPolicy || null,
+      laundry: zillowData.laundry || null,
+      availabilityStatus: zillowData.availabilityStatus || null,
       garageSpaces: zillowData.garageSpaces != null ? zillowData.garageSpaces : null,
       floodZone: zillowData.floodZone || null,
       region: zillowData.region || null,
+      // === PR: high-value Facts & features fields (DOM fallback only) ===
+      fullBathrooms: zillowData.fullBathrooms != null ? zillowData.fullBathrooms : null,
+      interiorFeatures: zillowData.interiorFeatures || null,
+      flooring: zillowData.flooring || null,
+      parkingDetails: zillowData.parkingDetails || null,
+      patioPorch: zillowData.patioPorch || null,
+      exteriorFeatures: zillowData.exteriorFeatures || null,
+      amenitiesIncluded: zillowData.amenitiesIncluded || null,
+      security: zillowData.security || null,
+      // === PR: full structured Facts & features groups (schema-agnostic) ===
+      factsAndFeatures: zillowData.factsAndFeaturesGroups || { groups: [] },
     } : {}),
   };
 
@@ -3031,6 +3340,13 @@ async function extractListingDataLight() {
         heating: zillowData.heating || null,
         cooling: zillowData.cooling || null,
         basement: zillowData.basement || null,
+        leaseTerm: zillowData.leaseTerm || null,
+        petPolicy: zillowData.petPolicy || null,
+        laundry: zillowData.laundry || null,
+        availabilityStatus: zillowData.availabilityStatus || null,
+        parkingFeatures: zillowData.parkingFeatures || null,
+        // === PR: parallel schema-agnostic groups (preserves flat fields above) ===
+        factsAndFeaturesGroups: zillowData.factsAndFeaturesGroups || { groups: [] },
       },
       financials: {
         pricePerSqft: zillowData.pricePerSqftAmount || null,
@@ -5457,6 +5773,1018 @@ async function collectByPhotoSwipePaging() {
 }
 
 
+// ============================================================================
+// Zillow Gallery Extraction Upgrade - 4 collector types + page scope detection
+// ============================================================================
+
+// 结果状态
+const GALLERY_RESULT_STATUS = {
+  COMPLETE: 'complete',
+  PARTIAL: 'partial',
+  FAILED: 'failed'
+};
+
+// 图库类型
+const GALLERY_TYPES = {
+  ZILLOW_MEDIA_CAROUSEL: 'zillow_media_carousel',
+  ZILLOW_VERTICAL_MEDIA_WALL: 'zillow_vertical_media_wall',
+  ZILLOW_BUILDING_GALLERY: 'zillow_building_gallery',
+  ZILLOW_UNIT_CAROUSEL: 'zillow_unit_carousel'
+};
+
+// 页面范围
+const PAGE_SCOPES = {
+  PROPERTY: 'property',
+  BUILDING: 'building',
+  UNIT: 'unit'
+};
+
+// 识别当前页面范围
+// Unit 优先从 hash 识别，Building 使用 pathname，Property 使用 zpid
+function detectZillowPageScope() {
+  const hash = window.location.hash;
+  const pathname = window.location.pathname;
+
+  // Unit: URL 含 #udpLightbox-{unitId}-mmlb-{index}
+  const unitHashMatch = hash.match(/#udpLightbox-(\d+)-mmlb-/);
+  if (unitHashMatch) {
+    return {
+      scope: PAGE_SCOPES.UNIT,
+      unitId: unitHashMatch[1],
+      buildingId: null,
+      zpid: null
+    };
+  }
+
+  // Building: /apartments/... 路径（使用 pathname 避免 query string 干扰）
+  const buildingMatch = pathname.match(/^\/apartments\/.+\/([A-Za-z0-9_-]+)\/?$/);
+  if (buildingMatch) {
+    return {
+      scope: PAGE_SCOPES.BUILDING,
+      buildingId: buildingMatch[1],
+      unitId: null,
+      zpid: null
+    };
+  }
+
+  // Property: /homedetails/ 或包含 zpid 的路径
+  const zpidMatch = window.location.href.match(/(\d+)_zpid/);
+  if (zpidMatch) {
+    return {
+      scope: PAGE_SCOPES.PROPERTY,
+      zpid: zpidMatch[1],
+      buildingId: null,
+      unitId: null
+    };
+  }
+
+  // 默认按 Property 处理
+  return {
+    scope: PAGE_SCOPES.PROPERTY,
+    zpid: null,
+    buildingId: null,
+    unitId: null
+  };
+}
+
+// 查找可见元素（尺寸>0, 可见, 中心点命中）
+function findVisibleElement(selector) {
+  const candidates = document.querySelectorAll(selector);
+  for (const el of candidates) {
+    const rect = el.getBoundingClientRect();
+    const style = getComputedStyle(el);
+    if (rect.width <= 0 || rect.height <= 0) continue;
+    if (style.display === 'none' || style.visibility === 'hidden') continue;
+    const cx = rect.left + rect.width / 2;
+    const cy = rect.top + rect.height / 2;
+    const hit = document.elementFromPoint(cx, cy);
+    if (hit && (hit === el || el.contains(hit))) {
+      return el;
+    }
+  }
+  return null;
+}
+
+// 查找 Unit dialog
+function findVisibleUnitGalleryDialog() {
+  const hashMatch = window.location.hash.match(/#udpLightbox-(\d+)-mmlb-/);
+  if (!hashMatch) return null;
+
+  const unitId = hashMatch[1];
+  const dialogs = document.querySelectorAll('[role="dialog"]');
+
+  for (const dialog of dialogs) {
+    const rect = dialog.getBoundingClientRect();
+    const style = getComputedStyle(dialog);
+    if (rect.width <= 0 || rect.height <= 0) continue;
+    if (style.display === 'none' || style.visibility === 'hidden') continue;
+    const imgs = dialog.querySelectorAll('img[src*="fp/"]');
+    if (imgs.length > 0) return dialog;
+  }
+  return null;
+}
+
+// 查找 Building dialog
+function findVisibleBuildingGalleryDialog() {
+  const dialogs = document.querySelectorAll('[role="dialog"]');
+  for (const dialog of dialogs) {
+    const rect = dialog.getBoundingClientRect();
+    const style = getComputedStyle(dialog);
+    if (rect.width <= 0 || rect.height <= 0) continue;
+    if (style.display === 'none' || style.visibility === 'hidden') continue;
+    const imgs = dialog.querySelectorAll('img[src*="fp/"]');
+    if (imgs.length > 0) return dialog;
+  }
+  return null;
+}
+
+// 提取 Zillow 图片 hash
+function canonicalizeZillowPhoto(url) {
+  if (!url) return null;
+  const match = String(url).match(/\/fp\/([a-f0-9]+)/i);
+  return match ? `zillow:${match[1].toLowerCase()}` : null;
+}
+
+// 解析 opener 按钮文本中的照片数量
+// 支持: "See all 22 photos", "See all photos (16)", "22 photos"
+function parsePhotoTotal(text) {
+  const value = String(text || '');
+
+  // 数字在 photos 前面: "See all 22 photos"
+  const before = value.match(/(\d+)\s+photos?/i);
+  if (before) return Number(before[1]);
+
+  // 数字在 photos 后面: "See all photos (16)"
+  const after = value.match(/photos?\s*\(\s*(\d+)\s*\)/i);
+  if (after) return Number(after[1]);
+
+  return null;
+}
+
+// 带坐标点击（使用实测成功的完整事件参数）
+function clickWithCoordinates(element) {
+  if (!element) return;
+  const rect = element.getBoundingClientRect();
+  const x = rect.left + rect.width / 2;
+  const y = rect.top + rect.height / 2;
+  const hit = document.elementFromPoint(x, y);
+  if (!hit) return;
+
+  hit.dispatchEvent(new PointerEvent('pointerdown', {
+    bubbles: true,
+    pointerType: 'mouse',
+    isPrimary: true,
+    clientX: x,
+    clientY: y
+  }));
+  hit.dispatchEvent(new MouseEvent('mousedown', {
+    bubbles: true,
+    buttons: 1,
+    clientX: x,
+    clientY: y
+  }));
+  hit.dispatchEvent(new MouseEvent('mouseup', {
+    bubbles: true,
+    clientX: x,
+    clientY: y
+  }));
+  hit.dispatchEvent(new MouseEvent('click', {
+    bubbles: true,
+    clientX: x,
+    clientY: y
+  }));
+}
+
+// 确保图库打开按钮在视口内可见
+async function ensureGalleryOpenerInView() {
+  if (window.scrollY > 100) {
+    window.scrollTo({ top: 0, behavior: 'instant' });
+    await shortDelay(300, 500);
+  }
+}
+
+// 等待可见的 Photos 标签
+async function waitForVisiblePhotosTab(timeoutMs = 4000) {
+  const start = Date.now();
+  while (Date.now() - start < timeoutMs) {
+    const candidates = document.querySelectorAll('[data-testid="persistent-tab-photos"]');
+    for (const tab of candidates) {
+      const rect = tab.getBoundingClientRect();
+      const style = getComputedStyle(tab);
+      if (rect.width <= 0 || rect.height <= 0) continue;
+      if (style.display === 'none' || style.visibility === 'hidden') continue;
+      const centerX = rect.left + rect.width / 2;
+      const centerY = rect.top + rect.height / 2;
+      const hit = document.elementFromPoint(centerX, centerY);
+      if (hit && (hit === tab || tab.contains(hit))) {
+        return tab;
+      }
+    }
+    await shortDelay(100, 200);
+  }
+  return null;
+}
+
+async function openGalleryForScope(pageContext) {
+  // Unit: hash 可能先更新，dialog 后挂载。等待 dialog 出现，不立即返回 opened:false
+  if (pageContext.scope === PAGE_SCOPES.UNIT) {
+    const timeout = 5000;
+    const start = Date.now();
+    while (Date.now() - start < timeout) {
+      const dialog = findVisibleUnitGalleryDialog();
+      if (dialog) {
+        return { opened: true, expectedTotal: null };
+      }
+      await shortDelay(100, 200);
+    }
+    return { opened: true, expectedTotal: null };
+  }
+
+  // Building: 先滚回顶部，再查找 opener
+  if (pageContext.scope === PAGE_SCOPES.BUILDING) {
+    await ensureGalleryOpenerInView();
+    const opener = findVisibleElement('button[data-testid="photos-label"]');
+    const expectedTotal = parsePhotoTotal(opener?.textContent);
+    if (opener) {
+      clickWithCoordinates(opener);
+      return { opened: true, expectedTotal };
+    }
+    return { opened: false, expectedTotal: null };
+  }
+
+  // Property: 新版入口需要两步
+  if (pageContext.scope === PAGE_SCOPES.PROPERTY) {
+    await ensureGalleryOpenerInView();
+
+    const newEntry = findVisibleElement(
+      'button[aria-label^="Open photo slideshow at photo "]'
+    );
+    if (newEntry) {
+      clickWithCoordinates(newEntry);
+      const photosTab = await waitForVisiblePhotosTab(5000);
+      if (photosTab) {
+        clickWithCoordinates(photosTab);
+        return { opened: true, expectedTotal: null };
+      }
+    }
+
+    const oldEntry = findVisibleElement(
+      'button[data-testid="gallery-see-all-photos-button"]'
+    );
+    if (oldEntry) {
+      const expectedTotal = parsePhotoTotal(oldEntry.textContent);
+      clickWithCoordinates(oldEntry);
+      return { opened: true, expectedTotal };
+    }
+  }
+
+  return { opened: false, expectedTotal: null };
+}
+
+function detectZillowGallery(pageContext) {
+  // Unit 只能识别 Unit，不穿透
+  if (pageContext.scope === PAGE_SCOPES.UNIT) {
+    const root = findVisibleUnitGalleryDialog();
+    return root
+      ? { galleryType: GALLERY_TYPES.ZILLOW_UNIT_CAROUSEL, root }
+      : { galleryType: null, root: null };
+  }
+
+  // Building 只能识别 Building，不穿透
+  if (pageContext.scope === PAGE_SCOPES.BUILDING) {
+    const root = findVisibleBuildingGalleryDialog();
+    return root
+      ? { galleryType: GALLERY_TYPES.ZILLOW_BUILDING_GALLERY, root }
+      : { galleryType: null, root: null };
+  }
+
+  // Property: 新版 Media Carousel
+  const mediaCarousel = findVisibleElement(
+    '[data-testid="media-carousel"][aria-label="photo-carousel"]'
+  );
+  if (mediaCarousel) {
+    return { galleryType: GALLERY_TYPES.ZILLOW_MEDIA_CAROUSEL, root: mediaCarousel };
+  }
+
+  // Property: Vertical Media Wall
+  const mediaWall = findVisibleElement(
+    '[data-testid="hollywood-vertical-media-wall"]'
+  );
+  if (mediaWall) {
+    return { galleryType: GALLERY_TYPES.ZILLOW_VERTICAL_MEDIA_WALL, root: mediaWall };
+  }
+
+  return { galleryType: null, root: null };
+}
+
+async function waitForZillowGallery(pageContext, timeoutMs = 5000) {
+  const startedAt = Date.now();
+
+  while (Date.now() - startedAt < timeoutMs) {
+    const detected = detectZillowGallery(pageContext);
+
+    if (detected.galleryType && detected.root) {
+      return detected;
+    }
+
+    await shortDelay(100, 200);
+  }
+
+  return { galleryType: null, root: null };
+}
+
+// ─── Media Carousel Collector ───
+//
+// Two-root model:
+//   - imageRoot = detected.root = the [data-testid="media-carousel"] element.
+//     Strictly used to collect `<picture>/<img>` URLs from `[data-testid="carousel-item-li"]`.
+//   - controlRoot = shallowest ancestor of imageRoot that contains BOTH
+//     a visible `button[aria-label="Next photo"]` AND a visible element
+//     whose textContent strictly matches the counter regex. Used to read
+//     the counter and locate the Next/Previous photo buttons.
+//
+// Hard constraints:
+//   - controlRoot resolution never returns `document.body`, `documentElement`,
+//     or `document`. It never traverses the whole document to find a counter.
+//   - Image URL collection is strictly scoped to imageRoot to avoid mixing in
+//     Floor Plan / similar listings / other carousels.
+//   - Each paging iteration re-checks `imageRoot.isConnected` and
+//     `controlRoot.isConnected`; if either is detached, re-runs
+//     `detectZillowGallery(context)` and re-resolves controlRoot.
+async function collectZillowMediaCarousel(root, context) {
+  // Strict counter text regex (must be declared before any helper call;
+  // TDZ otherwise throws on the first findControlRoot/getCarouselCounter use).
+  // Matches "1 of 51", "Photo 1 of 51", "1 / 51" — anchored so only the
+  // actual counter element (whose own textContent equals the counter) matches.
+  const ZILLOW_COUNTER_TEXT_RE = /^(?:Photo\s*)?\d+\s*(?:of|\/)\s*\d+$/i;
+
+  let imageRoot = root;
+  let controlRoot = findControlRoot(imageRoot);
+
+  function isVisibleElement(el) {
+    if (!el) return false;
+    const rect = el.getBoundingClientRect();
+    const style = getComputedStyle(el);
+    if (rect.width <= 0 || rect.height <= 0) return false;
+    if (style.display === 'none' || style.visibility === 'hidden') return false;
+    return true;
+  }
+
+  // Walk up from imageRoot looking for the shallowest ancestor that contains:
+  //   - a visible button[aria-label="Next photo"]
+  //   - a visible element whose textContent strictly matches ZILLOW_COUNTER_TEXT_RE
+  // Returns the matching ancestor, or null. Never returns body / html / document.
+  function findControlRoot(imgRoot) {
+    if (!imgRoot || !imgRoot.isConnected) return null;
+    let el = imgRoot.parentElement;
+    while (el) {
+      if (el === document.body || el === document.documentElement || el === document) {
+        return null;
+      }
+      let hasVisibleNext = false;
+      const nextButtons = el.querySelectorAll('button[aria-label="Next photo"]');
+      for (const btn of nextButtons) {
+        if (isVisibleElement(btn)) { hasVisibleNext = true; break; }
+      }
+      if (!hasVisibleNext) { el = el.parentElement; continue; }
+      let hasVisibleCounter = false;
+      const candidates = el.querySelectorAll('*');
+      for (const cand of candidates) {
+        if (!isVisibleElement(cand)) continue;
+        const t = (cand.textContent || '').replace(/\s+/g, ' ').trim();
+        if (ZILLOW_COUNTER_TEXT_RE.test(t)) { hasVisibleCounter = true; break; }
+      }
+      if (hasVisibleCounter) return el;
+      el = el.parentElement;
+    }
+    return null;
+  }
+
+  // Robust counter reader (strict regex):
+  // - Scoped to controlRoot (no document-wide traversal)
+  // - Inspects textContent / aria-label / title
+  // - Accepts "1 of 51", "1 / 51", "Photo 1 of 51"
+  function parseCounterFromText(rawText) {
+    const normalized = String(rawText == null ? '' : rawText).replace(/\s+/g, ' ').trim();
+    if (!normalized) return null;
+    if (!ZILLOW_COUNTER_TEXT_RE.test(normalized)) return null;
+    const nums = normalized.match(/(\d+)/g);
+    if (!nums || nums.length < 2) return null;
+    const current = Number(nums[0]);
+    const total = Number(nums[1]);
+    if (!Number.isFinite(current) || !Number.isFinite(total) || total <= 0) return null;
+    return { current, total, raw: normalized };
+  }
+
+  // Reads the counter from controlRoot (NOT imageRoot).
+  // Leaf-ish heuristic avoids parent-of-counter noise.
+  function getCarouselCounter(ctrlRoot) {
+    if (!ctrlRoot) return null;
+
+    // 1) Direct descendants (leaf-ish)
+    const candidates = ctrlRoot.querySelectorAll('*');
+    for (const el of candidates) {
+      let hasDescendantMatch = false;
+      for (const child of el.children) {
+        if (parseCounterFromText(child.textContent)) { hasDescendantMatch = true; break; }
+      }
+      const own = parseCounterFromText(el.textContent);
+      if (own && !hasDescendantMatch) return own;
+    }
+
+    // 2) Fallback: aria-label / title
+    for (const el of candidates) {
+      const ariaLabel = el.getAttribute && el.getAttribute('aria-label');
+      if (ariaLabel) {
+        const parsed = parseCounterFromText(ariaLabel);
+        if (parsed) return parsed;
+      }
+      const title = el.getAttribute && el.getAttribute('title');
+      if (title) {
+        const parsed = parseCounterFromText(title);
+        if (parsed) return parsed;
+      }
+    }
+
+    return null;
+  }
+
+  // Poll up to 5s for controlRoot resolution + counter to appear (interval 150–250ms).
+  const COUNTER_POLL_TIMEOUT_MS = 5000;
+  const COUNTER_POLL_MIN_MS = 150;
+  const COUNTER_POLL_MAX_MS = 250;
+
+  let initialCounter = null;
+  const counterPollStart = Date.now();
+  while (Date.now() - counterPollStart < COUNTER_POLL_TIMEOUT_MS) {
+    if (!controlRoot || !controlRoot.isConnected) {
+      controlRoot = findControlRoot(imageRoot);
+    }
+    if (controlRoot) {
+      initialCounter = getCarouselCounter(controlRoot);
+      if (initialCounter) break;
+    }
+    await shortDelay(COUNTER_POLL_MIN_MS, COUNTER_POLL_MAX_MS);
+  }
+
+  if (!initialCounter) {
+    noop('[DIAG] collectZillowMediaCarousel: counter not found within', COUNTER_POLL_TIMEOUT_MS, 'ms');
+  }
+
+  const expectedTotal = initialCounter?.total || null;
+  const startIndex = initialCounter?.current || 1;
+  const maxAttempts = (expectedTotal || 50) + 2;
+
+  const seenSignatures = new Set();
+  const images = [];
+
+  // Image URL collection is strictly scoped to imageRoot.
+  const collectAllCarouselImages = () => {
+    if (!imageRoot || !imageRoot.isConnected) return;
+    const items = imageRoot.querySelectorAll(
+      '[data-testid="carousel-item-li"] img, ' +
+      '[data-testid="carousel-item-li"] source'
+    );
+    for (const item of items) {
+      const src = item.src || item.srcset?.split(',')?.pop()?.trim()?.split(' ')[0];
+      if (!src) continue;
+      const signature = canonicalizeZillowPhoto(src);
+      if (signature && !seenSignatures.has(signature)) {
+        seenSignatures.add(signature);
+        images.push({ index: images.length + 1, url: src, signature });
+      }
+    }
+  };
+
+  const waitForCounterChange = (prevCounter, timeoutMs = 3000) => {
+    return new Promise(resolve => {
+      const start = Date.now();
+      const check = () => {
+        const current = getCarouselCounter(controlRoot);
+        if (!current) {
+          if (Date.now() - start > timeoutMs) resolve(false);
+          else setTimeout(check, 100);
+          return;
+        }
+        if (!prevCounter || current.current !== prevCounter.current) {
+          resolve(true);
+        } else if (Date.now() - start > timeoutMs) {
+          resolve(false);
+        } else {
+          setTimeout(check, 100);
+        }
+      };
+      check();
+    });
+  };
+
+  collectAllCarouselImages();
+
+  // Next/Previous photo buttons come from controlRoot, never from imageRoot.
+  let nextBtn = (controlRoot && controlRoot.isConnected)
+    ? controlRoot.querySelector('button[aria-label="Next photo"]')
+    : null;
+  let failedMoves = 0;
+
+  for (let attempt = 0; attempt < maxAttempts; attempt++) {
+    if (expectedTotal && seenSignatures.size >= expectedTotal) {
+      break;
+    }
+
+    // Re-check connection each iteration; re-resolve if either root detached.
+    if (!imageRoot.isConnected || !controlRoot || !controlRoot.isConnected) {
+      const reDetected = detectZillowGallery(context);
+      if (!reDetected || !reDetected.root || reDetected.galleryType !== GALLERY_TYPES.ZILLOW_MEDIA_CAROUSEL) {
+        break;
+      }
+      imageRoot = reDetected.root;
+      controlRoot = findControlRoot(imageRoot);
+      if (!controlRoot) break;
+      nextBtn = controlRoot.querySelector('button[aria-label="Next photo"]');
+      if (!nextBtn) break;
+    }
+
+    const prevCounter = getCarouselCounter(controlRoot);
+
+    if (!nextBtn) break;
+    clickWithCoordinates(nextBtn);
+
+    const changed = await waitForCounterChange(prevCounter);
+
+    collectAllCarouselImages();
+
+    if (!changed) {
+      failedMoves++;
+      if (failedMoves >= 1) break;
+    } else {
+      failedMoves = 0;
+    }
+
+    const currentCounter = getCarouselCounter(controlRoot);
+    if (currentCounter && currentCounter.current === startIndex && seenSignatures.size < (expectedTotal || 0)) {
+      break;
+    }
+  }
+
+  return {
+    status: null,
+    expectedTotal,
+    images,
+    _counterText: initialCounter?.raw ?? null,
+    _imageRootConnected: !!(imageRoot && imageRoot.isConnected),
+    _controlRootConnected: !!(controlRoot && controlRoot.isConnected)
+  };
+}
+
+// ─── Vertical Wall Collector ───
+function findScrollableParent(element) {
+  let current = element.parentElement;
+  while (current) {
+    const style = getComputedStyle(current);
+    if (current.scrollHeight > current.clientHeight &&
+        (style.overflowY === 'auto' || style.overflowY === 'scroll')) {
+      return current;
+    }
+    current = current.parentElement;
+  }
+  return null;
+}
+
+async function collectZillowVerticalWall(root, context, expectedTotal) {
+  const mediaWall = root;
+  const scrollContainer = findScrollableParent(mediaWall);
+
+  if (!scrollContainer) {
+    // 无可滚动容器，直接采集
+    const images = [];
+    const seenSignatures = new Set();
+    const imgs = mediaWall.querySelectorAll('img[src*="fp/"]');
+    for (const img of imgs) {
+      const signature = canonicalizeZillowPhoto(img.src);
+      if (signature && !seenSignatures.has(signature)) {
+        seenSignatures.add(signature);
+        images.push({ index: images.length + 1, url: img.src, signature });
+      }
+    }
+    return { status: null, expectedTotal, images };
+  }
+
+  const images = [];
+  const seenSignatures = new Set();
+
+  const collectVisibleImages = () => {
+    const imgs = mediaWall.querySelectorAll('img[src*="fp/"]');
+    for (const img of imgs) {
+      const signature = canonicalizeZillowPhoto(img.src);
+      if (signature && !seenSignatures.has(signature)) {
+        seenSignatures.add(signature);
+        images.push({ index: images.length + 1, url: img.src, signature });
+      }
+    }
+  };
+
+  const scrollStep = Math.floor(scrollContainer.clientHeight * 0.85);
+
+  while (true) {
+    collectVisibleImages();
+
+    if (expectedTotal && seenSignatures.size >= expectedTotal) {
+      break;
+    }
+
+    const previousTop = scrollContainer.scrollTop;
+    scrollContainer.scrollTop += scrollStep;
+    await shortDelay(300, 500);
+
+    const reachedBottom =
+      scrollContainer.scrollTop === previousTop ||
+      scrollContainer.scrollTop + scrollContainer.clientHeight >= scrollContainer.scrollHeight - 10;
+
+    if (reachedBottom) {
+      collectVisibleImages();
+      break;
+    }
+  }
+
+  return { status: null, expectedTotal, images };
+}
+
+// ─── Building Gallery Collector ───
+function findScrollableDescendant(root) {
+  const candidates = [root, ...root.querySelectorAll('*')]
+    .map(el => {
+      const style = getComputedStyle(el);
+      return {
+        el,
+        overflowY: style.overflowY,
+        delta: el.scrollHeight - el.clientHeight
+      };
+    })
+    .filter(item =>
+      item.delta > 100 &&
+      (item.overflowY === 'auto' || item.overflowY === 'scroll')
+    )
+    .sort((a, b) => b.delta - a.delta);
+
+  return candidates[0]?.el || null;
+}
+
+async function collectZillowBuildingGallery(root, context, expectedTotal) {
+  const dialog = root;
+  const scrollContainer = findScrollableDescendant(dialog);
+
+  const images = [];
+  const seenSignatures = new Set();
+
+  const collectFromDialog = () => {
+    const imgs = dialog.querySelectorAll('img[src*="fp/"]');
+    for (const img of imgs) {
+      const signature = canonicalizeZillowPhoto(img.src);
+      if (signature && !seenSignatures.has(signature)) {
+        seenSignatures.add(signature);
+        images.push({ index: images.length + 1, url: img.src, signature });
+      }
+    }
+  };
+
+  if (scrollContainer) {
+    const scrollStep = Math.floor(scrollContainer.clientHeight * 0.85);
+    let reachedBottom = false;
+
+    while (!reachedBottom) {
+      collectFromDialog();
+      const prevScrollTop = scrollContainer.scrollTop;
+      scrollContainer.scrollTop += scrollStep;
+      await shortDelay(200, 400);
+
+      const atBottom =
+        scrollContainer.scrollTop === prevScrollTop ||
+        scrollContainer.scrollTop + scrollContainer.clientHeight >= scrollContainer.scrollHeight - 10;
+
+      if (atBottom) {
+        reachedBottom = true;
+      }
+    }
+    collectFromDialog();
+  } else {
+    collectFromDialog();
+  }
+
+  return { status: null, expectedTotal, images };
+}
+
+// ─── Unit Carousel Collector ───
+async function collectZillowUnitCarousel(root, context) {
+  const dialog = root;
+
+  const getCounterInfo = () => {
+    const buttons = [...dialog.querySelectorAll('button')];
+    for (const btn of buttons) {
+      const rect = btn.getBoundingClientRect();
+      const style = getComputedStyle(btn);
+      const text = btn.textContent?.trim() || '';
+      const match = text.match(/(\d+)\s+of\s+(\d+)/i);
+      if (!match) continue;
+      if (rect.width <= 200 || rect.height <= 200) continue;
+      if (style.display === 'none' || style.visibility === 'hidden') continue;
+      return { current: parseInt(match[1]), total: parseInt(match[2]) };
+    }
+    return null;
+  };
+
+  const initialCounter = getCounterInfo();
+  const expectedTotal = initialCounter?.total || null;
+
+  const images = [];
+  const seenSignatures = new Set();
+  const collectedIndexes = new Set();
+
+  const collectCurrentImage = () => {
+    const buttons = [...dialog.querySelectorAll('button')];
+    for (const btn of buttons) {
+      const rect = btn.getBoundingClientRect();
+      const style = getComputedStyle(btn);
+      const text = btn.textContent?.trim() || '';
+      const match = text.match(/(\d+)\s+of\s+(\d+)/i);
+      if (!match) continue;
+      if (rect.width <= 200 || rect.height <= 200) continue;
+      if (style.display === 'none' || style.visibility === 'hidden') continue;
+
+      const img = btn.querySelector('img');
+      if (img) {
+        const signature = canonicalizeZillowPhoto(img.src);
+        const index = parseInt(match[1]);
+        if (signature && !seenSignatures.has(signature)) {
+          seenSignatures.add(signature);
+          collectedIndexes.add(index);
+          images.push({ index, url: img.src, signature });
+        }
+      }
+    }
+  };
+
+  const dialogRect = dialog.getBoundingClientRect();
+  const leftCenter = { x: dialogRect.left + 50, y: dialogRect.top + dialogRect.height / 2 };
+  const rightCenter = { x: dialogRect.right - 50, y: dialogRect.top + dialogRect.height / 2 };
+
+  // Unit 局部等待函数
+  const waitForCounterChange = (prevCounter, timeoutMs = 3000) => {
+    return new Promise(resolve => {
+      const start = Date.now();
+      const check = () => {
+        const current = getCounterInfo();
+        if (!current) {
+          if (Date.now() - start > timeoutMs) resolve(false);
+          else setTimeout(check, 100);
+          return;
+        }
+        if (!prevCounter || current.current !== prevCounter.current) {
+          resolve(true);
+        } else if (Date.now() - start > timeoutMs) {
+          resolve(false);
+        } else {
+          setTimeout(check, 100);
+        }
+      };
+      check();
+    });
+  };
+
+  const waitForNewHash = (prevSignature, timeoutMs = 3000) => {
+    return new Promise(resolve => {
+      const start = Date.now();
+      const check = () => {
+        const currentSig = [...dialog.querySelectorAll('button')]
+          .filter(btn => {
+            const rect = btn.getBoundingClientRect();
+            return rect.width > 200 && rect.height > 200;
+          })
+          .map(btn => btn.querySelector('img')?.src)
+          .filter(Boolean)
+          .map(src => canonicalizeZillowPhoto(src))
+          .find(sig => sig && sig !== prevSignature);
+
+        if (currentSig) {
+          resolve(true);
+        } else if (Date.now() - start > timeoutMs) {
+          resolve(false);
+        } else {
+          setTimeout(check, 100);
+        }
+      };
+      check();
+    });
+  };
+
+  // 翻页循环
+  const maxIterations = expectedTotal || 60;
+
+  for (let i = 0; i < maxIterations; i++) {
+    if (expectedTotal && collectedIndexes.size >= expectedTotal) {
+      break;
+    }
+
+    const prevCounter = getCounterInfo();
+    const prevSignature = seenSignatures.size > 0
+      ? [...seenSignatures][seenSignatures.size - 1]
+      : null;
+
+    const rightBtn = document.elementFromPoint(rightCenter.x, rightCenter.y)?.closest('button');
+    clickWithCoordinates(rightBtn);
+
+    const counterChanged = await waitForCounterChange(prevCounter);
+    if (!counterChanged) {
+      break;
+    }
+
+    const hashChanged = await waitForNewHash(prevSignature);
+    if (!hashChanged) {
+      break;
+    }
+
+    collectCurrentImage();
+
+    const currentCounter = getCounterInfo();
+    if (currentCounter && initialCounter &&
+        currentCounter.current === initialCounter.current &&
+        seenSignatures.size < (expectedTotal || 0)) {
+      break;
+    }
+  }
+
+  return { status: null, expectedTotal, images };
+}
+
+// ─── Unified Entry: extractZillowGallery ───
+async function extractZillowGallery({ pageContext, listing, retry = false, preservedExpectedTotal = null }) {
+  let detected = null;
+  let expectedTotal = preservedExpectedTotal;
+
+  // 1. 重试：先检查图库是否仍然打开
+  if (retry) {
+    detected = detectZillowGallery(pageContext);
+  }
+
+  // 2. 如果图库未打开，尝试打开
+  if (!detected?.root || !detected?.galleryType) {
+    const openResult = await openGalleryForScope(pageContext);
+    if (!openResult.opened) {
+      return {
+        status: GALLERY_RESULT_STATUS.FAILED,
+        reason: 'gallery_not_opened',
+        images: [],
+        expectedTotal: null
+      };
+    }
+    expectedTotal = expectedTotal || openResult.expectedTotal || null;
+
+    // 3. 等待并识别图库
+    detected = await waitForZillowGallery(pageContext, 5000);
+    if (!detected.root || !detected.galleryType) {
+      return {
+        status: GALLERY_RESULT_STATUS.FAILED,
+        reason: 'unknown_gallery_type',
+        images: [],
+        expectedTotal: expectedTotal
+      };
+    }
+  }
+
+  // 4. 重置滚动容器（Vertical Wall / Building）
+  if (retry) {
+    if (detected.galleryType === GALLERY_TYPES.ZILLOW_VERTICAL_MEDIA_WALL) {
+      const scrollContainer = findScrollableParent(detected.root);
+      if (scrollContainer) {
+        scrollContainer.scrollTop = 0;
+        await shortDelay(300, 500);
+      }
+    } else if (detected.galleryType === GALLERY_TYPES.ZILLOW_BUILDING_GALLERY) {
+      const scrollContainer = findScrollableDescendant(detected.root);
+      if (scrollContainer) {
+        scrollContainer.scrollTop = 0;
+        await shortDelay(300, 500);
+      }
+    }
+  }
+
+  // 5. 调用对应采集器
+  let result;
+  switch (detected.galleryType) {
+    case GALLERY_TYPES.ZILLOW_MEDIA_CAROUSEL:
+      result = await collectZillowMediaCarousel(detected.root, pageContext);
+      break;
+    case GALLERY_TYPES.ZILLOW_VERTICAL_MEDIA_WALL:
+      result = await collectZillowVerticalWall(detected.root, pageContext, expectedTotal);
+      break;
+    case GALLERY_TYPES.ZILLOW_BUILDING_GALLERY:
+      result = await collectZillowBuildingGallery(detected.root, pageContext, expectedTotal);
+      break;
+    case GALLERY_TYPES.ZILLOW_UNIT_CAROUSEL:
+      result = await collectZillowUnitCarousel(detected.root, pageContext);
+      break;
+    default:
+      result = { status: GALLERY_RESULT_STATUS.FAILED, reason: 'unsupported_gallery_type', images: [] };
+  }
+
+  // 6. 校验
+  result = validateGalleryResult({
+    ...result,
+    galleryType: detected.galleryType,
+    expectedTotal: result.expectedTotal || expectedTotal || null
+  });
+
+  // Summary diagnostic log — fields requested by requirement #10:
+  // galleryType, counterText, expectedTotal, uniqueCount, reason.
+  // Must NOT include imageUrls array or full response.
+  // Try to read counterText again (best-effort) only for logging.
+  let counterTextForLog = null;
+  try {
+    const fresh = result && result._counterText;
+    if (fresh) {
+      counterTextForLog = fresh;
+    } else if (detected && detected.root) {
+      // best-effort re-read using same regex; never blocks
+      const candidates = detected.root.querySelectorAll('*');
+      for (const el of candidates) {
+        const txt = String(el.textContent || '').replace(/\s+/g, ' ').trim();
+        const m = txt.match(/(\d+)\s*(?:\/|of)\s*(\d+)/i);
+        if (m) { counterTextForLog = txt; break; }
+      }
+    }
+  } catch (_) { /* noop */ }
+
+  console.error('[HS_GALLERY_SUMMARY]', {
+    galleryType: result?.galleryType,
+    counterText: counterTextForLog,
+    expectedTotal: result?.expectedTotal,
+    uniqueCount: result?.uniqueCount,
+    imageRootConnected: result?._imageRootConnected,
+    controlRootConnected: result?._controlRootConnected,
+    reason: result?.reason
+  });
+
+  return result;
+}
+
+// ─── Validate Gallery Result ───
+function validateGalleryResult(result) {
+  const expectedTotal = Number(result.expectedTotal) || null;
+
+  const uniqueCount = new Set(
+    result.images.map(image => image.signature).filter(Boolean)
+  ).size;
+
+  const normalized = {
+    ...result,
+    uniqueCount,
+    collectedCount: result.images.length
+  };
+
+  // 没有采集到任何图片
+  if (!uniqueCount) {
+    return { ...normalized, status: GALLERY_RESULT_STATUS.FAILED, reason: 'no_images_collected' };
+  }
+
+  // 四种已知 Zillow 图库必须有 expectedTotal
+  const zillowGalleryTypes = [
+    GALLERY_TYPES.ZILLOW_MEDIA_CAROUSEL,
+    GALLERY_TYPES.ZILLOW_VERTICAL_MEDIA_WALL,
+    GALLERY_TYPES.ZILLOW_BUILDING_GALLERY,
+    GALLERY_TYPES.ZILLOW_UNIT_CAROUSEL
+  ];
+
+  if (zillowGalleryTypes.includes(result.galleryType) && !expectedTotal) {
+    return {
+      ...normalized,
+      status: GALLERY_RESULT_STATUS.FAILED,
+      reason: 'expected_total_missing'
+    };
+  }
+
+  // 没有 expectedTotal 时
+  if (!expectedTotal) {
+    return { ...normalized, status: GALLERY_RESULT_STATUS.COMPLETE };
+  }
+
+  // 唯一数量超过预期：混入其他图片
+  if (uniqueCount > expectedTotal) {
+    return { ...normalized, status: GALLERY_RESULT_STATUS.FAILED, reason: 'unique_count_exceeds_expected' };
+  }
+
+  // 唯一数量少于预期：部分缺失
+  if (uniqueCount < expectedTotal) {
+    return {
+      ...normalized,
+      status: GALLERY_RESULT_STATUS.PARTIAL,
+      reason: 'missing_images',
+      missingCount: expectedTotal - uniqueCount
+    };
+  }
+
+  return { ...normalized, status: GALLERY_RESULT_STATUS.COMPLETE, missingCount: 0 };
+}
+
+
 /**
  * 切换到 Zillow StyledDialog 中的 Photos Tab
  * 返回 true 表示已切换或已在 Photos tab，返回 false 表示找不到 Tab
@@ -6342,6 +7670,11 @@ function zillowBuildApartmentPatch(building) {
   };
 }
 
+function zillowReadString(p, key) {
+  const v = p == null ? undefined : p[key];
+  return typeof v === 'string' && v.length > 0 ? v : null;
+}
+
 function zillowBuildHomedetailsPatch(property, urlZpid) {
   const zpid = String(property.zpid);
   const buildingId = property.buildingId != null ? String(property.buildingId) : null;
@@ -6352,6 +7685,30 @@ function zillowBuildHomedetailsPatch(property, urlZpid) {
   const sqft = zillowReadLivingArea(property);
   const beds = zillowReadNumber(property, 'bedrooms');
   const baths = zillowReadNumber(property, 'bathrooms');
+
+  // === Rental facts — strictly from gdpClientCache property.
+  //     Field names: see gdpClientCache property shape (verified via
+  //     zillowReadBaseRentFromProperty + zillowReadBoolean reads above).
+  //     Anything absent is left null; we do NOT fall back to DOM inside patch. ===
+  const requiredMonthlyFeeMin = zillowReadNumber(property, 'requiredMonthlyFeeMin');
+  const requiredMonthlyFeeMax = zillowReadNumber(property, 'requiredMonthlyFeeMax');
+  const leaseTerm = zillowReadString(property, 'leaseTerm');
+  const petPolicy = zillowReadString(property, 'petPolicy')
+                  ?? zillowReadString(property, 'petsAllowed');
+  const laundry = zillowReadString(property, 'laundry');
+  const availabilityStatusRaw = zillowReadString(property, 'availabilityStatus')
+                             ?? zillowReadString(property, 'dateAvailable')
+                             ?? zillowReadString(property, 'availableFrom');
+  const availabilityStatus = (() => {
+    if (!availabilityStatusRaw) return null;
+    const lower = availabilityStatusRaw.toLowerCase();
+    if (/now|today|immediately/.test(lower)) return 'available_now';
+    if (/coming\s*soon|future/.test(lower)) return 'coming_soon';
+    return availabilityStatusRaw;
+  })();
+  const homeType = zillowReadString(property, 'homeType');
+  const parkingStr = zillowReadString(property, 'parking')
+                  ?? zillowReadString(property, 'parkingFeatures');
 
   const availableUnits = (scope === 'selected_unit' && unitNumber) ? [{
     unitId: null,
@@ -6384,6 +7741,14 @@ function zillowBuildHomedetailsPatch(property, urlZpid) {
     bathrooms: baths,
     listPriceIncludesRequiredMonthlyFees:
       zillowReadBoolean(property, 'listPriceIncludesRequiredMonthlyFees'),
+    requiredMonthlyFeeMin,
+    requiredMonthlyFeeMax,
+    leaseTerm,
+    petPolicy,
+    laundry,
+    availabilityStatus,
+    homeType,
+    parking: parkingStr,
     floorPlanSummaries: [],
     availableUnits,
     rawAddress: property.address?.streetAddress ?? null,
@@ -6470,6 +7835,36 @@ function applyZillowStructuredOverride(existingResult) {
   out.availableUnits = patch.availableUnits;
   out.baseRent = patch.baseRent;
   out.listPriceIncludesRequiredMonthlyFees = patch.listPriceIncludesRequiredMonthlyFees;
+  // === Rental facts (selected_unit path: patch wins; fall back to existing
+  //     DOM facts on listing). building path leaves these null. ===
+  if (!isBuilding) {
+    if (patch.requiredMonthlyFeeMin !== null && patch.requiredMonthlyFeeMin !== undefined) {
+      out.requiredMonthlyFeeMin = patch.requiredMonthlyFeeMin;
+    } else if (out.requiredMonthlyFeeMin == null) {
+      out.requiredMonthlyFeeMin = null;
+    }
+    if (patch.requiredMonthlyFeeMax !== null && patch.requiredMonthlyFeeMax !== undefined) {
+      out.requiredMonthlyFeeMax = patch.requiredMonthlyFeeMax;
+    } else if (out.requiredMonthlyFeeMax == null) {
+      out.requiredMonthlyFeeMax = null;
+    }
+    if (patch.leaseTerm !== null) out.leaseTerm = patch.leaseTerm;
+    else if (out.leaseTerm == null) out.leaseTerm = null;
+    if (patch.petPolicy !== null) out.petPolicy = patch.petPolicy;
+    else if (out.petPolicy == null) out.petPolicy = null;
+    if (patch.laundry !== null) out.laundry = patch.laundry;
+    else if (out.laundry == null) out.laundry = null;
+    if (patch.availabilityStatus !== null) out.availabilityStatus = patch.availabilityStatus;
+    else if (out.availabilityStatus == null) out.availabilityStatus = null;
+    if (patch.homeType !== null) out.homeType = patch.homeType;
+    else if (out.homeType == null) out.homeType = null;
+    if (patch.parking !== null) {
+      // Non-destructive: do not overwrite an existing number parking count.
+      if (out.parking == null || typeof out.parking === 'string') {
+        out.parking = patch.parking;
+      }
+    }
+  }
   out.extractionSchemaVersion = 2;
 
   // Top-level pricing/sizing fix
