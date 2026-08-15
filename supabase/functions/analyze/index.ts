@@ -10,7 +10,7 @@ import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 // base prompt with the risk-modules block (the dashboard inline version had
 // this suffix embedded; we now do the join explicitly).
 
-import { US_STEP1_SYSTEM_PROMPT, US_STEP2_SALE_PROMPT, US_STEP2_RISK_MODULES_BLOCK, US_STEP2_RENT_PROMPT, STEP1_RENT_SYSTEM_PROMPT } from "./prompts/us-prompts.ts";
+import { US_STEP1_SYSTEM_PROMPT, US_STEP2_SALE_PROMPT, US_STEP2_RISK_MODULES_BLOCK, US_STEP2_RENT_PROMPT, STEP1_RENT_SYSTEM_PROMPT, STEP2_US_BUILDING_RENT_PROMPT } from "./prompts/us-prompts.ts";
 import { AU_STEP1_SYSTEM_PROMPT, AU_STEP2_RENT_PROMPT, AU_STEP2_SALE_PROMPT } from "./prompts/au-prompts.ts";
 
 import {
@@ -160,6 +160,17 @@ const LOCAL_SERVICE_KEY = PRIMARY_SERVICE_ROLE_KEY;
 const LOCAL_ANON_KEY = PRIMARY_ANON_KEY;
 
 const SITE_URL = Deno.env.get("SITE_URL") || "https://www.tryhomescope.com";
+
+// ── Feature flags（灰度开关，默认保持现有行为）─────────────────────────────────
+
+// Step 2 合同字段缺失防御性重试开关：true=重试（当前默认），false=关闭
+const STEP2_CONTRACT_RETRY_ENABLED = Deno.env.get("STEP2_CONTRACT_RETRY_ENABLED") !== "false";
+// URL 去重开关：true=去重（当前默认），false=关闭
+const IMAGE_DEDUP_ENABLED = Deno.env.get("IMAGE_DEDUP_ENABLED") !== "false";
+
+console.log("=== Feature Flags ===");
+console.log("STEP2_CONTRACT_RETRY_ENABLED:", STEP2_CONTRACT_RETRY_ENABLED);
+console.log("IMAGE_DEDUP_ENABLED:", IMAGE_DEDUP_ENABLED);
 
 console.log("=== Server Configuration ===");
 console.log("IS_US_WORKER:", IS_US_WORKER);
@@ -1536,17 +1547,50 @@ function combinedSignal(signals: AbortSignal[]): AbortSignal {
  */
 function createInvocationDeadline(): { signal: AbortSignal; deadlineAt: number } {
   const controller = new AbortController();
-  const deadlineAt = Date.now() + INVOCATION_DEADLINE_MS;
+  const startedAt = Date.now();
+  const deadlineAt = startedAt + INVOCATION_DEADLINE_MS;
   // Schedule a hard cap. setTimeout is fine — when it fires, the controller
   // aborts and every fetch sharing the signal rejects immediately.
   setTimeout(() => {
     if (!controller.signal.aborted) {
+      const elapsedMs = Date.now() - startedAt;
+      // DIAG: log which stage we were in when the deadline fired.
+      // currentStage is updated by the run flow (sale finalize) so this
+      // tells us whether Step 2 / Reality Check / Step 1 / deterministic
+      // patches consumed the budget — without this we cannot tell.
       console.error(`[DEADLINE] Invocation deadline (${INVOCATION_DEADLINE_MS}ms) reached — aborting all in-flight requests`);
+      console.error(`[DEADLINE_TRIGGERED] elapsedMs=${elapsedMs} currentStage=${getCurrentStage()} budgetCapMs=${INVOCATION_DEADLINE_MS}`);
       controller.abort(new Error(`Invocation deadline ${INVOCATION_DEADLINE_MS}ms exceeded`));
     }
   }, INVOCATION_DEADLINE_MS).unref?.();
   return { signal: controller.signal, deadlineAt };
 }
+
+// ──────────────────────────────────────────────────────────────────────────────
+// Stage-tracking diagnostics (sale finalize latency hunt)
+// ──────────────────────────────────────────────────────────────────────────────
+// Goal: when the 138s invocation deadline fires, we want to know WHICH phase
+// consumed the budget — RealityCheck / Step1 batch / Step2 attempt 1+2 /
+// deterministic patches / finalize. The catch block already prints err.message,
+// but not which stage we were in when abort happened.
+//
+// Lightweight: a single mutable string + one helper. Nothing else changes —
+// no model swap, no timeout tweak, no architecture change. After one more
+// sale run we read these logs and pick a precise fix.
+let __hsCurrentStage = 'init';
+let __hsStageStartMs = Date.now();
+function setCurrentStage(stage: string): void {
+  const now = Date.now();
+  const sinceRunStart = now - __hsRunStartedAt;
+  const sinceStageStart = now - __hsStageStartMs;
+  console.log(`[HS_STAGE] -> ${stage} | stageElapsed=${sinceStageStart}ms runElapsed=${sinceRunStart}ms`);
+  __hsCurrentStage = stage;
+  __hsStageStartMs = now;
+}
+function getCurrentStage(): string {
+  return __hsCurrentStage;
+}
+let __hsRunStartedAt = Date.now();
 
 /**
  * Wrap fetch() with both a per-call timeout and the shared invocation deadline.
@@ -1616,6 +1660,17 @@ async function reserveCredits(userId: string, analysisId: string): Promise<{ suc
     }
 
     // Step 2: Reserve a credit — write to AU profiles
+    // ── 业务幂等：检查同一 analysisId 是否已有 reserved 记录 ──────────────
+    const existingUsage = await fetchJson(
+      `${AUTH_URL}/rest/v1/usage_records?analysis_id=eq.${analysisId}&status=eq.reserved&select=id,status`,
+      { headers: { "apikey": ACCOUNT_SERVICE_KEY, "Authorization": `Bearer ${ACCOUNT_SERVICE_KEY}` } }
+    );
+    if (existingUsage.ok && Array.isArray(existingUsage.payload) && (existingUsage.payload as any[]).length > 0) {
+      const existing = (existingUsage.payload as any[])[0];
+      console.log(`[reserveCredits] analysisId=${analysisId} already has reserved usage record ${existing.id} — idempotent skip`);
+      return { success: true, usageId: existing.id };
+    }
+
     const update = await fetchJson(
       `${AUTH_URL}/rest/v1/profiles?id=eq.${userId}`,
       {
@@ -1724,6 +1779,20 @@ async function releaseCredits(userId: string, usageId?: string): Promise<boolean
 
     // Step 3: Update usage record status in AU
     if (usageId) {
+      // ── 业务幂等：检查 usage_records 是否已标记 released ──────────────
+      const checkUsage = await fetchJson(
+        `${AUTH_URL}/rest/v1/usage_records?id=eq.${usageId}&select=status`,
+        { headers: { "apikey": ACCOUNT_SERVICE_KEY, "Authorization": `Bearer ${ACCOUNT_SERVICE_KEY}` } }
+      );
+      if (checkUsage.ok && Array.isArray(checkUsage.payload) && (checkUsage.payload as any[]).length > 0) {
+        const rec = (checkUsage.payload as any[])[0];
+        if (rec.status === 'released') {
+          // 已释放，幂等跳过
+          console.log(`[releaseCredits] usage ${usageId} already released — idempotent skip`);
+          return true;
+        }
+      }
+
       await fetchJson(
         `${AUTH_URL}/rest/v1/usage_records?id=eq.${usageId}`,
         {
@@ -1777,6 +1846,22 @@ async function completeCredits(userId: string, usageId?: string): Promise<boolea
       return true;
     }
 
+    // ── 业务幂等：检查 usage_records 是否已标记 completed ─────────────────
+    if (usageId) {
+      const checkUsage = await fetchJson(
+        `${AUTH_URL}/rest/v1/usage_records?id=eq.${usageId}&select=status`,
+        { headers: { "apikey": ACCOUNT_SERVICE_KEY, "Authorization": `Bearer ${ACCOUNT_SERVICE_KEY}` } }
+      );
+      if (checkUsage.ok && Array.isArray(checkUsage.payload) && (checkUsage.payload as any[]).length > 0) {
+        const rec = (checkUsage.payload as any[])[0];
+        if (rec.status === 'completed') {
+          // 已完成，幂等跳过（防止重复扣费）
+          console.log(`[completeCredits] usage ${usageId} already completed — idempotent skip`);
+          return true;
+        }
+      }
+    }
+
     // Step 2: Finalize: remaining - 1, reserved - 1, used + 1 — write to AU profiles
     const update = await fetchJson(
       `${AUTH_URL}/rest/v1/profiles?id=eq.${userId}`,
@@ -1826,7 +1911,7 @@ async function completeCredits(userId: string, usageId?: string): Promise<boolea
 
 // ========== Analysis States Table Helpers ==========
 
-async function createAnalysisState(id: string): Promise<void> {
+async function createAnalysisState(id: string, reportMode?: 'sale' | 'rent' | 'unknown'): Promise<void> {
   // Write to LOCAL — US server writes to US DB, AU server writes to AU DB
   const response = await fetch(`${LOCAL_URL}/rest/v1/analysis_states`, {
     method: "POST",
@@ -1842,6 +1927,7 @@ async function createAnalysisState(id: string): Promise<void> {
       message: "Upload received, starting analysis...",
       progress: 5,
       status: "queued",
+      ...(reportMode && reportMode !== 'unknown' ? { report_mode: reportMode } : {}),
     }),
   });
   if (!response.ok) {
@@ -2108,6 +2194,42 @@ async function updateAnalysisRecord(
 /**
  * Mark analysis record as failed
  */
+/**
+ * Update the analyses row's status (and started_at if needed).
+ * Plugin polls the analyses table — it must always reflect the truth:
+ *  - "pending"   → user just submitted, not started
+ *  - "processing" → work in progress
+ *  - "done"      → has full_result, success
+ *  - "failed"    → unrecoverable error
+ */
+async function patchAnalysisStatus(id: string, status: "processing" | "done"): Promise<void> {
+  try {
+    const body: Record<string, unknown> = {
+      status,
+      updated_at: new Date().toISOString(),
+    };
+    if (status === "processing") {
+      body.started_at = new Date().toISOString();
+    }
+    const response = await fetch(`${LOCAL_URL}/rest/v1/analyses?id=eq.${id}`, {
+      method: "PATCH",
+      headers: {
+        "Content-Type": "application/json",
+        "apikey": LOCAL_SERVICE_KEY,
+        "Authorization": `Bearer ${LOCAL_SERVICE_KEY}`,
+        "Prefer": "return=minimal",
+      },
+      body: JSON.stringify(body),
+    });
+    if (!response.ok) {
+      const text = await response.text();
+      console.error("[patchAnalysisStatus] failed:", response.status, text);
+    }
+  } catch (err) {
+    console.error("[patchAnalysisStatus] exception:", err);
+  }
+}
+
 async function failAnalysisRecord(id: string, error: string): Promise<{ success: boolean; error?: string }> {
   console.log("=== failAnalysisRecord called ===");
   console.log("Analysis ID:", id);
@@ -2344,8 +2466,6 @@ function buildVerifiedFactsFromPayload(body: Record<string, unknown>, optionalDe
     zestimate_display: String(od.zestimate ?? '') || null,
     rentZestimate: parseVerifiedNumberLocal(od.rentZestimate) ?? null,
     rentZestimate_display: String(od.rentZestimate ?? '') || null,
-    estimatedSalesRangeMin: parseVerifiedNumberLocal((od as any)?.estimatedSalesRange?.min) ?? null,
-    estimatedSalesRangeMax: parseVerifiedNumberLocal((od as any)?.estimatedSalesRange?.max) ?? null,
     pricePerSqft: verifiedPricePerSqft,
     pricePerSqft_display: verifiedPricePerSqftDisplay,
     taxAssessedValue: verifiedTaxAssessed,
@@ -2383,6 +2503,39 @@ function buildVerifiedFactsFromPayload(body: Record<string, unknown>, optionalDe
     bikeScore: String(od.bikeScore ?? '') || null,
     neighborhood: String(od.neighborhood ?? '') || null,
     architecturalStyle: String(od.architecturalStyle ?? '') || null,
+    // ── Zillow Sale 新增字段 ───────────────────────────────────────────────────
+    roof: String(od.roof ?? '') || null,
+    basement: String(od.basement ?? '') || null,
+    laundry: String(od.laundry ?? '') || null,
+    transitScore: typeof od.transitScore === 'number' ? od.transitScore : parseVerifiedNumberLocal(od.transitScore),
+    // schoolFacts: normalize schoolRatings from optionalDetails into VerifiedFactsPayload shape
+    schoolFacts: (() => {
+      const raw = od.schoolRatings;
+      if (!raw || !Array.isArray(raw)) return null;
+      return raw.map((s: any) => ({
+        name: String(s.name ?? ''),
+        rating: typeof s.rating === 'number' ? s.rating : parseVerifiedNumberLocal(s.rating) ?? 0,
+        level: s.level ? String(s.level) : undefined,
+        distance: s.distance ? String(s.distance) : undefined,
+      }));
+    })(),
+    // HOA included services: from Community & HOA section
+    hoaIncludedServices: (Array.isArray(od.hoaIncludedServices) ? od.hoaIncludedServices : null) as string[] | null,
+    // monthlyPaymentSource: mark as 'zillow_estimated' when we have a raw total from BuyAbility
+    monthlyPaymentSource: ((zillowFinancials as any)?.monthlyPayment?.estimatedMonthlyPayment?.value != null)
+      ? 'zillow_estimated'
+      : null,
+    // ── Estimated Sales Range: correct path (not estimatedSalesRange.min) ─────────
+    estimatedSalesRangeMin: (
+      parseVerifiedNumberLocal((od as any)?.estimatedSalesRangeMin)
+      ?? parseVerifiedNumberLocal((od as any)?.estimatedSalesRange?.min)
+      ?? null
+    ),
+    estimatedSalesRangeMax: (
+      parseVerifiedNumberLocal((od as any)?.estimatedSalesRangeMax)
+      ?? parseVerifiedNumberLocal((od as any)?.estimatedSalesRange?.max)
+      ?? null
+    ),
     fieldEvidence: (body as any)?.listingFacts?.evidence ?? null,
   };
 }
@@ -2487,7 +2640,7 @@ function stripSingleFamilyRentalLanguage(finalReport: Record<string, any>, verif
   return visited;
 }
 
-function lockVerifiedFactsIntoResult(finalReport: Record<string, any>, verifiedFacts: Record<string, any>) {
+function lockVerifiedFactsIntoResult(finalReport: Record<string, any>, verifiedFacts: Record<string, any>, zillowFinancials?: unknown) {
   if (!finalReport || !verifiedFacts) return finalReport;
   finalReport.property_snapshot ||= {};
   finalReport.price_assessment ||= {};
@@ -2548,6 +2701,66 @@ function lockVerifiedFactsIntoResult(finalReport: Record<string, any>, verifiedF
   if (verifiedFacts.monthlyPayment != null) {
     finalReport.carrying_costs.primary_monthly_estimate = verifiedFacts.monthlyPayment;
   }
+  // ── 月供分项 deterministic 回填（确保月供总额与各分项不依赖 AI 复制） ──
+  // 格式统一：estimatedMonthlyPayment={value,raw}，其余为数字或 {status}。
+  // 前端 NewReportUI.tsx 使用 toMoney() 统一处理多种形状。
+  if (verifiedFacts.monthlyPayment != null) {
+    finalReport.carrying_costs.monthly_breakdown = finalReport.carrying_costs.monthly_breakdown || {};
+    const mb = finalReport.carrying_costs.monthly_breakdown as Record<string, unknown>;
+
+    // estimatedMonthlyPayment: {value, raw} 结构
+    const mpVal = (verifiedFacts as any).monthlyPayment;
+    if (mpVal != null) {
+      mb.estimatedMonthlyPayment = typeof mpVal === 'object' && mpVal !== null && 'value' in mpVal
+        ? mpVal
+        : { value: mpVal as number, raw: String(mpVal) };
+    }
+
+    // principalAndInterest: 优先 verifiedFacts，否则从 zf 读取
+    const pAndI = (verifiedFacts as any).principalAndInterest
+      ?? (zillowFinancials as any)?.monthlyPayment?.principalAndInterest;
+    if (pAndI != null) mb.principalAndInterest = pAndI;
+
+    // propertyTaxes
+    const propTax = (verifiedFacts as any).propertyTaxMonthly
+      ?? (zillowFinancials as any)?.monthlyPayment?.propertyTaxes;
+    if (propTax != null) mb.propertyTaxes = propTax;
+
+    // homeInsurance
+    const homeIns = (verifiedFacts as any).homeInsuranceMonthly
+      ?? (zillowFinancials as any)?.monthlyPayment?.homeInsurance;
+    if (homeIns != null) mb.homeInsurance = homeIns;
+
+    // mortgageInsurance
+    const mortIns = (verifiedFacts as any).mortgageInsurance
+      ?? (zillowFinancials as any)?.monthlyPayment?.mortgageInsurance;
+    if (mortIns != null) mb.mortgageInsurance = mortIns;
+
+    // utilities: {status:'not_included'|'included'}
+    const utilIncluded = (zillowFinancials as any)?.monthlyPayment?.utilities?.status;
+    if (utilIncluded === 'not_included') {
+      mb.utilities = { status: 'not_included' };
+    } else if (utilIncluded === 'included') {
+      mb.utilities = { status: 'included' };
+    }
+  }
+
+  // ── HOA fee deterministic write (independent of monthlyPayment) ─────────────
+  // The Facts & Features "HOA fee: $951 monthly" entry can be the only known
+  // HOA amount on listings where BuyAbility monthly totals are missing. We must
+  // write mb.hoaFees regardless of whether the monthly payment total is present,
+  // otherwise the report shows zero HOA even though the fee is known.
+  const hoaAmt = (verifiedFacts as any).hoaAmount;
+  const hoaSts = (zillowFinancials as any)?.monthlyPayment?.hoaFees?.status;
+  if (hoaAmt != null || hoaSts === 'not_applicable') {
+    finalReport.carrying_costs.monthly_breakdown = finalReport.carrying_costs.monthly_breakdown || {};
+    const mb = finalReport.carrying_costs.monthly_breakdown as Record<string, unknown>;
+    if (hoaAmt != null) {
+      mb.hoaFees = hoaAmt;
+    } else if (hoaSts === 'not_applicable') {
+      mb.hoaFees = { status: 'not_applicable' };
+    }
+  }
   // ── HOA 冲突处理 ──────────────────────────────────────────────────────────
   if (verifiedFacts.hoa === 'inconsistent') {
     finalReport.carrying_costs.hoa = 'Verify HOA Status';
@@ -2563,13 +2776,76 @@ function lockVerifiedFactsIntoResult(finalReport: Record<string, any>, verifiedF
   }
   // 如果 hoa === 'unknown', 不设置 carrying_costs.hoa（让它保持 undefined）
 
+  // ── HOA Included Services: deterministic write (from Community & HOA section) ─
+  if (verifiedFacts.hoaIncludedServices && Array.isArray(verifiedFacts.hoaIncludedServices)) {
+    finalReport.carrying_costs.hoa_included_services = verifiedFacts.hoaIncludedServices;
+    finalReport.property_snapshot = finalReport.property_snapshot || {};
+    finalReport.property_snapshot.hoaIncludedServices = verifiedFacts.hoaIncludedServices;
+  }
+
+  // ── monthlyPaymentSource: deterministic write ─────────────────────────────
+  if (verifiedFacts.monthlyPaymentSource) {
+    finalReport.carrying_costs.monthlyPaymentSource = verifiedFacts.monthlyPaymentSource;
+  }
+
   // ── Zestimate 锁定 ─────────────────────────────────────────────────────────
   if (verifiedFacts.zestimate != null) {
     finalReport.price_assessment.zestimate = verifiedFacts.zestimate;
     finalReport.price_assessment.zillow_estimate = verifiedFacts.zestimate;
+    // Also write zestimate_display if available
+    if (verifiedFacts.zestimate_display) {
+      finalReport.price_assessment.zestimate_display = verifiedFacts.zestimate_display;
+    }
   }
   if (verifiedFacts.rentZestimate != null) {
     finalReport.price_assessment.rent_zestimate = verifiedFacts.rentZestimate;
+  }
+
+  // ── Estimated Sales Range: deterministic write to price_assessment ─────────
+  if (verifiedFacts.estimatedSalesRangeMin != null) {
+    finalReport.price_assessment.estimated_min = verifiedFacts.estimatedSalesRangeMin;
+  }
+  if (verifiedFacts.estimatedSalesRangeMax != null) {
+    finalReport.price_assessment.estimated_max = verifiedFacts.estimatedSalesRangeMax;
+  }
+
+  // ── Roof / Basement / Laundry: deterministic write to property_snapshot ─────
+  if (verifiedFacts.roof) {
+    finalReport.property_snapshot.roof = verifiedFacts.roof;
+  }
+  if (verifiedFacts.basement) {
+    finalReport.property_snapshot.basement = verifiedFacts.basement;
+  }
+  if (verifiedFacts.laundry) {
+    finalReport.property_snapshot.laundry = verifiedFacts.laundry;
+  }
+
+  // ── Transit Score: write to neighborhood_lifestyle or property_snapshot ──────
+  if (verifiedFacts.transitScore != null) {
+    finalReport.property_snapshot = finalReport.property_snapshot || {};
+    finalReport.property_snapshot.transitScore = verifiedFacts.transitScore;
+    // Also inject into neighborhood_lifestyle page_signals if present
+    if (finalReport.neighborhood_lifestyle) {
+      finalReport.neighborhood_lifestyle.page_signals ||= [];
+      const sig = `Transit Score: ${verifiedFacts.transitScore} / 100`;
+      if (!finalReport.neighborhood_lifestyle.page_signals.includes(sig)) {
+        finalReport.neighborhood_lifestyle.page_signals.push(sig);
+      }
+    }
+  }
+
+  // ── School Facts: deterministic write to neighborhood_lifestyle ─────────────
+  if (verifiedFacts.schoolFacts && Array.isArray(verifiedFacts.schoolFacts) && verifiedFacts.schoolFacts.length > 0) {
+    finalReport.neighborhood_lifestyle ||= {};
+    finalReport.neighborhood_lifestyle.schoolFacts = verifiedFacts.schoolFacts;
+    // Also add to page_signals so the report shows them
+    finalReport.neighborhood_lifestyle.page_signals ||= [];
+    for (const school of verifiedFacts.schoolFacts) {
+      const sig = `${school.name}: Rating ${school.rating}/10${school.distance ? ' · ' + school.distance : ''}`;
+      if (!finalReport.neighborhood_lifestyle.page_signals.some((s: string) => s.startsWith(school.name))) {
+        finalReport.neighborhood_lifestyle.page_signals.push(sig);
+      }
+    }
   }
 
   // ── Market Time Guard: extended market time / stale listing only for DOM >= 60 ─
@@ -2760,18 +3036,31 @@ function normalizeStep2Decision(
 
   const verdict = normalizePriceVerdict(rawVerdict, explanation, asking_price);
 
-  // ── Verdict constraints when Zestimate exists ──────────────────────────────────
-  // If Zestimate exists but no real comparable sales, do not output Overpriced
-  // without strong evidence. Prefer "Needs Comps" or "Price Needs Support".
+  // ── Sale verdict defensive demotion ──────────────────────────────────────────
+  // Rationale: list/active "comparable listings" are not closed sales; they cannot
+  // independently justify an Overpriced verdict. Real comparable-sale evidence
+  // (sold comps, recent sales, similar sold) plus a structurally material price
+  // gap (>10% above the estimated sales range max) is required to keep
+  // Overpriced. Otherwise, when the explanation is thin (asking in range,
+  // asking only slightly above the range, Low valuation confidence, or only
+  // Zestimate without a range), the verdict must be demoted to "Needs Comps".
+  // This runs regardless of whether Zestimate exists, so the guard does not
+  // silently rely on a missing zestimate input.
   let normalizedVerdict = verdict;
-  if (hasZestimate && verdict === 'Overpriced') {
+  if (normalizedVerdict === 'Overpriced') {
     const explanationLower = explanation.toLowerCase();
-    // Overpriced is only allowed if there are explicit comparable sales or strong price gap
-    const hasExplicitComps = /comparable sales|recent sales|recent comps|sold.*similar/i.test(explanationLower);
+    const hasExplicitSoldComps = /\b(comparable\s+sales|recent\s+sales|recent\s+comps|similar\s+sold|sold\s+comps|comparable\s+comps)\b/i.test(explanationLower);
     const hasStrongGap = hasEstimatedSalesRange
-      ? (asking_price != null && asking_price > (verifiedFacts!.estimatedSalesRangeMax ?? 0) * 1.1)
+      ? (asking_price != null && asking_price > (verifiedFacts?.estimatedSalesRangeMax ?? 0) * 1.1)
       : /significantly above|well above|much higher|more than.*%.*above/i.test(explanationLower);
-    if (!hasExplicitComps && !hasStrongGap) {
+    const askingInRange = asking_price != null && estimated_min != null && estimated_max != null
+      && asking_price >= estimated_min && asking_price <= estimated_max;
+    const askingSlightlyAboveRange = asking_price != null && estimated_max != null
+      && asking_price > estimated_max && asking_price <= estimated_max * 1.1;
+    const confidenceLow = String(priceRaw.valuation_confidence ?? '').trim().toLowerCase() === 'low';
+    const onlyZestimate = hasZestimate && !hasEstimatedSalesRange;
+    const evidenceIsThin = askingInRange || askingSlightlyAboveRange || confidenceLow || onlyZestimate;
+    if (!hasExplicitSoldComps && !hasStrongGap && evidenceIsThin) {
       normalizedVerdict = 'Needs Comps';
     }
   }
@@ -2857,19 +3146,49 @@ function normalizeStep2Decision(
 
   const neighborhood_lifestyle = (decision as any).neighborhood_lifestyle ?? {};
 
-  // Inject extracted Zillow location data into neighborhood_lifestyle if AI output is empty
+  // Inject extracted Zillow location data into neighborhood_lifestyle if AI output is empty.
+  // Use both _extractedLocation (from AI text parsing) and verifiedFacts (from structured data pipeline).
+  // If a fact exists in verifiedFacts, do NOT add it to external_data_needed.
   const extractedLocation = (decision as any)._extractedLocation ?? {};
-  if (extractedLocation.neighborhood || extractedLocation.floodZone || extractedLocation.walkScore || extractedLocation.bikeScore || extractedLocation.schoolRatings || extractedLocation.transit) {
+  const vf = verifiedFacts as Record<string, unknown> | null | undefined;
+  const hasVerifiedWalk = (vf?.walkScore != null && String(vf.walkScore).length > 0)
+    || (extractedLocation as any).walkScore != null;
+  const hasVerifiedTransit = (vf?.transitScore != null)
+    || (extractedLocation as any).transitScore != null;
+  const hasVerifiedSchool = (vf?.schoolFacts != null && Array.isArray(vf.schoolFacts as any[]) && (vf.schoolFacts as any[]).length > 0)
+    || ((extractedLocation as any).schoolRatings != null);
+  const hasVerifiedFlood = (vf?.floodZone != null && String(vf.floodZone).length > 0)
+    || (extractedLocation as any).floodZone != null;
+  const hasVerifiedBike = (vf?.bikeScore != null && String(vf.bikeScore).length > 0)
+    || (extractedLocation as any).bikeScore != null;
+
+  if (hasVerifiedWalk || hasVerifiedTransit || hasVerifiedSchool || hasVerifiedFlood || hasVerifiedBike || extractedLocation.neighborhood) {
     const signals: string[] = [];
     const extNeeded: string[] = [];
     if (extractedLocation.neighborhood) signals.push(`Neighborhood: ${extractedLocation.neighborhood}`);
-    if (extractedLocation.walkScore) signals.push(`Walk Score: ${extractedLocation.walkScore}`);
-    if (extractedLocation.bikeScore) signals.push(`Bike Score: ${extractedLocation.bikeScore}`);
-    if (extractedLocation.schoolRatings) signals.push(`School Ratings: ${extractedLocation.schoolRatings}`);
-    if (extractedLocation.floodZone) signals.push(`Flood Zone: ${extractedLocation.floodZone}`);
-    if (!extractedLocation.walkScore) extNeeded.push('Walk Score / Transit Score');
-    if (!extractedLocation.schoolRatings) extNeeded.push('School ratings');
-    if (!extractedLocation.floodZone) extNeeded.push('Flood zone');
+    if (vf?.walkScore || (extractedLocation as any).walkScore) {
+      signals.push(`Walk Score: ${vf?.walkScore ?? (extractedLocation as any).walkScore}`);
+    }
+    if (vf?.bikeScore || (extractedLocation as any).bikeScore) {
+      signals.push(`Bike Score: ${vf?.bikeScore ?? (extractedLocation as any).bikeScore}`);
+    }
+    if (vf?.transitScore != null) {
+      signals.push(`Transit Score: ${vf.transitScore} / 100`);
+    }
+    if (vf?.schoolFacts && Array.isArray(vf.schoolFacts)) {
+      for (const school of vf.schoolFacts as any[]) {
+        signals.push(`School: ${school.name} Rating ${school.rating}/10${school.distance ? ' · ' + school.distance : ''}`);
+      }
+    } else if ((extractedLocation as any).schoolRatings) {
+      signals.push(`School Ratings: ${(extractedLocation as any).schoolRatings}`);
+    }
+    if (vf?.floodZone || (extractedLocation as any).floodZone) {
+      signals.push(`Flood Zone: ${vf?.floodZone ?? (extractedLocation as any).floodZone}`);
+    }
+    // Only add to external_data_needed if NOT already available in verifiedFacts
+    if (!hasVerifiedWalk) extNeeded.push('Walk Score / Transit Score');
+    if (!hasVerifiedSchool) extNeeded.push('School ratings');
+    if (!hasVerifiedFlood) extNeeded.push('Flood zone');
     (neighborhood_lifestyle as any).page_signals = signals.length ? signals : (neighborhood_lifestyle as any).page_signals ?? [];
     (neighborhood_lifestyle as any).external_data_needed = extNeeded.length ? extNeeded : (neighborhood_lifestyle as any).external_data_needed ?? [];
   }
@@ -4132,6 +4451,10 @@ export function computeFullSaleScore(input: FullSaleScoreInputs): FullSaleScoreB
 
   // Risk module coverage (max +10). NOTE: presence of risk_categories is GOOD —
   // it means the AI analyzed each dimension. We do NOT score by risk_level.
+  // REMOVED from Evidence Score: riskModuleBonus only rewards module GENERATION,
+  // not the quality or completeness of evidence. A report missing real data
+  // could still score max if it generates 4 modules.
+  // Keeping the logic for diagnostic _scoreBreakdown exposure only.
   const riskKeys = ['foundation_basement','water_leaks','roof_exterior','hidden_ownership_cost'];
   const riskFilled = riskKeys.filter(k => rc[k] != null && typeof rc[k] === 'object').length;
   let riskModuleBonus = 0;
@@ -4141,7 +4464,11 @@ export function computeFullSaleScore(input: FullSaleScoreInputs): FullSaleScoreB
   else if (riskFilled === 1) riskModuleBonus = 2;
   // 0 risk modules = report is shallow, no bonus
 
-  // Listing-does-not-prove (max +5): an explicit gap list signals the AI did its job.
+  // Listing-does-not-prove (max +5): REMOVED from Evidence Score.
+  // A long unproven list signals the AI surfaced gaps — but those gaps are
+  // MISSING evidence, not proof of completeness. Rewarding the listing for
+  // NOT proving things inflates scores for thin reports.
+  // Keeping for diagnostic _scoreBreakdown exposure only.
   let unprovenBonus = 0;
   if (Array.isArray(ldp)) {
     if (ldp.length >= 4)      unprovenBonus = 5;
@@ -4165,7 +4492,7 @@ export function computeFullSaleScore(input: FullSaleScoreInputs): FullSaleScoreB
   if (priceVerdict === 'unknown' || priceVerdict === '') penalty -= 3;
   if (photoCount === 0)                            penalty -= 4;
 
-  const raw = base + verifiedBonus + photoBonus + riskModuleBonus + unprovenBonus + priceBonus + penalty;
+  const raw = base + verifiedBonus + photoBonus + priceBonus + penalty;
 
   // Hard clamp to 1..100 (NEVER 0 — 0 is reserved as a sentinel meaning "no data")
   const score = Math.max(1, Math.min(100, Math.round(raw)));
@@ -4670,11 +4997,15 @@ async function callStep2Model(
       // Less than 5s of budget left — skip this attempt and surface the error.
       const msg = `[Step 2] skipping attempt ${attemptNumber}: only ${remaining}ms of budget left (deadlineSignal aborted=${deadlineSignal?.aborted ?? false})`;
       console.warn(msg);
+      console.log(`[STEP2_ATTEMPT_END] attempt=${attemptNumber} duration=0ms status=skipped reason=budget_remaining_too_low remainingMs=${remaining} runElapsed=${Date.now() - step2StartMs}ms`);
       throw new Error(msg);
     }
     // Clamp per-call timeout to remaining budget so we never request more time than we have.
     const perCallTimeout = Math.min(TIMEOUT_LIMITS_MS.STEP2_ATTEMPT, remaining);
     console.log(`[Step 2] attempt ${attemptNumber} start (perCallTimeout=${perCallTimeout}ms, remaining=${remaining}ms)`);
+    setCurrentStage(`step2_attempt_${attemptNumber}`);
+    console.log(`[STEP2_ATTEMPT_START] attempt=${attemptNumber} perCallTimeoutMs=${perCallTimeout} remainingBudgetMs=${remaining} runElapsed=${Date.now() - step2StartMs}ms`);
+    const attemptStartMs = Date.now();
 
     const response = await fetchWithTimeout(
       "https://openrouter.ai/api/v1/chat/completions",
@@ -4691,11 +5022,18 @@ async function callStep2Model(
       perCallTimeout,
       `Step2-attempt-${attemptNumber}`,
       deadlineSignal,
-    );
+    ).catch((err) => {
+      const dur = Date.now() - attemptStartMs;
+      const errName = (err as any)?.name ?? '';
+      const isTimeout = errName === 'TimeoutError' || errName === 'AbortError' || /timed out|deadline/i.test(String((err as any)?.message ?? ''));
+      console.log(`[STEP2_ATTEMPT_END] attempt=${attemptNumber} duration=${dur}ms status=${isTimeout ? 'timeout' : 'fetch_error'} errName=${errName} runElapsed=${Date.now() - step2StartMs}ms`);
+      throw err;
+    });
 
     if (!response.ok) {
       const errorData = await response.json().catch(() => ({}));
       console.error("[Step 2] API error response:", JSON.stringify(errorData));
+      console.log(`[STEP2_ATTEMPT_END] attempt=${attemptNumber} duration=${Date.now() - attemptStartMs}ms status=http_error statusCode=${response.status} runElapsed=${Date.now() - step2StartMs}ms`);
       throw new Error(
         (errorData as { error?: { message?: string } }).error?.message ||
           `Step 2 failed: ${response.status}`
@@ -4724,9 +5062,11 @@ async function callStep2Model(
     }
 
     const rawText = extractModelText(data);
+    console.log(`[STEP2_ATTEMPT_END] attempt=${attemptNumber} duration=${Date.now() - attemptStartMs}ms status=ok rawTextLen=${rawText?.length ?? 0} finishReason=${finishReason} provider=${data?.provider ?? null} runElapsed=${Date.now() - step2StartMs}ms`);
 
     if (!rawText) {
       const issue = classifyStep2ResponseIssue(data);
+      console.log(`[STEP2_ATTEMPT_END] attempt=${attemptNumber} duration=${Date.now() - attemptStartMs}ms status=no_text issue=${issue} runElapsed=${Date.now() - step2StartMs}ms`);
       throw new Error(
         `Step 2 returned no usable text (${issue}) | finish_reason=${data?.choices?.[0]?.finish_reason ?? "unknown"}`
       );
@@ -4738,6 +5078,7 @@ async function callStep2Model(
     } catch (parseErr) {
       console.error("[Step 2] JSON parse failed. Raw text preview:", rawText.slice(0, 2000));
       const isTruncated = rawText.length > 0 && !rawText.trim().endsWith("}");
+      console.log(`[STEP2_ATTEMPT_END] attempt=${attemptNumber} duration=${Date.now() - attemptStartMs}ms status=json_parse_fail truncated=${isTruncated} runElapsed=${Date.now() - step2StartMs}ms`);
       throw new Error(
         isTruncated
           ? "Step 2 output was truncated by max_tokens. Increase max_tokens or reduce schema size."
@@ -4761,27 +5102,31 @@ async function callStep2Model(
       const hasLdp = Array.isArray(parsedAny.listing_does_not_prove) && (parsedAny.listing_does_not_prove as unknown[]).length > 0;
       const hasBybs = Array.isArray(parsedAny.before_you_book_showing) && (parsedAny.before_you_book_showing as unknown[]).length > 0;
 
-      if (!hasRc || !hasLdp || !hasBybs) {
+      if (STEP2_CONTRACT_RETRY_ENABLED && (!hasRc || !hasLdp || !hasBybs)) {
         console.warn('[Step 2] attempt 1 succeeded but missing risk contract fields — retrying once to recover', {
           hasRc, hasLdp, hasBybs,
         });
+        console.log('[STEP2_CONTRACT_RETRY] triggered=true reason=missing_contract_fields runElapsed=' + (Date.now() - step2StartMs) + 'ms');
         try {
           const second = await attempt(2);
+          console.log('[STEP2_CONTRACT_RETRY] attempt2=ok runElapsed=' + (Date.now() - step2StartMs) + 'ms');
           return second;
         } catch (err2) {
-          // Don't fail the whole report just because the contract retry failed —
-          // the safeParseModelJson + downstream normalize will still produce a
-          // valid result; missing fields will simply be filled with nulls.
           console.error('[Step 2] contract retry failed, returning attempt 1:', err2);
+          console.log('[STEP2_CONTRACT_RETRY] attempt2=failed fallback=attempt1 runElapsed=' + (Date.now() - step2StartMs) + 'ms');
           return first;
         }
+      } else if (!STEP2_CONTRACT_RETRY_ENABLED && (!hasRc || !hasLdp || !hasBybs)) {
+        // Feature flag off: 跳过重试，记录但接受缺字段结果
+        console.warn('[Step 2] contract fields missing but STEP2_CONTRACT_RETRY_ENABLED=false — accepting attempt 1', { hasRc, hasLdp, hasBybs });
+        console.log('[STEP2_CONTRACT_RETRY] triggered=false reason=flag_disabled runElapsed=' + (Date.now() - step2StartMs) + 'ms');
       }
     }
 
     return first;
   } catch (err1) {
     console.error("[Step 2] attempt 1 failed:", err1);
-
+    console.log('[STEP2_CONTRACT_RETRY] triggered=false reason=attempt1_failed runElapsed=' + (Date.now() - step2StartMs) + 'ms');
     console.log("[Step 2] retrying once...");
     return await attempt(2);
   }
@@ -4799,6 +5144,28 @@ function isValidHttpUrl(url: string): boolean {
   }
 }
 
+// ── Image URL normalization and deduplication ───────────────────────────────────
+// Normalizes Zillow CDN URLs (adds ?dpi=... parameter if missing) and
+// deduplicates exact or semantically-equivalent URLs while preserving order.
+// Safe: empty or non-string inputs return empty array. Original URLs
+// are always kept as-is for fallback if IMAGE_DEDUP_ENABLED=false.
+
+function normalizeAndDedupImageUrls(urls: string[]): string[] {
+  if (!Array.isArray(urls)) return [];
+  const seen = new Set<string>();
+  const result: string[] = [];
+  for (const raw of urls) {
+    if (typeof raw !== 'string' || !raw.trim()) continue;
+    // Normalize: strip trailing dpi param (or add default)
+    const norm = raw.split('?')[0].trim();
+    if (!seen.has(norm)) {
+      seen.add(norm);
+      result.push(norm);
+    }
+  }
+  return result;
+}
+
 function buildStep1Messages(
   imageUrls: string[] = [],
   batchIndex = 0,
@@ -4809,6 +5176,10 @@ function buildStep1Messages(
     homeType?: string | null;
     propertyType?: string | null;
     propertySubtype?: string | null;
+    /** Page scope from Zillow extractor */
+    listingScope?: string | null;
+    /** Whether a specific unit has been selected (vs. building overview page) */
+    specificUnitSelected?: boolean | null;
   }
 ) {
   // Filter and validate URLs
@@ -4850,13 +5221,14 @@ function buildStep1Messages(
   // Build property type context for user message
   let propertyContextText = '';
   if (propertyContext) {
-    const { normalizedPropertyCategory, homeType, propertyType, propertySubtype } = propertyContext;
+    const { normalizedPropertyCategory, homeType, propertyType, propertySubtype, listingScope, specificUnitSelected } = propertyContext;
     // Collect non-empty structured fields
     const fields: string[] = [];
     if (normalizedPropertyCategory) fields.push(`Category: ${normalizedPropertyCategory}`);
     if (homeType) fields.push(`Home Type: ${homeType}`);
     if (propertyType) fields.push(`Property Type: ${propertyType}`);
     if (propertySubtype) fields.push(`Property Subtype: ${propertySubtype}`);
+    if (listingScope) fields.push(`Listing Scope: ${listingScope}`);
 
     if (fields.length > 0) {
       const isSingleFamily =
@@ -4865,17 +5237,28 @@ function buildStep1Messages(
         /single\s*family|single\s*family\s*residence/i.test(propertyType ?? '') ||
         /single\s*family|single\s*family\s*residence/i.test(propertySubtype ?? '');
 
+      const isBuildingOverview = listingScope === 'multi_unit_building' && !specificUnitSelected;
+
       propertyContextText = `
 
 STRUCTURED LISTING DATA (authoritative):
 ${fields.join(', ')}
 
 CRITICAL RULES:
+${isSingleFamily ? `
 - Structured property type is the authoritative classification. Photos CANNOT override it.
 - If the structured data shows SingleFamily / Single Family Residence, DO NOT describe this property as multi-family, duplex unit, two-family, or income property — regardless of what the photos show.
 - Photos may show attached/semi-attached appearance, shared wall possibility, enclosed porch/sunroom, or multi-level layout — these physical features do NOT change the legal property category.
 - Only describe visible physical characteristics; do not infer legal unit count or property category from photos.
-${isSingleFamily ? '' : ''}`;
+` : ''}
+${isBuildingOverview ? `
+- THIS IS A MULTI-UNIT BUILDING OVERVIEW PAGE. Photos may show different units, shared areas, model units, or nearby amenities.
+- DO NOT combine photographed rooms from different units into one apartment.
+- DO NOT write "The unit has..." Use: "Some photographed units show...", "At least one photographed unit appears to have...", or "Features may vary by unit."
+- DO NOT attribute building amenities (gym, pool, rooftop) as if they are inside a specific unit.
+- Park, lake, neighborhood skyline, and street-level photos = neighborhood, NOT common area.
+- Representative interior photos may be from model units and may not reflect the actual available unit.
+` : ''}`;
     }
   }
 
@@ -4894,61 +5277,14 @@ ${isSingleFamily ? '' : ''}`;
   };
 }
 
-/**
- * Merge multiple visual analysis results from batched Step 1 calls.
- * Adjusts photoIndex to be global and merges spaceAnalysis by spaceType.
- */
+// ── Visual-analysis batch merge is delegated to a standalone module so
+// ── vitest can exercise it directly. The implementation is in
+// ── `./mergeVisualAnalysis.ts` and is the single source of truth.
+import { mergeVisualAnalysis as mergeVisualAnalysisImpl } from './mergeVisualAnalysis.ts';
 function mergeVisualAnalysis(
   results: Array<{ photos?: Array<Record<string, unknown>>; spaceAnalysis?: Array<Record<string, unknown>>; photoReview?: Record<string, unknown> }>
 ): Record<string, unknown> {
-  const allPhotos: Array<Record<string, unknown>> = [];
-  const spaceAnalysisMap = new Map<string, Record<string, unknown>>();
-
-  for (const result of results) {
-    if (!result) continue;
-
-    // Merge photos with adjusted index
-    if (Array.isArray(result.photos)) {
-      for (const photo of result.photos) {
-        allPhotos.push({ ...photo });
-      }
-    }
-
-    // Merge spaceAnalysis by spaceType
-    if (Array.isArray(result.spaceAnalysis)) {
-      for (const space of result.spaceAnalysis) {
-        const spaceType = space.spaceType as string;
-        if (spaceType && spaceAnalysisMap.has(spaceType)) {
-          // Merge observations from duplicate space types
-          const existing = spaceAnalysisMap.get(spaceType)!;
-          const existingObs = (existing.observations as string[]) || [];
-          const newObs = (space.observations as string[]) || [];
-          existing.observations = [...new Set([...existingObs, ...newObs])].slice(0, 5);
-          // Average the scores
-          const existingScore = (existing.score as number) || 0;
-          const newScore = (space.score as number) || 0;
-          existing.score = Math.round((existingScore + newScore) / 2);
-        } else {
-          spaceAnalysisMap.set(spaceType, { ...space });
-        }
-      }
-    }
-  }
-
-  // Merge photoReview (take the first non-empty result)
-  let photoReview: Record<string, unknown> | null = null;
-  for (const result of results) {
-    if (result?.photoReview && Object.keys(result.photoReview).length > 0) {
-      photoReview = result.photoReview;
-      break;
-    }
-  }
-
-  return {
-    photos: allPhotos,
-    spaceAnalysis: Array.from(spaceAnalysisMap.values()),
-    ...(photoReview && { photoReview }),
-  };
+  return mergeVisualAnalysisImpl(results) as unknown as Record<string, unknown>;
 }
 
 // ── Unified Market Detection ───────────────────────────────────────────────────────────────────────────
@@ -5190,6 +5526,7 @@ function buildStep2Messages(
     neighborhood: string | null;
     architecturalStyle: string | null;
   },
+  listingScope?: string | null,
 ) {
   // ── Prompt selection ───────────────────────────────────────────────────────
   let systemPrompt: string;
@@ -5202,8 +5539,18 @@ function buildStep2Messages(
       systemPrompt = STEP2_US_SALE_PROMPT;
       selectedPromptName = 'STEP2_US_SALE_PROMPT';
     } else if (reportMode === 'rent') {
-      systemPrompt = STEP2_US_RENT_PROMPT;
-      selectedPromptName = 'STEP2_US_RENT_PROMPT';
+      // Check listingScope from optionalDetails first, then from the listingScope parameter.
+      // The extension sets optionalDetails.listingScope when submitting a multi-unit building;
+      // fall back to the top-level listingScope parameter for callers that set it at the top level.
+      const od = optionalDetails as Record<string, unknown>;
+      const scope = (od as any)?.listingScope ?? listingScope ?? null;
+      if (scope === 'multi_unit_building') {
+        systemPrompt = STEP2_US_BUILDING_RENT_PROMPT;
+        selectedPromptName = 'STEP2_US_BUILDING_RENT_PROMPT';
+      } else {
+        systemPrompt = STEP2_US_RENT_PROMPT;
+        selectedPromptName = 'STEP2_US_RENT_PROMPT';
+      }
     } else {
       throw new Error('REPORT_MODE_REQUIRED: cannot determine sale vs rent');
     }
@@ -5221,12 +5568,6 @@ function buildStep2Messages(
     // Unknown market AND unknown reportMode — strict guard.
     throw new Error('REPORT_MODE_REQUIRED: cannot determine market or report mode');
   }
-
-  console.log("[DIAG] market routing — buildStep2Messages:", {
-    reportMode,
-    market,
-    selectedPrompt: selectedPromptName,
-  });
 
   let textContent = visualAnalysis
     ? `VISUAL ANALYSIS RESULTS:\n${JSON.stringify(visualAnalysis, null, 2)}\n\n`
@@ -5371,15 +5712,6 @@ PHOTO EVIDENCE RULES (STRICT):
       if (extractedTransit) textContent += `\n- Transit Score: ${extractedTransit}`;
     }
 
-    // Debug log: verify facts are included
-    console.log('[DIAG] Step2 optionalDetails included', {
-      market,
-      reportMode,
-      detailCount: details.length,
-      optionalDetailKeys: optionalDetails ? Object.keys(optionalDetails) : [],
-      includedDetailsPreview: details.slice(0, 20),
-    });
-
     if (details.length > 0) {
       textContent += `
 ZILLOW FACTS & FEATURES FROM THE LISTING:
@@ -5389,6 +5721,154 @@ IMPORTANT:
 Use these listing facts heavily in your analysis. Do not say tax, year built, home type, roof, HOA, price per sqft, or multi-family status are unknown if they appear above.
 If a field is not listed above, then treat it as unknown and add it to data_gaps or external_data_needed.
 `;
+    }
+
+    // ── Multi-Unit Building: inject available units into prompt ─────────────────
+    // availableUnits and floorPlanSummaries are set by the extension when
+    // listingScope === 'multi_unit_building' and sent via optionalDetails.
+    // We inject them here so the model can populate available_unit_options,
+    // cost_and_fee_range, and totalMonthlyRange in the STEP2_US_BUILDING_RENT_PROMPT
+    // schema — without this data the model has no unit-level facts to work with.
+    const scopeOd = optionalDetails as Record<string, unknown>;
+    const scopeForPrompt = (scopeOd as any)?.listingScope ?? listingScope ?? null;
+    if (scopeForPrompt === 'multi_unit_building') {
+      const units = Array.isArray(optionalDetails?.availableUnits)
+        ? (optionalDetails as any).availableUnits as Array<Record<string, unknown>>
+        : null;
+      const floorPlans = Array.isArray(optionalDetails?.floorPlanSummaries)
+        ? (optionalDetails as any).floorPlanSummaries as Array<Record<string, unknown>>
+        : null;
+      const identifiedUnitCount =
+        typeof (scopeOd as any)?.identifiedUnitCount === 'number'
+          ? (scopeOd as any).identifiedUnitCount
+          : (units?.length ?? 0);
+      const totalUnitCount =
+        typeof (scopeOd as any)?.availableUnitCount === 'number'
+          ? (scopeOd as any).availableUnitCount
+          : (floorPlans?.reduce((acc, fp) => {
+              const n = Number((fp as any)?.unitCount);
+              return Number.isFinite(n) && n >= 0 ? acc + n : acc;
+            }, 0) || identifiedUnitCount);
+      const feeRangeText = (() => {
+        const min = Number((scopeOd as any)?.requiredMonthlyFeeMin);
+        const max = Number((scopeOd as any)?.requiredMonthlyFeeMax);
+        if (!Number.isFinite(min) && !Number.isFinite(max)) return null;
+        if (Number.isFinite(min) && Number.isFinite(max) && min !== max) {
+          return `$${min.toLocaleString()}–$${max.toLocaleString()}/mo`;
+        }
+        const v = Number.isFinite(min) ? min : max;
+        return `$${v.toLocaleString()}/mo`;
+      })();
+      const feesIncluded = (scopeOd as any)?.listPriceIncludesRequiredMonthlyFees === true;
+
+      textContent += `\nBUILDING AVAILABILITY (listing-level facts; do not re-derive):\n`;
+      textContent += `- Total available units across floor plans: ${totalUnitCount}\n`;
+      textContent += `- Identified specific units with concrete identity: ${identifiedUnitCount}\n`;
+      textContent += `- Floor plan roll-ups (unit type level): ${floorPlans?.length ?? 0}\n`;
+      if (feeRangeText) {
+        textContent += `- Required monthly fee range: ${feeRangeText}\n`;
+      }
+      if (feesIncluded) {
+        textContent += `- Required fees are already included in the listing price.\n`;
+      }
+
+      if (floorPlans && floorPlans.length > 0) {
+        textContent += `\nFLOOR PLAN SUMMARIES (authoritative unit-type level roll-ups; the range below is the building-wide fact and MUST NOT be replaced by a single unit's price):\n`;
+        for (const fp of floorPlans) {
+          const name = fp.planName ?? fp.name ?? 'Unknown';
+          const beds = fp.bedrooms ?? '-';
+          const baths = fp.bathrooms ?? '-';
+          const sqft = fp.sqft ?? '-';
+          const minPrice = Number((fp as any)?.minPrice);
+          const maxPrice = Number((fp as any)?.maxPrice);
+          const minBaseRent = Number((fp as any)?.minBaseRent);
+          const maxBaseRent = Number((fp as any)?.maxBaseRent);
+          const unitCount = Number((fp as any)?.unitCount);
+          const listPrice = (fp as any)?.listPriceIncludesRequiredMonthlyFees === true
+            ? ' (required fees included)'
+            : '';
+          const priceLine =
+            Number.isFinite(minPrice) && Number.isFinite(maxPrice) && minPrice !== maxPrice
+              ? `$${minPrice.toLocaleString()}–$${maxPrice.toLocaleString()}/mo`
+              : Number.isFinite(minPrice)
+                ? `$${minPrice.toLocaleString()}/mo`
+                : 'TBD';
+          const baseLine =
+            Number.isFinite(minBaseRent) && Number.isFinite(maxBaseRent) && minBaseRent !== maxBaseRent
+              ? `$${minBaseRent.toLocaleString()}–$${maxBaseRent.toLocaleString()}/mo`
+              : Number.isFinite(minBaseRent)
+                ? `$${minBaseRent.toLocaleString()}/mo`
+                : null;
+          const unitsLine = Number.isFinite(unitCount) && unitCount >= 0
+            ? `${unitCount} unit${unitCount !== 1 ? 's' : ''}`
+            : null;
+          const tail = [
+            unitsLine ? `${unitsLine} available` : null,
+            baseLine ? `base rent ${baseLine}` : null,
+          ].filter(Boolean).join(' · ');
+          textContent += `- ${name}: ${beds}bd / ${baths}ba / ${sqft} sqft — ${priceLine}${listPrice ? listPrice : ''}${tail ? ' · ' + tail : ''}\n`;
+        }
+      }
+
+      if (units && units.length > 0) {
+        textContent += `\nIDENTIFIED UNITS (concrete unit rows; never merge these into floor plan roll-ups):\n`;
+        for (const u of units) {
+          const unitNum = u.unitNumber ? `Unit ${u.unitNumber}` : (u.name ? String(u.name) : 'Unit');
+          const beds = u.bedrooms ?? '-';
+          const baths = u.bathrooms ?? '-';
+          const sqft = u.sqft ?? '-';
+          const rent = u.monthlyRent != null
+            ? `$${Number(u.monthlyRent).toLocaleString()}/mo`
+            : 'TBD';
+          const avail = u.availableFrom ?? 'TBD';
+          textContent += `- ${unitNum}: ${beds}bd / ${baths}ba / ${sqft} sqft — ${rent} — available: ${avail}\n`;
+        }
+      }
+
+      // ── Special offer (verbatim from listing) ─────────────────────────────────────────
+      const offerText = (scopeOd as any)?.specialOfferText;
+      if (typeof offerText === 'string' && offerText.trim().length > 0) {
+        textContent += `\nSPECIAL OFFER (verbatim from the listing — preserve wording, do not invent):\n${offerText.trim()}\n`;
+      }
+      const offerItems = (scopeOd as any)?.specialOffers;
+      if (Array.isArray(offerItems) && offerItems.length > 0) {
+        textContent += `\nSPECIAL OFFER ITEMS:\n${offerItems.map((s) => `- ${String(s)}`).join('\n')}\n`;
+      }
+
+      // ── Rental Cost Calculator (verbatim; preserve "Varies" reimbursement facts) ──
+      const calc = (scopeOd as any)?.rentalCostCalculator;
+      if (calc && typeof calc === 'object') {
+        textContent += `\nRENTAL COST CALCULATOR (verbatim from the listing — preserve range and "Varies" facts; do not derive from any single unit):\n`;
+        const fmtMoney = (n: unknown) => Number.isFinite(Number(n))
+          ? `$${Number(n).toLocaleString()}`
+          : 'TBD';
+        const fmtRange = (a: unknown, b: unknown) => {
+          const av = Number(a), bv = Number(b);
+          if (!Number.isFinite(av) && !Number.isFinite(bv)) return null;
+          if (Number.isFinite(av) && Number.isFinite(bv) && av !== bv) {
+            return `$${av.toLocaleString()}–$${bv.toLocaleString()}`;
+          }
+          const v = Number.isFinite(av) ? av : bv;
+          return `$${v.toLocaleString()}`;
+        };
+        const monthly = fmtRange(calc.estimatedMonthlyMin, calc.estimatedMonthlyMax);
+        const baseRent = fmtRange(calc.baseRentMin, calc.baseRentMax);
+        if (monthly) textContent += `- Est. total monthly cost: ${monthly}\n`;
+        if (baseRent) textContent += `- Monthly base rent: ${baseRent}\n`;
+        if (calc.applicationCost != null) textContent += `- Application Cost: ${fmtMoney(calc.applicationCost)}\n`;
+        if (calc.holdingCost != null) textContent += `- Holding Cost: ${fmtMoney(calc.holdingCost)}\n`;
+        if (calc.totalApplicationCost != null) textContent += `- Est. total application cost: ${fmtMoney(calc.totalApplicationCost)}\n`;
+        if (calc.deposit != null) textContent += `- Deposit: ${fmtMoney(calc.deposit)}\n`;
+        if (calc.totalMoveInCost != null) textContent += `- Est. move-in cost: ${fmtMoney(calc.totalMoveInCost)}\n`;
+        if (Array.isArray(calc.variableReimbursements) && calc.variableReimbursements.length > 0) {
+          // Emit each reimbursement on its own canonical-labeled line so the LLM cannot
+          // collapse them into a single "Varies" string and cannot drop any one of them.
+          for (const label of calc.variableReimbursements) {
+            textContent += `- Variable reimbursement: ${label}: Varies\n`;
+          }
+        }
+      }
+
     }
     // ── Step 4: Inject verified facts for US market ──────────────────────────────────────────
     if (market === 'US' && verifiedFacts) {
@@ -5601,7 +6081,7 @@ If a field is not listed above, then treat it as unknown and add it to data_gaps
 |- Basement moisture, foundation, and drainage
 |- Permits for finished basement or recent renovations
 |- Certificate of Occupancy to confirm legal use
-|- DOB records and open violations
+|- Local building department records and open violations
 |- Comparable single-family sales (not rental comps)
 |- Insurance and utility costs
 `;
@@ -6049,6 +6529,9 @@ function inferReportModeStrictFromResult(fullResult: unknown): 'sale' | 'rent' |
     if (full_result && typeof full_result === 'object') {
       (full_result as Record<string, unknown>).report_mode = canonicalReportMode;
       (full_result as Record<string, unknown>).reportMode = canonicalReportMode;
+      // listingScope: normalize to the top-level field so any reader finds it
+      const storedScope = (full_result as Record<string, unknown>).listingScope;
+      (full_result as Record<string, unknown>).listingScope = storedScope ?? null;
     }
 
     return jsonResponse({
@@ -6063,6 +6546,7 @@ function inferReportModeStrictFromResult(fullResult: unknown): 'sale' | 'rent' |
       verdict,
       report_mode: canonicalReportMode,
       reportMode: canonicalReportMode,
+      listingScope: (full_result as Record<string, unknown> | null)?.listingScope ?? null,
     });
   }
 
@@ -6459,19 +6943,6 @@ function inferReportModeStrictFromResult(fullResult: unknown): 'sale' | 'rent' |
       listingUrl: bodyListingUrl,
       description,
       optionalDetails,
-    });
-
-    console.log("[DIAG] backend market routing — basic-sync:", {
-      body_source: bodySource,
-      body_sourceDomain: bodySourceDomain,
-      body_market: bodyMarket,
-      body_listingUrl: bodyListingUrl,
-      optional_source: (optionalDetails as Record<string, unknown>).source ?? null,
-      optional_sourceDomain: (optionalDetails as Record<string, unknown>).sourceDomain ?? null,
-      optional_market: (optionalDetails as Record<string, unknown>).market ?? null,
-      optional_listingUrl: (optionalDetails as Record<string, unknown>).listingUrl ?? null,
-      final_market: detectedMarket,
-      reportMode,
     });
 
     const basicPromptName = detectedMarket === 'US'
@@ -6931,17 +7402,6 @@ Only output the JSON. No other text.
 Listing: ${description}
 ${optionalDetails.askingPrice ? `Asking Price: ${optionalDetails.askingPrice}\n` : ''}${optionalDetails.suburb ? `Location: ${optionalDetails.suburb}\n` : ''}${optionalDetails.bedrooms ? `Bedrooms: ${optionalDetails.bedrooms}\n` : ''}${optionalDetails.bathrooms ? `Bathrooms: ${optionalDetails.bathrooms}\n` : ''}`);
 
-    console.log("[DIAG] market routing — basic-sync:", {
-      action: "basic-sync",
-      source: bodySource,
-      sourceDomain: bodySourceDomain,
-      market: bodyMarket,
-      listingUrl: bodyListingUrl,
-      reportMode,
-      detectedMarket,
-      selectedPromptName: basicPromptName,
-    });
-
     // Try to get current user (optional - basic analysis works without auth)
     const { user, error: authError } = await getCurrentUser(req);
     let analysisId: string | null = null;
@@ -7209,6 +7669,9 @@ ${optionalDetails.askingPrice ? `Asking Price: ${optionalDetails.askingPrice}\n`
           }
         : null;
 
+      // Extract listingScope from request body (used by both DB save and response)
+      const bodyListingScope = (body as Record<string, unknown>).listingScope as string | null ?? null;
+
       // If we have an analysisId, update the record with the FULL result
       // (what_we_know, listing_claims, questions_to_ask, monthly_cost_snapshot etc.
       // are needed for history playback via NewReportUI.)
@@ -7230,6 +7693,7 @@ ${optionalDetails.askingPrice ? `Asking Price: ${optionalDetails.askingPrice}\n`
             whatLooksGood: result.whatLooksGood || [],
             riskSignals: result.riskSignals || [],
             reportMode,
+            listingScope: bodyListingScope,
             market: detectedMarket,
             source: bodySource || null,
             sourceDomain: bodySourceDomain || null,
@@ -7285,6 +7749,7 @@ ${optionalDetails.askingPrice ? `Asking Price: ${optionalDetails.askingPrice}\n`
             );
           })(),
           reportMode,
+          listingScope: bodyListingScope,
           market: detectedMarket,
           source: bodySource || null,
           sourceDomain: bodySourceDomain || null,
@@ -7332,7 +7797,13 @@ ${optionalDetails.askingPrice ? `Asking Price: ${optionalDetails.askingPrice}\n`
 
   // ACTION: submit (create new analysis task)
   if (resolvedAction === "submit" || !resolvedAction) {
-    const imageUrls = Array.isArray(body.imageUrls) ? body.imageUrls.filter(isValidHttpUrl) : [];
+    const rawImageUrls: string[] = Array.isArray(body.imageUrls) ? body.imageUrls : [];
+    const validRawUrls = rawImageUrls.filter(isValidHttpUrl);
+    const imageUrls = IMAGE_DEDUP_ENABLED
+      ? normalizeAndDedupImageUrls(validRawUrls)
+      : validRawUrls;
+    console.log(`[IMAGE_DEDUP] raw=${rawImageUrls.length} valid=${validRawUrls.length} deduped=${imageUrls.length} enabled=${IMAGE_DEDUP_ENABLED}`);
+
     const description = typeof body.description === "string" ? body.description : "";
     // Strict three-state reportMode; reject unknown at entry.
     const effectiveReportMode: 'sale' | 'rent' | 'unknown' =
@@ -7364,28 +7835,12 @@ ${optionalDetails.askingPrice ? `Asking Price: ${optionalDetails.askingPrice}\n`
       optionalDetails: body.optionalDetails,
     });
 
-    console.log("[DIAG] backend market routing — submit:", {
-      action: "submit",
-      body_source: body.source,
-      body_sourceDomain: body.sourceDomain,
-      body_market: rawMarket,
-      body_listingUrl: rawListingUrl,
-      optional_source: (body.optionalDetails as Record<string, unknown>)?.source as string | null,
-      optional_sourceDomain: (body.optionalDetails as Record<string, unknown>)?.sourceDomain as string | null,
-      optional_market: (body.optionalDetails as Record<string, unknown>)?.market as string | null,
-      optional_listingUrl: (body.optionalDetails as Record<string, unknown>)?.listingUrl as string | null,
-      resolvedSource: rawSource,
-      resolvedSourceDomain,
-      final_market: detectedMarket,
-      reportMode: effectiveReportMode,
-    });
-
     if (imageUrls.length === 0 && !description.trim()) {
       return jsonResponse({ message: "Please provide images or description" }, 400);
     }
 
     const analysisId = crypto.randomUUID();
-    await createAnalysisState(analysisId);
+    await createAnalysisState(analysisId, effectiveReportMode);
 
     // Create analysis record in analyses table
     // MUST succeed before returning - this is critical for history to work
@@ -7463,6 +7918,7 @@ ${optionalDetails.askingPrice ? `Asking Price: ${optionalDetails.askingPrice}\n`
 
     // Pre-reserve credit before starting analysis (atomic operation)
     const reserveResult = await reserveCredits(currentUser.id, id);
+    console.log('[CREDITS_OP] action=reserve userId=' + currentUser.id + ' analysisId=' + id + ' success=' + reserveResult.success + ' usageId=' + (reserveResult.usageId ?? 'null') + (reserveResult.error ? ' error=' + reserveResult.error : ''));
     if (!reserveResult.success) {
       console.log("Failed to reserve credits:", reserveResult.error);
       
@@ -7497,6 +7953,18 @@ ${optionalDetails.askingPrice ? `Asking Price: ${optionalDetails.askingPrice}\n`
     console.log("Analysis ID:", id);
     console.log("Usage Record ID:", usageId);
 
+    // DIAG: reset stage tracker for this run. Anything set before this point
+    // is from a previous invocation and not relevant to the deadline fired here.
+    __hsRunStartedAt = Date.now();
+    __hsStageStartMs = Date.now();
+    __hsCurrentStage = 'sale_finalize_start';
+    console.log(`[SALE_FINALIZE_START] id=${id} runElapsed=0ms budgetCapMs=${INVOCATION_DEADLINE_MS}`);
+
+    // Immediately flip analyses.status to "processing" + set started_at so
+    // the plugin's poll never sees a stale "pending" while the long LLM work
+    // is in flight (or if the deadline fires before any state row is written).
+    await patchAnalysisStatus(id, "processing");
+
     // ── Invocation deadline ──────────────────────────────────────────────────
     // Supabase Edge Functions cap at 150s wall-clock. Create a deadline
     // signal shared across all in-flight LLM / fetch calls so we abort
@@ -7506,8 +7974,13 @@ ${optionalDetails.askingPrice ? `Asking Price: ${optionalDetails.askingPrice}\n`
     const deadlineSignal = invocationDeadline.signal;
     console.log(`[DEADLINE] Created — ceiling at ${new Date(invocationDeadline.deadlineAt).toISOString()} (${INVOCATION_DEADLINE_MS}ms from now)`);
 
-    const imageUrls = Array.isArray(body.imageUrls) ? body.imageUrls.filter(isValidHttpUrl) : [];
+    const rawImageUrls: string[] = Array.isArray(body.imageUrls) ? body.imageUrls : [];
+    const validRawUrls = rawImageUrls.filter(isValidHttpUrl);
+    const imageUrls = IMAGE_DEDUP_ENABLED
+      ? normalizeAndDedupImageUrls(validRawUrls)
+      : validRawUrls;
     const optionalDetails = body.optionalDetails ?? {};
+    const listingScope = (body as any)?.listingScope ?? null;
     // ── Top-level description conflict guard ──────────────────────────────────
     // If the top-level body.description disagrees with optionalDetails on
     // address (zip), asking price, or sqft, it is most likely STALE text
@@ -7637,7 +8110,6 @@ ${optionalDetails.askingPrice ? `Asking Price: ${optionalDetails.askingPrice}\n`
           }
         }
       } catch (e) {
-        console.error("[DIAG] run: failed to fetch analysis record for source:", e);
       }
     }
 
@@ -7653,42 +8125,16 @@ ${optionalDetails.askingPrice ? `Asking Price: ${optionalDetails.askingPrice}\n`
       optionalDetails,
     });
 
-    console.log("[DIAG] backend market routing — run:", {
-      body_source: body.source,
-      body_sourceDomain: body.sourceDomain,
-      body_market: (body as Record<string, unknown>).market as string | null,
-      body_listingUrl: (body as Record<string, unknown>).listingUrl as string | null,
-      optional_source: (optionalDetails as Record<string, unknown>).source as string | null,
-      optional_sourceDomain: (optionalDetails as Record<string, unknown>).sourceDomain as string | null,
-      optional_market: (optionalDetails as Record<string, unknown>).market as string | null,
-      optional_listingUrl: (optionalDetails as Record<string, unknown>).listingUrl as string | null,
-      final_market: detectedMarket,
-      reportMode: effectiveReportMode,
-    });
-
     const selectedPromptName = detectedMarket === 'US'
       ? (effectiveReportMode === 'sale' ? 'STEP2_US_SALE_PROMPT' : 'STEP2_US_RENT_PROMPT')
       : detectedMarket === 'AU'
       ? (effectiveReportMode === 'sale' ? 'STEP2_SALE_PROMPT' : 'STEP2_RENT_PROMPT')
       : 'REPORT_MODE_REQUIRED';
 
-    console.log("[DIAG] market routing — run action:", {
-      action: "run",
-      body_source: body.source,
-      body_sourceDomain: body.sourceDomain,
-      body_market: (body as Record<string, unknown>).market as string | null,
-      body_listingUrl: (body as Record<string, unknown>).listingUrl as string | null,
-      optionalSource: (optionalDetails as Record<string, unknown>).source as string | null,
-      resolvedSource: source,
-      resolvedSourceDomain: sourceDomain,
-      reportMode: effectiveReportMode,
-      final_market: detectedMarket,
-      selectedPromptName,
-    });
-
     const openRouterApiKey = Deno.env.get("OPENROUTER_API_KEY");
     if (!openRouterApiKey) {
       // Analysis failed - release credits
+      console.log('[CREDITS_OP] action=release reason=no_api_key userId=' + currentUser.id + ' usageId=' + (usageId ?? 'null'));
       await releaseCredits(currentUser.id, usageId);
       await updateAnalysisState(id, {
         stage: "failed",
@@ -7748,38 +8194,64 @@ ${optionalDetails.askingPrice ? `Asking Price: ${optionalDetails.askingPrice}\n`
       console.log("[Reality Check] spinText sample:", spinText?.slice(0, 300));
       console.log("[Reality Check] hasMlsNoise:", hasMlsNoise);
       let realityCheckPromise: Promise<RealityCheck> = Promise.resolve({ should_display: false });
+      const rcStartMs = Date.now();
       if (spinText && !hasMlsNoise) {
         console.log("[Reality Check] Input source:", spinDesc ? 'whatsSpecialText/listingDescription/whatSpecial' : 'description (fallback)');
         console.log("[Reality Check] Input length:", spinText.length);
+        setCurrentStage('reality_check');
+        console.log(`[REALITY_CHECK_START] runElapsed=${Date.now() - __hsRunStartedAt}ms inputLen=${spinText.length}`);
         realityCheckPromise = runRealityCheck(openRouterApiKey, spinText, "", deadlineSignal).catch((rcError) => {
           console.error("[RealityCheck] Failed:", rcError);
           return { should_display: false };
         });
+        // Attach a follower so we know exactly when it resolves (or fails) — without blocking.
+        realityCheckPromise.finally?.(() => {
+          const dur = Date.now() - rcStartMs;
+          console.log(`[REALITY_CHECK_END] duration=${dur}ms runElapsed=${Date.now() - __hsRunStartedAt}ms`);
+        });
       } else {
         console.log("[Reality Check] Skipped: no meaningful listing text after MLS filtering");
+        console.log(`[REALITY_CHECK_SKIPPED] reason=no_meaningful_text runElapsed=${Date.now() - __hsRunStartedAt}ms`);
       }
 
       // Step 1: Visual analysis (batched for stability)
+      // 批次元数据声明在块前，确保 fullResultWithType 中引用时不产生 ReferenceError
+      let step1Meta: { totalBatches: number; successfulBatches: number; failedBatches: number; totalPhotos: number; runElapsedAtMerge: number } | undefined;
       if (imageUrls.length > 0) {
         console.log("\n[Step 1] Visual analysis start (batched)");
-        
+        setCurrentStage('step1_start');
+
         const MAX_BATCHES = 2; // 最多 2 批 = 40 张图片
         const BATCH_SIZE = 20;
         const numBatches = Math.min(Math.ceil(imageUrls.length / BATCH_SIZE), MAX_BATCHES);
-        
+
         const batchResults: Array<Record<string, unknown>> = [];
         let batchSuccessCount = 0;
+        // ── Step 1 批次元数据（用于观测，不改变行为）──────────────────────
+        step1Meta = {
+          totalBatches: numBatches,
+          successfulBatches: 0,
+          failedBatches: 0,
+          totalPhotos: 0,
+          runElapsedAtMerge: 0,
+        };
 
         for (let batchIndex = 0; batchIndex < numBatches; batchIndex++) {
           console.log(`[Step 1 Batch ${batchIndex + 1}/${numBatches}] Processing...`);
+          setCurrentStage(`step1_batch_${batchIndex + 1}_of_${numBatches}`);
+          const batchStartMs = Date.now();
+          console.log(`[STEP1_BATCH_START] batch=${batchIndex + 1}/${numBatches} runElapsed=${Date.now() - __hsRunStartedAt}ms`);
 
           // Extract property context from structured fields for photo analysis guidance
           const od = optionalDetails as Record<string, unknown>;
+          const bodyListingScope = (body as Record<string, unknown>).listingScope as string | null ?? null;
           const propertyContext = {
             normalizedPropertyCategory: od?.normalizedPropertyCategory as string | null ?? null,
             homeType: od?.homeType as string | null ?? null,
             propertyType: od?.propertyType as string | null ?? null,
             propertySubtype: od?.propertySubtype as string | null ?? null,
+            listingScope: bodyListingScope,
+            specificUnitSelected: od?.specificUnitSelected as boolean | null ?? null,
           };
 
           const { messages, photoIndexOffset } = buildStep1Messages(imageUrls, batchIndex, detectedMarket, effectiveReportMode, propertyContext);
@@ -7813,6 +8285,7 @@ ${optionalDetails.askingPrice ? `Asking Price: ${optionalDetails.askingPrice}\n`
               const errorData = await step1Response.json().catch(() => ({}));
               console.error(`[Step 1 Batch ${batchIndex + 1}] Error Response:`, JSON.stringify(errorData));
               // 继续下一批，不抛出异常
+              console.log(`[STEP1_BATCH_END] batch=${batchIndex + 1}/${numBatches} duration=${Date.now() - batchStartMs}ms status=error statusCode=${step1Response.status} runElapsed=${Date.now() - __hsRunStartedAt}ms`);
               continue;
             }
 
@@ -7821,12 +8294,13 @@ ${optionalDetails.askingPrice ? `Asking Price: ${optionalDetails.askingPrice}\n`
 
             if (!step1Content) {
               console.warn(`[Step 1 Batch ${batchIndex + 1}] No response content`);
+              console.log(`[STEP1_BATCH_END] batch=${batchIndex + 1}/${numBatches} duration=${Date.now() - batchStartMs}ms status=no_content runElapsed=${Date.now() - __hsRunStartedAt}ms`);
               continue;
             }
 
             try {
               const batchResult = safeParseModelJson(step1Content) as Record<string, unknown>;
-              
+
               // Adjust photoIndex to be global
               if (Array.isArray(batchResult.photos)) {
                 for (const photo of batchResult.photos) {
@@ -7835,29 +8309,40 @@ ${optionalDetails.askingPrice ? `Asking Price: ${optionalDetails.askingPrice}\n`
                   }
                 }
               }
-              
+
               batchResults.push(batchResult);
               batchSuccessCount++;
+              step1Meta.successfulBatches++;
+              step1Meta.totalPhotos += (batchResult.photos as unknown[])?.length || 0;
               console.log(`[Step 1 Batch ${batchIndex + 1}] Success, ${(batchResult.photos as unknown[])?.length || 0} photos analyzed`);
+              console.log(`[STEP1_BATCH_END] batch=${batchIndex + 1}/${numBatches} duration=${Date.now() - batchStartMs}ms status=ok photos=${(batchResult.photos as unknown[])?.length || 0} runElapsed=${Date.now() - __hsRunStartedAt}ms`);
             } catch {
               console.warn(`[Step 1 Batch ${batchIndex + 1}] JSON parse failed, skipping batch`);
+              step1Meta.failedBatches++;
+              console.log(`[STEP1_BATCH_END] batch=${batchIndex + 1}/${numBatches} duration=${Date.now() - batchStartMs}ms status=json_parse_fail runElapsed=${Date.now() - __hsRunStartedAt}ms`);
             }
           } catch (batchError) {
             console.error(`[Step 1 Batch ${batchIndex + 1}] Request failed:`, batchError);
+            step1Meta.failedBatches++;
             // 继续下一批
+            console.log(`[STEP1_BATCH_END] batch=${batchIndex + 1}/${numBatches} duration=${Date.now() - batchStartMs}ms status=request_fail errName=${(batchError as any)?.name ?? ''} runElapsed=${Date.now() - __hsRunStartedAt}ms`);
           }
         }
 
         // Merge results from all successful batches
+        step1Meta.runElapsedAtMerge = Date.now() - __hsRunStartedAt;
         if (batchResults.length > 0) {
           visualAnalysis = mergeVisualAnalysis(batchResults as Parameters<typeof mergeVisualAnalysis>[0]);
           console.log(`[Step 1] Merged ${batchResults.length} batches, total photos: ${(visualAnalysis.photos as unknown[])?.length || 0}`);
+          console.log('[STEP1_META] ' + JSON.stringify(step1Meta));
         } else {
           // 所有批次都失败了
           console.warn("[Step 1] All batches failed, proceeding without visual analysis");
           visualAnalysis = null;
+          console.log('[STEP1_META] ' + JSON.stringify(step1Meta));
         }
 
+        setCurrentStage('step1_done');
         console.log("[Step 1] Visual analysis complete");
 
         // Update state after Step 1
@@ -7867,7 +8352,9 @@ ${optionalDetails.askingPrice ? `Asking Price: ${optionalDetails.askingPrice}\n`
           progress: 35,
         });
       } else {
+        setCurrentStage('step1_skipped');
         console.log("[Step 1] Skipped - no image URLs provided");
+        console.log(`[STEP1_SKIPPED] reason=no_images runElapsed=${Date.now() - __hsRunStartedAt}ms`);
       }
 
       // ── Step 3: Build verifiedFacts from optionalDetails (deterministic) ─────────
@@ -8102,13 +8589,20 @@ ${optionalDetails.askingPrice ? `Asking Price: ${optionalDetails.askingPrice}\n`
         description,
         optionalDetails,
         verifiedFacts,
+        listingScope,
       );
 
+      setCurrentStage('step2_start');
+      const step2StartMs = Date.now();
+      console.log(`[STEP2_START] runElapsed=${step2StartMs - __hsRunStartedAt}ms budgetRemainingMs=${INVOCATION_DEADLINE_MS - (step2StartMs - __hsRunStartedAt)}`);
       const { rawText: step2RawText, parsed: decision } = await callStep2Model(
         openRouterApiKey,
         step2Messages,
         deadlineSignal,
       );
+      setCurrentStage('step2_done');
+      const step2EndMs = Date.now();
+      console.log(`[STEP2_END] duration=${step2EndMs - step2StartMs}ms runElapsed=${step2EndMs - __hsRunStartedAt}ms status=ok rawTextLen=${step2RawText.length}`);
 
       console.log('[TRACE_ORIGIN_BACKEND_RAW_OUTPUT]', {
         questions_to_ask: (decision as any)?.questions_to_ask,
@@ -8168,7 +8662,7 @@ ${optionalDetails.askingPrice ? `Asking Price: ${optionalDetails.askingPrice}\n`
       };
       (decision as any)._extractedLocation = extractedLocation;
       const normalizedDecision = normalizeStep2Decision(decision, detectedMarket, optionalDetails, verifiedFacts);
-      lockVerifiedFactsIntoResult(normalizedDecision as Record<string, any>, verifiedFacts as Record<string, any>);
+      lockVerifiedFactsIntoResult(normalizedDecision as Record<string, any>, verifiedFacts as Record<string, any>, zfLoc as unknown);
   // Basement suppression for multi-family when listing has no basement signal
   // Even with prompt instructions, the AI may generate basement rental items for
   // multi-family listings that dont actually mention basement. Strip them here.
@@ -8348,17 +8842,6 @@ ${optionalDetails.askingPrice ? `Asking Price: ${optionalDetails.askingPrice}\n`
         });
       }
 
-      console.log("[DIAG] normalized Step2 decision", {
-        market: detectedMarket,
-        raw_has_pros: Array.isArray((decision as any)?.pros),
-        raw_has_what_looks_good: Array.isArray((decision as any)?.what_looks_good),
-        raw_has_cons: Array.isArray((decision as any)?.cons),
-        raw_has_risk_signals: Array.isArray((decision as any)?.risk_signals),
-        normalized_pros_count: normalizedDecision.pros?.length ?? 0,
-        normalized_cons_count: normalizedDecision.cons?.length ?? 0,
-        normalized_price_assessment: normalizedDecision.price_assessment,
-      });
-
       console.log("[Step 2] Decision complete:", normalizedDecision.overall_verdict);
 
       // Update state before competition estimation
@@ -8414,23 +8897,6 @@ ${optionalDetails.askingPrice ? `Asking Price: ${optionalDetails.askingPrice}\n`
         }
         return null;
       })();
-
-      // ── Rent verdict bucket → numeric midpoint fallback ─────────────
-      // US Rent Step 2 prompt emits `rental_listing_score.verdict` as a
-      // categorical label ("Strong Listing" / "Adequate" / "Thin Listing" /
-      // "Red Flag Heavy") but rarely a numeric score. Map the verdict to the
-      // midpoint of its bucket so the headline number is never null/0 when
-      // the LLM has given a categorical signal.
-      function verdictToRentScore(verdict: unknown): number | null {
-        if (!verdict) return null;
-        const v = String(verdict).trim();
-        if (/strong listing/i.test(v)) return 85;
-        if (/adequate/i.test(v)) return 65;
-        if (/thin listing/i.test(v)) return 45;
-        if (/red flag heavy/i.test(v)) return 25;
-        return null;
-      }
-      const rentVerdictScore = verdictToRentScore((decision as any)?.rental_listing_score?.verdict);
 
       // Determine verdict based on report mode
       const verdictStr = recommendation.verdict || '';
@@ -8682,6 +9148,7 @@ ${optionalDetails.askingPrice ? `Asking Price: ${optionalDetails.askingPrice}\n`
       const result = {
         id, // Analysis ID for sharing functionality
         reportMode: effectiveReportMode, // NEW: report mode indicator
+        listingScope: (body as Record<string, unknown>).listingScope as string | null ?? null, // multi_unit_building etc.
         source,     // market source for debugging
         sourceDomain, // domain extracted from URL or source for frontend routing
         market: detectedMarket, // market routing flag (replaces isUSMarket boolean)
@@ -8809,6 +9276,157 @@ ${optionalDetails.askingPrice ? `Asking Price: ${optionalDetails.askingPrice}\n`
         },
       };
 
+      // ── Multi-Unit Building: surface AI's building output onto result.buildingDetails ──
+      // The STEP2_US_BUILDING_RENT_PROMPT emits building-specific fields (building_snapshot,
+      // available_unit_options, cost_and_fee_range, building_amenities, features_that_may_vary,
+      // representative_photo_review, unit_specific_unknowns, questions_before_applying) on the
+      // decision object. Without this mapping, BuildingRentReport receives an empty buildingDetails
+      // and falls back to a generic stub. We also surface the Step 2 bottom_line so the existing
+      // quickSummary / bottom_line normalize path picks it up instead of producing a generic line.
+      const decisionAny = decision as Record<string, unknown>;
+      const _odAny = optionalDetails as Record<string, unknown>;
+      const _scopeForBuilding =
+        (body as Record<string, unknown>)?.listingScope ?? _odAny?.listingScope ?? null;
+      if (_scopeForBuilding === 'multi_unit_building') {
+        (result as any).buildingDetails = {
+          building_snapshot: decisionAny?.building_snapshot ?? null,
+          available_unit_options: decisionAny?.available_unit_options ?? [],
+          cost_and_fee_range: decisionAny?.cost_and_fee_range ?? null,
+          building_amenities: decisionAny?.building_amenities ?? null,
+          features_that_may_vary: decisionAny?.features_that_may_vary ?? null,
+          representative_photo_review: decisionAny?.representative_photo_review ?? null,
+          unit_specific_unknowns: decisionAny?.unit_specific_unknowns ?? null,
+          questions_before_applying: decisionAny?.questions_before_applying ?? null,
+          // Surface input-level building metadata so the frontend can render unit counts and
+          // building context without having to recompute them from availableUnits.
+          buildingName: _odAny?.buildingName ?? null,
+          buildingAddress: _odAny?.buildingAddress ?? null,
+          buildingId: _odAny?.buildingId ?? null,
+          availableUnitCount: _odAny?.availableUnitCount ?? 0,
+          identifiedUnitCount: _odAny?.identifiedUnitCount ?? _odAny?.availableUnitCount ?? 0,
+          availableUnits: _odAny?.availableUnits ?? [],
+          floorPlanSummaries: _odAny?.floorPlanSummaries ?? [],
+          baseRent: _odAny?.baseRent ?? null,
+          requiredMonthlyFeeMin: _odAny?.requiredMonthlyFeeMin ?? null,
+          requiredMonthlyFeeMax: _odAny?.requiredMonthlyFeeMax ?? null,
+          listPriceIncludesRequiredMonthlyFees: _odAny?.listPriceIncludesRequiredMonthlyFees ?? null,
+          buildingAmenities: _odAny?.buildingAmenities ?? null,
+          availableUnitOptions: _odAny?.availableUnitOptions ?? null,
+          unitNumber: _odAny?.unitNumber ?? null,
+          specialOfferText: _odAny?.specialOfferText ?? null,
+          specialOffers: _odAny?.specialOffers ?? null,
+          rentalCostCalculator: _odAny?.rentalCostCalculator ?? null,
+        };
+        // ── Deterministic fact lock (Multi-Unit) ───────────────────────────────
+        // Authority: structured Zillow facts (rentalCostCalculator) win over AI output.
+        // AI may EXPLAIN these facts but MUST NOT downgrade, delete, or rewrite them
+        // into null / unknown / "not listed" / "not disclosed".
+        // applicationCost is the calculator's structured amount; it is NOT the same as
+        // applicationFee (which only exists when the listing has an independent, clearly
+        // labeled "Application Fee" — we do not invent that here).
+        const _bd: any = (result as any).buildingDetails;
+        const _calc = _odAny?.rentalCostCalculator as
+          | {
+              applicationCost?: number | null;
+              holdingCost?: number | null;
+              totalApplicationCost?: number | null;
+              baseRentMin?: number | null;
+              baseRentMax?: number | null;
+              estimatedMonthlyMin?: number | null;
+              estimatedMonthlyMax?: number | null;
+              deposit?: number | null;
+              depositRefundable?: boolean | null;
+              totalMoveInCost?: number | null;
+              variableReimbursements?: string[] | null;
+            }
+          | null
+          | undefined;
+        if (_bd && _calc) {
+          const _cfr = (_bd.cost_and_fee_range ?? {}) as Record<string, unknown>;
+          // Lock applicationCost from the calculator
+          if (_calc.applicationCost != null && Number.isFinite(Number(_calc.applicationCost))) {
+            _cfr.applicationCost = Number(_calc.applicationCost);
+          }
+          if (_calc.holdingCost != null && Number.isFinite(Number(_calc.holdingCost))) {
+            _cfr.holdingCost = Number(_calc.holdingCost);
+          }
+          if (_calc.totalApplicationCost != null && Number.isFinite(Number(_calc.totalApplicationCost))) {
+            _cfr.totalApplicationCost = Number(_calc.totalApplicationCost);
+          }
+          if (_calc.deposit != null && Number.isFinite(Number(_calc.deposit))) {
+            _cfr.deposit = Number(_calc.deposit);
+          }
+          // Lock depositRefundable only when the calculator explicitly provides it.
+          // The AI must NEVER downgrade a stated refundable / non-refundable fact to
+          // null or to the opposite value.
+          if (_calc.depositRefundable === true || _calc.depositRefundable === false) {
+            _cfr.depositRefundable = _calc.depositRefundable;
+          }
+          if (_calc.totalMoveInCost != null && Number.isFinite(Number(_calc.totalMoveInCost))) {
+            _cfr.totalMoveInCost = Number(_calc.totalMoveInCost);
+          }
+          // Lock rent ranges from the calculator base rent
+          if (
+            _calc.baseRentMin != null &&
+            _calc.baseRentMax != null &&
+            Number.isFinite(Number(_calc.baseRentMin)) &&
+            Number.isFinite(Number(_calc.baseRentMax))
+          ) {
+            const _brMin = Number(_calc.baseRentMin);
+            const _brMax = Number(_calc.baseRentMax);
+            if (_brMin > 0 && _brMax > 0) {
+              _cfr.rentRangeMin = _brMin;
+              _cfr.rentRangeMax = _brMax;
+            }
+          }
+          // Lock total monthly range from the calculator total
+          if (
+            _calc.estimatedMonthlyMin != null &&
+            _calc.estimatedMonthlyMax != null &&
+            Number.isFinite(Number(_calc.estimatedMonthlyMin)) &&
+            Number.isFinite(Number(_calc.estimatedMonthlyMax))
+          ) {
+            const _emMin = Number(_calc.estimatedMonthlyMin);
+            const _emMax = Number(_calc.estimatedMonthlyMax);
+            if (_emMin > 0 && _emMax > 0) {
+              _cfr.totalMonthlyRangeMin = _emMin;
+              _cfr.totalMonthlyRangeMax = _emMax;
+            }
+          }
+          // Lock reimbursement Varies list (these are KNOWN facts — listing already states Varies)
+          if (Array.isArray(_calc.variableReimbursements) && _calc.variableReimbursements.length > 0) {
+            const _filtered = _calc.variableReimbursements.filter(
+              (s) => typeof s === 'string' && s.trim().length > 0,
+            );
+            if (_filtered.length > 0) {
+              _cfr.variableReimbursements = _filtered;
+            }
+          }
+          // Lock parking and lease term from structured data — when the listing
+          // explicitly states a value (e.g. "None", "Varies", "12-month lease"),
+          // that value is authoritative. The AI must not invent "confirm parking"
+          // prompts or contradict a stated fact.
+          const _parkingStr = (_odAny?.parking ?? _bd.parking) as string | null | undefined;
+          if (typeof _parkingStr === 'string' && _parkingStr.trim().length > 0) {
+            _bd.parking = _parkingStr.trim();
+          }
+          const _leaseStr = (_odAny?.leaseTerm ?? _bd.leaseTerm) as string | null | undefined;
+          if (typeof _leaseStr === 'string' && _leaseStr.trim().length > 0) {
+            _bd.leaseTerm = _leaseStr.trim();
+          }
+          _bd.cost_and_fee_range = _cfr;
+        }
+        // Map Step 2's bottom_line (which is the multi-unit prompt's primary summary) into the
+        // existing result bottom_line / quickSummary fields so the existing consume path
+        // (normalizeBottomLine, HeroSection, etc.) sees the AI's actual sentence instead of
+        // falling through to a generic fallback.
+        const aiBottomLine = decisionAny?.bottom_line;
+        if (typeof aiBottomLine === 'string' && aiBottomLine.trim().length > 0) {
+          (result as any).bottom_line = aiBottomLine;
+          (result as any).quickSummary = aiBottomLine;
+        }
+      }
+
       // ── Compute Full US Sale headline number AFTER result object exists ──
       // 1. Trust LLM-supplied score if valid (1..100)
       // 2. Otherwise compute evidence / decision-readiness from real fields
@@ -8826,7 +9444,7 @@ ${optionalDetails.askingPrice ? `Asking Price: ${optionalDetails.askingPrice}\n`
           : [],
       });
 
-      const overallScoreNum: number = aiScoreCandidate ?? rentVerdictScore ?? scoreBreakdown.score;
+      const overallScoreNum: number = aiScoreCandidate ?? scoreBreakdown.score;
       const evidenceLevelStr: string = scoreBreakdown.evidenceLevel;
 
       // Mirror the canonical score onto result so full_result JSONB carries
@@ -8849,6 +9467,25 @@ ${optionalDetails.askingPrice ? `Asking Price: ${optionalDetails.askingPrice}\n`
         evidenceLevel: scoreBreakdown.evidenceLevel,
         aiSupplied: aiScoreCandidate,
       };
+
+      // ── Verdict unification: all verdict fields must derive from score exclusively ──
+      // Backend is authoritative for the verdict label. Never trust AI's verdict text.
+      // score >= 80 → Enough to Review (matches evidenceVerdict() in reportViewModel.ts)
+      // score >= 65 → Review With Caution
+      // score >= 50 → Need More Evidence
+      // score < 50  → High Uncertainty
+      const scoreForVerdict = overallScoreNum;
+      let scoreVerdict: string;
+      if (scoreForVerdict >= 80) scoreVerdict = 'Enough to Review';
+      else if (scoreForVerdict >= 65) scoreVerdict = 'Review With Caution';
+      else if (scoreForVerdict >= 50) scoreVerdict = 'Need More Evidence';
+      else scoreVerdict = 'High Uncertainty';
+      // Write to all authoritative verdict fields in full_result
+      (result as any).verdict = scoreVerdict;
+      (result as any).overallVerdict = scoreVerdict;
+      if (result.recommendation && typeof result.recommendation === 'object') {
+        (result.recommendation as any).verdict = scoreVerdict;
+      }
 
       // ── Step 5: validateReportAgainstVerifiedFacts — P0-4 validator ─────────────────────────────
       // Scans AI output for contradictions with known facts and auto-fixes them.
@@ -9612,6 +10249,9 @@ ${optionalDetails.askingPrice ? `Asking Price: ${optionalDetails.askingPrice}\n`
       // ── FINAL deterministic overwrite: price_assessment.asking_price ──────────────
       // Source of truth: body.optionalDetails.askingPrice from Zillow extraction.
       // Must survive even if AI hallucinated 0 or null.
+      setCurrentStage('deterministic_patch_start');
+      const deterministicStartMs = Date.now();
+      console.log(`[DETERMINISTIC_PATCH_START] runElapsed=${deterministicStartMs - __hsRunStartedAt}ms`);
       const finalAskingPrice = firstValidPrice(
         (result as any)?.price_assessment?.asking_price,
         (normalizedDecision as any)?.price_assessment?.asking_price,
@@ -9685,6 +10325,8 @@ ${optionalDetails.askingPrice ? `Asking Price: ${optionalDetails.askingPrice}\n`
           result.carrying_costs = deterministicCC as any;
         }
       }
+      setCurrentStage('deterministic_patch_done');
+      console.log(`[DETERMINISTIC_PATCH_END] duration=${Date.now() - deterministicStartMs}ms runElapsed=${Date.now() - __hsRunStartedAt}ms`);
 
       // ── Debug logs ──────────────────────────────────────────────────────────────
       console.log('[FINAL_BEFORE_SAVE][price_assessment]', {
@@ -9724,7 +10366,12 @@ ${optionalDetails.askingPrice ? `Asking Price: ${optionalDetails.askingPrice}\n`
         overallScore: (result as any).overallScore ?? overallScoreNum,
         evidenceLevel: (result as any).evidenceLevel ?? evidenceLevelStr,
         analysisType: 'full',
+        // listingScope: from request body, written to meta so frontend can route to Building report
+        listingScope: (body as Record<string, unknown>).listingScope as string | null ?? null,
         ...(roomRentalFacts ? { room_rental_facts: roomRentalFacts } : {}),
+        // Step 1 batch metadata — written for observability and future recovery logic.
+        // Consumers must check for existence before reading (backward compatible).
+        ...(typeof step1Meta !== 'undefined' && step1Meta != null ? { _step1BatchMeta: step1Meta } : {}),
       };
 
       // ── FIX: write analyses.full_result BEFORE marking analysis_states
@@ -9759,8 +10406,11 @@ ${optionalDetails.askingPrice ? `Asking Price: ${optionalDetails.askingPrice}\n`
       });
 
       // Analysis succeeded - complete the credit usage
+      console.log('[CREDITS_OP] action=complete reason=success userId=' + currentUser.id + ' usageId=' + (usageId ?? 'null'));
       await completeCredits(currentUser.id, usageId);
 
+      setCurrentStage('sale_finalize_done');
+      console.log(`[SALE_FINALIZE_DONE] id=${id} totalRunElapsed=${Date.now() - __hsRunStartedAt}ms`);
       console.log("=== Analysis complete, credits deducted ===");
 
       return jsonResponse({ ok: true, id });
@@ -9772,6 +10422,11 @@ ${optionalDetails.askingPrice ? `Asking Price: ${optionalDetails.askingPrice}\n`
       console.error("Analysis error:", err.message);
       console.error("Error name:", err.name);
       console.error("===================");
+      // DIAG: capture which stage we were in when the error fired, plus how
+      // much of the 138s budget had been consumed. Lets us know whether the
+      // budget was eaten by Step 2 / Reality Check / Step 1 / deterministic
+      // patches on the next failure run.
+      console.error(`[ANALYSIS_ERROR_STAGE] currentStage=${getCurrentStage()} runElapsed=${Date.now() - __hsRunStartedAt}ms errName=${err.name ?? ''}`);
 
       // Distinguish timeout/deadline errors from generic failures.
       // Deadline / AbortError = recoverable. Do NOT write failed.
@@ -9788,6 +10443,10 @@ ${optionalDetails.askingPrice ? `Asking Price: ${optionalDetails.askingPrice}\n`
           progress: 10,
         });
 
+        // Critical: plugin polls the analyses table. Without this patch,
+        // analyses.status stays "pending" and the plugin shows "Tap to retry".
+        await patchAnalysisStatus(id, "processing");
+
         return jsonResponse({
           ok: true,
           id,
@@ -9798,6 +10457,7 @@ ${optionalDetails.askingPrice ? `Asking Price: ${optionalDetails.askingPrice}\n`
       }
 
       // True unrecoverable error — write failed.
+      console.log('[CREDITS_OP] action=release reason=unrecoverable_error userId=' + currentUser.id + ' usageId=' + (usageId ?? 'null'));
       await releaseCredits(currentUser.id, usageId);
       console.log("=== Analysis failed (unrecoverable), credits released ===");
 
@@ -9913,6 +10573,10 @@ ${optionalDetails.askingPrice ? `Asking Price: ${optionalDetails.askingPrice}\n`
             message: `Recovered by resume_due at ${new Date().toISOString()}.`,
           });
 
+          // Mirror state into the analyses row so the plugin's poll sees
+          // "processing" instead of stale "pending".
+          await patchAnalysisStatus(record.id, "processing");
+
           updatedIds.push(record.id);
         }
 
@@ -9979,6 +10643,7 @@ ${optionalDetails.askingPrice ? `Asking Price: ${optionalDetails.askingPrice}\n`
               message: "Completed via finalize_due.",
               progress: 100,
             });
+            await patchAnalysisStatus(record.id, "done");
             finalizedIds.push(record.id);
           }
           // If no result yet, leave it in step2_pending for next tick.

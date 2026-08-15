@@ -287,8 +287,9 @@ export function normalizeReportResult(result: AnyResult): NormalizedReport {
   const canonicalTitle = buildTitle(result);
   if (canonicalTitle) normalized.hero.title = canonicalTitle;
 
-  // Inject profile into meta for frontend consumption (read-only, backend already used it)
+  // Inject profile and listingScope into meta for frontend consumption
   normalized.meta.analysisProfile = analysisProfile;
+  normalized.meta.listingScope = toText(getField(result, 'listingScope') ?? null) || null;
 
   return normalized;
 }

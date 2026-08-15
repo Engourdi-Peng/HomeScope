@@ -3,6 +3,8 @@ import {
   isStructuredListingValid,
   readStructuredTransactionType,
   resolveEffectiveReportMode,
+  readModeResolverVersion,
+  isRecognizedResolverVersion,
 } from '../../../supabase/functions/analyze/reportMode';
 
 const ROOM_STRUCTURED_LISTING = {
@@ -158,5 +160,45 @@ describe('resolveEffectiveReportMode priority chain', () => {
   it('F) nothing provided → unknown (REPORT_MODE_REQUIRED surface)', () => {
     expect(resolveEffectiveReportMode({}, {})).toBe('unknown');
     expect(resolveEffectiveReportMode({}, { pricePeriod: 'year' })).toBe('unknown');
+  });
+});
+
+describe('modeResolution.resolverVersion (PR 1A)', () => {
+  it('readModeResolverVersion returns version when present at top level', () => {
+    expect(
+      readModeResolverVersion({
+        modeResolution: { resolverVersion: 'zillow_listing_mode_v2', mode: 'sale' },
+      }),
+    ).toBe('zillow_listing_mode_v2');
+  });
+
+  it('readModeResolverVersion also reads the version from listingData modeResolution', () => {
+    expect(
+      readModeResolverVersion({
+        listingData: { modeResolution: { resolverVersion: 'zillow_listing_mode_v2' } },
+      }),
+    ).toBe('zillow_listing_mode_v2');
+  });
+
+  it('readModeResolverVersion returns null when missing or malformed', () => {
+    expect(readModeResolverVersion({})).toBe(null);
+    expect(readModeResolverVersion({ modeResolution: null })).toBe(null);
+    expect(readModeResolverVersion({ modeResolution: {} })).toBe(null);
+    expect(readModeResolverVersion({ modeResolution: { resolverVersion: 42 } })).toBe(null);
+  });
+
+  it('isRecognizedResolverVersion accepts v2 and rejects anything else', () => {
+    expect(isRecognizedResolverVersion('zillow_listing_mode_v2')).toBe(true);
+    expect(isRecognizedResolverVersion('zillow_listing_mode_v1')).toBe(false);
+    expect(isRecognizedResolverVersion(null)).toBe(false);
+  });
+
+  it('unrecognized resolverVersion does not change the priority chain', () => {
+    const body = {
+      reportMode: 'sale',
+      modeResolution: { resolverVersion: 'zillow_listing_mode_bogus' },
+    };
+    // should still resolve to sale via body.reportMode
+    expect(resolveEffectiveReportMode(body, {})).toBe('sale');
   });
 });

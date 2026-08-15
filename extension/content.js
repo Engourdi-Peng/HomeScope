@@ -1,11 +1,49 @@
 /**
- * HomeScope Content Script
+ * HomeScope Content Script — Zillow Extractor
+ * =====================================================================
+ * PRODUCTION SOURCE OF TRUTH for Zillow extraction.
+ * ---------------------------------------------------------------------
+ * This file is the ONLY production implementation of the Zillow
+ * extractor. All Zillow bug fixes and extraction changes must happen
+ * here.
+ *
+ * The TS rewrite at `src/content/extractors/zillow.ts` is intentionally
+ * FROZEN — it is a schema reference for the eventual Phase 5 migration
+ * only, and is NOT shipped inside the Chrome extension. It is allowed
+ * to drift from this file until the Single TS Extractor phase.
+ *
+ * See plan: docs/zillow-golden-cases/ + Phase 0 of the migration plan.
+ * =====================================================================
+ *
  * Handles page extraction and gallery image collection (user-triggered only).
  * Includes anti-detection measures to avoid Zillow rate limiting.
  */
 
 ;(function() {
   'use strict';
+
+  // ═══════════════════════════════════════════════════════════════════════
+  // SINGLETON GUARD — must run before any listener / timer / observer /
+  // initialization side effect. Chrome MV3 injects all `chrome.scripting.
+  // executeScript({ files: ['content.js'] })` calls into the SAME isolated
+  // world as the manifest-declared content script, so they share this
+  // `globalThis`. The first instance wins; later ones bail out immediately.
+  // This is the final safety net — the real fix is to call
+  // `chrome.scripting.executeScript` at most once per tab lifetime, but if
+  // any future code path still slips a second injection in, we won't end up
+  // with N listeners and N parallel gallery extractions.
+  // ═══════════════════════════════════════════════════════════════════════
+  if (globalThis.__HS_CONTENT_LOADED__) {
+    // Duplicate instance — log once for diagnosis and exit before registering
+    // any listener, timer, or window event handler.
+    return;
+  }
+  Object.defineProperty(globalThis, '__HS_CONTENT_LOADED__', {
+    value: true,
+    writable: false,
+    configurable: false,
+    enumerable: false,
+  });
 
   // Debug logging — disabled in production for MV3 compliance
   const noop = function() {};
@@ -733,10 +771,11 @@ const INSTANCE_ID = Math.random().toString(36).slice(2, 9);
         return true;
 
       case 'EXTRACT_LISTING':
+        // applyZillowStructuredOverride is already called inside extractListingDataLight
+        // before the promise resolves — do NOT call it again here.
         extractListingDataLight().then(({ listing, detection }) => {
-          const overridden = applyZillowStructuredOverride(listing);
-          pageData = overridden;
-          sendResponse({ data: overridden, error: null, detection });
+          pageData = listing;
+          sendResponse({ data: listing, error: null, detection });
         }).catch((err) => {
           sendResponse({ data: null, error: err.message, detection: null });
         });
@@ -765,12 +804,6 @@ const INSTANCE_ID = Math.random().toString(36).slice(2, 9);
           noop('[DIAG] START_USER_EXTRACTION sendResponse called successfully');
         }).catch((err) => {
           noop('[DIAG] START_USER_EXTRACTION promise rejected:', err.message, 'code:', err.code);
-          console.error('[HS_EXTRACTION_REJECTED]', {
-            message: err?.message,
-            code: err?.code,
-            name: err?.name,
-            stack: err?.stack
-          });
           sendResponse({ success: false, error: err.message, code: err.code || 'EXTRACTION_ERROR' });
         });
         return true;
@@ -877,21 +910,6 @@ const INSTANCE_ID = Math.random().toString(36).slice(2, 9);
             // Write back pageData cache (used by subsequent GET_CACHED_DATA)
             const overridden = applyZillowStructuredOverride(out);
             pageData = overridden;
-  // [LOG-B] FORCE_REEXTRACT result
-  console.log('[HomeScope-LOG-B] FORCE_REEXTRACT', JSON.stringify({
-    forcedType: forcedType,
-    url: window.location.href,
-    listingUrl: out && out.listingUrl,
-    zpid: (out && out.zpid) || (out && out.propertyFactsV2 && out.propertyFactsV2.zpid),
-    listingIdentity: out && out.listingIdentity,
-    reportMode: out && out.reportMode,
-    listingType: out && out.listingType,
-    price: out && out.price,
-    pricePeriod: out && out.pricePeriod,
-    monthlyRent: out && out.monthlyRent,
-    askingPrice: out && out.askingPrice,
-    priceAmount: out && out.priceAmount,
-  }));
 
             sendResponse({ ok: true, data: overridden });
           } catch (err) {
@@ -1079,18 +1097,6 @@ async function startUserExtraction(bypassCache = false, analysisType = 'full') {
             ? 'GALLERY_INCOMPLETE'
             : 'GALLERY_EXTRACTION_FAILED';
           noop('[DIAG] startUserExtraction: gallery not complete:', galleryResult);
-          console.error('[HS_GALLERY_NOT_COMPLETE]', {
-            status: galleryResult?.status,
-            reason: galleryResult?.reason,
-            galleryType: galleryResult?.galleryType,
-            expectedTotal: galleryResult?.expectedTotal,
-            uniqueCount: galleryResult?.uniqueCount,
-            imageCount: Array.isArray(galleryResult?.images)
-              ? galleryResult.images.length
-              : (Array.isArray(galleryResult?.imageUrls) ? galleryResult.imageUrls.length : undefined),
-            currentIndex: galleryResult?.currentIndex,
-            iterations: galleryResult?.iterations
-          });
           throw error;
         }
 
@@ -1694,6 +1700,143 @@ function isZillowSearchPage() {
 function extractZillowData() {
   const raw = document.body.innerText || "";
 
+  // ── BuyAbility / Payment breakdown DOM extraction ─────────────────────────────
+  // Zillow's generated class names change frequently. Semantic text anchors are
+  // stable here, so locate the smallest UL containing all six breakdown labels.
+  function normalizeDomText(value) {
+    return String(value || '').replace(/\u00a0/g, ' ').replace(/\s+/g, ' ').trim();
+  }
+
+  function findExactTextElements(root, target) {
+    const normalizedTarget = normalizeDomText(target).toLowerCase();
+    const matches = [];
+    const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+    let node;
+    while ((node = walker.nextNode())) {
+      if (normalizeDomText(node.textContent).toLowerCase() === normalizedTarget && node.parentElement) {
+        matches.push(node.parentElement);
+      }
+    }
+    return matches;
+  }
+
+  function findPaymentBreakdownRoot() {
+    const requiredLabels = [
+      'Mortgage insurance',
+      'Property taxes',
+      'Home insurance',
+      'HOA fees',
+      'Utilities'
+    ];
+    const candidates = [];
+    for (const principalElement of findExactTextElements(document.body, 'Principal & interest')) {
+      let element = principalElement;
+      for (let hops = 0; element && hops < 12; hops += 1, element = element.parentElement) {
+        const text = element.textContent || '';
+        if (element.tagName === 'UL' && requiredLabels.every((label) => text.includes(label))) {
+          candidates.push(element);
+          break;
+        }
+      }
+    }
+    // ── Fallback: find the breakdown root with only "Principal & interest"
+    //   This handles listings where Mortgage insurance = $0 (no row in the DOM).
+    //   Also handles cases where "Utilities" is not shown separately.
+    if (candidates.length === 0) {
+      for (const principalElement of findExactTextElements(document.body, 'Principal & interest')) {
+        let element = principalElement;
+        for (let hops = 0; element && hops < 12; hops += 1, element = element.parentElement) {
+          const text = element.textContent || '';
+          // Relaxed: only Principal & interest required; Property taxes and Home insurance
+          // are present on virtually all Zillow BuyAbility breakdowns.
+          if (element.tagName === 'UL' &&
+              text.includes('Principal & interest') &&
+              text.includes('Property taxes') &&
+              text.includes('Home insurance')) {
+            candidates.push(element);
+            break;
+          }
+        }
+      }
+    }
+    return candidates.sort((a, b) => normalizeDomText(a.innerText).length - normalizeDomText(b.innerText).length)[0] || null;
+  }
+
+  function extractBuyAbilityPayment() {
+    const breakdownRoot = findPaymentBreakdownRoot();
+    if (!breakdownRoot) return null;
+
+    const getRowValue = (label) => {
+      const normalizedLabel = label.toLowerCase();
+      for (const row of breakdownRoot.querySelectorAll(':scope > li')) {
+        const text = normalizeDomText(row.innerText);
+        if (text.toLowerCase().startsWith(normalizedLabel)) {
+          const value = text.slice(label.length).trim().replace(/^[:：]\s*/, '');
+          return value || null;
+        }
+      }
+      return null;
+    };
+
+    let estimatedMonthlyPayment = null;
+    // ── Read estimatedMonthlyPayment from the dedicated "Estimated monthly payment"
+    // row inside the breakdown <ul>, NOT from any ancestor container that happens
+    // to contain "$.../mo".  This prevents HOA: $930/mo from shadowing the true
+    // total when the DOM order puts HOA before the total label.
+    const estPatterns = [/\$[\d,]+(?:\.\d{2})?\s*\/\s*mo\b/i];
+    for (const row of breakdownRoot.querySelectorAll(':scope > li')) {
+      const rowText = normalizeDomText(row.innerText);
+      if (!/estimated\s*monthly\s*payment/i.test(rowText)) continue;
+      const match = rowText.match(estPatterns[0]);
+      if (match) {
+        estimatedMonthlyPayment = match[0].replace(/\s+/g, ' ').trim();
+        break;
+      }
+    }
+
+    const result = {
+      estimatedMonthlyPayment,
+      principalAndInterest: getRowValue('Principal & interest'),
+      mortgageInsurance: getRowValue('Mortgage insurance'),
+      propertyTaxes: getRowValue('Property taxes'),
+      homeInsurance: getRowValue('Home insurance'),
+      hoaFees: getRowValue('HOA fees'),
+      utilities: getRowValue('Utilities')
+    };
+    return Object.values(result).some(Boolean) ? result : null;
+  }
+
+  // ── HOA and Roof extraction from facts section ────────────────────────────────
+  function extractFactsFromDOM() {
+    const factsSection = document.querySelector(
+      'section[id*="facts"], ' +
+      'div[id*="facts-features"], ' +
+      'div[data-testid*="fact"], ' +
+      '[data-testid*="home-details-facts"], ' +
+      'div[data-zmid*="facts"], ' +
+      'ul.facts-section, ' +
+      'div.facts li, ' +
+      '[class*="facts"] li'
+    ) || document.body;
+
+    const readExactLabelValue = (label) => {
+      for (const labelElement of findExactTextElements(factsSection, label)) {
+        const row = labelElement.closest('li') || labelElement.parentElement;
+        const text = normalizeDomText(row?.innerText);
+        const prefix = new RegExp(`^${label.replace(/[.*+?^${}()|[\\]\\]/g, '\\\\$&')}\\s*[:：]\\s*`, 'i');
+        const value = text.replace(prefix, '').trim();
+        if (value && value.toLowerCase() !== label.toLowerCase()) return value;
+      }
+      return null;
+    };
+
+    const hasHoaValue = readExactLabelValue('Has HOA');
+    return {
+      hasHoa: hasHoaValue ? /^(yes|no)$/i.test(hasHoaValue) ? /^yes$/i.test(hasHoaValue) : null : null,
+      roof: readExactLabelValue('Roof')
+    };
+  }
+
   const lines = raw
     .split(/\n+/)
     .map(s => s.replace(/\s+/g, " ").trim())
@@ -1759,10 +1902,18 @@ function extractZillowData() {
     220
   );
 
+  // C-1: also stop at BuyAbility℠ payment / Est. payment / Estimated payment
+  // hero anchors so the text-fallback `monthlyLines` slice never leaks the
+  // BuyAbility module's hidden customize-slider estimates into the payment
+  // strict-label lookahead (this is the path that produced $1,547 / $170 /
+  // $105 / $0 on 2500 Walnut when DOM extraction raced the SPA render).
   const monthly = sliceSection(
     [/^Monthly payment$/i],
     [
       /^Down payment assistance$/i,
+      /^BuyAbility(?:™|\u2122|\u2120|\u2113|\u24e2)?\s*payment$/i,
+      /^Est\.?\s*payment$/i,
+      /^Estimated\s+(?:monthly\s+)?payment$/i,
       /^Climate risks$/i,
       /^Neighborhood:/i,
     ],
@@ -1782,6 +1933,23 @@ function extractZillowData() {
     ],
     140
   );
+
+  // C-2: when scanning lookahead rows for a payment label, reject candidates
+  // that don't look like an actual money amount.  This stops BuyAbility's
+  // hidden customize-slider estimates (e.g. "Other costs: $1306",
+  // "Powered by NMLS #10287") from being picked up as a P&I / Tax / Ins /
+  // HOA value when `monthlyLines` accidentally contains them.
+  const PAYMENT_VALUE_PATTERNS = [
+    /^\$\s*[\d,]+(?:\.\d+)?\s*(?:\/\s*mo)?$/i,        // $5,593 / $5,593/mo
+    /^Not\s+included$/i,                              // BuyAbility "Not included"
+    /^Included$/i,                                     // alternative phrasing
+    /^\d+\s*\/\s*\d+\s*score$/i,                      // credit-score rows that slipped in (defensive)
+  ];
+  function looksLikePaymentValue(candidate) {
+    if (!candidate) return false;
+    const c = candidate.trim();
+    return PAYMENT_VALUE_PATTERNS.some(re => re.test(c));
+  }
 
   function getStrictLabelValue(sectionLines, labels, stopLabels = [], maxLookahead = 6) {
     for (let i = 0; i < sectionLines.length; i++) {
@@ -1810,6 +1978,11 @@ function extractZillowData() {
             return null;
           }
 
+          // C-2: payment labels require a money-shaped value; if the candidate
+          // is unrelated text (BuyAbility slider legend, NMLS notice, marketing
+          // copy, etc.) keep scanning rather than returning it.
+          if (!looksLikePaymentValue(candidate)) continue;
+
           return candidate;
         }
       }
@@ -1836,15 +2009,56 @@ function extractZillowData() {
     const addressLine =
       top.find(l => /\d{5}/.test(l) && /,\s*[A-Z]{2}\s+\d{5}/.test(l)) || null;
 
-    const estPaymentLine =
-      top.find(l => /^Est\.?\s*payment:/i.test(l)) || null;
+    // ── Hero / Top Summary local extraction ──
+    // Real Zillow listings sometimes split "Est." and "$7,829/mo" across
+    // two adjacent text nodes. To preserve the existing single-line behaviour
+    // and stay strictly local to the Hero/Top Summary slice, we:
+    //   (1) keep the original `^Est\.?\s*payment:` same-line match, and
+    //   (2) if that misses, anchor on a standalone "Est." / "Est. payment"
+    //       line inside the same `top` slice and absorb the first legal
+    //       "$X/mo" token from the **next 1–3 adjacent text nodes only**.
+    // We MUST NOT fall back to scanning the whole `lines` array — that
+    // would let "$930/mo" from an HOA row leak into the hero total.
+    // If no legal amount is found inside that 1–3 node window, keep null
+    // (do not guess).
+    const HERO_AMOUNT_RE = /\$[\d,]+(?:\.\d{2})?\s*\/\s*mo\b/i;
+
+    let estPaymentRaw = null;
+    const estPaymentLineSameRow =
+      top.find(l => /^Est\.?\s*payment:\s*.+\/mo\b/i.test(l)) || null;
+    if (estPaymentLineSameRow) {
+      estPaymentRaw = estPaymentLineSameRow;
+    } else {
+      // Same-line with label only (no $/mo yet) — e.g. "Est. payment:"
+      // pointing at a value that lives in the next node. We still treat this
+      // as a same-row match and only absorb a token that's literally on the
+      // same line after the colon.
+      const estPaymentLine =
+        top.find(l => /^Est\.?\s*payment:/i.test(l)) || null;
+      if (estPaymentLine) {
+        estPaymentRaw = estPaymentLine;
+      } else {
+        const anchorIndex = top.findIndex(l =>
+          /^Est\.?(\s+payment)?\s*[:.]?\s*$/i.test(l)
+        );
+        if (anchorIndex >= 0) {
+          for (let i = 1; i <= 3 && anchorIndex + i < top.length; i++) {
+            const candidate = top[anchorIndex + i];
+            if (HERO_AMOUNT_RE.test(candidate)) {
+              estPaymentRaw = candidate;
+              break;
+            }
+          }
+        }
+      }
+    }
 
     return {
       priceDisplay: priceLine,
       priceAmount: parseMoneyNumber(priceLine),
       address: addressLine,
-      estimatedPaymentTop: estPaymentLine
-        ? norm(estPaymentLine.replace(/^Est\.?\s*payment:\s*/i, ""))
+      estimatedPaymentTop: estPaymentRaw
+        ? norm(estPaymentRaw.replace(/^Est\.?\s*payment:\s*/i, ""))
         : null,
     };
   }
@@ -2009,7 +2223,7 @@ function extractZillowData() {
     return null;
   }
 
-  // Walk Score / Bike Score: extract from Getting Around section
+  // Walk Score / Bike Score / Transit Score: extract from Getting Around section
   function extractScores() {
     const gettingAround = sliceSection(
       [/^Getting around$/i],
@@ -2020,6 +2234,7 @@ function extractZillowData() {
 
     let walkScore = null;
     let bikeScore = null;
+    let transitScore = null;
     for (const line of lines) {
       const wm = line.match(/walk\s+score[:\s]*(\d+)\s*\/?\s*100[^,\n]*(?:,\s*([^\n]+))?/i);
       if (wm && !walkScore) {
@@ -2029,8 +2244,45 @@ function extractZillowData() {
       if (bm && !bikeScore) {
         bikeScore = `${bm[1]} / 100${bm[2] ? ', ' + bm[2].trim() : ''}`;
       }
+      // Transit Score: "Transit Score: 67 / 100, Good Transit"
+      const tm = line.match(/transit\s+score[:\s]*(\d+)\s*\/?\s*100[^,\n]*(?:,\s*([^\n]+))?/i);
+      if (tm && !transitScore) {
+        transitScore = Number(tm[1]) || null;
+      }
     }
-    return { walkScore, bikeScore };
+    return { walkScore, bikeScore, transitScore };
+  }
+
+  // ── School Ratings: extract from Nearby Schools section ────────────────────────
+  // Zillow page contains school ratings as structured text: "School Name  Rating: X/10  0.X miles"
+  function extractSchoolRatings() {
+    const schoolsSection = sliceSection(
+      [/^Nearby schools$/i, /^More about schools$/i],
+      [/^Getting around$/i, /^Climate risks$/i, /^Neighborhood$/i],
+      120
+    );
+    const schoolLines = schoolsSection?.lines ?? [];
+
+    const schools = [];
+    for (const line of schoolLines) {
+      // Match: "School Name  Rating: 8/10  1.2 miles" or similar patterns
+      // Try multiple patterns for robustness
+      const ratingMatch = line.match(/rating[:\s]*(\d+)\s*\/?\s*10/i);
+      const distanceMatch = line.match(/(\d+(?:\.\d+)?)\s*(?:mi|miles?)/i);
+      if (ratingMatch) {
+        const name = line
+          .replace(/\s*rating[:\s]*\d+\s*\/?\s*10/i, '')
+          .replace(/\s*\d+(?:\.\d+)?\s*(?:mi|miles?)\s*/gi, '')
+          .replace(/,/g, ',')
+          .trim();
+        const rating = Number(ratingMatch[1]) || null;
+        const distance = distanceMatch ? distanceMatch[0].trim() : null;
+        if (name && name.length > 1 && rating) {
+          schools.push({ name, rating, distance: distance || undefined });
+        }
+      }
+    }
+    return schools.length > 0 ? schools : null;
   }
 
   // Neighborhood: extract from Neighborhood section
@@ -2058,6 +2310,46 @@ function extractZillowData() {
   const monthlyLines = monthly.lines;
   const factsDict = readZillowFactsDict();
   const factsAndFeatures = readZillowFactsAndFeatures();
+
+  // ── Zillow Estimated Market Value section: Zestimate + Sales Range ──────────────────
+  // Declared OUTSIDE the result object — JavaScript object literals cannot contain var/let/const declarations.
+  const estimatedSalesRangeLines = (() => {
+    const mvSection = sliceSection(
+      [/^Estimated market value$/i],
+      [/^Price history$/i, /^Monthly payment$/i, /^Public tax history$/i],
+      60
+    );
+    return mvSection?.lines ?? [];
+  })();
+
+  const parseRangeNum = (s) => {
+    if (!s) return null;
+    const normalized = String(s).replace(/[$,]/g, '');
+    const mMatch = normalized.match(/^([\d.]+)\s*M$/i);
+    if (mMatch) return Number(mMatch[1]) * 1_000_000;
+    const n = parseFloat(normalized);
+    return Number.isFinite(n) ? n : null;
+  };
+
+  let estimatedSalesRangeMin = null;
+  let estimatedSalesRangeMax = null;
+  for (let _ri = 0; _ri < estimatedSalesRangeLines.length; _ri++) {
+    const line = estimatedSalesRangeLines[_ri];
+    const inlineMatch = line.match(/\$([\d,.]+(?:M)?)\s*[-–]\s*\$([\d,.]+(?:M)?)/i);
+    if (inlineMatch && !estimatedSalesRangeMin) {
+      estimatedSalesRangeMin = parseRangeNum(inlineMatch[1]);
+      estimatedSalesRangeMax = parseRangeNum(inlineMatch[2]);
+      continue;
+    }
+    if (/estimated\s+sales\s+range/i.test(line) && _ri + 1 < estimatedSalesRangeLines.length) {
+      const nextLine = estimatedSalesRangeLines[_ri + 1];
+      const nextMatch = nextLine.match(/\$([\d,.]+(?:M)?)\s*[-–]\s*\$([\d,.]+(?:M)?)/i);
+      if (nextMatch && !estimatedSalesRangeMin) {
+        estimatedSalesRangeMin = parseRangeNum(nextMatch[1]);
+        estimatedSalesRangeMax = parseRangeNum(nextMatch[2]);
+      }
+    }
+  }
 
   const result = {
     // Top summary
@@ -2231,6 +2523,16 @@ function extractZillowData() {
     ]),
 
     hasHoa: getStrictLabelValue(factsLines, ["Has HOA"], [
+      "Location",
+      "Region",
+    ]),
+
+    // ── HOA fee: extracted from Facts & Features > Community & HOA > HOA > HOA fee.
+    //   This is the canonical Zillow "HOA fee: $951 monthly" entry that appears
+    //   even when BuyAbility / Monthly payment breakdown has not rendered yet.
+    //   Priority over BuyAbility-derived hoaFees only when BuyAbility returns null,
+    //   so existing DOM-extracted BuyAbility rows remain authoritative.
+    hoaFeeFromFacts: getStrictLabelValue(factsLines, ["HOA fee"], [
       "Location",
       "Region",
     ]),
@@ -2473,8 +2775,17 @@ function extractZillowData() {
     // Other
     description: extractDescription(),
     floodZone: extractFloodZone(),
-    ...(() => { const s = extractScores(); return { walkScore: s.walkScore, bikeScore: s.bikeScore }; })(),
+    ...(() => {
+      const s = extractScores();
+      return { walkScore: s.walkScore, bikeScore: s.bikeScore, transitScore: s.transitScore };
+    })(),
+    ...(() => {
+      const schools = extractSchoolRatings();
+      return { schoolRatings: schools };
+    })(),
     neighborhood: extractNeighborhood(),
+    estimatedSalesRangeMin,
+    estimatedSalesRangeMax,
 
     zillowFinancials: null,
 
@@ -2490,19 +2801,184 @@ function extractZillowData() {
     },
   };
 
+  // ── Try DOM extraction first (new BuyAbility UI) ────────────────────────────
+  // extractBuyAbilityPayment and extractFactsFromDOM are defined above
+  const buyAbility = (typeof extractBuyAbilityPayment === 'function')
+    ? extractBuyAbilityPayment()
+    : null;
+  const factsDOM = (typeof extractFactsFromDOM === 'function')
+    ? extractFactsFromDOM()
+    : null;
+
   // Build zillowFinancials
-  // monthlyPayment fields must be nested under monthlyPayment key with {value,raw} structure
-  // so that Edge Function (which reads zf.monthlyPayment.estimatedMonthlyPayment.value) gets them correctly
+  // Priority: DOM extraction (BuyAbility) > text parsing fallback.
+  // Each field is independently overridden — missing DOM values fall back to text extraction.
+  const monthlyPaymentFromText = result.monthlyPayment ? parseMoney(result.monthlyPayment) : null;
+  const zfMonthly = {
+    estimatedMonthlyPayment: buyAbility?.estimatedMonthlyPayment
+      ? parseMoney(buyAbility.estimatedMonthlyPayment)
+      : monthlyPaymentFromText,
+    principalAndInterest: buyAbility?.principalAndInterest
+      ? parseMoney(buyAbility.principalAndInterest)
+      : (result.principalAndInterest ? parseMoney(result.principalAndInterest) : null),
+    mortgageInsurance: buyAbility?.mortgageInsurance
+      ? parseMoney(buyAbility.mortgageInsurance)
+      : (result.mortgageInsurance ? parseMoney(result.mortgageInsurance) : null),
+    propertyTaxes: buyAbility?.propertyTaxes
+      ? parseMoney(buyAbility.propertyTaxes)
+      : (result.propertyTaxesMonthly ? parseMoney(result.propertyTaxesMonthly) : null),
+    homeInsurance: buyAbility?.homeInsurance
+      ? parseMoney(buyAbility.homeInsurance)
+      : (result.homeInsuranceMonthly ? parseMoney(result.homeInsuranceMonthly) : null),
+    hoaFees: buyAbility?.hoaFees
+      ? parseMoney(buyAbility.hoaFees)
+      : (result.hoaFees
+          ? parseMoney(result.hoaFees)
+          : (result.hoaFeeFromFacts ? parseMoney(result.hoaFeeFromFacts) : null)),
+    utilities: buyAbility?.utilities
+      ? parseMoney(buyAbility.utilities)
+      : (result.utilities ? parseMoney(result.utilities) : null),
+  };
+  // Consistency guard: if estimatedMonthlyPayment is lower than P&I alone, the
+  // extraction picked up a row-value (e.g. HOA $930) instead of the true total.
+  // Treat the total as unavailable rather than propagating bad data.
+  // Now also checks against P&I + tax + insurance + HOA (the complete known set).
+  const knownComponents = [
+    zfMonthly.principalAndInterest?.value,
+    zfMonthly.propertyTaxes?.value,
+    zfMonthly.homeInsurance?.value,
+    zfMonthly.hoaFees?.value,
+    zfMonthly.mortgageInsurance?.value,
+  ].filter(n => n != null && Number.isFinite(n));
+  const lowestPossibleTotal = knownComponents.reduce((sum, value) => sum + value, 0);
+  const estimatedPaymentValue = zfMonthly.estimatedMonthlyPayment?.value;
+  if (
+    estimatedPaymentValue != null &&
+    lowestPossibleTotal > 0 &&
+    estimatedPaymentValue < lowestPossibleTotal
+  ) {
+    // Null out the total; individual components are still valid.
+    zfMonthly.estimatedMonthlyPayment = null;
+  }
+
+  // C-3: hero-total cross-check. When the SPA delivered BuyAbility's hidden
+  // customize-slider estimate via the text-fallback path (producing a small
+  // P&I + tax + ins + HOA cluster such as $1,547 / $170 / $105 / $0), the
+  // sum-of-components guard above is silent because the estimatedMonthlyPayment
+  // itself is still the real hero $7,829. Compare the running component total
+  // against the hero payment and drop the contaminated component cluster when
+  // it is wildly inconsistent with the hero.  We treat "wildly inconsistent" as
+  // components sum being less than 50% of the hero (true components always sum
+  // to roughly the hero, modulo utilities + other costs) so this guard only
+  // fires on the small-down-payment contamination pattern, not normal pages.
+  const heroPaymentValue =
+    result?.estimatedPaymentTop != null
+      ? parseMoneyNumber(result.estimatedPaymentTop)
+      : null;
+  if (
+    heroPaymentValue != null &&
+    heroPaymentValue > 0 &&
+    lowestPossibleTotal > 0 &&
+    lowestPossibleTotal < heroPaymentValue * 0.5
+  ) {
+    // Components are too small relative to the hero total — likely a hidden
+    // BuyAbility customize estimate. Drop them rather than letting them
+    // shadow the real BuyAbility UL values downstream.
+    zfMonthly.principalAndInterest = null;
+    zfMonthly.propertyTaxes = null;
+    zfMonthly.homeInsurance = null;
+    zfMonthly.hoaFees = null;
+    zfMonthly.mortgageInsurance = null;
+    zfMonthly.utilities = null;
+  }
+
+  // ── HOA Services included + HOA fee: read from Community & HOA section in Facts & features ──
+  // Zillow lists services like: "Water, Trash, Maintenance Grounds, Maintenance Structure, Snow Removal"
+  // Zillow also lists the ledger HOA fee as "HOA fee: $951 monthly" inside the same section.
+  // We capture both as deterministic facts so the Sale pipeline never loses the HOA amount
+  // even when BuyAbility / Monthly payment breakdown has not yet rendered.
+  const hoaSection = sliceSection(
+    [/^Community & HOA$/i],
+    [/^Region$/i, /^Location$/i, /^Financial & listing details$/i],
+    40
+  );
+  const hoaSectionLines = hoaSection?.lines ?? [];
+  const hoaServicesIncluded = (() => {
+    const services = [];
+    for (const line of hoaSectionLines) {
+      // Match each service item prefixed by the "Services included" label
+      const serviceMatch = line.match(/^Services\s+included[:\s]*(.+)/i);
+      if (serviceMatch) {
+        const raw = serviceMatch[1];
+        // Services are comma-separated
+        for (const s of raw.split(/[,;]/)) {
+          const trimmed = s.trim();
+          if (trimmed && trimmed.length > 1 && trimmed.length < 50) {
+            services.push(trimmed);
+          }
+        }
+      }
+    }
+    return services.length > 0 ? services : null;
+  })();
+
+  // ── HOA fee fallback: deterministic promotion from Community & HOA > HOA > HOA fee.
+  //   Only fills in `result.hoaFee` when no other source (BuyAbility, JSON-LD
+  //   propertyData, sliceSection monthly payment) has already set it. This keeps
+  //   Rent and Building paths untouched: neither uses this exact label.
+  const hoaFeeFromFactsSection = (() => {
+    for (const line of hoaSectionLines) {
+      const match = line.match(/^HOA\s+fee[:\s]*(.+)/i);
+      if (match && match[1]) {
+        const value = match[1].trim();
+        // Skip sentinel values that mean "no HOA" rather than "has HOA but no number".
+        if (/^n\/?a$/i.test(value)) return null;
+        return value;
+      }
+    }
+    return null;
+  })();
+  if (hoaFeeFromFactsSection && !result.hoaFee) {
+    result.hoaFee = hoaFeeFromFactsSection;
+  }
+
+  // ── Roof fallback: only used when extractFactsFromDOM() did not surface a
+  //     "Roof: <value>" entry. Searches the structured Facts & features groups
+  //     for an item whose label is exactly "Roof" (case-insensitive) and uses
+  //     its value. A loose substring match is deliberately avoided — there are
+  //     other Roofing-related rows (e.g. "Roof age") that must not be picked
+  //     up here. The structural read is independent of the inner-text path and
+  //     is not affected by Zillow's "Show more" folding.
+  function pickRoofFromFactsAndFeatures(facts) {
+    if (!facts || !Array.isArray(facts.groups)) return null;
+    for (const group of (facts.groups || [])) {
+      const categories = Array.isArray(group.categories) ? group.categories : [];
+      for (const cat of categories) {
+        const items = Array.isArray(cat.items) ? cat.items : [];
+        for (const item of items) {
+          if (!item || typeof item !== 'object') continue;
+          const label = typeof item.label === 'string' ? item.label.trim() : '';
+          if (label.toLowerCase() !== 'roof') continue;
+          const value = typeof item.value === 'string' ? item.value.trim() : '';
+          if (value) return value;
+        }
+      }
+    }
+    return null;
+  }
+
   result.zillowFinancials = {
-    monthlyPayment: {
-      estimatedMonthlyPayment: result.monthlyPayment ? parseMoney(result.monthlyPayment) : null,
-      principalAndInterest: result.principalAndInterest ? parseMoney(result.principalAndInterest) : null,
-      mortgageInsurance: result.mortgageInsurance ? parseMoney(result.mortgageInsurance) : null,
-      propertyTaxes: result.propertyTaxesMonthly ? parseMoney(result.propertyTaxesMonthly) : null,
-      homeInsurance: result.homeInsuranceMonthly ? parseMoney(result.homeInsuranceMonthly) : null,
-      hoaFees: result.hoaFees ? parseMoney(result.hoaFees) : null,
-      utilities: result.utilities ? parseMoney(result.utilities) : null,
-    },
+    monthlyPayment: zfMonthly,
+    // Facts from DOM
+    hasHoa: factsDOM?.hasHoa ?? (result.hasHoa || null),
+    // Roof precedence: specialized DOM reader first, structured Facts &
+    // features fallback only when DOM read is empty. Keeps the specialized
+    // DOM value authoritative on listings where both paths surface a value.
+    roof: factsDOM?.roof || pickRoofFromFactsAndFeatures(factsAndFeatures) || null,
+    // Deterministic HOA fee promoted from Community & HOA > HOA > HOA fee.
+    // Supplied as flat string so backend consumers that read zillowFinancials.hoaFee
+    // (regardless of nested monthlyPayment shape) can rely on it.
+    hoaFee: result.hoaFee || null,
     // Preserve flat financial fields for other consumers
     pricePerSqft: result.pricePerSqft,
     pricePerSqftAmount: result.pricePerSqftAmount,
@@ -2512,9 +2988,194 @@ function extractZillowData() {
     annualTaxAmountNumber: result.annualTaxAmount,
     dateOnMarket: result.dateOnMarket,
     cumulativeDaysOnMarket: result.cumulativeDaysOnMarket,
+    // ── New structured fields ──
+    hoaIncludedServices: hoaServicesIncluded,
+    schoolRatings: result.schoolRatings || null,
+    transitScore: result.transitScore || null,
+    estimatedSalesRangeMin: result.estimatedSalesRangeMin || null,
+    estimatedSalesRangeMax: result.estimatedSalesRangeMax || null,
   };
 
   return result;
+}
+
+// ──────────────────────────────────────────────────────────────────────
+// Sale Property Payment lazy-render recovery
+//
+// On a Zillow Sale single-property page, the BuyAbility / monthly-payment
+// breakdown is mounted lazily when the BuyAbility module scrolls into the
+// Zillow `.layout-container-desktop` scroll container. If the page was
+// loaded at the top, the first `extractZillowData()` call often finds the
+// breakdown still un-hydrated, so `zillowFinancials.monthlyPayment` ends
+// up null. This helper:
+//
+//   1. Only runs on Zillow Sale single-property pages (reportMode='sale',
+//      PAGE_SCOPES.PROPERTY). Other paths are completely untouched.
+//   2. Only triggers when the first pass produced no Payment component at
+//      all. If any of the six core rows already has a value, we skip.
+//   3. Locates `.layout-container-desktop` and the `Estimated market value`
+//      heading; calls `scrollIntoView()` (no fixed pixel offsets).
+//   4. Waits a single bounded window for the breakdown to mount.
+//   5. Calls `extractZillowData()` again to re-read with DOM priority +
+//      text fallback (unchanged behaviour).
+//   6. Merges ONLY the non-empty `monthlyPayment` fields from the second
+//      pass back onto the first result. Address, HOA, Roof, Facts, and
+//      every other Zillow field stay exactly as the first pass produced.
+//   7. Always restores `.layout-container-desktop.scrollTo({ top: 0 })`
+//      in a `finally`, even on throw / timeout / missing anchor, so the
+//      gallery step that runs immediately afterwards still sees the page
+//      at the top.
+//
+// Never modifies collector / paging / dedup / expectedTotal logic.
+// ──────────────────────────────────────────────────────────────────────
+async function maybeRecoverSalePropertyPayment(initialZillowData) {
+  // Gate 1: only Zillow Sale single-property.
+  if (!isZillowPage()) return initialZillowData;
+  const reportMode = (typeof detectReportMode === 'function')
+    ? detectReportMode({}, window.location.href)
+    : null;
+  if (reportMode !== 'sale') return initialZillowData;
+  const pageScope = (typeof detectZillowPageScope === 'function')
+    ? detectZillowPageScope()
+    : { scope: null };
+  if (!pageScope || pageScope.scope !== PAGE_SCOPES.PROPERTY) return initialZillowData;
+
+  // Gate 2: only when every Payment component is missing.
+  const firstMp = initialZillowData?.zillowFinancials?.monthlyPayment || null;
+  const PAYMENT_FIELDS = [
+    'estimatedMonthlyPayment',
+    'principalAndInterest',
+    'mortgageInsurance',
+    'propertyTaxes',
+    'homeInsurance',
+    'hoaFees',
+    'utilities',
+  ];
+  const isMeaningful = (v) => {
+    if (v == null) return false;
+    if (typeof v === 'object') return v.value != null;
+    return String(v).trim() !== '';
+  };
+  const hasAnyPayment = PAYMENT_FIELDS.some((k) => isMeaningful(firstMp?.[k]));
+  if (hasAnyPayment) {
+    return initialZillowData;
+  }
+
+  // Gate 3: container must exist.
+  const layoutContainer = document.querySelector('.layout-container-desktop');
+  if (!layoutContainer) {
+    return initialZillowData;
+  }
+
+  try {
+    const anchor = findEstimatedMarketValueAnchor();
+    if (!anchor) {
+      return initialZillowData;
+    }
+
+    // Force the BuyAbility / monthly-payment block to lazy-mount by
+    // scrolling the anchor into view inside the Zillow layout container.
+    try {
+      anchor.scrollIntoView({ block: 'start', inline: 'nearest', behavior: 'auto' });
+    } catch (_) {
+      anchor.scrollIntoView();
+    }
+
+    // Bounded wait for Zillow to hydrate the BuyAbility breakdown.
+    const waitDeadline = Date.now() + 1500;
+    while (Date.now() < waitDeadline) {
+      if (typeof findPaymentBreakdownRoot === 'function' && findPaymentBreakdownRoot()) break;
+      await shortDelay(80, 140);
+    }
+
+    // Second pass: re-read with existing DOM priority + text fallback.
+    const secondZillowData = extractZillowData();
+    return mergeSalePropertyPayment(initialZillowData, secondZillowData);
+  } catch (err) {
+    return initialZillowData;
+  } finally {
+    // Restore the Zillow layout container to the top regardless of
+    // success / failure / missing anchor / timeout. The gallery step
+    // assumes the page is at the top; a stale scroll position would
+    // cause `gallery_not_opened` in `openGalleryForScope()`.
+    try {
+      if (layoutContainer && typeof layoutContainer.scrollTo === 'function') {
+        layoutContainer.scrollTo({ top: 0, behavior: 'auto' });
+        await shortDelay(150, 250);
+      }
+    } catch (_) {
+      /* swallow — restoration must never throw into the caller */
+    }
+  }
+}
+
+// Locate the heading whose normalised text is `Estimated market value`.
+// Falls back to case-insensitive contains to tolerate minor wording
+// shifts in the Zillow DOM.
+function findEstimatedMarketValueAnchor() {
+  const headingMatches = (text) => {
+    const norm = (text || '').replace(/\s+/g, ' ').trim().toLowerCase();
+    if (!norm) return false;
+    return norm === 'estimated market value'
+      || norm.startsWith('estimated market value')
+      || norm.includes('estimated market value');
+  };
+  const headings = document.querySelectorAll('h1, h2, h3');
+  for (const h of headings) {
+    if (headingMatches(h.textContent)) {
+      return h;
+    }
+  }
+  return null;
+}
+
+// Merge helper: start from `first` (which has all the address / HOA /
+// Roof / Facts data we don't want to disturb), then promote only the
+// non-empty `monthlyPayment` fields from `second`.
+function mergeSalePropertyPayment(first, second) {
+  if (!second || typeof second !== 'object') return first;
+  const safeFirst = first && typeof first === 'object' ? first : { source: 'zillow' };
+  const secondMp = second?.zillowFinancials?.monthlyPayment || null;
+  if (!secondMp) return safeFirst;
+
+  const existingZf = safeFirst.zillowFinancials || {};
+  const existingMp = existingZf.monthlyPayment || {};
+
+  const isMeaningful = (v) => {
+    if (v == null) return false;
+    if (typeof v === 'object') return v.value != null;
+    return String(v).trim() !== '';
+  };
+
+  const PAYMENT_FIELDS = [
+    'estimatedMonthlyPayment',
+    'principalAndInterest',
+    'mortgageInsurance',
+    'propertyTaxes',
+    'homeInsurance',
+    'hoaFees',
+    'utilities',
+  ];
+
+  const mergedMp = { ...existingMp };
+  let promoted = 0;
+  for (const key of PAYMENT_FIELDS) {
+    if (isMeaningful(existingMp[key])) continue; // never overwrite a real first-pass value
+    const candidate = secondMp[key];
+    if (isMeaningful(candidate)) {
+      mergedMp[key] = candidate;
+      promoted += 1;
+    }
+  }
+
+  if (promoted === 0) return safeFirst;
+  return {
+    ...safeFirst,
+    zillowFinancials: {
+      ...existingZf,
+      monthlyPayment: mergedMp,
+    },
+  };
 }
 
 /**
@@ -3180,6 +3841,12 @@ async function extractListingDataLight() {
 
     // Get Zillow-specific fields (includes zillowFinancials)
     zillowData = extractZillowData();
+    // Sale single-property Payment lazy-render recovery: if the page was
+    // still above the BuyAbility section when the first pass ran, the
+    // monthly-payment breakdown may not have mounted yet. A bounded scroll
+    // to "Estimated market value" + a short wait lets Zillow hydrate the
+    // block, and we merge only the non-empty monthlyPayment fields back in.
+    zillowData = await maybeRecoverSalePropertyPayment(zillowData);
   }
 
   // NOTE: imageUrls is intentionally empty here — gallery collection is
@@ -3231,11 +3898,20 @@ async function extractListingDataLight() {
       availableDate: zillowData.availableDate || null,
       financialDetails: zillowData.financialDetails || null,
       zillowFinancials: zillowData.zillowFinancials || null,
-      // Walk Score / Bike Score / Neighborhood / Architectural Style
+      // Walk Score / Bike Score / Neighborhood / Architectural Style / Transit / Schools
       walkScore: zillowData.walkScore || null,
       bikeScore: zillowData.bikeScore || null,
       neighborhood: zillowData.neighborhood || null,
       architecturalStyle: zillowData.architecturalStyle || null,
+      transitScore: zillowData.zillowFinancials?.transitScore || null,
+      schoolRatings: zillowData.zillowFinancials?.schoolRatings || null,
+      // roof and HOA from facts section (BuyAbility / DOM extraction)
+      roof: zillowData.zillowFinancials?.roof || null,
+      hoa: zillowData.zillowFinancials?.hasHoa != null
+        ? zillowData.zillowFinancials.hasHoa ? 'Yes' : 'No'
+        : null,
+      // HOA explicitly included services (from Community & HOA section)
+      hoaIncludedServices: zillowData.zillowFinancials?.hoaIncludedServices || null,
       // Property classification (also referenced from optionalDetails fallbacks)
       propertyType: zillowData.propertyType || null,
       homeType: zillowData.homeType || null,
@@ -3267,6 +3943,9 @@ async function extractListingDataLight() {
       security: zillowData.security || null,
       // === PR: full structured Facts & features groups (schema-agnostic) ===
       factsAndFeatures: zillowData.factsAndFeaturesGroups || { groups: [] },
+      // ── Sale valuation: Estimated sales range from Zillow ──────────────────────
+      estimatedSalesRangeMin: zillowData.zillowFinancials?.estimatedSalesRangeMin || null,
+      estimatedSalesRangeMax: zillowData.zillowFinancials?.estimatedSalesRangeMax || null,
     } : {}),
   };
 
@@ -3353,15 +4032,25 @@ async function extractListingDataLight() {
         annualTaxAmount: zillowData.annualTaxAmount || null,
         zestimate: zillowData.zestimate || null,
         rentZestimate: zillowData.rentZestimate || null,
+        // ── Estimated Sales Range from Zillow ──────────────────────────────────
+        estimatedSalesRangeMin: zf?.estimatedSalesRangeMin || null,
+        estimatedSalesRangeMax: zf?.estimatedSalesRangeMax || null,
       },
       monthlyPayment: zf?.monthlyPayment || null,
       location: {
         walkScore: zillowData.walkScore || null,
         bikeScore: zillowData.bikeScore || null,
+        transitScore: zf?.transitScore || null,
         floodZone: zillowData.floodZone || null,
         neighborhood: zillowData.neighborhood || null,
       },
-      schools: [],
+      // Schools from Zillow (extracted via extractSchoolRatings)
+      schools: (zillowData.zillowFinancials?.schoolRatings || []).map((s) => ({
+        name: s.name || '',
+        rating: s.rating || 0,
+        level: s.level,
+        distance: s.distance,
+      })),
       openHouses: [],
       extractionMeta: {
         confidence: typeof extractionConfidence !== 'undefined' ? extractionConfidence : (confidence || null),
@@ -3373,23 +4062,8 @@ async function extractListingDataLight() {
   }
 
   const detection = buildPropertyDetection(signals, listing);
-  // [LOG-A] extractListingDataLight EXIT
-  console.log('[HomeScope-LOG-A] extractListingDataLight', JSON.stringify({
-    url: window.location.href,
-    listingUrl: listing && listing.listingUrl,
-    zpid: (listing && listing.zpid) || (listing && listing.propertyFactsV2 && listing.propertyFactsV2.zpid),
-    listingIdentity: listing && listing.listingIdentity,
-    reportMode: listing && listing.reportMode,
-    listingType: listing && listing.listingType,
-    price: listing && listing.price,
-    pricePeriod: listing && listing.pricePeriod,
-    priceText: listing && listing.priceText,
-    monthlyRent: listing && listing.monthlyRent,
-    askingPrice: listing && listing.askingPrice,
-    priceAmount: listing && listing.priceAmount,
-  }));
 
-  return { listing, detection };
+  return { listing: applyZillowStructuredOverride(listing), detection };
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -5785,11 +6459,17 @@ const GALLERY_RESULT_STATUS = {
 };
 
 // 图库类型
+// 注：ZILLOW_MEDIA_CAROUSEL / ZILLOW_VERTICAL_MEDIA_WALL / ZILLOW_BUILDING_GALLERY /
+// ZILLOW_UNIT_CAROUSEL 是当前 production 已分别实测通过的 collector。
+// ZILLOW_IMX_LIGHTBOX / ZILLOW_PHOTOSWIPE 是历史 Property 页面已经实测通过的兼容路径，
+// 本轮恢复它们的独立 detection，避免和现有 4 collector 互相覆盖。
 const GALLERY_TYPES = {
   ZILLOW_MEDIA_CAROUSEL: 'zillow_media_carousel',
   ZILLOW_VERTICAL_MEDIA_WALL: 'zillow_vertical_media_wall',
   ZILLOW_BUILDING_GALLERY: 'zillow_building_gallery',
-  ZILLOW_UNIT_CAROUSEL: 'zillow_unit_carousel'
+  ZILLOW_UNIT_CAROUSEL: 'zillow_unit_carousel',
+  ZILLOW_IMX_LIGHTBOX: 'zillow_imx_lightbox',
+  ZILLOW_PHOTOSWIPE: 'zillow_photoswipe'
 };
 
 // 页面范围
@@ -5861,6 +6541,84 @@ function findVisibleElement(selector) {
     if (hit && (hit === el || el.contains(hit))) {
       return el;
     }
+  }
+  return null;
+}
+
+// 查找 IMX Lightbox root（严格 root identity，不依赖 Next photo）
+// 历史实测 selector: #search-detail-lightbox / .imx-lightbox / .imx-lightbox-modal
+//
+// 重要：#search-detail-lightbox 在新版本中是一个包含整个页面模块的大外壳，
+// 内部同时存在 details-page-container / similar-homes-module / market-value-module
+// / 普通页面 carousel / 各种页面按钮，最后才是真正可见的 gallery dialog。
+// 因此仅凭"#search-detail-lightbox 可见 + 内部任意位置有 /fp/ 图片" 不再可信。
+//
+// 为了防止 outer shell 抢占 inner gallery structure，本函数收窄为：
+//   - 真实 `.imx-lightbox` / `.imx-lightbox-modal` 优先（这些是真正的 lightbox 容器）
+//   - 真实 IMX paging controls：root 内可见 `button[aria-label="Next photo"]`
+//     以及严格 counter "^\d+\s+of\s+\d+$"
+//   - 仅当以上条件同时满足，才返回；否则返回 null（让 detection 走更具体的
+//     vertical / media-carousel / PhotoSwipe 路径，避免误分类）。
+function findVisibleImxLightbox() {
+  // 真实 IMX 容器优先（这些是 Zillow IMX lightbox 的强信号）
+  const strongSelectors = [
+    '.imx-lightbox-modal',
+    '.imx-lightbox'
+  ];
+  for (const sel of strongSelectors) {
+    const candidates = document.querySelectorAll(sel);
+    for (const el of candidates) {
+      if (!el || !el.isConnected) continue;
+      const rect = el.getBoundingClientRect();
+      const style = getComputedStyle(el);
+      if (rect.width <= 0 || rect.height <= 0) continue;
+      if (style.display === 'none' || style.visibility === 'hidden') continue;
+      // 必须存在真实图片元素
+      const hasImage =
+        el.querySelector('img[src*="fp/"]') ||
+        el.querySelector('picture img') ||
+        el.querySelector('[class*="Lightbox-image"], [class*="lightbox-image"]');
+      if (!hasImage) continue;
+      // 还需要 root-local paging controls 才算真正 IMX paging gallery
+      const hasPaging =
+        el.querySelector('button[aria-label="Next photo"]') ||
+        el.querySelector('button[aria-label*="Next" i]');
+      if (!hasPaging) continue;
+      return el;
+    }
+  }
+
+  // #search-detail-lightbox 本身只是一个大的页面/lightbox 外壳，不能直接当 IMX。
+  // 真实 IMX lightbox 才会同时具备 strongSelector 之一；这里不再把 #search-detail-lightbox
+  // 单独作为最终分类来源。如果未来 Zillow 把 IMX 容器换名，这里也保持稳定拒绝。
+  return null;
+}
+
+// 查找 PhotoSwipe root（严格 root identity，不依赖 Next photo）
+// 历史实测 selector: .pswp.pswp--open / .pswp--open / [class*="PhotoSwipe"]
+function findVisiblePhotoSwipe() {
+  const candidates = document.querySelectorAll(
+    '.pswp.pswp--open, .pswp--open, [class*="PhotoSwipe"]'
+  );
+  for (const el of candidates) {
+    if (!el) continue;
+    if (!el.isConnected) continue;
+    const rect = el.getBoundingClientRect();
+    const style = getComputedStyle(el);
+    if (rect.width <= 0 || rect.height <= 0) continue;
+    if (style.display === 'none' || style.visibility === 'hidden') continue;
+    // 必须有可见的真实图片元素，仅仅是 pswp 占位不算打开
+    const pswpImgs = el.querySelectorAll('.pswp__img, img[src*="fp/"]');
+    let hasReal = false;
+    for (const img of pswpImgs) {
+      const src = (img.currentSrc || img.src || '').trim();
+      if (!src || src.startsWith('data:') || src.startsWith('blob:')) continue;
+      const r = img.getBoundingClientRect();
+      if (r.width <= 24 || r.height <= 24) continue;
+      hasReal = true;
+      break;
+    }
+    if (hasReal) return el;
   }
   return null;
 }
@@ -5961,6 +6719,17 @@ async function ensureGalleryOpenerInView() {
     window.scrollTo({ top: 0, behavior: 'instant' });
     await shortDelay(300, 500);
   }
+  // Also reset Zillow's real scroll container (`.layout-container-desktop`).
+  // The viewport can be at top while the Zillow layout container is still
+  // scrolled down, which makes `findVisibleElement()`'s elementFromPoint hit
+  // test fail and returns `gallery_not_opened`. Independent threshold (> 0)
+  // to avoid masking the window.scrollY check above.
+  const layoutContainer = document.querySelector('.layout-container-desktop');
+  if (layoutContainer && layoutContainer.scrollTop > 0
+      && typeof layoutContainer.scrollTo === 'function') {
+    layoutContainer.scrollTo({ top: 0, behavior: 'auto' });
+    await shortDelay(150, 250);
+  }
 }
 
 // 等待可见的 Photos 标签
@@ -5985,6 +6754,130 @@ async function waitForVisiblePhotosTab(timeoutMs = 4000) {
   return null;
 }
 
+// One-shot gallery opener diagnostics. Captures candidate presence, rect,
+// One-shot failure diagnostics for openGalleryForScope()'s two
+// opened:false paths. Goal: classify the failure as one of:
+//   1. selector does not exist in DOM at all
+//   2. selector exists but is hidden (display/visibility/zero rect)
+//   3. selector exists but elementFromPoint cannot hit it
+//   4. Zillow has introduced a new photo/gallery opener (detected via nearbyCandidates)
+//   5. lazy mount / inner scroll container mis-positioned
+// This function is observational only — it never alters the result of
+// findVisibleElement() or clickWithCoordinates(), and it never influences
+// collector / paging / dedup / image-count logic.
+function hsLogGalleryOpenFail(scope, attemptedSelectors) {
+  try {
+    const safeAttr = (el, name) => {
+      try {
+        return el.getAttribute ? (el.getAttribute(name) || null) : null;
+      } catch (_) {
+        return null;
+      }
+    };
+    const safeText = (el) => {
+      try {
+        return (el && el.textContent ? el.textContent : '').trim().slice(0, 60) || null;
+      } catch (_) {
+        return null;
+      }
+    };
+    const safeCls = (el) => {
+      try {
+        return (typeof el.className === 'string' ? el.className : '').trim().slice(0, 80) || null;
+      } catch (_) {
+        return null;
+      }
+    };
+
+    const diagnostic = {
+      phase: 'open_gallery_failed',
+      scope: scope || null,
+      url: (function () { try { return window.location ? window.location.href : null; } catch (_) { return null; } })(),
+      scrollY: (function () { try { return window.scrollY || 0; } catch (_) { return 0; } })(),
+      readyState: (function () { try { return document.readyState || null; } catch (_) { return null; } })(),
+      historyLength: (function () { try { return window.history ? window.history.length : null; } catch (_) { return null; } })(),
+      layoutDesktopScrollTop: (function () {
+        try {
+          const c = document.querySelector('.layout-container-desktop');
+          return c ? (c.scrollTop || 0) : null;
+        } catch (_) { return null; }
+      })(),
+    };
+
+    if (Array.isArray(attemptedSelectors)) {
+      for (const sel of attemptedSelectors) {
+        const bucket = { allCount: 0, items: [] };
+        try {
+          const all = document.querySelectorAll(sel);
+          bucket.allCount = all.length;
+          for (const el of all) {
+            try {
+              const rect = el.getBoundingClientRect();
+              const style = getComputedStyle(el);
+              const cx = rect.left + rect.width / 2;
+              const cy = rect.top + rect.height / 2;
+              const hit = document.elementFromPoint(cx, cy);
+              const hitIsSelf = hit ? (hit === el || el.contains(hit)) : false;
+              bucket.items.push({
+                tag: el.tagName ? el.tagName.toLowerCase() : null,
+                id: el.id || null,
+                cls: safeCls(el),
+                ariaLabel: safeAttr(el, 'aria-label'),
+                dataTestId: safeAttr(el, 'data-testid'),
+                text: safeText(el),
+                rect: { x: rect.left, y: rect.top, w: rect.width, h: rect.height },
+                display: style.display,
+                visibility: style.visibility,
+                opacity: style.opacity,
+                isConnected: !!el.isConnected,
+                pointHitTag: hit ? (hit.tagName ? hit.tagName.toLowerCase() : null) : null,
+                pointHitIsSelf: hitIsSelf,
+              });
+            } catch (_) { /* per-element failures are non-fatal */ }
+          }
+        } catch (_) { /* selector iteration failures are non-fatal */ }
+        try {
+          diagnostic[sel] = bucket;
+        } catch (_) {
+          diagnostic['__selector_key_error__'] = sel;
+        }
+      }
+    }
+
+    // Nearby photo/gallery opener candidates. Used to surface a new Zillow
+    // selector that the current code does not yet recognise.
+    try {
+      const nearby = document.querySelectorAll(
+        'button, [role="button"], [data-testid*="photo" i], [data-testid*="gallery" i], [aria-label*="photo" i]'
+      );
+      diagnostic.nearbyCandidates = [];
+      for (const el of nearby) {
+        try {
+          const rect = el.getBoundingClientRect();
+          if (!rect || rect.width <= 0 || rect.height <= 0) continue;
+          const style = getComputedStyle(el);
+          if (style.display === 'none' || style.visibility === 'hidden') continue;
+          diagnostic.nearbyCandidates.push({
+            tag: el.tagName ? el.tagName.toLowerCase() : null,
+            id: el.id || null,
+            cls: safeCls(el),
+            dataTestId: safeAttr(el, 'data-testid'),
+            ariaLabel: safeAttr(el, 'aria-label'),
+            text: safeText(el),
+            rect: { x: rect.left, y: rect.top, w: rect.width, h: rect.height },
+          });
+          if (diagnostic.nearbyCandidates.length >= 20) break;
+        } catch (_) { /* per-element failures are non-fatal */ }
+      }
+    } catch (_) {
+      diagnostic.nearbyCandidates = [];
+    }
+
+  } catch (_) {
+    /* diagnostics must never throw */
+  }
+}
+
 async function openGalleryForScope(pageContext) {
   // Unit: hash 可能先更新，dialog 后挂载。等待 dialog 出现，不立即返回 opened:false
   if (pageContext.scope === PAGE_SCOPES.UNIT) {
@@ -5993,10 +6886,12 @@ async function openGalleryForScope(pageContext) {
     while (Date.now() - start < timeout) {
       const dialog = findVisibleUnitGalleryDialog();
       if (dialog) {
+        markGalleryOpened();
         return { opened: true, expectedTotal: null };
       }
       await shortDelay(100, 200);
     }
+    markGalleryOpened();
     return { opened: true, expectedTotal: null };
   }
 
@@ -6007,8 +6902,28 @@ async function openGalleryForScope(pageContext) {
     const expectedTotal = parsePhotoTotal(opener?.textContent);
     if (opener) {
       clickWithCoordinates(opener);
+      await shortDelay(200, 300);
+      markGalleryOpened();
       return { opened: true, expectedTotal };
     }
+
+    // Fallback (Building-only): photos-label 在某些 building 详情页不可见，
+    // 改用 hollywood-gallery-images 容器内"view larger view of the …photo of this building"
+    // 入口按钮打开图库。先在容器内查，再退到全页面查。
+    const buildingViewLargerSelector =
+      'button[aria-label^="view larger view of the "][aria-label*="photo of this building"]';
+    const buildingViewLargerInGallerySelector =
+      '[data-testid="hollywood-gallery-images"] ' + buildingViewLargerSelector;
+    const buildingFallbackSelector =
+      findVisibleElement(buildingViewLargerInGallerySelector)
+      || findVisibleElement(buildingViewLargerSelector);
+    if (buildingFallbackSelector) {
+      clickWithCoordinates(buildingFallbackSelector);
+      await shortDelay(200, 300);
+      markGalleryOpened();
+      return { opened: true, expectedTotal: null };
+    }
+
     return { opened: false, expectedTotal: null };
   }
 
@@ -6023,19 +6938,30 @@ async function openGalleryForScope(pageContext) {
       clickWithCoordinates(newEntry);
       const photosTab = await waitForVisiblePhotosTab(5000);
       if (photosTab) {
+        const preTab = photosTab;
+        const tabRect = photosTab.getBoundingClientRect();
+        const tabHit = document.elementFromPoint(tabRect.left + tabRect.width / 2, tabRect.top + tabRect.height / 2);
         clickWithCoordinates(photosTab);
+        await shortDelay(200, 300);
+        markGalleryOpened();
         return { opened: true, expectedTotal: null };
       }
+      await shortDelay(200, 300);
+      markGalleryOpened();
+      return { opened: true, expectedTotal: null };
     }
 
     const oldEntry = findVisibleElement(
       'button[data-testid="gallery-see-all-photos-button"]'
     );
     if (oldEntry) {
-      const expectedTotal = parsePhotoTotal(oldEntry.textContent);
       clickWithCoordinates(oldEntry);
+      await shortDelay(200, 300);
+      const expectedTotal = parsePhotoTotal(oldEntry.textContent);
+      markGalleryOpened();
       return { opened: true, expectedTotal };
     }
+
   }
 
   return { opened: false, expectedTotal: null };
@@ -6058,23 +6984,176 @@ function detectZillowGallery(pageContext) {
       : { galleryType: null, root: null };
   }
 
-  // Property: 新版 Media Carousel
+  // Property 优先级：先识别具体内部 structure，避免被模糊外壳抢占。
+  //
+  // 原则：明确的内部 gallery structure > 外层 modal/root 名称 > 行为能力 fallback。
+  // 具体顺序：
+  //   1) Vertical Media Wall：明确 `[data-testid="hollywood-vertical-media-wall"]`
+  //      且内部存在当前 listing 的 `/fp/` 图片 + 可见 vertical/scroll capability。
+  //   2) Media Carousel：明确 `[data-testid="media-carousel"][aria-label="photo-carousel"]`
+  //      且内部存在 carousel item 图片与局部 carousel controls。
+  //   3) PhotoSwipe：真实 `.pswp.pswp--open` / `.pswp--open` 等真实 paging gallery 结构。
+  //   4) IMX Lightbox：必须具备 `.imx-lightbox` / `.imx-lightbox-modal` 等真实 lightbox 容器
+  //      且具备 root-local paging controls；不能仅凭 `#search-detail-lightbox` 外壳分类。
+  //   5) 行为能力 fallback：只在能定位一个明确的 Gallery dialog context 且能证明 vertical/scroll
+  //      capability 时才进入 Vertical；只在能证明 paging capability 时才进入 paging 类型。
+  //   6) 仍无法证明行为类型 → unknown，不默认 collector。
+
+  // 1) Vertical Media Wall（具体内部 structure，必须早于 IMX 外壳）
+  const verticalWall = findVisibleElement(
+    '[data-testid="hollywood-vertical-media-wall"]'
+  );
+  if (verticalWall && hasVerticalWallCapability(verticalWall)) {
+    return { galleryType: GALLERY_TYPES.ZILLOW_VERTICAL_MEDIA_WALL, root: verticalWall };
+  }
+
+  // 2) 新版 Media Carousel
   const mediaCarousel = findVisibleElement(
     '[data-testid="media-carousel"][aria-label="photo-carousel"]'
   );
-  if (mediaCarousel) {
+  if (mediaCarousel && hasMediaCarouselCapability(mediaCarousel)) {
     return { galleryType: GALLERY_TYPES.ZILLOW_MEDIA_CAROUSEL, root: mediaCarousel };
   }
 
-  // Property: Vertical Media Wall
-  const mediaWall = findVisibleElement(
-    '[data-testid="hollywood-vertical-media-wall"]'
-  );
-  if (mediaWall) {
-    return { galleryType: GALLERY_TYPES.ZILLOW_VERTICAL_MEDIA_WALL, root: mediaWall };
+  // 3) PhotoSwipe：必须存在真实 active slide 与 paging structure
+  const pswpRoot = findVisiblePhotoSwipe();
+  if (pswpRoot && hasPhotoSwipePagingCapability(pswpRoot)) {
+    return { galleryType: GALLERY_TYPES.ZILLOW_PHOTOSWIPE, root: pswpRoot };
+  }
+
+  // 4) IMX Lightbox：findVisibleImxLightbox() 已收紧为真实 lightbox 容器 + root-local paging controls
+  const imxRoot = findVisibleImxLightbox();
+  if (imxRoot) {
+    return { galleryType: GALLERY_TYPES.ZILLOW_IMX_LIGHTBOX, root: imxRoot };
+  }
+
+  // 5) 行为能力 fallback：尝试在一个明确的 Gallery dialog 内证明 vertical/scroll capability
+  const dialogVertical = findGalleryDialogWithVerticalCapability();
+  if (dialogVertical) {
+    return {
+      galleryType: GALLERY_TYPES.ZILLOW_VERTICAL_MEDIA_WALL,
+      root: dialogVertical
+    };
   }
 
   return { galleryType: null, root: null };
+}
+
+// 判断一个 vertical wall candidate 是否真正具备 vertical/scroll gallery 行为能力
+// 不能仅凭 testid，必须存在当前 listing 的 /fp/ 图片以及真实可滚动结构。
+function hasVerticalWallCapability(candidate) {
+  if (!candidate || !candidate.isConnected) return false;
+  // 当前 listing 的 /fp/ 图片
+  const imgs = candidate.querySelectorAll('img[src*="fp/"]');
+  let hasRealFp = false;
+  for (const img of imgs) {
+    const src = (img.currentSrc || img.src || '').trim();
+    if (!src || src.startsWith('data:') || src.startsWith('blob:')) continue;
+    const r = img.getBoundingClientRect();
+    if (r.width <= 24 || r.height <= 24) continue;
+    hasRealFp = true;
+    break;
+  }
+  if (!hasRealFp) return false;
+
+  // vertical/scroll capability：candidate 自身或其可滚动祖先具备 overflow-y=auto/scroll
+  // 且 scrollHeight > clientHeight（多张图片需要滚动加载）
+  const scrollable = findScrollableParent(candidate) || candidate;
+  const style = getComputedStyle(scrollable);
+  const isScrollable =
+    (style.overflowY === 'auto' || style.overflowY === 'scroll') &&
+    scrollable.scrollHeight > scrollable.clientHeight + 50;
+  // 即便当前 scrollHeight 尚未明显大于 clientHeight（首屏前几张尚未触发滚动），
+  // 只要 ancestor 是 vertical 容器 + 已有多张 /fp/ 图片，仍视为具备能力。
+  const hasVerticalStructure =
+    isScrollable ||
+    candidate.matches('[data-testid="hollywood-vertical-media-wall"]') ||
+    !!candidate.querySelector('[data-testid="styled-vertical-media-wall"]');
+  return hasVerticalStructure;
+}
+
+// 判断一个 media-carousel candidate 是否真正具备 paging gallery 行为能力
+function hasMediaCarouselCapability(candidate) {
+  if (!candidate || !candidate.isConnected) return false;
+  // 存在 carousel item 图片
+  const items = candidate.querySelectorAll('[data-testid="carousel-item-li"]');
+  if (items.length === 0) {
+    // 退化检查：存在可见 /fp/ 图片
+    const imgs = candidate.querySelectorAll('img[src*="fp/"]');
+    for (const img of imgs) {
+      const r = img.getBoundingClientRect();
+      if (r.width > 24 && r.height > 24) return true;
+    }
+    return false;
+  }
+  return true;
+}
+
+// 判断一个 PhotoSwipe root 是否真正具备 paging gallery 行为能力
+function hasPhotoSwipePagingCapability(pswpRoot) {
+  if (!pswpRoot || !pswpRoot.isConnected) return false;
+  // findVisiblePhotoSwipe() 已要求有真实 .pswp__img 或 /fp/ 图片
+  // 再加一道：root 内存在 PhotoSwipe paging controls（arrow / button / counter）
+  const hasControl =
+    pswpRoot.querySelector('.pswp__button--arrow--right') ||
+    pswpRoot.querySelector('.pswp__button--arrow--next') ||
+    pswpRoot.querySelector('[class*="pswp__button"]') ||
+    pswpRoot.querySelector('button[aria-label*="Next" i]') ||
+    pswpRoot.querySelector('button[aria-label*="next" i]');
+  return !!hasControl;
+}
+
+// 在所有可见 dialog 中找一个具备 vertical/scroll capability 的 dialog。
+// 用于 behavior fallback：明确 dialog context 内确实存在垂直滚动结构 + /fp/ 图片。
+function findGalleryDialogWithVerticalCapability() {
+  const dialogs = document.querySelectorAll('[role="dialog"]');
+  for (const dialog of dialogs) {
+    const rect = dialog.getBoundingClientRect();
+    const style = getComputedStyle(dialog);
+    if (rect.width <= 0 || rect.height <= 0) continue;
+    if (style.display === 'none' || style.visibility === 'hidden') continue;
+    // 必须存在当前 listing 的 /fp/ 图片
+    const imgs = dialog.querySelectorAll('img[src*="fp/"]');
+    let hasRealFp = false;
+    for (const img of imgs) {
+      const src = (img.currentSrc || img.src || '').trim();
+      if (!src || src.startsWith('data:') || src.startsWith('blob:')) continue;
+      const r = img.getBoundingClientRect();
+      if (r.width <= 24 || r.height <= 24) continue;
+      hasRealFp = true;
+      break;
+    }
+    if (!hasRealFp) continue;
+    // 必须包含 vertical wall 结构或可滚动 ancestor
+    // Contract: collectZillowVerticalWall() 要求 root === mediaWall。
+    // 当 dialog 内存在具体 hollywood-vertical-media-wall 节点时，
+    // 必须返回该 wall 节点本身，而不是 dialog；否则 collector 拿到 dialog
+    // 会再次进入 root contract mismatch（reached_bottom / no_scroll_container）。
+    const wallNode = dialog.querySelector('[data-testid="hollywood-vertical-media-wall"]');
+    if (wallNode && wallNode.isConnected) {
+      const wRect = wallNode.getBoundingClientRect();
+      if (wRect.width > 0 && wRect.height > 0) {
+        return wallNode;
+      }
+    }
+    const styledWall = dialog.querySelector('[data-testid="styled-vertical-media-wall"]');
+    if (styledWall && styledWall.isConnected) {
+      const wallRoot = styledWall.closest('[data-testid="hollywood-vertical-media-wall"]')
+        || styledWall.closest('[role="dialog"]')
+        || styledWall;
+      const sRect = wallRoot.getBoundingClientRect();
+      if (sRect.width > 0 && sRect.height > 0) {
+        return wallRoot;
+      }
+    }
+    // 仅 generic scroll 行为且无 concrete wall root：拒绝作为 Vertical Media Wall root，
+    // 由 detectZillowGallery() 走 unknown 分支，避免把 dialog 喂进 collector。
+    const scrollable = findScrollableParent(dialog);
+    if (scrollable && scrollable.scrollHeight > scrollable.clientHeight + 50) {
+      return null;
+    }
+  }
+  return null;
 }
 
 async function waitForZillowGallery(pageContext, timeoutMs = 5000) {
@@ -6352,7 +7431,43 @@ function findScrollableParent(element) {
 
 async function collectZillowVerticalWall(root, context, expectedTotal) {
   const mediaWall = root;
+
+  const verticalDiag = (event, fields) => {
+    try {
+      const payload = Object.assign({ event }, fields);
+    } catch (_) {}
+  };
+
+  const diagRootInfo = () => ({
+    rootConnected: !!(mediaWall && mediaWall.isConnected),
+    rootTestid: mediaWall ? mediaWall.getAttribute('data-testid') : null
+  });
+
+  const diagContainerInfo = (el) => {
+    if (!el) {
+      return { scrollContainer: null };
+    }
+    let style;
+    try { style = getComputedStyle(el); } catch (_) { style = null; }
+    return {
+      scrollContainerId: el.id || null,
+      scrollContainerTestid: el.getAttribute ? el.getAttribute('data-testid') : null,
+      clientHeight: el.clientHeight,
+      scrollHeight: el.scrollHeight,
+      overflowY: style ? style.overflowY : null
+    };
+  };
+
+  let stopReason = 'unknown';
+  let loopCount = 0;
+
   const scrollContainer = findScrollableParent(mediaWall);
+
+  verticalDiag('start', Object.assign(
+    diagRootInfo(),
+    diagContainerInfo(scrollContainer),
+    { initialSeen: null }
+  ));
 
   if (!scrollContainer) {
     // 无可滚动容器，直接采集
@@ -6366,6 +7481,13 @@ async function collectZillowVerticalWall(root, context, expectedTotal) {
         images.push({ index: images.length + 1, url: img.src, signature });
       }
     }
+    stopReason = 'no_scroll_container';
+    verticalDiag('stop', {
+      loopCount: 0,
+      finalSeen: seenSignatures.size,
+      stopReason,
+      rootConnected: !!(mediaWall && mediaWall.isConnected)
+    });
     return { status: null, expectedTotal, images };
   }
 
@@ -6381,30 +7503,64 @@ async function collectZillowVerticalWall(root, context, expectedTotal) {
         images.push({ index: images.length + 1, url: img.src, signature });
       }
     }
+    return imgs.length;
   };
 
   const scrollStep = Math.floor(scrollContainer.clientHeight * 0.85);
 
-  while (true) {
-    collectVisibleImages();
+  try {
+    while (true) {
+      loopCount++;
 
-    if (expectedTotal && seenSignatures.size >= expectedTotal) {
-      break;
+      const mountedCount = collectVisibleImages();
+
+      if (expectedTotal && seenSignatures.size >= expectedTotal) {
+        stopReason = 'expected_total_reached';
+        break;
+      }
+
+      const previousTop = scrollContainer.scrollTop;
+      scrollContainer.scrollTop += scrollStep;
+      await shortDelay(300, 500);
+
+      const reachedBottom =
+        scrollContainer.scrollTop === previousTop ||
+        scrollContainer.scrollTop + scrollContainer.clientHeight >= scrollContainer.scrollHeight - 10;
+
+      verticalDiag('step', {
+        step: loopCount,
+        rootConnected: !!(mediaWall && mediaWall.isConnected),
+        previousTop,
+        currentTop: scrollContainer.scrollTop,
+        scrollHeight: scrollContainer.scrollHeight,
+        mountedCount,
+        seenCount: seenSignatures.size,
+        reachedBottom
+      });
+
+      if (reachedBottom) {
+        collectVisibleImages();
+        stopReason = 'reached_bottom';
+        break;
+      }
     }
-
-    const previousTop = scrollContainer.scrollTop;
-    scrollContainer.scrollTop += scrollStep;
-    await shortDelay(300, 500);
-
-    const reachedBottom =
-      scrollContainer.scrollTop === previousTop ||
-      scrollContainer.scrollTop + scrollContainer.clientHeight >= scrollContainer.scrollHeight - 10;
-
-    if (reachedBottom) {
-      collectVisibleImages();
-      break;
-    }
+  } catch (err) {
+    stopReason = 'collector_error';
+    verticalDiag('stop', {
+      loopCount,
+      finalSeen: seenSignatures.size,
+      stopReason,
+      rootConnected: !!(mediaWall && mediaWall.isConnected)
+    });
+    throw err;
   }
+
+  verticalDiag('stop', {
+    loopCount,
+    finalSeen: seenSignatures.size,
+    stopReason,
+    rootConnected: !!(mediaWall && mediaWall.isConnected)
+  });
 
   return { status: null, expectedTotal, images };
 }
@@ -6615,8 +7771,309 @@ async function collectZillowUnitCarousel(root, context) {
   return { status: null, expectedTotal, images };
 }
 
+// ─── IMX Lightbox Collector (root-scoped, P0) ──────────────────────────────
+//
+// IMX P0 contract (see plan: imx_p0_最小修复):
+//   - Input is the IMX root previously resolved by detectZillowGallery(),
+//     one of: #search-detail-lightbox, .imx-lightbox, .imx-lightbox-modal.
+//   - All queries (counter, Next button, image URLs) are scoped to this root.
+//   - Counter must be a strict leaf text matching ^\d+\s+of\s+\d+$.
+//   - Next button is `button[aria-label="Next photo"]` inside the root only.
+//   - Initial collection cannot return early; even 38/45 must continue paging.
+//   - Success = uniqueCount === expectedTotal. Anything below is
+//     GALLERY_INCOMPLETE, never silently promoted to success.
+//   - No global PhotoSwipe arrows, keyboard, or page-level counter lookups.
+
+function rootIdentityOf(node) {
+  if (!node) return null;
+  try {
+    if (node.id) return `#${node.id}`;
+    if (node.className && typeof node.className === 'string') {
+      return `.${node.className.split(/\s+/).filter(Boolean).slice(0, 3).join('.')}`;
+    }
+  } catch (_) {}
+  return node.tagName ? node.tagName.toLowerCase() : null;
+}
+
+async function collectZillowImxLightbox(root, preservedExpectedTotal) {
+  const imxDiag = (msg, extra) => {
+    try {
+      console.error('[HS_IMX_DIAG]', msg, extra || {});
+    } catch (_) {}
+  };
+
+  const result = {
+    status: null,
+    expectedTotal: preservedExpectedTotal || null,
+    images: [],
+    _counterText: null,
+    _imageRootConnected: !!(root && root.isConnected)
+  };
+
+  if (!root || !root.isConnected) {
+    imxDiag('root_missing_or_detached', { rootIdentity: rootIdentityOf(root) });
+    return result;
+  }
+
+  // ── helpers ────────────────────────────────────────────────────────────
+  const isVisibleElement = (el) => {
+    if (!el || !el.isConnected) return false;
+    const rect = el.getBoundingClientRect();
+    const style = getComputedStyle(el);
+    if (rect.width <= 0 || rect.height <= 0) return false;
+    if (style.display === 'none' || style.visibility === 'hidden') return false;
+    return true;
+  };
+
+  const IMX_COUNTER_RE = /^\d+\s+of\s+\d+$/i;
+
+  const parseCounter = (raw) => {
+    const txt = normalizeText(raw);
+    if (!txt || !IMX_COUNTER_RE.test(txt)) return null;
+    const m = txt.match(/(\d+)\s+of\s+(\d+)/i);
+    if (!m || m.length < 3) return null;
+    const current = Number(m[1]);
+    const total = Number(m[2]);
+    if (!Number.isFinite(current) || !Number.isFinite(total) || total <= 0) return null;
+    return { current, total, raw: txt };
+  };
+
+  // Strict counter reader: only find visible leaf-ish elements whose own
+  // textContent exactly matches ^\d+\s+of\s+\d+$. Never read from a parent
+  // whose text contains the pattern (ancestors are rejected by the leaf
+  // heuristic below).
+  const readImxCounter = () => {
+    if (!root || !root.isConnected) return null;
+    const candidates = root.querySelectorAll('*');
+    for (const el of candidates) {
+      if (!isVisibleElement(el)) continue;
+      let hasChildMatch = false;
+      for (const child of el.children) {
+        if (parseCounter(child.textContent)) { hasChildMatch = true; break; }
+      }
+      const own = parseCounter(el.textContent);
+      if (own && !hasChildMatch) return own;
+    }
+    // Fallback to aria-label / title of visible elements
+    for (const el of candidates) {
+      if (!isVisibleElement(el)) continue;
+      const aria = el.getAttribute && el.getAttribute('aria-label');
+      if (aria) {
+        const parsed = parseCounter(aria);
+        if (parsed) return parsed;
+      }
+      const title = el.getAttribute && el.getAttribute('title');
+      if (title) {
+        const parsed = parseCounter(title);
+        if (parsed) return parsed;
+      }
+    }
+    return null;
+  };
+
+  const findNextButton = () => {
+    if (!root || !root.isConnected) return null;
+    const btns = root.querySelectorAll('button[aria-label="Next photo"]');
+    for (const btn of btns) {
+      if (isVisibleElement(btn)) return btn;
+    }
+    return null;
+  };
+
+  const collectCurrentFpHashes = () => {
+    if (!root || !root.isConnected) return [];
+    const out = [];
+    const seen = new Set();
+    const imgs = root.querySelectorAll('img[src*="fp/"], source[src*="fp/"]');
+    for (const el of imgs) {
+      const src = el.currentSrc || el.src || el.getAttribute('src') || '';
+      const sig = canonicalizeZillowPhoto(src);
+      if (sig && !seen.has(sig)) {
+        seen.add(sig);
+        out.push({ url: src, signature: sig });
+      }
+    }
+    return out;
+  };
+
+  const waitForCounterOrSignatureChange = (prevCounter, prevSignature, timeoutMs) => {
+    return new Promise((resolve) => {
+      const start = Date.now();
+      const tick = () => {
+        if (!root || !root.isConnected) {
+          resolve({ changed: false, reason: 'root_detached' });
+          return;
+        }
+        const c = readImxCounter();
+        if (c && prevCounter && c.current !== prevCounter.current) {
+          resolve({ changed: true, current: c, reason: 'counter' });
+          return;
+        }
+        const fp = collectCurrentFpHashes();
+        if (prevSignature) {
+          for (const it of fp) {
+            if (it.signature !== prevSignature) {
+              resolve({ changed: true, current: c, signature: it.signature, reason: 'signature' });
+              return;
+            }
+          }
+        } else if (fp.length > 0) {
+          resolve({ changed: true, current: c, signature: fp[0].signature, reason: 'signature' });
+          return;
+        }
+        if (Date.now() - start > timeoutMs) {
+          resolve({ changed: false, reason: 'timeout', current: c });
+          return;
+        }
+        setTimeout(tick, 120);
+      };
+      tick();
+    });
+  };
+
+  // ── 1) Resolve counter (strict, root-scoped) ─────────────────────────
+  let initialCounter = null;
+  const counterPollStart = Date.now();
+  while (Date.now() - counterPollStart < 5000) {
+    initialCounter = readImxCounter();
+    if (initialCounter) break;
+    await shortDelay(150, 250);
+  }
+
+  const expectedTotal = (initialCounter && initialCounter.total)
+    || (Number(preservedExpectedTotal) || null);
+  const initialUniqueCount = new Set(
+    collectCurrentFpHashes().map((x) => x.signature).filter(Boolean)
+  ).size;
+  const nextButton = findNextButton();
+
+  result.expectedTotal = expectedTotal;
+  result._counterText = initialCounter ? initialCounter.raw : null;
+
+  imxDiag('initial', {
+    rootIdentity: rootIdentityOf(root),
+    strictCounterText: initialCounter ? initialCounter.raw : null,
+    currentIndex: initialCounter ? initialCounter.current : null,
+    expectedTotal,
+    initialUniqueCount,
+    nextButtonFound: !!nextButton
+  });
+
+  if (!root || !root.isConnected) {
+    imxDiag('stop', { stopReason: 'root_detached_before_paging' });
+    return result;
+  }
+  if (!nextButton) {
+    imxDiag('stop', { stopReason: 'next_button_not_found_in_imx_root' });
+    return result;
+  }
+  if (!expectedTotal || expectedTotal <= 0) {
+    imxDiag('stop', { stopReason: 'expected_total_missing' });
+    return result;
+  }
+
+  // ── 2) Initial collection (do NOT return early) ───────────────────────
+  const seenSignatures = new Set();
+  const collectAll = () => {
+    const fpItems = collectCurrentFpHashes();
+    for (const it of fpItems) {
+      if (!seenSignatures.has(it.signature)) {
+        seenSignatures.add(it.signature);
+        result.images.push({
+          index: result.images.length + 1,
+          url: it.url,
+          signature: it.signature
+        });
+      }
+    }
+  };
+  collectAll();
+
+  // ── 3) Paging loop ────────────────────────────────────────────────────
+  const MAX_CLICKS = Math.max(60, expectedTotal + 10);
+  const MAX_TOTAL_MS = 60000;
+  const MAX_NO_PROGRESS = 3;
+  const loopStart = Date.now();
+  let nextClickCount = 0;
+  let noProgressStreak = 0;
+  let stopReason = 'in_progress';
+
+  while (nextClickCount < MAX_CLICKS) {
+    if (seenSignatures.size >= expectedTotal) {
+      stopReason = 'complete';
+      break;
+    }
+    if (Date.now() - loopStart > MAX_TOTAL_MS) {
+      stopReason = 'timeout';
+      break;
+    }
+    if (!root || !root.isConnected) {
+      stopReason = 'root_detached';
+      break;
+    }
+
+    const btn = findNextButton();
+    if (!btn) {
+      stopReason = 'next_button_lost';
+      break;
+    }
+
+    const prevCounter = readImxCounter();
+    const prevSignature = result.images.length > 0
+      ? result.images[result.images.length - 1].signature
+      : null;
+
+    clickWithCoordinates(btn);
+    nextClickCount++;
+
+    const waitRes = await waitForCounterOrSignatureChange(
+      prevCounter,
+      prevSignature,
+      6000
+    );
+
+    const postCounter = waitRes.current || readImxCounter();
+    collectAll();
+
+    imxDiag('after_click', {
+      nextClickCount,
+      currentIndex: postCounter ? postCounter.current : null,
+      uniqueCount: seenSignatures.size,
+      waitReason: waitRes.reason
+    });
+
+    if (!waitRes.changed) {
+      noProgressStreak++;
+      if (noProgressStreak >= MAX_NO_PROGRESS) {
+        stopReason = 'no_progress';
+        break;
+      }
+      continue;
+    }
+    noProgressStreak = 0;
+  }
+
+  if (stopReason === 'in_progress') {
+    stopReason = seenSignatures.size >= expectedTotal ? 'complete' : 'max_clicks';
+  }
+
+  imxDiag('stop', {
+    stopReason,
+    nextClickCount,
+    expectedTotal,
+    uniqueCount: seenSignatures.size
+  });
+
+  return result;
+}
+
 // ─── Unified Entry: extractZillowGallery ───
 async function extractZillowGallery({ pageContext, listing, retry = false, preservedExpectedTotal = null }) {
+  // Lifecycle: close the gallery whether the collector completes, returns a
+  // PARTIAL result, or throws. closeGallery() is a no-op when
+  // _galleryWasOpened is false (no gallery was opened), so the wrapper is
+  // safe for failure paths too.
+  try {
   let detected = null;
   let expectedTotal = preservedExpectedTotal;
 
@@ -6682,6 +8139,32 @@ async function extractZillowGallery({ pageContext, listing, retry = false, prese
     case GALLERY_TYPES.ZILLOW_UNIT_CAROUSEL:
       result = await collectZillowUnitCarousel(detected.root, pageContext);
       break;
+    case GALLERY_TYPES.ZILLOW_IMX_LIGHTBOX: {
+      // IMX P0: bypass the generic collectByPhotoSwipePaging() (which has
+      // Zillow StyledDialog / bodyOverflow broad-scan early returns and
+      // returns 38/45 hashes after a single DOM scan for IMX). Use a small
+      // root-scoped IMX paging collector instead.
+      result = await collectZillowImxLightbox(detected.root, expectedTotal);
+      break;
+    }
+    case GALLERY_TYPES.ZILLOW_PHOTOSWIPE: {
+      // PhotoSwipe dispatch is unchanged. reusing the legacy collector
+      // here is intentional — IMX must not pass through this branch.
+      const legacyUrls = await collectByPhotoSwipePaging();
+      const legacyImages = Array.isArray(legacyUrls)
+        ? legacyUrls.map((url, index) => ({
+            index: index + 1,
+            url,
+            signature: canonicalizeZillowPhoto(url)
+          }))
+        : [];
+      result = {
+        status: null,
+        expectedTotal: expectedTotal || null,
+        images: legacyImages
+      };
+      break;
+    }
     default:
       result = { status: GALLERY_RESULT_STATUS.FAILED, reason: 'unsupported_gallery_type', images: [] };
   }
@@ -6696,13 +8179,19 @@ async function extractZillowGallery({ pageContext, listing, retry = false, prese
   // Summary diagnostic log — fields requested by requirement #10:
   // galleryType, counterText, expectedTotal, uniqueCount, reason.
   // Must NOT include imageUrls array or full response.
-  // Try to read counterText again (best-effort) only for logging.
+  // IMX MUST use the strict counter from the collector (`_counterText`).
+  // For IMX, do NOT fall back to a broad root-text scan (which previously
+  // captured schema.org / page-level text as the "counter").
   let counterTextForLog = null;
   try {
     const fresh = result && result._counterText;
     if (fresh) {
       counterTextForLog = fresh;
-    } else if (detected && detected.root) {
+    } else if (
+      detected &&
+      detected.root &&
+      detected.galleryType !== GALLERY_TYPES.ZILLOW_IMX_LIGHTBOX
+    ) {
       // best-effort re-read using same regex; never blocks
       const candidates = detected.root.querySelectorAll('*');
       for (const el of candidates) {
@@ -6713,17 +8202,13 @@ async function extractZillowGallery({ pageContext, listing, retry = false, prese
     }
   } catch (_) { /* noop */ }
 
-  console.error('[HS_GALLERY_SUMMARY]', {
-    galleryType: result?.galleryType,
-    counterText: counterTextForLog,
-    expectedTotal: result?.expectedTotal,
-    uniqueCount: result?.uniqueCount,
-    imageRootConnected: result?._imageRootConnected,
-    controlRootConnected: result?._controlRootConnected,
-    reason: result?.reason
-  });
-
   return result;
+  } finally {
+    // Unified close: covers all 5 Zillow collectors + the legacy
+    // PhotoSwipe path; runs on success, PARTIAL, FAILED, and thrown.
+    // closeGallery() is a safe no-op when _galleryWasOpened is false.
+    closeGallery();
+  }
 }
 
 // ─── Validate Gallery Result ───
@@ -6740,18 +8225,38 @@ function validateGalleryResult(result) {
     collectedCount: result.images.length
   };
 
+  // ── DIAG: TRACE_2 helper removed — validateGalleryResult now returns
+  //   directly without verbose per-branch logging. The expected_total_missing
+  //   failure path still propagates as GALLERY_RESULT_STATUS.FAILED with
+  //   reason: 'expected_total_missing'.
+
   // 没有采集到任何图片
   if (!uniqueCount) {
     return { ...normalized, status: GALLERY_RESULT_STATUS.FAILED, reason: 'no_images_collected' };
   }
 
   // 四种已知 Zillow 图库必须有 expectedTotal
+  // 注：IMX / PhotoSwipe 不进入该白名单——它们的 paging 来自 collectByPhotoSwipePaging()，
+  // 不依赖 opener 文本，因此走下面的"无 expectedTotal -> COMPLETE"分支。
   const zillowGalleryTypes = [
     GALLERY_TYPES.ZILLOW_MEDIA_CAROUSEL,
     GALLERY_TYPES.ZILLOW_VERTICAL_MEDIA_WALL,
-    GALLERY_TYPES.ZILLOW_BUILDING_GALLERY,
     GALLERY_TYPES.ZILLOW_UNIT_CAROUSEL
   ];
+
+  // Building 例外：fallback 入口不解析 opener 文本，expectedTotal 可能为 null。
+  // 此时 collectZillowBuildingGallery() 已通过"滚到底 + fp 图片"自行确认完整性，
+  // 不应再因为 expected_total_missing 判失败 —— 只要采到图片即视为 COMPLETE。
+  if (result.galleryType === GALLERY_TYPES.ZILLOW_BUILDING_GALLERY && !expectedTotal) {
+    if (uniqueCount > 0) {
+      return { ...normalized, status: GALLERY_RESULT_STATUS.COMPLETE };
+    }
+    return {
+      ...normalized,
+      status: GALLERY_RESULT_STATUS.FAILED,
+      reason: 'expected_total_missing'
+    };
+  }
 
   if (zillowGalleryTypes.includes(result.galleryType) && !expectedTotal) {
     return {
@@ -7647,8 +9152,74 @@ function zillowFlattenUnitsApartments(floorPlans, _bestMatched) {
   return out;
 }
 
+function parseZillowAvailableUnitRow(row) {
+  if (!(row instanceof HTMLElement)) return null;
+
+  const cleanText = (value) => String(value || '')
+    .replace(/\u00a0/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  const parseMoney = (value) => {
+    const match = cleanText(value).match(/\$([\d,]+)/);
+    return match ? Number(match[1].replace(/,/g, '')) : null;
+  };
+  const cells = [...row.querySelectorAll(':scope > td')];
+  if (cells.length < 4) return null;
+
+  const unitCellText = cleanText(cells[0].innerText);
+  const sqftText = cleanText(cells[1].innerText);
+  const availableFrom = cleanText(cells[2].innerText) || null;
+  const priceText = cleanText(cells[3].innerText);
+  const unitMatch = unitCellText.match(/\bUnit\s+([A-Za-z0-9-]+)\b/i);
+  const bedroomMatch = unitCellText.match(/\b(\d+(?:\.\d+)?)\s*bd\b/i);
+  const bathroomMatch = unitCellText.match(/\b(\d+(?:\.\d+)?)\s*ba\b/i);
+  const photoMatch = unitCellText.match(/\b(\d+)\s*photos?\b/i);
+  const sqft = /^[\d,]+$/.test(sqftText) ? Number(sqftText.replace(/,/g, '')) : null;
+  const unit = {
+    unitNumber: unitMatch?.[1] || null,
+    bedrooms: /\bStudio\b/i.test(unitCellText)
+      ? 0
+      : (bedroomMatch ? Number(bedroomMatch[1]) : null),
+    bathrooms: bathroomMatch ? Number(bathroomMatch[1]) : null,
+    sqft,
+    monthlyRent: parseMoney(priceText),
+    availableFrom,
+    photoCount: photoMatch ? Number(photoMatch[1]) : null,
+    source: 'dom.available-units.table-row',
+  };
+
+  // Generic contract: a row is preserved as long as it identifies a unit
+  // number. Auxiliary fields (photo count, sqft, date, rent, …) may be
+  // absent on the page; missing values stay null so the row still flows
+  // through to downstream consumers.
+  return unit.unitNumber !== null ? unit : null;
+}
+
+function extractZillowAvailableUnitsFromDOM() {
+  const seen = new Set();
+  return [...document.querySelectorAll('tr[data-test-id="unit-table-row"]')]
+    .map(parseZillowAvailableUnitRow)
+    .filter((unit) => {
+      if (!unit || seen.has(unit.unitNumber)) return false;
+      seen.add(unit.unitNumber);
+      return true;
+    });
+}
+
 function zillowBuildApartmentPatch(building) {
   const floorPlans = Array.isArray(building?.floorPlans) ? building.floorPlans : [];
+  const domAvailableUnits = extractZillowAvailableUnitsFromDOM();
+  const availableUnits = domAvailableUnits.length > 0
+    ? domAvailableUnits
+    : zillowFlattenUnitsApartments(floorPlans, null);
+  const floorPlanSummaries = floorPlans.map(zillowToFloorPlanSummary).filter(Boolean);
+  // Bug fix: total available unit count must come from floor plan roll-ups,
+  // not from the number of identified concrete units (which can be just 1
+  // because DOM/identity filtering intentionally drops anonymous rows).
+  const totalAvailableUnitCount = sumFloorPlanUnitCounts(floorPlanSummaries)
+    ?? availableUnits.length;
+  const offerBlock = extractZillowBuildingSpecialOffer();
+  const calculator = extractZillowRentalCostCalculator();
   return {
     listingScope: 'multi_unit_building',
     buildingName: typeof building?.name === 'string' ? building.name : null,
@@ -7658,15 +9229,590 @@ function zillowBuildApartmentPatch(building) {
     zpid: null,
     unitNumber: null,
     hdpUrl: null,
+    selectedUnit: null,
     monthlyRent: null,
     baseRent: null,
     sqft: null,
     bedrooms: null,
     bathrooms: null,
     listPriceIncludesRequiredMonthlyFees: null,
-    floorPlanSummaries: floorPlans.map(zillowToFloorPlanSummary).filter(Boolean),
-    availableUnits: zillowFlattenUnitsApartments(floorPlans, null),
+    floorPlanSummaries,
+    availableUnits,
+    availableUnitCount: totalAvailableUnitCount,
+    identifiedUnitCount: availableUnits.length,
     rawAddress: building?.address?.streetAddress ?? null,
+    specialOfferText: offerBlock?.text ?? null,
+    specialOffers: offerBlock?.items ?? null,
+    rentalCostCalculator: calculator,
+  };
+}
+
+/**
+ * Sum floor-plan unitCount values. Returns null when no valid roll-up is
+ * present (e.g. legacy shapes missing the field). Ignores null / non-finite /
+ * negative values to avoid NaN leaks.
+ */
+function sumFloorPlanUnitCounts(floorPlanSummaries) {
+  if (!Array.isArray(floorPlanSummaries) || floorPlanSummaries.length === 0) {
+    return null;
+  }
+  let sum = 0;
+  let anyValid = false;
+  for (const fp of floorPlanSummaries) {
+    const n = fp && typeof fp === 'object' ? fp.unitCount : null;
+    if (typeof n === 'number' && Number.isFinite(n) && n >= 0) {
+      sum += n;
+      anyValid = true;
+    }
+  }
+  return anyValid ? sum : null;
+}
+
+/**
+ * Scope Special Offer extraction to the current listing only.
+ * Avoid "Nearby apartments" / "Similar apartments" sections by requiring the
+ * candidate node to be inside the building header area or labelled
+ * "Special offer" / "Specials". Returns null when nothing reliable is found.
+ */
+function extractZillowBuildingSpecialOffer() {
+  if (typeof document === 'undefined') return null;
+  const doc = document;
+  const HEADER_SELECTORS = [
+    'h1',
+    '[data-test-id="building-name"]',
+    '[data-testid="building-name"]',
+    'header',
+  ];
+
+  // Find the building header root (closest containing element of any
+  // candidate header element).
+  let headerRoot = null;
+  for (const sel of HEADER_SELECTORS) {
+    const el = doc.querySelector(sel);
+    if (el) {
+      headerRoot = el.closest('section') || el.closest('article') || el.parentElement || el;
+      break;
+    }
+  }
+
+  // Locate "Special offer" / "Specials" heading within the main listing
+  // document, but excluding obvious "Similar" / "Nearby" sections. We
+  // include button / role=heading / offer-specific data-testid / class
+  // hooks so that the offer heading matches even when Zillow renders it
+  // as a tab / accordion label.
+  const headingSelectors = [
+    'h1', 'h2', 'h3', 'h4', 'h5', 'h6',
+    'button',
+    '[role="heading"]',
+    '[data-testid*="special" i]',
+    '[class*="special-offer" i]',
+    '[class*="SpecialOffer" i]',
+    'div', 'span', 'p',
+  ];
+  const directText = (el) => {
+    let out = '';
+    for (const node of el.childNodes) {
+      if (node.nodeType === 3 /* text */) out += node.textContent || '';
+    }
+    return out.trim();
+  };
+  const candidateHeadings = [...doc.querySelectorAll(headingSelectors.join(','))]
+    .filter((el) => {
+      const direct = directText(el);
+      const txt = (el.textContent || '').trim();
+      // Match either on direct short text or on a short whole-textContent.
+      const labelMatch = /^specials?\b|^special offer/i.test(direct)
+        || (/^specials?\b|^special offer/i.test(txt) && txt.length <= 200);
+      if (!labelMatch) return false;
+      // Reject if ancestor chain contains a "Similar apartments" / "Nearby" header.
+      let p = el.parentElement;
+      for (let i = 0; p && i < 6; i += 1) {
+        const pt = (p.textContent || '').toLowerCase();
+        if (pt.includes('similar apartments') || pt.includes('nearby apartments')
+            || pt.includes('other apartments you might')) {
+          return false;
+        }
+        p = p.parentElement;
+      }
+      return true;
+    });
+
+  if (candidateHeadings.length === 0) return null;
+
+  // Prefer candidates that are descendants of headerRoot, then those
+  // closest to it. Candidates that share no ancestry with headerRoot
+  // rank lowest.
+  const isDescendantOf = (el, root) => {
+    if (!el || !root) return false;
+    let cur = el;
+    while (cur && cur !== root) cur = cur.parentElement;
+    return !!cur;
+  };
+  let ranked = candidateHeadings.slice();
+  if (headerRoot) {
+    ranked.sort((a, b) => {
+      const aIn = isDescendantOf(a, headerRoot) ? 0 : 1;
+      const bIn = isDescendantOf(b, headerRoot) ? 0 : 1;
+      if (aIn !== bIn) return aIn - bIn;
+      return distanceTo(a, headerRoot) - distanceTo(b, headerRoot);
+    });
+  }
+
+  const heading = ranked[0];
+
+  // Pick the smallest container that looks like an "offer block":
+  //   1. Prefer a node whose own attribute hints at an offer container
+  //      (data-testid / class).
+  //   2. Otherwise, walk up from heading until we find a node whose
+  //      textContent is short enough to plausibly be a single offer
+  //      block (<1500 chars). This avoids leaking the whole building
+  //      page into the offer text.
+  let container = null;
+  const offerContainerHint = heading.closest(
+    '[data-testid*="offer" i], [class*="special-offer" i], [class*="SpecialOffer" i]',
+  );
+  if (offerContainerHint
+      && (offerContainerHint.textContent || '').length <= 4000) {
+    container = offerContainerHint;
+  } else {
+    let c = heading.parentElement;
+    while (c && (c.textContent || '').length > 1500 && c.parentElement) {
+      c = c.parentElement;
+    }
+    if (c) container = c;
+  }
+  if (!container) container = heading.closest('section') || heading.parentElement || heading;
+
+  // Collect individual offer bullets if the container is a list. Filter
+  // by offer-shape (short, no sqft/bed/bath markers, no $NNN,NNN price
+  // range, etc.) so we don't pull in description lists nested inside the
+  // offer block.
+  const OFFER_PREFIX = /^(apply|move|get|tour|free|save|use|contact|book|schedule|reserve|sign|receive|cash|earn|enjoy|book|booked)/i;
+  const NON_OFFER_MARKERS = /\b(\d+\s*bd|\d+\s*ba|\d+\s*sqft|sq\s*ft|bedrooms|bathrooms)\b/i;
+  const items = [];
+  const seen = new Set();
+  for (const li of container.querySelectorAll('li')) {
+    const t = (li.textContent || '').replace(/\s+/g, ' ').trim();
+    if (!t) continue;
+    if (t.length > 240) continue;
+    if (NON_OFFER_MARKERS.test(t) && !OFFER_PREFIX.test(t)) continue;
+    if (!seen.has(t)) items.push(t);
+    seen.add(t);
+  }
+  let text = items.length > 0
+    ? items.join('\n')
+    : (container.textContent || '').replace(/\s+/g, ' ').trim();
+  // Trim obvious unrelated trailing content from sibling sections.
+  text = text.split(/(Similar apartments|Nearby apartments|Other apartments you might)/i)[0].trim();
+  // Hard-length guard. A genuine Winbro offer block is well under 600
+  // chars. If we somehow collected the whole building body, drop it.
+  if (text.length > 600) text = text.slice(0, 600).trim();
+  if (!text || text.length < 4) return null;
+  return { text, items: items.length > 0 ? items : null };
+}
+
+function distanceTo(el, root) {
+  if (!el || !root) return Number.POSITIVE_INFINITY;
+  let depth = 0;
+  let cur = el;
+  while (cur && cur !== root && depth < 32) {
+    cur = cur.parentElement;
+    depth += 1;
+  }
+  return depth;
+}
+
+/**
+ * Extract the Rental Cost Calculator block.
+ *
+ * Two stable structural sections exist on Zillow's calculator surface:
+ *   #application-section     -> Application Cost / Holding Cost / Total application cost
+ *   #monthly-section-panel   -> Monthly base rent (range) + four "Varies" reimbursements
+ *
+ * The primary path reads those two sections independently so that
+ * `$50 Application`, `$165 Holding` and `$215 Est. total` never collide
+ * with `$765-$885 Monthly base rent`. When one of the section selectors
+ * is missing, we fall back to the bounded-container heuristic -- but
+ * each field regex remains anchored to its own section text so the two
+ * scopes can never bleed into each other.
+ *
+ * Captures the numeric ranges plus the literal "Varies" reimbursement
+ * facts (no fake numbers). Returns null when no calculator block is
+ * present on the page.
+ */
+function extractZillowRentalCostCalculator() {
+  if (typeof document === 'undefined') return null;
+  const doc = document;
+
+  // ---------- Section helpers ----------
+  const sectionText = (el) => {
+    if (!el) return '';
+    return (el.textContent || '').replace(/\s+/g, ' ').trim();
+  };
+
+  const parseMoney = (s) => {
+    if (s == null) return null;
+    const m = String(s).replace(/,/g, '').match(/\$?\s*(-?\d+(?:\.\d+)?)/);
+    return m ? Number(m[1]) : null;
+  };
+
+  // Separator class between a label and its amount. Includes:
+  //   - whitespace (\s)
+  //   - ":" hyphen "-" en-dash "–"
+  //   - "(" ")" "[" "]" "," — Zillow Winbro wraps the holding-cost value
+  //     as "Holding Cost ($165 each) $165 Refundable", so a single "(" or
+  //     comma must be transparent. Keeping the class otherwise narrow
+  //     prevents the regex from spanning across unrelated fields.
+  const LABEL_SEP = '[\\s:\\-\u2013()[\\],]*';
+  const labelToAmountRe = (label) => new RegExp(
+    `${label}${LABEL_SEP}\\$?([\\d,.]+)`, 'i',
+  );
+  const amountToLabelRe = (label) => new RegExp(
+    `\\$([\\d,.]+)\\s*[\\s:\\-\u2013]?\\s*${label}`, 'i',
+  );
+  const labelToRangeRe = (label) => new RegExp(
+    `${label}${LABEL_SEP}\\$?([\\d,.]+)\\s*[\\-\u2013]?\\s*\\$?([\\d,.]+)`, 'i',
+  );
+  const amountToRangeLabelRe = (label) => new RegExp(
+    `\\$([\\d,.]+)\\s*[\\-\u2013]?\\s*\\$([\\d,.]+)\\s*[\\s:\\-\u2013]?\\s*${label}`, 'i',
+  );
+
+  const firstNumber = (text, regexes) => {
+    for (const re of regexes) {
+      const m = re.exec(text);
+      if (m && m[1] != null) {
+        const v = parseMoney(m[1]);
+        if (v != null) return v;
+      }
+    }
+    return null;
+  };
+
+  // ---------- Application section (application + holding + total) ----------
+  const applicationEl = doc.querySelector('#application-section')
+    || doc.querySelector('[data-testid="application-section"]')
+    || doc.querySelector('[id*="application" i]');
+  const applicationText = sectionText(applicationEl);
+
+  const applicationCost = applicationText
+    ? firstNumber(applicationText, [
+        labelToAmountRe('application\\s*cost[s]?'),
+        amountToLabelRe('application\\s*cost[s]?'),
+      ])
+    : null;
+  const holdingCost = applicationText
+    ? firstNumber(applicationText, [
+        labelToAmountRe('holding\\s*cost[s]?'),
+        amountToLabelRe('holding\\s*cost[s]?'),
+      ])
+    : null;
+  // totalApplicationCost is the schema's existing slot for "$215 Est. total".
+  // IMPORTANT: prefer the label->amount direction first. The amount->label
+  // pattern (`$NNN Est. total application cost`) can false-match against
+  // a `$NNN Holding Cost` value when the collapsed section text places
+  // the two adjacent (e.g. "Holding Cost $165 Est. total ... $215"). The
+  // label->amount direction is anchored to the literal "Est. total" text
+  // and is therefore unambiguous.
+  const totalApplicationCost = applicationText
+    ? firstNumber(applicationText, [
+        labelToAmountRe('est(?:imated)?\\.?\\s*total\\s*application\\s*cost[s]?'),
+        labelToAmountRe('total\\s*application\\s*cost[s]?'),
+        amountToLabelRe('est(?:imated)?\\.?\\s*total\\s*application\\s*cost[s]?'),
+        amountToLabelRe('total\\s*application\\s*cost[s]?'),
+      ])
+    : null;
+
+  // ---------- Monthly section (base rent range + reimbursements) ----------
+  const monthlyEl = doc.querySelector('#monthly-section-panel')
+    || doc.querySelector('[data-testid="monthly-section-panel"]')
+    || doc.querySelector('[id*="monthly" i]');
+  const monthlyText = sectionText(monthlyEl);
+
+  let baseRentMin = null;
+  let baseRentMax = null;
+  if (monthlyText) {
+    for (const re of [
+      labelToRangeRe('monthly\\s*base\\s*rent'),
+      labelToRangeRe('base\\s*rent'),
+      amountToRangeLabelRe('monthly\\s*base\\s*rent'),
+      amountToRangeLabelRe('base\\s*rent'),
+    ]) {
+      const m = re.exec(monthlyText);
+      if (m && m[1] != null && m[2] != null) {
+        const a = parseMoney(m[1]);
+        const b = parseMoney(m[2]);
+        if (a != null && b != null) {
+          baseRentMin = Math.min(a, b);
+          baseRentMax = Math.max(a, b);
+          break;
+        }
+      }
+    }
+  }
+
+  // Reimbursements: accept per-label or merged form. NEVER derive amounts.
+  const reimbursementLabels = [
+    'Electric reimbursement',
+    'Gas reimbursement',
+    'Other reimbursement',
+    'Trash reimbursement',
+  ];
+  const variableReimbursements = [];
+  if (monthlyText) {
+    const perLabelRe = (label) => new RegExp(
+      `${label.replace(/\s+/g, '\\s+')}[:\\s=]+(varies)`, 'i',
+    );
+    const mergedRe = /(electric|gas|other|trash)\s*[\/,\s]*(?:reimbursement[s]?)?[^a-z]*(?:reimbursement[s]?)?\s*[:=]?\s*varies/i;
+    if (reimbursementLabels.some((l) => perLabelRe(l).test(monthlyText))) {
+      for (const label of reimbursementLabels) {
+        if (perLabelRe(label).test(monthlyText)) variableReimbursements.push(label);
+      }
+    } else if (mergedRe.test(monthlyText)) {
+      for (const label of reimbursementLabels) variableReimbursements.push(label);
+    }
+  }
+
+  const primaryHasAny = [
+    applicationCost, holdingCost, totalApplicationCost,
+    baseRentMin, baseRentMax,
+  ].some((v) => v != null) || variableReimbursements.length > 0;
+
+  // ---------- Fallback: bounded-container heuristic ----------
+  // Only consulted when at least one stable section is missing, and even
+  // then we keep the section-scoped outputs above. Each field regex is
+  // restricted to its own bounded container text so the two scopes
+  // cannot cross-contaminate. We never scan bodyText or invent numbers.
+  let fallback = null;
+  if (!primaryHasAny) {
+    fallback = extractZillowRentalCostCalculatorFallback(doc);
+    if (!fallback) return null;
+  } else {
+    // Optional deposit / move-in cost still flows through the bounded
+    // fallback because Zillow does not always render these in a stable
+    // section selector.
+    fallback = extractZillowRentalCostCalculatorFallback(doc, true);
+  }
+
+  const fallbackDeposit = fallback ? (fallback.deposit ?? null) : null;
+  const fallbackMoveIn = fallback ? (fallback.totalMoveInCost ?? null) : null;
+  return {
+    baseRentMin: primaryHasAny ? baseRentMin : (fallback?.baseRentMin ?? null),
+    baseRentMax: primaryHasAny ? baseRentMax : (fallback?.baseRentMax ?? null),
+    applicationCost: primaryHasAny ? applicationCost : (fallback?.applicationCost ?? null),
+    holdingCost: primaryHasAny ? holdingCost : (fallback?.holdingCost ?? null),
+    totalApplicationCost: primaryHasAny ? totalApplicationCost : (fallback?.totalApplicationCost ?? null),
+    deposit: fallbackDeposit,
+    totalMoveInCost: fallbackMoveIn,
+    variableReimbursements: primaryHasAny
+      ? variableReimbursements.slice()
+      : (fallback && Array.isArray(fallback.variableReimbursements) ? fallback.variableReimbursements.slice() : []),
+  };
+}
+
+/**
+ * Bounded-container fallback for the Rental Cost Calculator.
+ *
+ * When called with `extrasOnly=true`, only deposit + totalMoveInCost are
+ * resolved (and only when their labels are anchored to the same
+ * calculator block). Otherwise it scans for any calculator anchor block
+ * and returns whichever numbers can be anchored to their respective
+ * labels -- never inventing numbers from bodyText or from price ranges
+ * outside the bounded container.
+ */
+function extractZillowRentalCostCalculatorFallback(doc, extrasOnly = false) {
+  if (!doc || typeof doc.querySelectorAll !== 'function') return null;
+
+  const directText = (el) => {
+    let out = '';
+    for (const node of el.childNodes) {
+      if (node.nodeType === 3 /* text */) out += node.textContent || '';
+    }
+    return out.trim();
+  };
+
+  const headingSelectors = [
+    'h1', 'h2', 'h3', 'h4', 'h5', 'h6',
+    'button',
+    '[role="heading"]',
+    '[data-testid*="cost" i]',
+    '[class*="Calculator" i]',
+    'div', 'span', 'p',
+  ];
+  const candidateHeadings = [...doc.querySelectorAll(headingSelectors.join(','))]
+    .filter((el) => {
+      const direct = directText(el);
+      const txt = (el.textContent || '').trim();
+      const labelMatch = /cost calculator|rental cost/i.test(direct)
+        || (/cost calculator|rental cost/i.test(txt) && txt.length <= 240);
+      if (!labelMatch) return false;
+      let p = el.parentElement;
+      for (let i = 0; p && i < 6; i += 1) {
+        const pt = (p.textContent || '').toLowerCase();
+        if (pt.includes('similar apartments') || pt.includes('nearby apartments')
+            || pt.includes('other apartments you might')) {
+          return false;
+        }
+        p = p.parentElement;
+      }
+      return true;
+    });
+
+  if (candidateHeadings.length === 0) return null;
+
+  const boundedContainer = (heading) => {
+    let container = heading.closest('section') || heading.parentElement || heading;
+    if (container && (container.textContent || '').length > 4000) {
+      let c = heading.parentElement;
+      while (c && (c.textContent || '').length > 1500 && c.parentElement) {
+        c = c.parentElement;
+      }
+      if (c) container = c;
+    }
+    return container;
+  };
+
+  const anchorRegexes = [
+    /est(?:\.|imated)?\s*total\s*monthly\s*cost/i,
+    /monthly\s*base\s*rent|base\s*rent/i,
+    /application\s*cost/i,
+    /holding\s*cost/i,
+    /move[-\s]*in\s*cost/i,
+    /deposit/i,
+    /reimbursement/i,
+  ];
+  const scoreContainer = (root) => {
+    if (!root) return -1;
+    const t = (root.textContent || '').toLowerCase();
+    if (!t) return -1;
+    if (t.includes('similar apartments') || t.includes('nearby apartments')
+        || t.includes('other apartments you might')) {
+      return -1;
+    }
+    let score = 0;
+    for (const re of anchorRegexes) if (re.test(t)) score += 1;
+    return score;
+  };
+
+  const ranked = candidateHeadings
+    .map((h) => ({ heading: h, container: boundedContainer(h) }))
+    .filter((c) => scoreContainer(c.container) > 0)
+    .sort((a, b) => scoreContainer(b.container) - scoreContainer(a.container));
+
+  if (ranked.length === 0) return null;
+  const text = (ranked[0].container.textContent || '').replace(/\s+/g, ' ').trim();
+  if (!text) return null;
+
+  const parseMoney = (s) => {
+    if (s == null) return null;
+    const m = String(s).replace(/,/g, '').match(/\$?\s*(-?\d+(?:\.\d+)?)/);
+    return m ? Number(m[1]) : null;
+  };
+
+  const money = '\\$?([\\d,.]+)';
+  const moneySep = '\\s*[\\-\u2013]?\\s*';
+  const labelToRange = (label) => new RegExp(
+    `${label}[\\s:\\-\u2013]*${money}${moneySep}${money}`, 'i',
+  );
+  const labelToAmount = (label) => new RegExp(
+    `${label}[\\s:\\-\u2013]*${money}`, 'i',
+  );
+  const amountToLabel = (label, two) => new RegExp(
+    `\\$([\\d,.]+)${moneySep}${two ? '\\$([\\d,.]+)' : ''}\\s*[\\s:\\-\u2013]?\\s*${label}`, 'i',
+  );
+
+  const firstNumber = (regexes) => {
+    for (const re of regexes) {
+      const m = re.exec(text);
+      if (m && m[1] != null) {
+        const v = parseMoney(m[1]);
+        if (v != null) return v;
+      }
+    }
+    return null;
+  };
+
+  const baseRentRange = (() => {
+    for (const re of [
+      labelToRange('monthly\\s*base\\s*rent'),
+      labelToRange('base\\s*rent'),
+      amountToLabel('monthly\\s*base\\s*rent', true),
+      amountToLabel('base\\s*rent', true),
+    ]) {
+      const m = re.exec(text);
+      if (m && m[1] != null && m[2] != null) {
+        const a = parseMoney(m[1]);
+        const b = parseMoney(m[2]);
+        if (a != null && b != null) return { min: Math.min(a, b), max: Math.max(a, b) };
+      }
+    }
+    return null;
+  })();
+
+  const applicationCost = firstNumber([
+    labelToAmount('application\\s*cost[s]?'),
+    amountToLabel('application\\s*cost[s]?'),
+  ]);
+  const holdingCost = firstNumber([
+    labelToAmount('holding\\s*cost'),
+    amountToLabel('holding\\s*cost'),
+  ]);
+  const totalApplicationCost = firstNumber([
+    // amount->label must run first to beat the generic "$X cost" catch-all.
+    amountToLabel('est(?:imated)?\\.?\\s*total\\s*application\\s*cost[s]?', false),
+    labelToAmount('est(?:imated)?\\.?\\s*total\\s*application\\s*cost[s]?'),
+    amountToLabel('total\\s*application\\s*cost[s]?', false),
+    labelToAmount('total\\s*application\\s*cost[s]?'),
+  ]);
+  const deposit = firstNumber([
+    labelToAmount('deposit'),
+    amountToLabel('deposit'),
+  ]);
+  const totalMoveInCost = firstNumber([
+    amountToLabel('est(?:imated)?\\.?\\s*move[\\s-]*in\\s*cost[s]?', false),
+    labelToAmount('est(?:imated)?\\.?\\s*move[\\s-]*in\\s*cost[s]?'),
+    amountToLabel('move[\\s-]*in\\s*cost[s]?', false),
+    labelToAmount('move[\\s-]*in\\s*cost[s]?'),
+  ]);
+
+  const variableReimbursements = [];
+  const reimbursementLabels = [
+    'Electric reimbursement',
+    'Gas reimbursement',
+    'Other reimbursement',
+    'Trash reimbursement',
+  ];
+  const perLabelRe = (label) => new RegExp(
+    `${label.replace(/\s+/g, '\\s+')}[:\\s=]+(varies)`, 'i',
+  );
+  const mergedRe = /(electric|gas|other|trash)\s*[\/,\s]*(?:reimbursement[s]?)?[^a-z]*(?:reimbursement[s]?)?\s*[:=]?\s*varies/i;
+  if (reimbursementLabels.some((l) => perLabelRe(l).test(text))) {
+    for (const label of reimbursementLabels) {
+      if (perLabelRe(label).test(text)) variableReimbursements.push(label);
+    }
+  } else if (mergedRe.test(text)) {
+    for (const label of reimbursementLabels) variableReimbursements.push(label);
+  }
+
+  if (extrasOnly) {
+    return { deposit, totalMoveInCost };
+  }
+
+  const anyValue = [
+    applicationCost, holdingCost, totalApplicationCost,
+    baseRentRange?.min, baseRentRange?.max,
+    deposit, totalMoveInCost,
+  ].some((v) => v != null) || variableReimbursements.length > 0;
+  if (!anyValue) return null;
+
+  return {
+    baseRentMin: baseRentRange?.min ?? null,
+    baseRentMax: baseRentRange?.max ?? null,
+    applicationCost,
+    holdingCost,
+    totalApplicationCost,
+    deposit,
+    totalMoveInCost,
+    variableReimbursements,
   };
 }
 
@@ -7781,11 +9927,276 @@ function zillowBuildPatchFromNextData(nextData, url) {
     const building = zillowDeepGet(nextData,
       ['props','pageProps','componentProps','initialReduxState','gdp','building']);
     if (!building || typeof building !== 'object') return null;
-    if (!Array.isArray(building.floorPlans)) return null;
-    return zillowBuildApartmentPatch(building);
+
+    const hasFloorPlans = Array.isArray(building.floorPlans) && building.floorPlans.length > 0;
+
+    if (hasFloorPlans) {
+      return zillowBuildApartmentPatch(building);
+    }
+
+    // floorPlans missing or empty — fallback to unit-table DOM.
+    const domUnits = extractZillowAvailableUnitsFromDOM();
+    if (domUnits.length > 0) {
+      const offerBlock = extractZillowBuildingSpecialOffer();
+      const calculator = extractZillowRentalCostCalculator();
+      return {
+        listingScope: 'multi_unit_building',
+        buildingName: typeof building?.name === 'string' ? building.name : null,
+        buildingId: (building?.id ?? building?.buildingId) != null
+                      ? String(building.id ?? building.buildingId) : null,
+        buildingAddress: zillowFormatAddress(building?.address),
+        zpid: null,
+        unitNumber: null,
+        hdpUrl: null,
+        selectedUnit: null,
+        monthlyRent: null,
+        baseRent: null,
+        sqft: null,
+        bedrooms: null,
+        bathrooms: null,
+        listPriceIncludesRequiredMonthlyFees: null,
+        floorPlanSummaries: null,
+        availableUnits: domUnits,
+        availableUnitCount: domUnits.length,
+        identifiedUnitCount: domUnits.length,
+        rawAddress: building?.address?.streetAddress ?? null,
+        specialOfferText: offerBlock?.text ?? null,
+        specialOffers: offerBlock?.items ?? null,
+        rentalCostCalculator: calculator,
+      };
+    }
+
+    return null;
   }
 
   return null;
+}
+
+/**
+ * Read the building page's own DOM-rendered building name. Scoped to the
+ * building header root only so it never picks up "Similar apartments" /
+ * "Nearby apartments" / footer copy. Returns null when no reliable match.
+ */
+function readZillowBuildingNameFromDOM() {
+  if (typeof document === 'undefined') return null;
+  const doc = document;
+  const HEADER_SELECTORS = [
+    '[data-test-id="building-name"]',
+    '[data-testid="building-name"]',
+    'header h1',
+    'h1',
+  ];
+  let headerRoot = null;
+  let nameEl = null;
+  for (const sel of HEADER_SELECTORS) {
+    const el = doc.querySelector(sel);
+    if (el && (el.textContent || '').trim()) {
+      headerRoot = el.closest('section') || el.closest('article') || el.parentElement || el;
+      nameEl = el;
+      break;
+    }
+  }
+  if (!headerRoot || !nameEl) return null;
+  const rootText = (headerRoot.textContent || '').toLowerCase();
+  if (rootText.includes('similar apartments')
+      || rootText.includes('nearby apartments')
+      || rootText.includes('other apartments you might')) {
+    return null;
+  }
+  const txt = (nameEl.textContent || '').trim();
+  if (!txt || txt.length > 200) return null;
+  return txt;
+}
+
+/**
+ * Read the building page's own DOM-rendered address. Strictly scoped to the
+ * building header so the value matches the current listing — never pollutes
+ * from "Similar" modules or footers. Returns null when no reliable match.
+ */
+function readZillowBuildingAddressFromDOM() {
+  if (typeof document === 'undefined') return null;
+  const doc = document;
+  const addressEl = doc.querySelector('[data-test-id="building-address"]')
+    || doc.querySelector('[data-testid="building-address"]')
+    || doc.querySelector('.building-address');
+  if (!addressEl) return null;
+  let p = addressEl.parentElement;
+  for (let i = 0; p && i < 6; i += 1) {
+    const pt = (p.textContent || '').toLowerCase();
+    if (pt.includes('similar apartments')
+        || pt.includes('nearby apartments')
+        || pt.includes('other apartments you might')) {
+      return null;
+    }
+    p = p.parentElement;
+  }
+  const txt = (addressEl.textContent || '').trim();
+  if (!txt || txt.length > 400) return null;
+  return txt;
+}
+
+/**
+ * Read real, rendered floor-plan roll-ups from the Building page DOM.
+ *
+ * STRICTLY read from the page's floor-plan UI (e.g. "Floor plans" section /
+ * data-test-id floor-plan card). NEVER derive / fabricate from
+ * `availableUnits` rows or unit table data. Returns null when the page has
+ * no visible floor-plan section — guard will then keep blocked.
+ */
+function readZillowFloorPlanSummariesFromDOM() {
+  if (typeof document === 'undefined') return null;
+  const doc = document;
+
+  // Locate the floor-plan section root. Multiple Zillow variants exist, so we
+  // accept any of these hooks as the start of a real floor-plan block.
+  const SECTION_HOOKS = [
+    '[data-test-id="floorplan-section"]',
+    '[data-testid="floorplan-section"]',
+    '[data-test-id="floor-plans"]',
+    '[data-testid="floor-plans"]',
+    'section[aria-label*="loor" i][aria-label*="lan" i]',
+  ];
+  let sectionRoot = null;
+  for (const sel of SECTION_HOOKS) {
+    const el = doc.querySelector(sel);
+    if (el) { sectionRoot = el; break; }
+  }
+  if (!sectionRoot) {
+    // Fallback: heading-based scoping.
+    const heading = [...doc.querySelectorAll('h1, h2, h3, h4')]
+      .find((h) => /^\s*floor\s*plans?\s*$/i.test((h.textContent || '').trim()));
+    if (heading) sectionRoot = heading.parentElement;
+  }
+  if (!sectionRoot) return null;
+
+  const rootText = (sectionRoot.textContent || '').toLowerCase();
+  if (rootText.length > 200_000) return null; // sanity cap
+
+  // Each plan card exposes name + price range (+optional beds/baths/sqft).
+  const CARD_SELECTORS = [
+    '[data-test-id="floorplan-card"]',
+    '[data-testid="floorplan-card"]',
+    '[data-test-id="floor-plan-card"]',
+    '[data-testid="floor-plan-card"]',
+    '[class*="FloorplanCard" i]',
+    '[class*="floorplan-card" i]',
+  ];
+  const summarySelector = CARD_SELECTORS.join(',');
+
+  const cards = [...sectionRoot.querySelectorAll(summarySelector)];
+  if (cards.length === 0) return null;
+
+  const readNumber = (root, key) => {
+    const el = root.querySelector(`[data-test="${key}"]`)
+      || root.querySelector(`[data-testid="${key}"]`);
+    if (!el) return null;
+    const m = (el.textContent || '').replace(/[^0-9.]/g, '');
+    if (!m) return null;
+    const n = Number(m);
+    return Number.isFinite(n) ? n : null;
+  };
+
+  const readPriceRange = (root) => {
+    // Match "$X – $Y/mo" or "$X–$Y" inside the card.
+    const priceText = (root.textContent || '');
+    const m = priceText.match(/\$\s*([0-9][0-9,]*)\s*[–-]\s*\$\s*([0-9][0-9,]*)/);
+    if (m) {
+      const lo = Number(m[1].replace(/,/g, ''));
+      const hi = Number(m[2].replace(/,/g, ''));
+      if (Number.isFinite(lo) && Number.isFinite(hi)) {
+        return { min: lo, max: hi, same: lo === hi };
+      }
+    }
+    const single = priceText.match(/\$\s*([0-9][0-9,]*)/);
+    if (single) {
+      const n = Number(single[1].replace(/,/g, ''));
+      if (Number.isFinite(n)) return { min: n, max: null, same: false };
+    }
+    return null;
+  };
+
+  const seen = new Set();
+  const summaries = [];
+  for (const card of cards) {
+    const nameEl = card.querySelector('h2, h3, [data-test-id="plan-name"], [data-testid="plan-name"]');
+    const planName = nameEl ? (nameEl.textContent || '').trim() : null;
+    const beds = readNumber(card, 'bedrooms') ?? readNumber(card, 'beds');
+    const baths = readNumber(card, 'bathrooms') ?? readNumber(card, 'baths');
+    const sqft = readNumber(card, 'sqft') ?? readNumber(card, 'squareFootage');
+    const price = readPriceRange(card);
+    if (!planName || !price || price.min == null) continue;
+    const key = `${planName}|${beds ?? ''}|${baths ?? ''}|${sqft ?? ''}|${price.min ?? ''}|${price.max ?? ''}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    summaries.push({
+      planName,
+      bedrooms: beds ?? null,
+      bathrooms: baths ?? null,
+      sqft: sqft ?? null,
+      minPrice: price.min,
+      maxPrice: price.max ?? price.min,
+      unitCount: null,
+      source: 'dom.floorplan-card',
+    });
+  }
+  return summaries.length > 0 ? summaries : null;
+}
+
+/**
+ * Standalone DOM-only patch for Zillow Building pages.
+ *
+ * Used when __NEXT_DATA__ is unavailable or has no floorPlans.
+ * Clears the dirty monthlyRent / bedrooms / bathrooms / sqft that
+ * the generic extraction incorrectly populated.
+ *
+ * Non-destructive contract:
+ *   - Only fills fields that are missing/null on the source listingData.
+ *   - buildingName / buildingAddress come from the page's own DOM header.
+ *   - floorPlanSummaries come strictly from the page's rendered floor-plan
+ *     section; NEVER derived from availableUnits. Falls back to null when
+ *     the page has no visible floor-plan block.
+ *   - Existing valid values passed in via `existingResult` are preserved by
+ *     the caller (this builder only emits its observed DOM values; the
+ *     caller merges).
+ *
+ * Returns null when the unit table is not present on the page.
+ */
+function buildZillowBuildingPatchFromDOM() {
+  const domUnits = extractZillowAvailableUnitsFromDOM();
+  if (domUnits.length === 0) return null;
+
+  const domBuildingName = readZillowBuildingNameFromDOM();
+  const domBuildingAddress = readZillowBuildingAddressFromDOM();
+  const domFloorPlanSummaries = readZillowFloorPlanSummariesFromDOM();
+  const offerBlock = extractZillowBuildingSpecialOffer();
+  const calculator = extractZillowRentalCostCalculator();
+
+  return {
+    listingScope: 'multi_unit_building',
+    // Caller merges with non-destructive semantics — emit whatever the page
+    // explicitly rendered. Null when not present.
+    buildingName: domBuildingName,
+    buildingId: null,
+    buildingAddress: domBuildingAddress,
+    zpid: null,
+    unitNumber: null,
+    hdpUrl: null,
+    selectedUnit: null,
+    monthlyRent: null,
+    baseRent: null,
+    sqft: null,
+    bedrooms: null,
+    bathrooms: null,
+    listPriceIncludesRequiredMonthlyFees: null,
+    floorPlanSummaries: domFloorPlanSummaries,
+    availableUnits: domUnits,
+    availableUnitCount: domUnits.length,
+    identifiedUnitCount: domUnits.length,
+    rawAddress: domBuildingAddress,
+    specialOfferText: offerBlock?.text ?? null,
+    specialOffers: offerBlock?.items ?? null,
+    rentalCostCalculator: calculator,
+  };
 }
 
 /**
@@ -7806,35 +10217,84 @@ function zillowBuildPatchFromNextData(nextData, url) {
  */
 function applyZillowStructuredOverride(existingResult) {
   if (!existingResult || typeof existingResult !== 'object') return existingResult;
+  const url = (existingResult && existingResult.listingUrl)
+                || (typeof window !== 'undefined' ? window.location.href : '');
+  if (!zillowIsHost(url)) return existingResult;
+
   let patch = null;
+
+  // Try __NEXT_DATA__ first
   try {
-    const url = (existingResult && existingResult.listingUrl)
-                  || (typeof window !== 'undefined' ? window.location.href : '');
-    if (!zillowIsHost(url)) return existingResult;
     const nextData = zillowReadNextData();
-    if (!nextData) return existingResult;
-    patch = zillowBuildPatchFromNextData(nextData, url);
-  } catch (_) {
-    return existingResult;
+    if (nextData) {
+      patch = zillowBuildPatchFromNextData(nextData, url);
+
+    }
+  } catch (_) { /* fall through to DOM */ }
+
+  // Building pages: if __NEXT_DATA__ was absent or returned null,
+  // attempt DOM-only patch so the dirty $300 / bedrooms/bathrooms
+  // from the generic extraction are still cleared.
+  if (!patch) {
+    const isBuildingUrl = /\/(apartments|b)\//.test(url);
+    if (isBuildingUrl) {
+      patch = buildZillowBuildingPatchFromDOM();
+    }
   }
+
   if (!patch) return existingResult;
 
   const scope = patch.listingScope;
   const isBuilding = scope === 'multi_unit_building';
   const out = { ...existingResult };
 
-  // New fields — always written
+  // New fields — non-destructive: keep an existing valid value on the
+  // source listingData; only fill when the source is null/undefined and
+  // the patch carries a meaningful value. This matches the DOM fallback
+  // contract: we never clobber a valid name/address/floorPlanSummaries
+  // already extracted upstream.
   out.listingScope = scope;
-  out.buildingName = patch.buildingName;
-  out.buildingId = patch.buildingId;
-  out.buildingAddress = patch.buildingAddress;
+  const assignIfMissing = (key, patchValue, { nonEmptyArray = false } = {}) => {
+    const cur = out[key];
+    const curMissing = cur == null
+      || (typeof cur === 'string' && cur.trim() === '')
+      || (nonEmptyArray && Array.isArray(cur) && cur.length === 0);
+    if (curMissing) {
+      if (patchValue == null) return;
+      if (nonEmptyArray && Array.isArray(patchValue) && patchValue.length === 0) return;
+      out[key] = patchValue;
+    }
+  };
+  assignIfMissing('buildingName', patch.buildingName);
+  assignIfMissing('buildingId', patch.buildingId);
+  assignIfMissing('buildingAddress', patch.buildingAddress);
   out.zpid = patch.zpid;
   out.unitNumber = patch.unitNumber;
   out.hdpUrl = patch.hdpUrl;
-  out.floorPlanSummaries = patch.floorPlanSummaries;
+  // floorPlanSummaries must come strictly from rendered DOM (or upstream
+  // patch); never derive from availableUnits. Keep existing arrays.
+  assignIfMissing('floorPlanSummaries', patch.floorPlanSummaries, { nonEmptyArray: true });
   out.availableUnits = patch.availableUnits;
+  // availableUnitCount comes from the patch (which already prefers the floor
+  // plan roll-up total over the identified-unit count). We only fall back to
+  // the existing value when the patch did not provide one (shouldn't happen
+  // for building scope, but defensive).
+  out.availableUnitCount = patch.availableUnitCount ?? out.availableUnits.length;
+  out.identifiedUnitCount = patch.identifiedUnitCount ?? out.availableUnits.length;
+  out.selectedUnit = null;
   out.baseRent = patch.baseRent;
   out.listPriceIncludesRequiredMonthlyFees = patch.listPriceIncludesRequiredMonthlyFees;
+  // Special offer + rental cost calculator (building scope only — kept as
+  // null for single-unit paths).
+  if (patch.specialOfferText !== undefined) out.specialOfferText = patch.specialOfferText;
+  if (patch.specialOffers !== undefined) out.specialOffers = patch.specialOffers;
+  // Only overwrite an existing calculator with the patch when the patch
+  // carries a valid, non-null object. A `null` patch (extractor found no
+  // calculator block on the page) preserves any calculator we already have
+  // from a previous extraction pass, preventing accidental blanks.
+  if (patch.rentalCostCalculator && typeof patch.rentalCostCalculator === 'object') {
+    out.rentalCostCalculator = patch.rentalCostCalculator;
+  }
   // === Rental facts (selected_unit path: patch wins; fall back to existing
   //     DOM facts on listing). building path leaves these null. ===
   if (!isBuilding) {

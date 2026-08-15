@@ -8,6 +8,14 @@
 // up running a sale prompt against a room-rental structured listing (or
 // vice-versa).
 //
+// PR 1A: Also accept body.modeResolution.resolverVersion. The client now uses
+// the three-source resolver (v2) which may emit a `modeResolution` block with
+// a `resolverVersion` field. We don't currently *consume* that block — the
+// structuredListing field is still the source of truth — but we DO validate
+// the resolverVersion so that a misbehaving or downgraded client can be
+// detected during analysis. Unknown versions are tolerated (so old clients
+// keep working) but logged so we can spot drift in production.
+//
 // This file is the single source of truth. It is imported by both
 // supabase/functions/analyze/index.ts (the edge handler) and the vitest
 // routing test file in src/lib/reportAdapters.
@@ -15,6 +23,33 @@
 
 const STRUCTURED_LISTING_VALID_SOURCES = new Set(['zillow_structured']);
 const STRUCTURED_LISTING_VALID_SOURCE_VERSIONS = new Set(['zillow_structured_v1']);
+
+// Resolver versions we explicitly recognize. v2 = the three-source resolver
+// (JSON-LD + structured raw status + Hero DOM). Unknown values are accepted
+// for backwards compatibility but logged.
+const RECOGNIZED_RESOLVER_VERSIONS = new Set(['zillow_listing_mode_v2']);
+
+/**
+ * Returns the resolverVersion from a client-emitted modeResolution block, or
+ * null when the block is missing/invalid. Used as a soft compatibility hint;
+ * never used to short-circuit the priority chain.
+ */
+export function readModeResolverVersion(body: Record<string, unknown>): string | null {
+  const candidate: unknown =
+    (body as Record<string, unknown>).modeResolution ??
+    ((body as Record<string, unknown>).listingData as Record<string, unknown> | undefined)?.modeResolution;
+  if (!candidate || typeof candidate !== 'object') return null;
+  const v = (candidate as Record<string, unknown>).resolverVersion;
+  return typeof v === 'string' && v.length > 0 ? v : null;
+}
+
+/**
+ * Returns true for resolver versions the backend explicitly understands.
+ * Anything not in the allow-list is logged-but-accepted.
+ */
+export function isRecognizedResolverVersion(version: string | null): boolean {
+  return version != null && RECOGNIZED_RESOLVER_VERSIONS.has(version);
+}
 
 export function isStructuredListingValid(input: unknown): boolean {
   if (!input || typeof input !== 'object') return false;
@@ -54,6 +89,17 @@ export function resolveEffectiveReportMode(
   body: Record<string, unknown>,
   optionalDetails?: Record<string, unknown>,
 ): 'sale' | 'rent' | 'unknown' {
+  // PR 1A: read the client-emitted resolver version. We don't gate the
+  // decision on it (structuredListing is still source of truth), but we log
+  // unknown versions so we can detect client drift in production.
+  const resolverVersion = readModeResolverVersion(body);
+  if (resolverVersion && !isRecognizedResolverVersion(resolverVersion)) {
+    console.warn('[reportMode] unrecognized resolverVersion from client', {
+      resolverVersion,
+      recognized: Array.from(RECOGNIZED_RESOLVER_VERSIONS),
+    });
+  }
+
   // 1) structuredListing.classification.transactionType (highest priority when valid)
   const structuredTx = readStructuredTransactionType(body);
   if (structuredTx === 'sale' || structuredTx === 'rent') return structuredTx;

@@ -2,6 +2,10 @@ import { useState } from 'react';
 import type { AnalysisResult } from '../types';
 import { ListingHeader } from './ListingHeader';
 import { USSaleReport } from './us/USSaleReport';
+// BuildingRentReport.tsx is an untracked file accidentally deleted during
+// this session. Restore from your backup / another machine.
+// TODO: uncomment once BuildingRentReport.tsx is restored:
+// import { BuildingRentReport } from './us/BuildingRentReport';
 import { AnimatedNumber } from './AnimatedNumber';
 import { Check, AlertCircle, ArrowRight, ArrowLeft, TrendingUp, AlertTriangle, MessageCircle, Eye, DollarSign, Share2, Copy, CheckCircle, Sun, MessageSquare, Send, SquareCheck, Zap } from 'lucide-react';
 
@@ -243,15 +247,16 @@ export function ResultCard({ result, onBack, onShare, hideNav, isPublicShare, on
       hasUSModules
     );
 
-  console.log('[DIAG] ResultCard US route check', {
-    reportMode: result.reportMode,
-    sourceDomain,
-    source,
-    market,
-    listingUrl,
-    hasUSModules,
-    isUSZillow,
-  });
+  // Check if this is a multi-unit building report
+  const isBuildingReport =
+    result.reportMode === 'rent' &&
+    (result as any).listingScope === 'multi_unit_building';
+
+  if (isBuildingReport) {
+    // TODO: restore BuildingRentReport.tsx and replace with:
+    // return <BuildingRentReport result={result} />;
+    console.warn('[ResultCard] BuildingRentReport.tsx is missing — falling through to fallback');
+  }
 
   if (isUSZillow) {
     return <USSaleReport result={result} />;

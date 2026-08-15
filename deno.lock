@@ -1,0 +1,47 @@
+{
+  "version": "5",
+  "specifiers": {
+    "jsr:@supabase/functions-js@*": "2.110.8"
+  },
+  "jsr": {
+    "@supabase/functions-js@2.110.8": {
+      "integrity": "79de9d9de83149576cce2ff4b4d1bf2e1f40df472c04de413c67dc1ce1549220"
+    }
+  },
+  "workspace": {
+    "packageJson": {
+      "dependencies": [
+        "npm:@eslint/js@^9.39.1",
+        "npm:@radix-ui/react-accordion@^1.2.12",
+        "npm:@supabase/supabase-js@^2.101.1",
+        "npm:@tailwindcss/vite@^4.2.1",
+        "npm:@types/node@^24.10.1",
+        "npm:@types/react-dom@^19.2.3",
+        "npm:@types/react@^19.2.7",
+        "npm:@vercel/analytics@^2.0.1",
+        "npm:@vercel/functions@^3.4.3",
+        "npm:@vercel/node@^5.7.0",
+        "npm:@vitejs/plugin-react@^5.1.1",
+        "npm:eslint-plugin-react-hooks@^7.0.1",
+        "npm:eslint-plugin-react-refresh@~0.4.24",
+        "npm:eslint@^9.39.1",
+        "npm:gh-pages@^6.3.0",
+        "npm:globals@^16.5.0",
+        "npm:html2canvas@^1.4.1",
+        "npm:jspdf@^4.2.1",
+        "npm:lucide-react@0.577",
+        "npm:openai@^6.27.0",
+        "npm:react-dom@^19.2.0",
+        "npm:react-dropzone@15",
+        "npm:react-router-dom@^7.13.1",
+        "npm:react@^19.2.0",
+        "npm:supabase@^2.78.1",
+        "npm:tailwindcss@^4.2.1",
+        "npm:typescript-eslint@^8.48.0",
+        "npm:typescript@~5.9.3",
+        "npm:vite@^7.3.1",
+        "npm:vitest@^3.2.4"
+      ]
+    }
+  }
+}

@@ -757,6 +757,90 @@ async function waitForContentReady(tabId: number, retries = 5): Promise<boolean>
   return false;
 }
 
+// ═══════════════════════════════════════════════════════════════════════════
+// SINGLE fallback injection path — at most one executeScript per tab lifetime.
+//
+// Manifest content_scripts is the primary entry point. This helper exists ONLY
+// to recover from the rare case where a tab was already open before the
+// extension was installed/updated/reloaded — in that case the manifest
+// injection did not happen, and we must inject the script once to bring the
+// tab to parity.
+//
+// Hard rules:
+//   1. At most ONE fallback injection per tabId, for the entire lifetime of
+//      this sidepanel. Module-level Set guards against repeat calls from
+//      refreshPageData / handleTabChange / startAnalysis etc.
+//   2. PING first; only fall through to executeScript if PING truly fails
+//      after a couple of short retries. This avoids racing the manifest-
+//      injected instance during SW cold start or page init.
+//   3. Content script's own top-of-file singleton guard is the final safety
+//      net — see extension/content.js header.
+// ═══════════════════════════════════════════════════════════════════════════
+const _fallbackInjectedTabs = new Set<number>();
+
+async function ensureContentScriptOnce(tabId: number): Promise<{
+  ready: boolean;
+  injected: boolean;
+}> {
+  // Hard guard: never inject the same tab twice from this sidepanel.
+  if (_fallbackInjectedTabs.has(tabId)) {
+    // We already tried once — just re-check readiness, don't inject again.
+    const verify = await sendMessageWithTimeout<{ ready: boolean }>(
+      { action: 'PONG' },
+      tabId,
+      1000
+    );
+    return { ready: verify.success && verify.data?.ready === true, injected: false };
+  }
+
+  // Step 1: PING — manifest injection should already be there on Zillow tab.
+  for (let attempt = 1; attempt <= 2; attempt++) {
+    const pong = await sendMessageWithTimeout<{ ready: boolean }>(
+      { action: 'PONG' },
+      tabId,
+      1500
+    );
+    if (pong.success && pong.data?.ready === true) {
+      return { ready: true, injected: false };
+    }
+    if (attempt < 2) {
+      await new Promise(r => setTimeout(r, 300));
+    }
+  }
+
+  // Step 2: Single fallback executeScript. Mark BEFORE awaiting to close the
+  // race window where two concurrent ensureContentScriptOnce callers could
+  // both pass the Set check.
+  _fallbackInjectedTabs.add(tabId);
+
+  let tabUrl: string | undefined;
+  try {
+    const tab = await chrome.tabs.get(tabId);
+    tabUrl = tab.url;
+  } catch {
+    return { ready: false, injected: false };
+  }
+  if (!isInjectableUrl(tabUrl) || !isSupportedPropertyUrl(tabUrl)) {
+    return { ready: false, injected: false };
+  }
+
+  try {
+    noop('[ExtApp] Content script missing, performing single fallback injection...');
+    await chrome.scripting.executeScript({
+      target: { tabId },
+      files: ['content.js'],
+    });
+    noop('[ExtApp] content.js fallback-injected');
+  } catch (err: any) {
+    noop('[ExtApp] Fallback executeScript failed:', err?.message || String(err));
+    return { ready: false, injected: true };
+  }
+
+  // Step 3: Verify the (now singleton-guarded) script is responsive.
+  const ready = await waitForContentReady(tabId, 5);
+  return { ready, injected: true };
+}
+
 /**
  * Ensures the content script is loaded and performs a lightweight EXTRACT_LISTING.
  * Returns { data, error, detection } — never throws.
@@ -787,54 +871,22 @@ async function ensureContentScriptThenExtractListing(
     };
   }
 
-  // Step 1: PING — check if content script is already loaded
-  let pingOk = false;
-  try {
-    const pongResult = await sendMessageWithTimeout<{ ready: boolean }>(
-      { action: 'PONG' },
-      tabId,
-      1000
-    );
-    pingOk = pongResult.success && pongResult.data?.ready === true;
-    if (!pingOk) {
-      noop('[ExtApp] PING failed:', pongResult.error || 'unknown');
-    }
-  } catch (err) {
-    noop('[ExtApp] PING exception:', err);
-  }
-
-  // Step 2: Inject if needed (only if PING failed)
-  if (!pingOk) {
-    try {
-      noop('[ExtApp] Content script not responding, attempting injection...');
-      await chrome.scripting.executeScript({
-        target: { tabId },
-        files: ['content.js'],
-      });
-      noop('[ExtApp] content.js injected successfully');
-
-      // Wait for content script to initialize with backoff retry
-      const ready = await waitForContentReady(tabId, 5);
-      if (!ready) {
-        noop('[ExtApp] Content script may not be fully loaded after injection');
-        return {
-          data: null,
-          error: 'Content script not ready after injection. Please refresh the page and try again.',
-          detection: null,
-        };
-      }
-    } catch (err: any) {
-      // 仅对可注入页面打印严重错误；chrome:// 等页面预期失败，不打印
-      if (isInjectableUrl(tabUrl)) {
-        noop('[ExtApp] executeScript failed:', err.message, err);
-      }
-      // 注入失败，返回明确错误
+  // Step 1+2: single-shot PING → at most ONE fallback injection → re-verify.
+  // The shared helper enforces the once-per-tab-lifetime injection contract.
+  const ensured = await ensureContentScriptOnce(tabId);
+  if (!ensured.ready) {
+    if (ensured.injected) {
       return {
         data: null,
-        error: `Failed to inject content script: ${err.message}. Please refresh the page.`,
+        error: 'Content script not ready after injection. Please refresh the page and try again.',
         detection: null,
       };
     }
+    return {
+      data: null,
+      error: 'Content script not responding. Please refresh the Zillow page and try again.',
+      detection: null,
+    };
   }
 
   // Step 2b: Verify tab is still valid after injection attempt
@@ -876,7 +928,7 @@ async function ensureContentScriptThenExtractListing(
     if (!extractResult.success) {
       return {
         data: null,
-        error: extractResult.error || 'Failed to communicate with content script. Please try again.',
+        error: extractResult.error || 'Failed to communicate with content script. Please refresh the page and try again.',
         detection: null,
       };
     }
@@ -916,14 +968,14 @@ async function ensureContentScriptThenExtractListing(
 }
 
 /**
- * Pure ping + inject: ensures content script is loaded, returns whether it succeeded.
- * Uses retry mechanism to handle transient connection failures.
- * Used by startAnalysis (no EXTRACT_LISTING call needed there).
+ * Pure ping + delegate: ensures content script is loaded for `startAnalysis`.
+ *
+ * All PING / fallback-injection logic now lives in `ensureContentScriptOnce`
+ * (one executeScript per tab lifetime, gated by an internal Set + content.js
+ * top-of-file singleton guard). This wrapper exists purely so callers in the
+ * extraction / analyze paths can keep their current shape.
  */
 async function ensureContentScriptLoaded(tabId: number): Promise<boolean> {
-  const PING_TIMEOUT_MS = 3000;  // 3 秒超时，给繁忙页面足够时间
-  const MAX_RETRIES = 3;
-
   // 获取 tab URL 用于错误分类
   let tabUrl: string | undefined;
   try {
@@ -937,68 +989,8 @@ async function ensureContentScriptLoaded(tabId: number): Promise<boolean> {
   if (!isInjectableUrl(tabUrl)) return false;
   if (!isSupportedPropertyUrl(tabUrl)) return false;
 
-  for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
-    let pingOk = false;
-    let lastError = '';
-
-    try {
-      const pongResult = await sendMessageWithTimeout<{ ready: boolean; instanceId?: string }>(
-        { action: 'PONG' },
-        tabId,
-        PING_TIMEOUT_MS
-      );
-      pingOk = pongResult.success && pongResult.data?.ready === true;
-      if (pingOk) {
-        if (attempt > 1) {
-          noop(`[ExtApp] PING succeeded on attempt ${attempt}`);
-        }
-        return true;
-      }
-      lastError = pongResult.error || 'PONG returned !ready';
-    } catch (err: any) {
-      lastError = err?.message || String(err);
-    }
-
-      noop(`[ExtApp] PING attempt ${attempt}/${MAX_RETRIES} failed: ${lastError}`);
-
-    // 最后一次尝试失败后才注入
-    if (attempt === MAX_RETRIES) {
-      try {
-        noop('[ExtApp] Content script not responding, injecting...');
-        await chrome.scripting.executeScript({
-          target: { tabId },
-          files: ['content.js'],
-        });
-        noop('[ExtApp] content.js injected successfully');
-
-        // 注入后验证
-        const verifyResult = await sendMessageWithTimeout<{ ready: boolean }>(
-          { action: 'PONG' },
-          tabId,
-          PING_TIMEOUT_MS
-        );
-        pingOk = verifyResult.success && verifyResult.data?.ready === true;
-
-        if (pingOk) {
-          noop('[ExtApp] Content script ready after injection');
-          return true;
-        }
-        noop('[ExtApp] Content script injected but not ready');
-        return false;
-      } catch (err: any) {
-        // 非可注入页面的 executeScript 失败预期，不需要警告
-        if (isInjectableUrl(tabUrl)) {
-          noop('[ExtApp] executeScript failed:', err?.message || String(err));
-        }
-        return false;
-      }
-    }
-
-    // 短暂等待后再重试
-    await new Promise(resolve => setTimeout(resolve, 500));
-  }
-
-  return false;
+  const { ready } = await ensureContentScriptOnce(tabId);
+  return ready;
 }
 
 // ── Unified dispatch helper for extraction results ──

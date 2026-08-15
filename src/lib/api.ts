@@ -49,11 +49,6 @@ async function getAuthenticatedSession(): Promise<{ session: any; user: any }> {
   
   const user = session?.user ?? null;
   
-  console.log('=== Auth Session Check ===');
-  console.log('Session exists:', !!session);
-  console.log('Access token exists:', !!session?.access_token);
-  console.log('User email:', user?.email || 'N/A');
-  
   return { session, user };
 }
 
@@ -65,12 +60,6 @@ async function getAuthenticatedSession(): Promise<{ session: any; user: any }> {
  */
 function buildAuthHeaders(session: any, sourceDomain?: string): HeadersInit {
   const token = session?.access_token;
-  const tokenPreview = token ? token.substring(0, 10) : 'NONE';
-
-  console.log('=== Building Auth Headers ===');
-  console.log('Authorization token preview:', tokenPreview);
-  console.log('Token is anon key?', token === SUPABASE_ANON_KEY);
-  console.log('Token starts with eyJ?', token?.startsWith('eyJ'));
 
   // Use the correct anon key based on server
   const isUSServer = sourceDomain && (sourceDomain.includes('zillow') || sourceDomain.includes('realtor'));
@@ -164,32 +153,11 @@ export async function submitAnalysis(data: AnalyzeRequest, sourceDomain?: string
   
   console.log('submitAnalysis: User email:', user?.email);
 
-  // #region agent log
-  const token = session.access_token as string;
-  const tokenLen = token?.length ?? 0;
-  const tokenParts = token ? token.split('.').length : 0;
-  const tokenIsAnon = token === SUPABASE_ANON_KEY;
-  const payload = decodeJwtPayload(token);
-  const nowSec = Math.floor(Date.now() / 1000);
-  const isExpired = payload?.exp != null && nowSec > payload.exp;
-  console.log('[DEBUG JWT] tokenLen=%s tokenParts=%s tokenIsAnon=%s isExpired=%s payload=%o', tokenLen, tokenParts, tokenIsAnon, isExpired, payload);
-  fetch('http://127.0.0.1:7873/ingest/14e98dc4-2a4e-4ddd-8421-c56a70cfbbc3',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'c16c5f'},body:JSON.stringify({sessionId:'c16c5f',location:'api.ts:submitAnalysis',message:'JWT diagnostic',data:{tokenLen,tokenParts,tokenIsAnon,payloadExp:payload?.exp,payloadIat:payload?.iat,payloadAud:payload?.aud,nowSec,isExpired},timestamp:Date.now(),hypothesisId:'A,B,C,E'})}).catch(()=>{});
-  // #endregion
-
   const response = await fetch(url, {
     method: 'POST',
     headers: buildAuthHeaders(session, sourceDomain),
     body: JSON.stringify(data),
   });
-
-  // Debug: 打印实际发送的请求头
-  console.log('=== Actual Request Sent ===');
-  console.log('Full headers sent:', {
-    'Content-Type': 'application/json',
-    'apikey': SUPABASE_ANON_KEY,
-    'Authorization': `Bearer ${session?.access_token}`,
-  });
-  console.log('Authorization token (full):', session?.access_token);
 
   // 改进错误处理：先读取 response body，再解析
   const raw = await response.text();
@@ -318,6 +286,7 @@ export async function getAnalysisProgress(analysisId: string, sourceDomain?: str
 
 export interface BasicAnalysisRequest {
   reportMode: 'rent' | 'sale';
+  listingScope?: 'single_property' | 'entire_home' | 'private_room' | 'multi_unit_building' | 'selected_unit' | 'unknown';
   description: string;
   optionalDetails?: {
     weeklyRent?: string;
@@ -330,6 +299,12 @@ export interface BasicAnalysisRequest {
     sourceDomain?: string;
     market?: string;
     listingUrl?: string;
+    /** Building-level fields — only present when listingScope === 'multi_unit_building' */
+    buildingName?: string | null;
+    buildingAddress?: string | null;
+    availableUnits?: unknown[];
+    floorPlanSummaries?: unknown[];
+    specificUnitSelected?: boolean;
   };
   source?: string;
   sourceDomain?: string;
@@ -382,6 +357,7 @@ export async function analyzeBasicSync(data: BasicAnalysisRequest, sourceDomain?
     headers: authHeaders,
     body: JSON.stringify({
       reportMode: data.reportMode,
+      listingScope: data.listingScope,
       description: data.description,
       optionalDetails: data.optionalDetails,
       source: data.source,

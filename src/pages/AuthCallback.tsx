@@ -23,13 +23,6 @@ function pushSessionToExtension(session: Session, options: PushSessionOptions = 
   const hasRefreshToken = !!session.refresh_token;
   const userId = session.user?.id;
 
-  console.log('[HomeScope AuthCallback] pushSessionToExtension: START');
-  console.log('[HomeScope AuthCallback]   hasAccessToken:', hasAccessToken);
-  console.log('[HomeScope AuthCallback]   hasRefreshToken:', hasRefreshToken);
-  console.log('[HomeScope AuthCallback]   userId:', userId);
-  console.log('[HomeScope AuthCallback]   flowId:', flowId);
-  console.log('[HomeScope AuthCallback]   accessToken:', session.access_token ? session.access_token.substring(0, 10) + '...' : 'null');
-
   // 发送 session 到 content script（通过 postMessage）
   const message = {
     source: 'homescope-auth-bridge',
@@ -42,12 +35,7 @@ function pushSessionToExtension(session: Session, options: PushSessionOptions = 
     }
   };
 
-  console.log('[HomeScope AuthCallback]   targetOrigin: * (any, for extension content script)');
-  console.log('[HomeScope AuthCallback]   message.type:', message.type);
-
   window.postMessage(message, '*');
-
-  console.log('[HomeScope AuthCallback] pushSessionToExtension: postMessage dispatched');
 }
 
 /** 扩展 flow_id 通过 URL 参数传入（sessionStorage 跨标签不可达，必须用 URL） */
@@ -74,8 +62,6 @@ export function AuthCallback() {
     const flowId = getFlowId();
     const isFromExtension = !!flowId;
 
-    console.log('[HomeScope AuthCallback] PAGE LOADED, isFromExtension:', isFromExtension, ', flowId:', flowId);
-
     async function pushIfSession(session: { user: { id: string }; access_token: string; refresh_token?: string } | null) {
       if (finished || !session) return;
       finished = true;
@@ -97,7 +83,6 @@ export function AuthCallback() {
 
     const { data: { subscription } } = supabase.auth.onAuthStateChange((event, sess) => {
       if (event === 'SIGNED_IN' && sess) {
-        console.log('[HomeScope AuthCallback] onAuthStateChange SIGNED_IN, userId=', sess.user?.id);
         void pushIfSession(sess);
       }
     });
@@ -106,12 +91,6 @@ export function AuthCallback() {
     // 导致 SIGNED_IN 事件在 AuthCallback 监听器注册前就触发了）
     void (async () => {
       const { data, error } = await supabase.auth.getSession();
-      console.log('[HomeScope AuthCallback] immediate getSession:', {
-        hasSession: !!data.session,
-        userId: data.session?.user?.id,
-        error: error?.message,
-        url: window.location.href
-      });
       if (data.session) {
         await pushIfSession(data.session);
       }

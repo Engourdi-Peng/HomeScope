@@ -608,7 +608,7 @@ function QuestionsToAskCard({ result }: { result: AnalysisResult }) {
     'Is the property legally registered as a single-family, two-family, or multi-family home?',
     'Are there any open DOB, HPD, or permit violations?',
     'What is the annual property tax and assessed value?',
-    'How old are the roof, boiler, electrical panel, plumbing, and heating system?',
+    'How old are the roof, heating and cooling systems, water heater, electrical panel, and plumbing, and are service records available?',
     'Can you provide recent interior photos or inspection records?',
     'Has there been any water intrusion, flooding, or drainage issue?',
     'What are realistic market rents if part of the home is rented out?',

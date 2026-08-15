@@ -68,6 +68,8 @@ import {
 } from 'lucide-react';
 import type { NormalizedReport, ReportSection, ContradictionVM } from '../../lib/reportAdapters/types';
 import type { ReportViewModel } from '../../lib/reportAdapters';
+import { resolveBuildingDetails } from '../../lib/reportAdapters/buildingDetails';
+import type { BuildingDetailsView } from '../../lib/reportAdapters/buildingDetails';
 import { PhotoSpaceAnalysisCard } from './PhotoSpaceAnalysisCard';
 import { UPSELL_CTA_FALLBACK } from '../../lib/reportAdapters/Fallbacks';
 
@@ -518,13 +520,6 @@ function HeroSection({ report, isBasic }: { report: NormalizedReport; isBasic?: 
     } else {
       nextBestMoveText = 'Ask the agent for legal use, repair history, open permits, and comparable sales before booking a viewing.';
     }
-
-    console.log('[TRACE_RENDER_NEXT_BEST_MOVE_SOURCE]', {
-      vmNextBestMove: raw?.nextBestMove ?? raw?.next_step,
-      rawNextBestMove: raw?.nextBestMove,
-      rawNextStep: raw?.next_step,
-      actuallyRenderedText: nextBestMoveText,
-    });
 
     return nextBestMoveText;
   }, [hero.address, hero.title, isBasic, report]);
@@ -1014,7 +1009,7 @@ function buildRiskAction(riskText: string, isNYC = false, reportProfile?: string
 
   // 2. Maintenance — excludes basement/water (those go to Environmental or Structural)
   if (/maintenance|deferred|roof|drainage|leak|dated|old systems|boiler|electrical|plumbing|hvac/i.test(t)) {
-    let base = 'Ask for the roof age, boiler age, electrical panel details, plumbing history, HVAC condition, and recent repair records before viewing. Bring a licensed inspector if still interested.';
+    let base = 'Ask for the roof age, heating and cooling system service history, electrical panel details, plumbing history, and recent repair records before viewing. Bring a licensed inspector if still interested.';
     if (/cracked tile|cracked.floor/i.test(t)) {
       base += ' Also ask whether the basement has had water intrusion, drainage issues, or foundation repairs.';
     }
@@ -1645,8 +1640,14 @@ function CarryingCostsSection({ report }: { report: NormalizedReport }) {
     return m;
   }
 
-  // Extract breakdown values — read from mb fields directly (they are { value: number } or plain numbers)
-  const estimatedMonthlyPayment = toMonthly(
+  // ── Total estimated monthly payment ─────────────────────────────────────────
+  // Priority: carrying_costs.primary_monthly_estimate (backend deterministic
+  // fallback when monthly_breakdown.estimatedMonthlyPayment is null) →
+  // monthly_breakdown.estimatedMonthlyPayment.value → zillowFinancials fallback.
+  const primaryMonthly = toMonthly(
+    carrying_costs.primary_monthly_estimate ?? carrying_costs.primaryMonthlyEstimate ?? null
+  );
+  const estimatedMonthlyPayment = primaryMonthly || toMonthly(
     mb.estimatedMonthlyPayment?.value ?? mb.estimatedMonthlyPayment ??
     zf.monthlyPayment?.estimatedPayment?.value ?? zf.monthlyPayment?.estimatedMonthlyPayment?.value ??
     (raw as any).monthlyPayment ?? (raw as any).monthly_payment ?? null
@@ -1720,6 +1721,21 @@ function CarryingCostsSection({ report }: { report: NormalizedReport }) {
   const hasBreakdown = !!(estimatedMonthlyPayment || principalAndInterest || propertyTaxes || homeInsurance);
   const hasCostSignal = hasBreakdown || !!(effectiveAnnualTax || hoaFees === 'N/A');
 
+  // Monthly tax equivalent — available from AI decision even when no monthly breakdown exists
+  const monthlyTaxEquivalent = toMonthly(
+    carrying_costs.monthly_tax_equivalent ?? carrying_costs.monthlyTaxEquivalent ??
+    (raw as any).monthlyTaxEquivalent ?? null
+  );
+
+  // Status flag — when carrying_costs.status === "derived" the total was
+  // assembled from individual components rather than read from a single Zillow field.
+  const costStatus = (carrying_costs as any).status ?? null;
+  const isDerived = costStatus === 'derived';
+
+  // Section title: only use "What It May Really Cost Monthly" when we have a real monthly payment
+  // breakdown from Zillow data. Otherwise downgrade to "Known Carrying Costs".
+  const sectionTitle = hasBreakdown ? 'What It May Really Cost Monthly' : 'Known Carrying Costs';
+
   if (!hasCostSignal) {
     return (
       <div className="bg-white rounded-2xl p-6 sm:p-8 md:p-10 mb-8 border border-slate-200">
@@ -1727,7 +1743,7 @@ function CarryingCostsSection({ report }: { report: NormalizedReport }) {
           <div className="w-10 h-10 rounded-xl bg-violet-500/10 flex items-center justify-center shrink-0">
             <DollarSign className="w-5 h-5 text-violet-600/70" />
           </div>
-          <h2 className="text-xl sm:text-2xl font-bold text-slate-900">What It May Really Cost Monthly</h2>
+          <h2 className="text-xl sm:text-2xl font-bold text-slate-900">{sectionTitle}</h2>
         </div>
         <div className="rounded-xl p-4 mb-4 bg-amber-50 border border-amber-200">
           <div className="flex items-start gap-3">
@@ -1746,7 +1762,7 @@ function CarryingCostsSection({ report }: { report: NormalizedReport }) {
         <div className="w-10 h-10 rounded-xl bg-violet-500/10 flex items-center justify-center shrink-0">
           <DollarSign className="w-5 h-5 text-violet-600/70" />
         </div>
-        <h2 className="text-xl sm:text-2xl font-bold text-slate-900">What It May Really Cost Monthly</h2>
+          <h2 className="text-xl sm:text-2xl font-bold text-slate-900">{sectionTitle}</h2>
       </div>
 
       {/* Zillow Monthly Payment Breakdown */}
@@ -1754,10 +1770,15 @@ function CarryingCostsSection({ report }: { report: NormalizedReport }) {
         <div className="space-y-1 mb-6">
           {/* Total */}
           {estimatedMonthlyPayment && (
-            <div className="flex justify-between items-center py-2.5 border-b border-slate-200 mb-2">
-              <span className="text-sm font-semibold text-slate-900">Zillow Estimated Monthly Payment</span>
-              <span className="text-lg font-bold text-slate-900">{estimatedMonthlyPayment}</span>
-            </div>
+            <>
+              <div className="flex justify-between items-center py-2.5 border-b border-slate-200 mb-2">
+                <span className="text-sm font-semibold text-slate-900">Estimated Monthly Payment</span>
+                <span className="text-lg font-bold text-slate-900">{estimatedMonthlyPayment}</span>
+              </div>
+              {isDerived && (
+                <p className="text-xs text-slate-400 italic mb-3">Calculated from Zillow's listed payment components. Utilities are not included.</p>
+              )}
+            </>
           )}
           {/* Breakdown rows */}
           {principalAndInterest && (
@@ -1803,7 +1824,11 @@ function CarryingCostsSection({ report }: { report: NormalizedReport }) {
           {/* Disclaimer */}
           <div className="mt-3 pt-2 border-t border-slate-100">
             {hasBreakdown && estimatedMonthlyPayment ? (
-              <p className="text-xs text-slate-400 italic">Zillow estimates monthly ownership cost around {estimatedMonthlyPayment}, excluding utilities. Verify taxes, insurance, loan terms, and actual utility costs before relying on this number.</p>
+              <p className="text-xs text-slate-400 italic">
+                {isDerived
+                  ? 'Verify taxes, insurance, loan terms, and actual utility costs before relying on this number.'
+                  : `Zillow estimates monthly ownership cost around ${estimatedMonthlyPayment}, excluding utilities. Verify taxes, insurance, loan terms, and actual utility costs before relying on this number.`}
+              </p>
             ) : (
               <p className="text-xs text-slate-400 italic">This is a Zillow estimate, not a final ownership budget.</p>
             )}
@@ -1818,6 +1843,12 @@ function CarryingCostsSection({ report }: { report: NormalizedReport }) {
             <span className="text-sm text-slate-600">Annual Tax</span>
             <span className="text-sm font-medium text-slate-900">{effectiveAnnualTax}</span>
           </div>
+          {monthlyTaxEquivalent && (
+            <div className="flex justify-between items-start py-1.5">
+              <span className="text-sm text-slate-600">Monthly Tax Equivalent</span>
+              <span className="text-sm font-medium text-slate-900">{monthlyTaxEquivalent}</span>
+            </div>
+          )}
         </div>
       )}
 
@@ -2045,26 +2076,6 @@ function normalizeFitSection(report: NormalizedReport): {
   const raw = report.raw ?? {};
   const layout = raw.layout_fit ?? raw.layoutFit ?? {};
 
-  // ── Detect report profile from raw data ────────────────────────────────
-  const listingText = [
-    raw.listingInfo?.description ?? '',
-    raw.listingOverview?.description ?? '',
-    raw.description ?? '',
-    raw.property_snapshot?.homeType ?? '',
-    raw.property_snapshot?.home_type ?? '',
-  ].join(' ').toLowerCase();
-
-  const profile = (raw.meta?.reportProfile ?? raw.reportProfile ?? '') ||
-    (raw.property_snapshot?.homeType ?? raw.property_snapshot?.home_type ?? '').toLowerCase();
-
-  const isSingleFamilyProfile =
-    /single\s*family|singlefamily|single\s*family\s*residence|single\s*family\s*home/i.test(profile) ||
-    (/single/i.test(profile) && !/multi/i.test(profile));
-
-  const hasRentalSignal = /rental\s*unit|basement\s*apartment|income\s*unit|legal\s*two.family|2.family|multi.family|duplex|separate\s*unit|tenant|walk.in\s*apartment|mother.daughter/i.test(listingText);
-
-  const isSFOC = isSingleFamilyProfile && !hasRentalSignal;
-
   // best_for: array of strings, or comma/semicolon/newline separated string
   let bestFor: string[] = [];
   const bfRaw = layout.best_for ?? layout.bestFor;
@@ -2086,81 +2097,14 @@ function normalizeFitSection(report: NormalizedReport): {
   // whyItMatters from summary field
   const summary = toText(layout.summary ?? '');
 
-  // ── Property-aware fallbacks — must NEVER carry data from another listing ──
-  // Every string below is derived at runtime from the actual report's raw fields.
-  // If a field is missing, we render a neutral placeholder, never a hardcoded
-  // city / year / system name from a prior report.
-  if (bestFor.length === 0) {
-    // Pull representative facts from raw listing data
-    const snap = raw.property_snapshot ?? {};
-    const info = raw.listingInfo ?? {};
-    const beds = Number(snap.beds ?? snap.bedrooms ?? info.bedrooms ?? NaN);
-    const baths = Number(snap.baths ?? snap.bathrooms ?? info.bathrooms ?? NaN);
-    const bedroomBit = Number.isFinite(beds) && beds > 0
-      ? `${beds}-bedroom`
-      : 'multi-bedroom';
-    const bathBit = Number.isFinite(baths) && baths > 0
-      ? `${baths}-bath`
-      : 'single-bath';
-    const homeType = String(snap.homeType ?? snap.home_type ?? info.propertyType ?? '').trim();
-    const typeBit = homeType
-      ? homeType.toLowerCase().includes('multi')
-        ? 'multi-family layout'
-        : homeType.toLowerCase().includes('condo')
-          ? 'condo layout'
-          : homeType.toLowerCase().includes('co-op') || homeType.toLowerCase().includes('coop')
-            ? 'co-op layout'
-            : 'single-family layout'
-      : isSFOC ? 'single-family layout' : 'this layout';
-
-    if (isSFOC) {
-      bestFor = [
-        `Owner-occupants looking for a ${bedroomBit} ${typeBit}`,
-        `Buyers prioritizing ${bathBit} layouts with private outdoor space`,
-        'Buyers prioritizing this neighborhood\'s amenities and commute access',
-      ];
-    } else {
-      bestFor = [
-        `Owner-occupants seeking rental income to offset a ${bedroomBit} ${typeBit}`,
-        'Multi-generational households needing separate living areas',
-        'Buyers comfortable with renovation and permit verification',
-      ];
-    }
-  }
-  if (notIdealFor.length === 0) {
-    if (isSFOC) {
-      notIdealFor = [
-        'Investors seeking strong rental cash flow',
-        'Buyers needing a large open floor plan',
-        'Buyers unwilling to inspect older building systems',
-      ];
-    } else {
-      notIdealFor = [
-        'Buyers wanting move-in-ready condition with no renovation work',
-        'Buyers with limited renovation budget',
-        'Buyers uncomfortable with legal-use or rental-income verification',
-      ];
-    }
-  }
-
-  const defaultWhyItMatters = (() => {
-    const snap = raw.property_snapshot ?? {};
-    const info = raw.listingInfo ?? {};
-    const yearBuiltRaw = snap.year_built ?? snap.yearBuilt ?? info.yearBuilt;
-    const yearBuiltNum = Number(yearBuiltRaw);
-    if (Number.isFinite(yearBuiltNum) && yearBuiltNum > 1800 && yearBuiltNum < 2030) {
-      if (yearBuiltNum < 1978) {
-        return `Built in ${yearBuiltNum} — electrical panel, plumbing material, heating system, roof age, basement moisture history, and possible lead-based paint risk due to pre-1978 construction should all be verified before relying on this property. Permit history for any renovation work should also be confirmed.`;
-      }
-      return `Built in ${yearBuiltNum} — electrical panel, plumbing, heating, and roof age should be verified before relying on this property. Permit history for any renovation work should also be confirmed.`;
-    }
-    return 'Year built was not disclosed by the listing. Electrical, plumbing, heating, roof age, and permit history should be verified independently before relying on this property.';
-  })();
-
+  // ── Only use what the AI actually returned ────────────────────────────────────
+  // AI chose to leave goodFitIf / notIdealIf empty when evidence is insufficient.
+  // Never substitute invented buyer profiles.  When both arrays are empty the
+  // owning component (WhoThisPropertyWorksForSection) will hide the module.
   return {
     bestFor,
     notIdealFor,
-    whyItMatters: summary || defaultWhyItMatters,
+    whyItMatters: summary || '',
   };
 }
 
@@ -2250,7 +2194,7 @@ const FIELD_NAME_PATTERNS = [
 function fieldToQuestion(fieldText: string, reportProfile?: string): string {
   const t = fieldText.toLowerCase();
   const isSFOC = reportProfile === 'single_family_owner_occupier';
-  if (/roof|drainage|leak/i.test(t)) return 'How old are the roof, boiler, electrical panel, plumbing, and HVAC systems?';
+  if (/roof|drainage|leak/i.test(t)) return 'How old are the roof, heating and cooling systems, water heater, electrical panel, and plumbing, and are service records available?';
   if (/electrical|plumb|heating|boiler|system|mechanical/i.test(t)) return 'When were the major systems last updated, and are maintenance records available?';
   if (/comparable|comp|market trends|recent sale/i.test(t)) return isSFOC
     ? 'Can you provide recent comparable single-family sales for similar homes in the area?'
@@ -2334,7 +2278,7 @@ function getFallbackQuestions(isNYC: boolean, reportProfile?: string): Array<{ q
     { q: 'Can you provide recent comparable sales for similar nearby properties to support the asking price?', tag: 'Price', color: 'bg-amber-100 text-amber-700' },
     { q: 'Are there any open permits, violations, complaints, or unresolved building records for this address?', tag: 'Legal', color: 'bg-violet-100 text-violet-700' },
     { q: 'Are gas, electric, heat, and water separately metered or owner-paid? Can you provide recent utility bills?', tag: 'Costs', color: 'bg-teal-100 text-teal-700' },
-    { q: 'How old are the roof, boiler/heating system, electrical panels, plumbing, and water heater?', tag: 'Systems', color: 'bg-orange-100 text-orange-700' },
+    { q: 'How old are the roof, heating and cooling systems, water heater, electrical panel, and plumbing, and are service records available?', tag: 'Systems', color: 'bg-orange-100 text-orange-700' },
     { q: 'What is the basement’s current condition, access, permitted use, and water-intrusion history?', tag: 'Basement', color: 'bg-blue-100 text-blue-700' },
   ];
 }
@@ -2553,13 +2497,6 @@ function QuestionsToAskSection({ report, viewModel, isBasic }: { report: Normali
   // ── P0-7: Apply skip filter to final list before rendering ───────────────────────
   // Skips questions about already-known fields to avoid redundant/untrustworthy questions
   finalQuestions = finalQuestions.filter(q => !shouldSkipQuestion(q.question));
-
-  console.log('[TRACE_RENDER_QUESTIONS_SOURCE]', {
-    questionsFromViewModel: viewModel?.questions?.map(q => q.text),
-    rawQuestionsToAsk: rawResultForTrace?.questions_to_ask,
-    rawQuestionsToAskCamel: rawResultForTrace?.questionsToAsk,
-    actuallyRenderedQuestions: finalQuestions.map(q => q.question),
-  });
 
   if (finalQuestions.length === 0) return null;
 
@@ -3347,20 +3284,22 @@ function LocationRealityCheckSection({ report }: { report: NormalizedReport }) {
   }
 
   // Standard "What to verify" questions — property-aware
+  // Hurricane/flood question is only shown when flood zone data is actually available
   const defaultVerifyItems = isSFOC ? [
     'What are recent comparable single-family sales nearby?',
     'What are actual commute times to key destinations?',
     'What is evening and weekend parking like?',
     'What are nearby school ratings and catchment zones?',
     'What is the safety profile of this block?',
-    'Is the property in a flood zone or hurricane evacuation zone?',
   ] : [
     'What are the actual nearby transit options and commute times?',
     'What are the school ratings and catchment zones?',
     'What is the crime and safety profile of this block?',
-    'Is the property in a flood zone or hurricane evacuation zone?',
     'How easy is parking during evenings and weekends?',
   ];
+  if (extractedLocation.floodZone) {
+    defaultVerifyItems.push('Is the property in a mapped flood zone, and could it affect insurance requirements?');
+  }
 
   const seen = new Set<string>();
   const allVerify: string[] = [];
@@ -3605,6 +3544,360 @@ function normalizeRentRiskLevel(level: string | undefined): string {
   if (upper === 'MODERATE' || upper === 'MEDIUM') return 'Medium';
   if (upper === 'HIGH' || upper === 'CRITICAL') return 'High';
   return level;
+}
+
+// ── Multi-unit Building Rent ──────────────────────────────────────────────────
+// Renders only when the underlying result has structured Building Rent facts
+// (reportMode === 'rent' && listingScope === 'multi_unit_building').
+// All values come from the existing buildingDetails payload — no synthesis.
+function formatPriceRange(
+  min: number | null,
+  max: number | null,
+  unit = '/mo',
+): string | null {
+  if (min == null && max == null) return null;
+  if (min != null && max != null) {
+    if (min === max) return `$${min.toLocaleString()}${unit}`;
+    return `$${min.toLocaleString()} – $${max.toLocaleString()}${unit}`;
+  }
+  const v = min ?? max;
+  return v != null ? `$${v.toLocaleString()}${unit}` : null;
+}
+
+function formatBedsBaths(
+  beds: number | null,
+  baths: number | null,
+): string | null {
+  const parts: string[] = [];
+  if (beds != null) parts.push(beds === 0 ? 'Studio' : `${beds} bed${beds === 1 ? '' : 's'}`);
+  if (baths != null) parts.push(`${baths} bath${baths === 1 ? '' : 's'}`);
+  return parts.length > 0 ? parts.join(' / ') : null;
+}
+
+function BuildingRentSection({ report }: { report: NormalizedReport }) {
+  const raw = (report.raw ?? {}) as Record<string, unknown>;
+  const details: BuildingDetailsView | null = resolveBuildingDetails(raw);
+  if (!details) return null;
+
+  const {
+    availableUnitCount,
+    identifiedUnitCount,
+    floorPlans,
+    availableUnits,
+    rentalCostCalculator,
+    specialOfferText,
+    specialOffers,
+    floorPlanRollupFeesIncluded,
+    floorPlanRollupFeeMin,
+    floorPlanRollupFeeMax,
+  } = details;
+
+  const hasAvailability =
+    availableUnitCount > 0 || identifiedUnitCount > 0 || floorPlans.length > 0;
+  const hasAnyFloorPlanFact =
+    floorPlans.length > 0 ||
+    floorPlanRollupFeeMin != null ||
+    floorPlanRollupFeeMax != null ||
+    floorPlanRollupFeesIncluded != null;
+  const hasCalculator =
+    rentalCostCalculator != null &&
+    (rentalCostCalculator.applicationCost != null ||
+      rentalCostCalculator.holdingCost != null ||
+      rentalCostCalculator.totalApplicationCost != null ||
+      rentalCostCalculator.estimatedMonthlyMin != null ||
+      rentalCostCalculator.estimatedMonthlyMax != null ||
+      rentalCostCalculator.baseRentMin != null ||
+      rentalCostCalculator.baseRentMax != null ||
+      (rentalCostCalculator.variableReimbursements &&
+        rentalCostCalculator.variableReimbursements.length > 0));
+
+  const specialOfferLines: string[] = [];
+  const seenOfferLines = new Set<string>();
+  const addOfferLine = (raw: string) => {
+    const line = raw.trim();
+    if (line && !seenOfferLines.has(line)) {
+      seenOfferLines.add(line);
+      specialOfferLines.push(raw);
+    }
+  };
+  specialOffers.forEach(addOfferLine);
+  if (typeof specialOfferText === 'string' && specialOfferText.trim()) {
+    specialOfferText.split('\n').forEach(addOfferLine);
+  }
+  const hasOffers = specialOfferLines.length > 0;
+  const hasSpecificUnit = availableUnits.length > 0;
+
+  if (
+    !hasAvailability &&
+    !hasAnyFloorPlanFact &&
+    !hasCalculator &&
+    !hasOffers &&
+    !hasSpecificUnit
+  ) {
+    return null;
+  }
+
+  const firstFloorPlan = floorPlans[0] ?? null;
+  const advertisedPriceRange = firstFloorPlan
+    ? formatPriceRange(firstFloorPlan.minPrice, firstFloorPlan.maxPrice)
+    : null;
+  const baseRentRange = firstFloorPlan
+    ? formatPriceRange(firstFloorPlan.minBaseRent, firstFloorPlan.maxBaseRent)
+    : null;
+  const feeRange = formatPriceRange(
+    floorPlanRollupFeeMin,
+    floorPlanRollupFeeMax,
+  );
+  const totalMonthlyRange = rentalCostCalculator
+    ? formatPriceRange(
+        rentalCostCalculator.estimatedMonthlyMin,
+        rentalCostCalculator.estimatedMonthlyMax,
+      )
+    : null;
+
+  const showSpecificUnitBlock = identifiedUnitCount > 0 && hasSpecificUnit;
+  const representativeUnit = availableUnits[0] ?? null;
+  const representativeUnitLabel = representativeUnit
+    ? formatBedsBaths(representativeUnit.bedrooms, representativeUnit.bathrooms)
+    : null;
+
+  return (
+    <>
+      <SectionRegistrar ids={['building-rent']} />
+      <div
+        id="building-rent"
+        data-testid="building-rent-section"
+        className="rounded-2xl border border-slate-200 bg-white p-6 sm:p-8 md:p-10 mb-8"
+      >
+        <div className="flex items-center gap-3 mb-2">
+          <BuildingIcon />
+          <h2 className="text-lg sm:text-xl font-bold text-slate-900">
+            Building &amp; Availability
+          </h2>
+        </div>
+        <p className="text-xs text-stone-400 mb-5 sm:mb-6">
+          Listing-level facts only. Photos may represent different units or
+          floor plan variants.
+        </p>
+
+        {hasAvailability && (
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 mb-6">
+            <div className="rounded-xl bg-stone-50 p-4">
+              <div className="text-[10px] font-semibold uppercase tracking-widest text-stone-500">
+                Total available units
+              </div>
+              <div className="text-lg font-semibold text-slate-900">
+                {availableUnitCount > 0 ? availableUnitCount : '—'}
+              </div>
+              <div className="text-xs text-stone-500">
+                Across {floorPlans.length || '—'} floor plan
+                {floorPlans.length === 1 ? '' : 's'}
+              </div>
+            </div>
+            <div className="rounded-xl bg-stone-50 p-4">
+              <div className="text-[10px] font-semibold uppercase tracking-widest text-stone-500">
+                Identified specific units
+              </div>
+              <div className="text-lg font-semibold text-slate-900">
+                {identifiedUnitCount > 0 ? identifiedUnitCount : '—'}
+              </div>
+              <div className="text-xs text-stone-500">
+                Concrete unit numbers listed
+              </div>
+            </div>
+            {firstFloorPlan && (
+              <div className="rounded-xl bg-stone-50 p-4">
+                <div className="text-[10px] font-semibold uppercase tracking-widest text-stone-500">
+                  Floor plan types
+                </div>
+                <div className="text-lg font-semibold text-slate-900">
+                  {floorPlans.length}
+                </div>
+                <div className="text-xs text-stone-500">
+                  {floorPlans
+                    .map((fp) => fp.planName ?? fp.name ?? 'Unnamed')
+                    .filter(Boolean)
+                    .join(' · ')}
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+
+        {showSpecificUnitBlock && representativeUnit && (
+          <div className="rounded-xl border border-slate-200 bg-slate-50 p-4 mb-6">
+            <div className="text-[10px] font-semibold uppercase tracking-widest text-stone-500 mb-2">
+              Identified unit example
+            </div>
+            <div className="flex flex-wrap items-baseline gap-2">
+              <span className="text-base font-semibold text-slate-900">
+                {representativeUnit.unitNumber ?? representativeUnit.name ?? representativeUnit.unitId ?? 'Unit'}
+              </span>
+              {representativeUnitLabel && (
+                <span className="text-sm text-slate-600">{representativeUnitLabel}</span>
+              )}
+              {representativeUnit.sqft != null && (
+                <span className="text-sm text-slate-600">
+                  {representativeUnit.sqft.toLocaleString()} sqft
+                </span>
+              )}
+              {representativeUnit.monthlyRent != null && (
+                <span className="text-sm font-semibold text-slate-900 ml-auto">
+                  ${representativeUnit.monthlyRent.toLocaleString()}/mo
+                </span>
+              )}
+            </div>
+            {representativeUnit.availableFrom && (
+              <div className="text-xs text-stone-500 mt-1">
+                Available from {representativeUnit.availableFrom}
+              </div>
+            )}
+            {availableUnits.length > 1 && (
+              <div className="text-xs text-stone-500 mt-2">
+                + {availableUnits.length - 1} more identified unit
+                {availableUnits.length - 1 === 1 ? '' : 's'} (details vary per unit)
+              </div>
+            )}
+          </div>
+        )}
+
+        {hasAnyFloorPlanFact && (
+          <div className="mb-6">
+            <div className="text-[10px] font-semibold uppercase tracking-widest text-stone-500 mb-2">
+              Recurring monthly cost
+            </div>
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+              <div className="rounded-xl bg-stone-50 p-4">
+                <div className="text-[10px] font-semibold uppercase tracking-widest text-stone-500">
+                  Advertised total price
+                </div>
+                <div className="text-base font-semibold text-slate-900">
+                  {advertisedPriceRange ?? 'Not listed'}
+                </div>
+              </div>
+              <div className="rounded-xl bg-stone-50 p-4">
+                <div className="text-[10px] font-semibold uppercase tracking-widest text-stone-500">
+                  Base rent
+                </div>
+                <div className="text-base font-semibold text-slate-900">
+                  {baseRentRange ?? 'Not listed'}
+                </div>
+              </div>
+              <div className="rounded-xl bg-stone-50 p-4">
+                <div className="text-[10px] font-semibold uppercase tracking-widest text-stone-500">
+                  Required monthly fees
+                </div>
+                <div className="text-base font-semibold text-slate-900">
+                  {feeRange ?? 'Not listed'}
+                </div>
+                {floorPlanRollupFeesIncluded === true && (
+                  <div className="text-xs text-emerald-700 mt-1">
+                    Required fees are already included in the listed price.
+                  </div>
+                )}
+                {floorPlanRollupFeesIncluded === false && (
+                  <div className="text-xs text-amber-700 mt-1">
+                    Required fees are not included in the listed price.
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
+        )}
+
+        {hasCalculator && rentalCostCalculator && (
+          <div className="mb-6">
+            <div className="text-[10px] font-semibold uppercase tracking-widest text-stone-500 mb-2">
+              Upfront application costs
+            </div>
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+              <div className="rounded-xl bg-stone-50 p-4">
+                <div className="text-[10px] font-semibold uppercase tracking-widest text-stone-500">
+                  Application
+                </div>
+                <div className="text-base font-semibold text-slate-900">
+                  {rentalCostCalculator.applicationCost != null
+                    ? `$${rentalCostCalculator.applicationCost.toLocaleString()}`
+                    : 'Not listed'}
+                </div>
+              </div>
+              <div className="rounded-xl bg-stone-50 p-4">
+                <div className="text-[10px] font-semibold uppercase tracking-widest text-stone-500">
+                  Holding
+                </div>
+                <div className="text-base font-semibold text-slate-900">
+                  {rentalCostCalculator.holdingCost != null
+                    ? `$${rentalCostCalculator.holdingCost.toLocaleString()}`
+                    : 'Not listed'}
+                </div>
+              </div>
+              <div className="rounded-xl bg-stone-50 p-4">
+                <div className="text-[10px] font-semibold uppercase tracking-widest text-stone-500">
+                  Total application cost
+                </div>
+                <div className="text-base font-semibold text-slate-900">
+                  {rentalCostCalculator.totalApplicationCost != null
+                    ? `$${rentalCostCalculator.totalApplicationCost.toLocaleString()}`
+                    : 'Not listed'}
+                </div>
+              </div>
+            </div>
+            {totalMonthlyRange && (
+              <div className="text-xs text-stone-500 mt-2">
+                Calculator's estimated monthly range: {totalMonthlyRange}
+              </div>
+            )}
+            {rentalCostCalculator.variableReimbursements &&
+              rentalCostCalculator.variableReimbursements.length > 0 && (
+                <div className="mt-3 rounded-xl border border-amber-200 bg-amber-50 p-4">
+                  <div className="text-[10px] font-semibold uppercase tracking-widest text-amber-700 mb-2">
+                    Variable / unresolved monthly costs
+                  </div>
+                  <ul className="space-y-1">
+                    {rentalCostCalculator.variableReimbursements.map((label, idx) => (
+                      <li key={idx} className="text-sm text-amber-900">
+                        {label}: <strong>varies</strong>
+                      </li>
+                    ))}
+                  </ul>
+                  <div className="text-xs text-amber-700 mt-2">
+                    These are listed as "Varies" by the building; the exact
+                    monthly amount is not disclosed.
+                  </div>
+                </div>
+              )}
+          </div>
+        )}
+
+        {hasOffers && (
+          <div className="rounded-xl border border-emerald-200 bg-emerald-50 p-4">
+            <div className="text-[10px] font-semibold uppercase tracking-widest text-emerald-700 mb-2">
+              Special offer
+            </div>
+            <ul className="space-y-1">
+              {specialOfferLines.map((line, idx) => (
+                <li key={idx} className="text-sm text-emerald-900">
+                  {line}
+                </li>
+              ))}
+            </ul>
+            <div className="text-xs text-emerald-700 mt-2">
+              Conditions apply. The offer is not converted into a permanent
+              monthly rent discount.
+            </div>
+          </div>
+        )}
+      </div>
+    </>
+  );
+}
+
+function BuildingIcon() {
+  return (
+    <span className="inline-flex items-center justify-center w-9 h-9 rounded-xl bg-emerald-50">
+      <House className="w-4 h-4 text-emerald-700" strokeWidth={1.5} />
+    </span>
+  );
 }
 
 function _RentSection({
@@ -3916,21 +4209,6 @@ function ReportClosingCTA({
   const ctaBuyMessage = isRent
     ? 'HomeScope does not tell you whether to rent a home. It helps you spot what the listing may not make obvious — so you can move forward with more confidence, or skip a property that is not worth applying to.'
     : 'HomeScope is not here to tell you what to buy. It helps you spot what the listing may not make obvious — so you can move forward with more confidence, or skip a property that is not worth the trip.';
-  const ctaAvoidItems = isRent
-    ? [
-        'Whether the rent looks fair',
-        'What the listing language may be hiding',
-        'Which photos or details are missing',
-        'What could increase your monthly costs',
-        'What to ask before scheduling a tour',
-      ]
-    : [
-        'Whether the price looks reasonable',
-        'What the listing language may be hiding',
-        'Which photos or details are missing',
-        'What could cost money later',
-        'What to ask before booking a viewing',
-      ];
   const shareCtaMessage = isRent
     ? 'Share this report with someone you trust before you make a decision.'
     : 'Share this report with someone you trust before you make a call.';
@@ -4128,19 +4406,6 @@ function ReportClosingCTA({
       <p className="text-slate-600 text-sm sm:text-base leading-relaxed mb-6">
         {ctaBuyMessage}
       </p>
-
-      {/* What this report helped you avoid guessing */}
-      <div className="bg-amber-50 border border-amber-200 rounded-xl p-5 sm:p-6 mb-6">
-        <div className="font-semibold text-slate-800 mb-3">What this report helped you avoid guessing</div>
-        <ul className="space-y-2">
-          {ctaAvoidItems.map((item, i) => (
-            <li key={i} className="flex items-start gap-2 text-sm text-slate-700">
-              <CheckCircle2 className="w-4 h-4 text-amber-600/80 mt-0.5 shrink-0" />
-              {item}
-            </li>
-          ))}
-        </ul>
-      </div>
 
       {/* Share section */}
       <div className="border-t border-slate-200 pt-6">
@@ -4921,21 +5186,8 @@ function VerifiedFromListingSection({ report, viewModel: _viewModel }: {
   const hero = report.hero;
   const { sections } = report;
 
-  // ── Compute isSFOC from report data ─────────────────────────────────────────
-  const raw = report.raw ?? {};
-  const listingText = [
-    raw.listingInfo?.description ?? '',
-    raw.listingOverview?.description ?? '',
-    raw.description ?? '',
-    raw.property_snapshot?.homeType ?? '',
-    raw.property_snapshot?.home_type ?? '',
-  ].join(' ').toLowerCase();
-  const profileText = (raw.property_snapshot?.homeType ?? raw.property_snapshot?.home_type ?? '').toLowerCase();
-  const isSingleFamilyProfile = /single\s*family|singlefamily|single\s*family\s*residence|single\s*family\s*home/i.test(profileText) || (/single/i.test(profileText) && !/multi/i.test(profileText));
-  const hasRentalSignal = /rental\s*unit|basement\s*apartment|income\s*unit|legal\s*two.family|2.family|multi.family|duplex|separate\s*unit|tenant|walk.in\s*apartment|mother.daughter/i.test(listingText);
-  const isSFOC = isSingleFamilyProfile && !hasRentalSignal;
-
   // ── Verified from listing — use hero fields directly (set by usSale adapter) ──
+  const raw = report.raw ?? {};
   const verified: Array<{ label: string; value: string }> = [];
 
   if (hero?.price) verified.push({ label: 'Asking price', value: hero.price });
@@ -4956,25 +5208,43 @@ function VerifiedFromListingSection({ report, viewModel: _viewModel }: {
   // Use the detailed Zillow monthly payment breakdown below as the single source of truth
   // to avoid showing conflicting summary vs detailed payment figures in the same report.
 
-  // ── Still needs verification — property-aware list ─────────────────────────
-  const needsList = isSFOC ? [
-    'Roof age and condition',
-    'Permits for recent updates',
-    'Boiler / water heater installation date',
-    'Electrical panel and wiring updates',
-    'Plumbing material and age',
-    'Basement moisture history',
-    'Insurance and utility costs',
-  ] : [
-    'Certificate of Occupancy',
-    'Basement condition and permitted use',
-    'DOB / HPD / ECB records',
-    'Roof / boiler / electrical age',
-    'Legal-use documents and occupancy records',
-    'Insurance and utility costs',
-  ];
+  // ── Derive "Still needs verification" from AI / data-gap evidence only ───────
+  // Priority: risk_categories.*.missing  >  listing_does_not_prove.
+  // No static checklist — if there is no evidence, show nothing.
+  const needsList: string[] = (() => {
+    const rc: Record<string, unknown> = (raw as any).risk_categories ?? {};
+    const missingFromRisk: string[] = [];
+    for (const cat of Object.values(rc)) {
+      if (!cat || typeof cat !== 'object') continue;
+      const c = cat as Record<string, unknown>;
+      const m = typeof c.missing === 'string' ? c.missing.trim() : '';
+      if (m && m.length > 10) missingFromRisk.push(m);
+    }
+    const ldp = Array.isArray((raw as any).listing_does_not_prove)
+      ? (raw as any).listing_does_not_prove
+      : [];
+    const missingFromLdp: string[] = ldp
+      .filter((s: unknown) => typeof s === 'string' && s.trim().length > 10)
+      .map((s: unknown) => String(s).trim());
 
-  if (verified.length === 0) return null;
+    const combined = [...missingFromRisk, ...missingFromLdp];
+    if (combined.length === 0) return [];
+
+    // Deduplicate by normalized text
+    const seen = new Set<string>();
+    const deduped: string[] = [];
+    for (const item of combined) {
+      const key = item.toLowerCase().replace(/[^a-z0-9]/g, '').trim();
+      if (!key || seen.has(key)) continue;
+      seen.add(key);
+      deduped.push(item);
+    }
+    return deduped.slice(0, 6);
+  })();
+
+  // ── Render — hide the right column if nothing to verify ────────────────────
+
+  if (verified.length === 0 && needsList.length === 0) return null;
 
   return (
     <div className="bg-white rounded-2xl p-5 sm:p-6 mb-6 border border-slate-200">
@@ -4995,18 +5265,20 @@ function VerifiedFromListingSection({ report, viewModel: _viewModel }: {
             ))}
           </div>
         </div>
-        {/* Still needs verification */}
-        <div>
-          <div className="text-xs font-semibold text-amber-600 uppercase tracking-wide mb-2">Still needs verification</div>
-          <div className="space-y-1">
-            {needsList.map((item, i) => (
-              <div key={i} className="flex items-start gap-2 text-xs text-slate-600">
-                <span className="text-amber-400 mt-0.5 shrink-0">—</span>
-                {item}
-              </div>
-            ))}
+        {/* Still needs verification — only shown when evidence-derived items exist */}
+        {needsList.length > 0 && (
+          <div>
+            <div className="text-xs font-semibold text-amber-600 uppercase tracking-wide mb-2">Still needs verification</div>
+            <div className="space-y-1">
+              {needsList.map((item, i) => (
+                <div key={i} className="flex items-start gap-2 text-xs text-slate-600">
+                  <span className="text-amber-400 mt-0.5 shrink-0">—</span>
+                  {item}
+                </div>
+              ))}
+            </div>
           </div>
-        </div>
+        )}
       </div>
     </div>
   );
@@ -5234,6 +5506,13 @@ export function NewReportUI({
           {effectiveReportMode === 'rent' ? (
             <>
               {/* ── Rent-specific deep layout ────────────────────────── */}
+              {/* 1d. Multi-Unit Building Rent overview (only when
+                  listingScope === 'multi_unit_building'). Renders structured
+                  facts that already live on result.buildingDetails. */}
+              {(report?.meta?.listingScope ?? (rawObj.listingScope as string | null)) === 'multi_unit_building' && (
+                <BuildingRentSection report={report} />
+              )}
+
               {/* 2. Rental Listing Score (verdict + reason) */}
               <RentalListingScoreSection report={report} />
 
@@ -5263,7 +5542,7 @@ export function NewReportUI({
 
               {/* 11. Photo & Habitability Review (reuse sale's photo block when present) */}
               {report.raw?.photoReview || report.raw?.spaceAnalysis || report.raw?.visualAnalysis || report.raw?.photos ? (
-                <PhotoSpaceAnalysisCard raw={report.raw} />
+                <PhotoSpaceAnalysisCard raw={{ ...report.raw, reportMode: report.meta?.reportMode }} />
               ) : null}
 
               {/* 12. Rental Risk Categories (4 rent lanes) */}
@@ -5322,7 +5601,7 @@ export function NewReportUI({
                   <LeaseTermsRulesSection report={report} />
                   <LocationDailyLifeSection report={report} />
                   {report.raw?.photoReview || report.raw?.spaceAnalysis || report.raw?.visualAnalysis || report.raw?.photos ? (
-                    <PhotoSpaceAnalysisCard raw={report.raw} />
+                    <PhotoSpaceAnalysisCard raw={{ ...report.raw, reportMode: report.meta?.reportMode }} />
                   ) : null}
                   <RentalRiskCategoriesSection report={report} />
                   <WhatCouldChangeYourDecisionSection report={report} />
@@ -5355,13 +5634,15 @@ export function NewReportUI({
 
                 {/* 7. Photo & Space Analysis */}
                 {report.raw?.photoReview || report.raw?.spaceAnalysis || report.raw?.visualAnalysis || report.raw?.photos ? (
-                  <PhotoSpaceAnalysisCard raw={report.raw} />
+                  <PhotoSpaceAnalysisCard raw={{ ...report.raw, reportMode: report.meta?.reportMode }} />
                 ) : null}
 
                 {/* 7b. Buyer Risk Check (risk_categories) */}
                 <RiskCategoriesSection report={report} />
 
-                {/* 7c. What the Listing Does Not Prove */}
+                {/* 7c. What the Listing Does Not Prove — register so _RemainingSections
+                    won't render it again from the usSale.buildSections adapter output. */}
+                <SectionRegistrar ids={['listing-does-not-prove']} />
                 <ListingDoesNotProveSection report={report} />
 
                 {/* 7d. Before You Book a Showing */}

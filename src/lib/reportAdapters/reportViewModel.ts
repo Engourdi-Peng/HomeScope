@@ -1048,9 +1048,11 @@ export function normalizeFitSection(layoutFit: any): FitVM {
     if (text && text.length > 5) notIdealFor.push(text);
   }
 
+  // AI chose to leave goodFitIf / notIdealIf empty when evidence was insufficient.
+  // Never substitute invented buyer profiles.
   return {
-    bestFor: bestFor.length ? bestFor : [MODULE_FALLBACKS.FIT_BEST_FOR_DEFAULT],
-    notIdealFor: notIdealFor.length ? notIdealFor : [MODULE_FALLBACKS.FIT_NOT_IDEAL_DEFAULT],
+    bestFor,
+    notIdealFor,
     whyItMatters: toText(layoutFit?.why_it_matters ?? layoutFit?.why ?? ''),
   };
 }
@@ -1153,8 +1155,6 @@ export function normalizeQuestions(
     result?: any;
   } = {},
 ): QuestionVM[] {
-  console.log('[TRACE_Q_INPUT]', questions);
-
   const { maxQuestions = 6, result: rawResult } = context;
   const results: QuestionVM[] = [];
   const seen = new Set<string>();
@@ -1301,8 +1301,6 @@ export function normalizeQuestions(
     addQuestion(fullText);
   }
 
-  console.log('[TRACE_Q_AFTER_AI]', results.map(q => q.text));
-
   // Family deduplication
   const seenFamilies = new Set<number>();
   const deduped: QuestionVM[] = [];
@@ -1318,13 +1316,6 @@ export function normalizeQuestions(
     if (matchedFamily >= 0) seenFamilies.add(matchedFamily);
     deduped.push(q);
   }
-
-  console.log('[TRACE_Q_AFTER_DEDUPE]', deduped.map(q => q.text));
-  console.log('[TRACE_Q_FALLBACK_SOURCE]', {
-    usingDynamicFallback: !!basicFieldContext,
-    effectiveCategory,
-    suppressPatternsExists: !!suppressPatterns,
-  });
 
   // ── No template fallback: return only AI questions, deduplicated and capped ─────────
   return deduped.slice(0, maxQuestions);
@@ -1391,18 +1382,6 @@ export function buildReportViewModel(
   normalizedReport?: { meta?: { isBasic?: boolean; reportProfile?: string; normalizedPropertyCategory?: string } },
 ): ReportViewModel {
   const raw = result?.raw ?? result;
-
-  console.log('[TRACE_VM_INPUT_RAW]', {
-    normalizedPropertyCategory: raw?.normalizedPropertyCategory,
-    reportProfile: raw?.reportProfile,
-    displayType: raw?.displayType,
-    homeType: raw?.property_snapshot?.homeType ?? raw?.property_snapshot?.home_type,
-    questions_to_ask: raw?.questions_to_ask,
-    questionsToAsk: raw?.questionsToAsk,
-    nextBestMove: raw?.nextBestMove,
-    next_step: raw?.next_step,
-    layout_fit: raw?.layout_fit ?? raw?.layoutFit,
-  });
 
   // isBasic is the authoritative flag from the normalize layer
   const isBasic = normalizedReport?.meta?.isBasic ?? result?.meta?.isBasic ?? false;
@@ -1642,7 +1621,7 @@ export function buildReportViewModel(
       { text: 'Can you confirm the basement’s current use, condition, access, permits, and whether any basement area is included in legal rentable space?', category: 'Legal', tagColor: 'bg-violet-100 text-violet-700' },
       { text: 'Are there any open DOB permits, ECB/OATH violations, complaints, or unresolved building issues for this address?', category: 'Legal', tagColor: 'bg-violet-100 text-violet-700' },
       { text: 'Has the basement had water intrusion, foundation repairs, or drainage issues?', category: 'Basement', tagColor: 'bg-blue-100 text-blue-700' },
-      { text: 'How old are the roof, boiler, electrical panel, plumbing, and HVAC systems?', category: 'Systems', tagColor: 'bg-orange-100 text-orange-700' },
+      { text: 'How old are the roof, heating and cooling systems, water heater, electrical panel, and plumbing, and are service records available?', category: 'Systems', tagColor: 'bg-orange-100 text-orange-700' },
       { text: 'Can you provide the actual insurance quote, average utility costs, and any owner-paid expenses beyond the listing estimate?', category: 'Costs', tagColor: 'bg-teal-100 text-teal-700' },
       { text: 'Can you provide recent comparable sales for similar properties in the area?', category: 'Price', tagColor: 'bg-amber-100 text-amber-700' },
     ];
@@ -1722,6 +1701,7 @@ export function buildReportViewModel(
     meta: {
       market: result?.meta?.market ?? 'US',
       reportMode: result?.meta?.reportMode ?? 'unknown',
+      listingScope: result?.meta?.listingScope ?? null,
       sourceDomain: result?.meta?.sourceDomain,
       isBasic,
       isNYC,
@@ -1737,24 +1717,6 @@ export function buildReportViewModel(
   if (shouldApplyFinalSingleFamilySanitizer) {
     applySingleFamilyFinalSanitizer(viewModel);
   }
-
-  console.log('[HomeScope Questions Source]', {
-    usedSingleFamilySafetyFallback: false,
-    questions: viewModel.questions.map((q: QuestionVM) => q.text),
-  });
-
-  console.log('[FINAL_SANITIZED_VM]', {
-    isSingleFamilyLike,
-    hasExplicitRentalEvidence,
-    questions: viewModel.questions.map(q => q.text),
-    nextBestMove: viewModel.hero.nextBestMove,
-    decisionCards: viewModel.decisionCards.map(c => ({
-      title: c.title,
-      explanation: c.explanation,
-      badge: c.badge,
-    })),
-    fitNotIdealFor: viewModel.fit?.notIdealFor,
-  });
 
   return viewModel;
 }

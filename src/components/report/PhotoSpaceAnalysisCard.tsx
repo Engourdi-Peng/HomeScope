@@ -6,6 +6,10 @@
  * 同时保持向后兼容旧的 spaceAnalysis 格式
  */
 import { Camera, CheckCircle, AlertTriangle, HelpCircle, Search, ChevronRight } from 'lucide-react';
+import {
+  mergePhotoReviewAreas,
+  type PhotoReviewAreaRecord,
+} from '../../lib/reportAdapters/photoReviewAreas';
 
 // ── Buyer-flavored phrase filter ────────────────────────────────────────────
 // Filters sale-specific actor/process phrases that leak through from the Step 1
@@ -35,24 +39,30 @@ const BUYER_FLAVORED_PATTERNS: RegExp[] = [
  * phrases (length < 15 after stripping). Used for `whatLooksLike` and
  * `whatToCheckNext` fields where the core information should be preserved but
  * the actor references need to be neutralised.
+ *
+ * When `isRent` is false (sale reports), returns the text UNCHANGED so that
+ * "Ask the listing agent" stays as-is in sale context. The rent-flavored
+ * replacements are only applied for rent reports.
  */
-function rentSafeText(text: string | undefined | null): string {
+function rentSafeText(text: string | undefined | null, isRent = true): string {
   if (!text) return '';
   let result = text;
-  // Replace buyer-flavored actor references with renter-appropriate ones
-  result = result
-    .replace(/\blisting\s+agent\b/gi, 'property manager or landlord')
-    .replace(/\bseller'?s?\s+(agent|representation)\b/gi, 'property manager or landlord')
-    .replace(/\b(buyer'?s?|seller'?s?)\s+agent\b/gi, 'property contact')
-    .replace(/\bproperty\s+being\s+(sold|purchased)\b/gi, 'rental listing')
-    .replace(/\brenovation\s+permit(s|history)?\b/gi, 'disclosure documents')
-    .replace(/\bseller\s+disclosure\b/gi, 'landlord disclosure')
-    .replace(/\bproperty\s+sale\b/gi, 'rental listing')
-    .replace(/\bfinancing\s+or\s+insurance\b/gi, 'insurance or lease terms')
-    .replace(/\bbuy\s+the\s+property\b/gi, 'apply for the rental')
-    .replace(/\bmake\s+an?\s+offer\b/gi, 'submit a rental application');
-  // Drop if the item is now empty or consists only of neutralised phrases
-  if (result.trim().length < 10) return '';
+  // Only apply rent-flavored replacements for rent reports
+  if (isRent) {
+    result = result
+      .replace(/\blisting\s+agent\b/gi, 'property manager or landlord')
+      .replace(/\bseller'?s?\s+(agent|representation)\b/gi, 'property manager or landlord')
+      .replace(/\b(buyer'?s?|seller'?s?)\s+agent\b/gi, 'property contact')
+      .replace(/\bproperty\s+being\s+(sold|purchased)\b/gi, 'rental listing')
+      .replace(/\brenovation\s+permit(s|history)?\b/gi, 'disclosure documents')
+      .replace(/\bseller\s+disclosure\b/gi, 'landlord disclosure')
+      .replace(/\bproperty\s+sale\b/gi, 'rental listing')
+      .replace(/\bfinancing\s+or\s+insurance\b/gi, 'insurance or lease terms')
+      .replace(/\bbuy\s+the\s+property\b/gi, 'apply for the rental')
+      .replace(/\bmake\s+an?\s+offer\b/gi, 'submit a rental application');
+    // Drop if the item is now empty or consists only of neutralised phrases
+    if (result.trim().length < 10) return '';
+  }
   return result;
 }
 
@@ -118,7 +128,7 @@ function getConfidenceColor(confidence: string): string {
 
 // ── New Photo Review Types ──────────────────────────────────────────────────
 
-interface PhotoReviewArea {
+interface PhotoReviewArea extends PhotoReviewAreaRecord {
   area: string;
   whatLooksLike: string;
   visibleConcerns: string[];
@@ -146,6 +156,8 @@ interface PhotoSpaceAnalysisCardProps {
   raw: {
     // New Photo & Condition Review format
     photoReview?: PhotoReview | null;
+    // reportMode: used to determine whether rent-flavored text replacements apply
+    reportMode?: string;
     // Backward compatible fields
     spaceAnalysis?: Array<{
       spaceType?: string;
@@ -155,6 +167,14 @@ interface PhotoSpaceAnalysisCardProps {
       observations?: string[];
     }>;
     visualAnalysis?: {
+      photoReview?: PhotoReview | null;
+      spaceAnalysis?: Array<{
+        spaceType?: string;
+        score?: number;
+        explanation?: string;
+        photoCount?: number;
+        observations?: string[];
+      }>;
       renovationLevel?: string;
       cosmeticFlipRisk?: string;
       naturalLight?: string;
@@ -195,12 +215,12 @@ function SectionHeader({ title, subtitle }: { title: string; subtitle?: string }
   );
 }
 
-function KeyTakeawayBadge({ type, items }: { type: 'solid' | 'attention' | 'verify'; items: string[] }) {
+function KeyTakeawayBadge({ type, items, isRent = true }: { type: 'solid' | 'attention' | 'verify'; items: string[]; isRent?: boolean }) {
   if (!items || items.length === 0) return null;
 
   // Filter buyer-flavored items so they don't pollute the rent report photo module
   const cleanItems = items
-    .map((item) => rentSafeText(item))
+    .map((item) => rentSafeText(item, isRent))
     .filter((item): item is string => Boolean(item));
 
   if (cleanItems.length === 0) return null;
@@ -258,26 +278,27 @@ function KeyTakeawayBadge({ type, items }: { type: 'solid' | 'attention' | 'veri
   );
 }
 
-function AreaReviewCard({ area }: { area: PhotoReviewArea }) {
+function AreaReviewCard({ area, isRent = true }: { area: PhotoReviewArea; isRent?: boolean }) {
   // Apply buyer-flavored phrase replacement / drop to all text fields
-  const cleanWhatLooksLike = rentSafeText(area.whatLooksLike);
+  // For sale reports (isRent=false), keep the original text intact — don't replace "listing agent" etc.
+  const cleanWhatLooksLike = rentSafeText(area.whatLooksLike, isRent);
   if (!cleanWhatLooksLike) return null; // drop card if description is entirely buyer-flavored
 
   const cleanConcerns = (area.visibleConcerns ?? [])
-    .map((c) => rentSafeText(c))
+    .map((c) => rentSafeText(c, isRent))
     .filter(Boolean) as string[];
   const hasConcerns = cleanConcerns.length > 0;
 
   // Drop entirely buyer-flavored items from "Can't Verify"
   const cleanCannotVerify = (area.cannotTellFromPhotos ?? [])
     .filter((c) => !hasBuyerFlavor(c))
-    .map((c) => rentSafeText(c))
+    .map((c) => rentSafeText(c, isRent))
     .filter(Boolean) as string[];
   const hasCannotVerify = cleanCannotVerify.length > 0;
 
   // Replace buyer-flavored phrases in "What to Check Next"
   const cleanNextSteps = (area.whatToCheckNext ?? [])
-    .map((s) => rentSafeText(s))
+    .map((s) => rentSafeText(s, isRent))
     .filter(Boolean) as string[];
   const hasNextSteps = cleanNextSteps.length > 0;
 
@@ -418,7 +439,10 @@ function LegacySpaceCard({ space }: {
 // ── Main Component ───────────────────────────────────────────────────────────
 
 export function PhotoSpaceAnalysisCard({ raw }: PhotoSpaceAnalysisCardProps) {
-  const { photoReview, spaceAnalysis, visualAnalysis, photos, analyzedPhotoCount, detectedRooms, roomCounts } = raw;
+  const { photoReview, reportMode, spaceAnalysis, visualAnalysis, photos, analyzedPhotoCount, detectedRooms, roomCounts } = raw;
+
+  // Determine if this is a rent report (for rent-flavored text replacements)
+  const isRent = reportMode === 'rent';
 
   // ── Source priority: top-level fields > visualAnalysis.* (nested) ──
   // Step 1 photo analysis may live at either location depending on the
@@ -455,7 +479,8 @@ export function PhotoSpaceAnalysisCard({ raw }: PhotoSpaceAnalysisCardProps) {
     const { solidSigns, needsAttention, cannotVerify } = keyTakeaways || {};
 
     // Apply buyer-flavored phrase replacement to the overall summary
-    const cleanSummary = rentSafeText(overallSummary);
+    // For sale reports (isRent=false), keep the original text intact.
+    const cleanSummary = rentSafeText(overallSummary, isRent);
 
     return (
       <div className="bg-white rounded-2xl p-5 border border-stone-100 shadow-[0_1px_4px_rgba(0,0,0,0.04)] animate-in fade-in slide-in-from-bottom-8 duration-700 ease-out mb-8">
@@ -475,17 +500,21 @@ export function PhotoSpaceAnalysisCard({ raw }: PhotoSpaceAnalysisCardProps) {
         {/* Key Takeaways Grid */}
         {(solidSigns?.length > 0 || needsAttention?.length > 0 || cannotVerify?.length > 0) && (
           <div className="grid grid-cols-1 @container[size>=600px]:grid-cols-3 gap-3 mb-5">
-            <KeyTakeawayBadge type="solid" items={solidSigns || []} />
-            <KeyTakeawayBadge type="attention" items={needsAttention || []} />
-            <KeyTakeawayBadge type="verify" items={cannotVerify || []} />
+            <KeyTakeawayBadge type="solid" items={solidSigns || []} isRent={isRent} />
+            <KeyTakeawayBadge type="attention" items={needsAttention || []} isRent={isRent} />
+            <KeyTakeawayBadge type="verify" items={cannotVerify || []} isRent={isRent} />
           </div>
         )}
 
         {/* Area Reviews */}
         {areas && areas.length > 0 && (
           <div className="space-y-4">
-            {areas.map((area, i) => (
-              <AreaReviewCard key={i} area={area} />
+            {mergePhotoReviewAreas(areas).map((area) => (
+              <AreaReviewCard
+                key={`${area.area ?? area.areaType ?? area.spaceType ?? 'unknown'}-${area.unit ?? area.unitNumber ?? area.floor ?? area.floorNumber ?? area.subject ?? ''}`}
+                area={area}
+                isRent={isRent}
+              />
             ))}
           </div>
         )}

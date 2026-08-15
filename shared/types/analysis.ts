@@ -128,6 +128,29 @@ export interface OptionalDetails {
   dateOnMarket?: string;
   /** Sale 专属：地块尺寸 */
   lotSize?: string;
+  // ─────────────────────────────────────────────────────────────────
+  // Zillow Sale 新增字段（与 VerifiedFactsPayload 同步）
+  // ─────────────────────────────────────────────────────────────────
+  /** 屋顶类型 */
+  roof?: string | null;
+  /** 地下室状态 */
+  basement?: string | null;
+  /** 洗衣设施 */
+  laundry?: string | null;
+  /** Walk Score（如 '97 / 100, Walker's Paradise'） */
+  walkScore?: string | null;
+  /** Bike Score */
+  bikeScore?: string | null;
+  /** Transit Score（数字） */
+  transitScore?: number | null;
+  /** 学校评分列表 */
+  schoolRatings?: Array<{ name: string; rating: number; level?: string; distance?: string }> | null;
+  /** HOA 明确包含的服务列表 */
+  hoaIncludedServices?: string[] | null;
+  /** Zillow 估算销售区间下限 */
+  estimatedSalesRangeMin?: number | null;
+  /** Zillow 估算销售区间上限 */
+  estimatedSalesRangeMax?: number | null;
 }
 
 export type FactSource = 'bodyText' | 'dom' | 'jsonld' | 'script' | 'structured' | 'fallback';
@@ -193,6 +216,25 @@ export interface ListingFacts {
   rawSourcesSummary?: RawSourcesSummary;
 }
 
+export interface SchoolFact {
+  name: string;
+  rating: number;
+  level?: string;
+  distance?: string;
+}
+
+/**
+ * VerifiedFactsPayload — 美国 Sale 报告的确定性事实来源
+ *
+ * 扩展说明：
+ * - 已有：zestimate / estimatedSalesRangeMin/Max / monthlyPayment / principalAndInterest /
+ *         propertyTaxMonthly / homeInsuranceMonthly / hoa / hoaAmount
+ * - 新增：roof / basement / laundry / transitScore / schoolFacts / hoaIncludedServices /
+ *         hoaServicesIncluded（数组） / monthlyPaymentSource
+ *
+ * 后端 buildVerifiedFactsFromPayload() 会填充所有字段。
+ * 前端适配器（usSale.ts）只读这些字段，不做任何推测或 AI 复制。
+ */
 export interface VerifiedFactsPayload {
   address: string | null;
   price: number | null;
@@ -208,11 +250,15 @@ export interface VerifiedFactsPayload {
   annualTax_display?: string | null;
   monthlyPayment: number | null;
   monthlyPayment_display?: string | null;
+  /** 来源标记：'zillow_estimated' = Zillow BuyAbility 原生总额；'derived' = 各分项求和 */
+  monthlyPaymentSource?: 'zillow_estimated' | 'derived' | null;
   principalAndInterest: number | null;
   propertyTaxMonthly: number | null;
   homeInsuranceMonthly: number | null;
   hoa: 'yes' | 'no' | 'unknown';
   hoaAmount: number | null;
+  /** HOA 明确包含的服务列表（如 ['water', 'trash', 'maintenance grounds', 'maintenance structure', 'snow removal']） */
+  hoaIncludedServices?: string[] | null;
   floodZone?: string | null;
   zestimate?: number | null;
   zestimate_display?: string | null;
@@ -237,6 +283,20 @@ export interface VerifiedFactsPayload {
   rawHomeType?: string;
   rawPropertyType?: string;
   rawPropertySubtype?: string;
+  /** 屋顶类型（如 'Membrane'） */
+  roof?: string | null;
+  /** 地下室状态（'No' | 'Unfinished' | 'Finished' 等） */
+  basement?: string | null;
+  /** 洗衣设施（'In Unit' | 'Shared' | 'None' 等） */
+  laundry?: string | null;
+  /** Transit Score（如 67） */
+  transitScore?: number | null;
+  /** Walk Score（如 97） */
+  walkScore?: string | null;
+  /** Bike Score（如 99） */
+  bikeScore?: string | null;
+  /** 学校评分列表 */
+  schoolFacts?: SchoolFact[] | null;
   fieldEvidence?: Record<string, FactEvidence | null>;
 }
 
@@ -518,6 +578,12 @@ export interface AnalysisResult {
   /** 报告模式：rent=租房报告, sale=买房报告 */
   reportMode?: 'rent' | 'sale';
 
+  /** 页面范围：用于区分多单元建筑与单套房源 */
+  listingScope?: 'single_property' | 'entire_home' | 'private_room' | 'multi_unit_building' | 'selected_unit' | 'unknown' | null;
+
+  /** 多单元建筑详情（仅当 listingScope === 'multi_unit_building' 时存在） */
+  buildingDetails?: BuildingDetails | null;
+
   /** 分析类型：basic=基础分析，full=深度分析（用于区分卡片显示） */
   analysisType?: 'basic' | 'full';
 
@@ -670,12 +736,19 @@ export interface AnalysisResult {
     yearBuilt?: string | number | null;
     homeType?: string | null;
     roof?: string | null;
+    basement?: string | null;
+    laundry?: string | null;
     lotSize?: string | number | null;
     taxAssessedValue?: string | number | null;
     annualTax?: string | number | null;
     hoa?: string | null;
+    /** HOA 已明确包含的服务列表（如 'water, trash, grounds'） */
+    hoaIncludedServices?: string[] | null;
     pricePerSqft?: string | number | null;
     region?: string | null;
+    transitScore?: number | null;
+    walkScore?: string | null;
+    bikeScore?: string | null;
   } | null;
 
   carrying_costs?: {
@@ -689,6 +762,8 @@ export interface AnalysisResult {
     missing_costs?: string[];
     status?: 'available' | 'partial' | 'not_enough_disclosed';
     primary_monthly_estimate?: number | null;
+    /** 来源标记：'zillow_estimated' = Zillow BuyAbility 原生总额；'derived' = 各分项求和 */
+    monthlyPaymentSource?: 'zillow_estimated' | 'derived' | null;
     monthly_breakdown?: {
       estimatedMonthlyPayment?: { raw: string; value: number | null; status: string; period?: string } | null;
       principalAndInterest?: { raw: string; value: number | null; status: string; period?: string } | null;
@@ -726,6 +801,8 @@ export interface AnalysisResult {
     summary?: string;
     page_signals?: string[];
     external_data_needed?: string[];
+    /** 学校评分列表（来自 Zillow） */
+    schoolFacts?: Array<{ name: string; rating: number; level?: string; distance?: string }> | null;
   } | null;
 
   legal_compliance?: {
@@ -775,6 +852,132 @@ export interface AnalysisResult {
    *  professional inspections, etc. This is for verification that matters
    *  AFTER deciding to visit, not before. */
   deeper_due_diligence?: string[] | null;
+}
+
+/**
+ * Building details for multi-unit building reports.
+ * Present when listingScope === 'multi_unit_building'.
+ *
+ * Fields that are per-unit (bedrooms, bathrooms, sqft, monthlyRent) are intentionally
+ * absent from the top-level AnalysisResult when listingScope === 'multi_unit_building'.
+ * Use availableUnitOptions[] for per-unit details instead.
+ */
+export interface BuildingDetails {
+  /** Building name (e.g., "The Landon Apartments") */
+  buildingName?: string | null;
+  /** Full building street address */
+  buildingAddress?: string | null;
+  /** Stable building identifier from Zillow (if available) */
+  buildingId?: string | null;
+  /** Zillow listing ID for the selected unit (null if overview page) */
+  zpid?: string | null;
+  /** Unit number of the selected unit (null if overview page or no unit selected) */
+  unitNumber?: string | null;
+  /** HDP URL for the selected unit (null if overview page) */
+  hdpUrl?: string | null;
+  /** Number of available units listed (building total = sum of floor plan unitCount). */
+  availableUnitCount?: number | null;
+  /** Identified specific units (subset with concrete unitNumber/zpid/hdpUrl). */
+  identifiedUnitCount?: number | null;
+  /** Floor plan summaries from Zillow __NEXT_DATA__ */
+  floorPlanSummaries?: FloorPlanSummary[] | null;
+  /** Available unit rows from Zillow (raw) */
+  availableUnits?: AvailableUnitRow[] | null;
+  /** Base/lowest advertised rent across all available units */
+  baseRent?: number | null;
+  /** Whether the list price already includes required monthly fees */
+  listPriceIncludesRequiredMonthlyFees?: boolean | null;
+  /** Building-level amenities (gym, pool, concierge, etc.) */
+  buildingAmenities?: string[] | null;
+  /** Minimum required monthly fee (e.g., amenity fee, facility fee) */
+  requiredMonthlyFeeMin?: number | null;
+  /** Maximum required monthly fee (e.g., amenity fee, facility fee) */
+  requiredMonthlyFeeMax?: number | null;
+  /** Total available unit options for display */
+  availableUnitOptions?: AvailableUnitOption[] | null;
+  /** Verbatim "Special offer" block from the listing, when present. */
+  specialOfferText?: string | null;
+  /** Special offer bullet items, when present. */
+  specialOffers?: string[] | null;
+  /** Rental Cost Calculator data block (verbatim from listing). */
+  rentalCostCalculator?: RentalCostCalculator | null;
+}
+
+export interface RentalCostCalculator {
+  estimatedMonthlyMin?: number | null;
+  estimatedMonthlyMax?: number | null;
+  baseRentMin?: number | null;
+  baseRentMax?: number | null;
+  applicationCost?: number | null;
+  holdingCost?: number | null;
+  totalApplicationCost?: number | null;
+  deposit?: number | null;
+  totalMoveInCost?: number | null;
+  /** Labels where the listing states "Varies" (reimbursements that vary per unit). */
+  variableReimbursements?: string[] | null;
+}
+
+export interface FloorPlanSummary {
+  name?: string | null;
+  bedrooms?: number | null;
+  bathrooms?: number | null;
+  sqft?: number | null;
+  monthlyRent?: number | null;
+  photoCount?: number | null;
+  /** Floor-plan unit count (roll-up of identical units). */
+  unitCount?: number | null;
+  /** Floor-plan minimum advertised price (rent). */
+  minPrice?: number | null;
+  /** Floor-plan maximum advertised price (rent). */
+  maxPrice?: number | null;
+  /** Floor-plan minimum base rent. */
+  minBaseRent?: number | null;
+  /** Floor-plan maximum base rent. */
+  maxBaseRent?: number | null;
+  /** Required monthly fee minimum (when floor plan exposes it). */
+  requiredMonthlyFeeMin?: number | null;
+  /** Required monthly fee maximum (when floor plan exposes it). */
+  requiredMonthlyFeeMax?: number | null;
+  /** Whether required monthly fees are included in the listing price. */
+  listPriceIncludesRequiredMonthlyFees?: boolean | null;
+  /** Verbatim "available from" string for the floor plan. */
+  availableFrom?: string | null;
+  /** Verbatim lease-term string for the floor plan. */
+  leaseTerm?: string | null;
+}
+
+export interface AvailableUnitRow {
+  unitId?: string | null;
+  name?: string | null;
+  unitNumber?: string | null;
+  zpid?: string | null;
+  bedrooms?: number | null;
+  bathrooms?: number | null;
+  sqft?: number | null;
+  monthlyRent?: number | null;
+  availableFrom?: string | null;
+  photoCount?: number | null;
+  photoUrl?: string | null;
+}
+
+export interface AvailableUnitOption {
+  /** Display label (e.g., "Studio", "1 Bed / 1 Bath", "2 Bed / 2 Bath") */
+  label: string;
+  bedrooms?: number | null;
+  bathrooms?: number | null;
+  sqft?: number | null;
+  /** Monthly rent for this unit type (may be a range string e.g., "$1,800 - $2,100") */
+  rentRange?: string | null;
+  rentMin?: number | null;
+  rentMax?: number | null;
+  /** Whether this unit type is currently available */
+  available?: boolean;
+  /** Promised available date if not immediately available */
+  availableFrom?: string | null;
+  /** Features that are advertised for this unit type */
+  advertisedFeatures?: string[];
+  /** Source: 'floor_plan' | 'available_units_table' | 'cost_calculator' | 'listing_text' */
+  source?: string;
 }
 
 export interface RiskCategorySignal {

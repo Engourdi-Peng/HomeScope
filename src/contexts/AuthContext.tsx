@@ -86,8 +86,6 @@ export function AuthProvider({ children }: AuthProviderProps) {
 
     // onAuthStateChange：SDK 的 detectSessionInUrl 在 exchange 完成后会触发 SIGNED_IN
     const { data: { subscription } } = supabase.auth.onAuthStateChange((event: string, session: { user: User } | null) => {
-      console.log('[AuthContext] onAuthStateChange:', event, session?.user?.id ?? 'null');
-
       if (event === 'SIGNED_IN' && session?.user) {
         setUser(session.user);
         fetchProfile(session.user.id);
@@ -98,7 +96,6 @@ export function AuthProvider({ children }: AuthProviderProps) {
         if (url.searchParams.has('code')) {
           url.searchParams.delete('code');
           window.history.replaceState({}, '', url.pathname + url.search);
-          console.log('[AuthContext] onAuthStateChange: cleaned ?code= from URL');
         }
         // ──────────────────────────────────────────────────────────────
 
@@ -138,15 +135,11 @@ export function AuthProvider({ children }: AuthProviderProps) {
     if (flowId) {
       const extFlowData = JSON.stringify({ flowId });
       sessionStorage.setItem('hs_ext_flow', extFlowData);
-      console.log('[Auth] signInWithGoogle: extension flow detected, flowId:', flowId);
-    } else {
-      console.log('[Auth] signInWithGoogle: normal web flow (no flow_id in URL)');
     }
 
     const callbackParams = new URLSearchParams();
     if (flowId) callbackParams.set('flow_id', flowId);
     const redirectTo = `${window.location.origin}/auth/callback${callbackParams.toString() ? '?' + callbackParams.toString() : ''}`;
-    console.log('[Auth] signInWithGoogle: redirectTo =', redirectTo);
 
     const { error } = await supabase.auth.signInWithOAuth({
       provider: 'google',

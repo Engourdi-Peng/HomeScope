@@ -35,7 +35,7 @@ export const MODULE_FALLBACKS = {
 // ── B. Deal-Changing Risk Action Fallback ─────────────────────────────────────
 
 export const RISK_ACTION_FALLBACKS = {
-  maintenance: 'Ask for roof age, boiler/HVAC service records, electrical panel amperage, plumbing material, and basement moisture history before scheduling inspection.',
+  maintenance: 'Ask for roof age, heating and cooling system service records, electrical panel amperage, plumbing material, and basement moisture history before scheduling inspection.',
   // SFOC variant — for single-family owner-occupier profiles
   legal_sfoc_nyc: 'Ask for the Certificate of Occupancy and check NYC DOB records and permits for recent renovations before making an offer.',
   legal_sfoc_general: 'Ask for legal-use documents, permits for recent updates, and check local building department or county records before making an offer.',
@@ -237,7 +237,7 @@ export const QUESTION_FALLBACKS_BASIC = [
  * 这些函数支持 normalizedPropertyCategory 参数，可以根据房源类型返回不同的问题。
  */
 export const QUESTION_FALLBACKS = [
-  'How old are the roof, boiler, electrical panel, plumbing, and HVAC systems?',
+  'How old are the roof, heating and cooling systems, water heater, electrical panel, and plumbing, and are service records available?',
   'Has the basement had water intrusion, flooding, mold, drainage issues, or foundation repairs?',
   'Can you provide recent comparable sales to support the asking price?',
   'What are the real monthly costs including insurance, utilities, repairs, vacancy, and maintenance reserve?',
@@ -313,7 +313,7 @@ export const PROPERTY_TYPE_RISK_ACTIONS = {
   coop_financing: 'Confirm which financing types are allowed (conventional, FHA, co-op financing), minimum down payment requirements, and any acquisition fees or flip taxes.',
   coop_building: 'Ask about recent or upcoming roof, boiler, facade, elevator, plumbing, or electrical updates, and review the building\'s capital expenditure plan.',
   coop_reserve: 'Ask for the reserve fund balance and the building\'s financial statements for the last 2–3 years to assess fiscal health.',
-  coop_walkup: 'Confirm whether the building is a walkup or has elevator access, and how this affects the unit\'s desirability and resale value.',
+  coop_walkup: 'Only if the listing or photos mention elevator access, walkup, building access, or accessibility, confirm how it affects the unit\'s desirability and resale value. If no such evidence exists, do NOT generate an elevator question.',
 
   // ── Condo ──────────────────────────────────────────────────────────────────
   condo_common_charges: 'Ask for the current common charges, any pending special assessments, and the reserve fund balance.',

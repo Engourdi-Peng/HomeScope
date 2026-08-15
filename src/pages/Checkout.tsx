@@ -69,9 +69,6 @@ export function CheckoutPage() {
       urlParams.get('_ptxn') ||
       urlParams.get('txn');
 
-    console.log('[checkout] current url:', window.location.href);
-    console.log('[checkout] txnId from url:', txnIdFromUrl);
-
     if (!txnIdFromUrl) {
       setError('Missing transaction id. Please try again from the payment link.');
       setLoading(false);
@@ -104,11 +101,8 @@ export function CheckoutPage() {
           },
         },
         eventCallback: (event: PaddleEvent) => {
-          console.log('[checkout] event:', event.name, event.data);
-
           if (event.name === 'checkout.completed') {
             const completedTxnId = event.data?.id || txnIdFromUrl;
-            console.log('[checkout] completed transaction id:', completedTxnId);
 
             completedRef.current = true;
             setTransactionId(completedTxnId);
@@ -132,14 +126,11 @@ export function CheckoutPage() {
             }, 1000);
 
             countdownTimer.current = window.setTimeout(() => {
-              console.log('[checkout] redirecting to success page');
               window.location.href = `/payment-success?transaction_id=${completedTxnId}`;
             }, 3000);
           }
 
           if (event.name === 'checkout.closed') {
-            console.log('[checkout] checkout closed');
-
             if (!completedRef.current) {
               setLoading(false);
               setSuccess(false);

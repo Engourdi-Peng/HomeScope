@@ -140,8 +140,6 @@ export function Home() {
   // ========== 轻量化 Basic Analysis ==========
   // 无需登录、无需图片、同步直接返回结果
   const handleBasicAnalysis = async () => {
-    console.log('[BasicAnalysis] Starting lightweight basic analysis...');
-
     // 1. 权限检查 - 无需登录，任何人都可以使用
     // 注意：basic 分析不需要登录
 
@@ -166,7 +164,6 @@ export function Home() {
       });
 
       setProgressPct(100);
-      console.log('[BasicAnalysis] Result received:', result);
 
       // 4. 直接保存结果并跳转，无需轮询
       // 构建 listingInfo
@@ -220,16 +217,8 @@ export function Home() {
 
     // ========== Full Analysis - 完整路径 (需要积分) ==========
     // ========== 权限检查 ==========
-    // 调试日志
-    console.log('=== Analyze Permission Check ===');
-    console.log('isAuthenticated:', isAuthenticated);
-    console.log('user email:', user?.email);
-    console.log('creditsRemaining (available):', creditsRemaining);
-    console.log('Analysis Type:', analysisType);
-
     // 1. 未登录用户不能 Analyze
     if (!isAuthenticated) {
-      console.log('analyze blocked reason: NOT_AUTHENTICATED');
       setError('Please sign in first to analyze listings.');
       setIsLoginModalOpen(true);
       return;
@@ -237,13 +226,9 @@ export function Home() {
 
     // 2. 已登录但无可用积分 - 深度分析需要积分，基础分析不需要
     if (analysisType === 'full' && creditsRemaining <= 0) {
-      console.log('analyze blocked reason: NO_CREDITS');
       setError('You\'ve used all credits. Use Basic Analysis for free!');
       return;
     }
-
-    // 3. 权限检查通过，继续执行
-    console.log('analyze allowed: proceeding with analysis');
 
     if (photos.length === 0 && description.trim() === '') {
       return;
@@ -280,8 +265,6 @@ export function Home() {
       const uploadedFiles = compressedFiles.map(c => c.file);
       const imageUrls = await uploadImagesToStorage(uploadedFiles);
 
-      console.log('Uploaded image URLs:', imageUrls);
-
       // ========== Step 3: Build request with imageUrls ==========
       // If user did not paste a listingUrl, fall back to window.location.href
       // when the user is already on a known listing site (Zillow / Realtor /
@@ -311,16 +294,12 @@ export function Home() {
         })(),
       };
 
-      console.log('Submitting analysis...');
-
       // ========== Step 4: Submit to create analysis ID ==========
       setProgressPct(60);
       setProgressLabel('Starting analysis...');
 
       const submitResult = await submitAnalysis(requestData);
       const analysisId = submitResult.id;
-
-      console.log('Analysis submitted, ID:', analysisId);
 
       // ========== Step 5: Trigger the analysis runner ==========
       setProgressLabel(analysisType === 'basic' ? 'Running basic analysis...' : 'Analyzing property...');

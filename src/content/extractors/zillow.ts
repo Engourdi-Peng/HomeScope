@@ -1,5 +1,33 @@
 /**
- * Zillow ?????
+ * =====================================================================
+ * ⚠️  FROZEN — DO NOT USE FOR PRODUCTION BUG FIXES
+ * =====================================================================
+ * Zillow extractor (TS rewrite).
+ *
+ * This file is NOT shipped inside the Chrome extension and is NOT in
+ * active maintenance. The current production extractor lives in
+ * `extension/content.js` — that is the only file that receives Zillow
+ * bug fixes.
+ *
+ * This TS file exists as:
+ *   1. A schema reference for the canonical `ListingFacts` contract
+ *      (Phase 2 of the migration plan).
+ *   2. The target of the eventual Phase 5 (Single TS Extractor) switch,
+ *      where this implementation becomes the production source of truth
+ *      and `content.js` is decommissioned.
+ *
+ * Allowed in this file (until Phase 5):
+ *   - Schema / type-only edits that keep it consistent with the
+ *     canonical `src/shared/types/listingFacts.ts` definition.
+ *
+ * Disallowed in this file (until Phase 5):
+ *   - Fixing extractor bugs reported against Zillow pages.
+ *   - Behaviour changes that diverge from `content.js`.
+ *
+ * See plan: Phase 0 + Phase 5 of the migration plan.
+ * =====================================================================
+ *
+ * Zillow 提取器（TS 重写版）。
  * ?? zillow.com ??????
  *
  * ??????????
@@ -20,7 +48,20 @@ import type {
   SaleListingFields,
   ListingTypeMeta,
 } from './base';
-import type { StandardizedListingData, SchoolRating } from './types';
+import type { ListingModeResolution, ListingModeSourceResult, StandardizedListingData, SchoolRating, ListingScope, AvailableUnit } from './types';
+import {
+  resolveListingMode,
+  resolveModeFromCurrentListingJsonLd,
+  resolveModeFromCurrentListingHero,
+  resolveStructuredRawStatus,
+} from './modeDetection';
+import {
+  buildListingIdentity,
+  extractApartmentTailId,
+  extractZpidFromUrl,
+  getCanonicalListingUrl,
+  normalizePath,
+} from './urlUtils';
 
 const ZILLOW_HOSTNAME = 'zillow.com';
 
@@ -356,18 +397,57 @@ interface ZillowRawData {
   architecturalStyle?: string;
   stories?: string;
   hoaStatus?: string;
+  // === PR 1A: structured raw status (Source B) — read from the ORIGINAL gdpClientCache
+  //   entry that matches the current zpid. These are the raw values, not the
+  //   output of detectListingTypeInternal. resolveStructuredRawStatus() joins
+  //   them into a single mode.
+  homeStatus?: string;
+  listingType?: string;
+  listingSubType?: string;
+  transactionType?: string;
+  buildingId?: string;
+  // === Building / multi-unit (Phase 1) ===
+  isBuilding?: boolean;
+  buildingName?: string | null;
+  floorPlans?: FloorPlan[];
+  bestMatchedUnitHdpUrl?: string | null;
+  bestMatchedUnitZpid?: string | null;
+}
+
+interface FloorPlan {
+  name?: string | null;
+  beds?: number | null;
+  baths?: number | null;
+  sqft?: number | null;
+  minPrice?: number | null;
+  maxPrice?: number | null;
+  units?: FloorPlanUnit[];
+}
+
+interface FloorPlanUnit {
+  unitId?: string | null;
+  name?: string | null;
+  beds?: number | null;
+  baths?: number | null;
+  sqft?: number | null;
+  price?: number | null;
+  availableFrom?: string | null;
+  photoUrl?: string | null;
 }
 
 export class ZillowExtractor implements ListingExtractor, ModeAwareListingExtractor {
   readonly source = 'zillow' as const;
 
   canHandle(url: URL): boolean {
+    const path = url.pathname;
     return url.hostname.includes(ZILLOW_HOSTNAME) && (
-      url.pathname.includes('/homedetails/') ||
-      url.pathname.includes('/condo/') ||
-      url.pathname.includes('/townhouse/') ||
-      url.pathname.includes('/rent/') ||
-      url.pathname.includes('/lot/')
+      path.includes('/homedetails/') ||
+      path.includes('/condo/') ||
+      path.includes('/townhouse/') ||
+      path.includes('/rent/') ||
+      path.includes('/lot/') ||
+      path.includes('/apartments/') ||
+      path.match(/^\/b\//) !== null
     );
   }
 
@@ -375,19 +455,76 @@ export class ZillowExtractor implements ListingExtractor, ModeAwareListingExtrac
   // Legacy entry: extract() — 保持原签名,内部走 detect + common + (sale|rent)
   // ==========================================================================
   async extract(ctx: ExtractContext): Promise<StandardizedListingData> {
-    const meta = await this.detectListingType(ctx);
-    const common = await this.extractCommonFields(ctx);
+    // Collect raw data once so we can both feed the resolver and surface
+    // identity fields (zpid / buildingId) on the returned StandardizedListingData.
+    const raw = await this.collectRawData(ctx);
+    const meta = this.detectListingTypeInternal(ctx.document, ctx.url, raw);
+    const common = this.buildCommonFields(raw, meta);
+
+    // Inject identity fields onto meta so the merge helpers can copy them onto
+    // the returned StandardizedListingData. The meta fields use the legacy
+    // ListingTypeMeta shape plus hidden underscore-prefixed fields.
+    const zpid = extractZpidFromUrl(ctx.url.href);
+    const identityMeta = meta as unknown as ListingTypeMeta & {
+      __buildingId: string | null;
+      __listingIdentity: string;
+      __modeResolution: StandardizedListingData['modeResolution'];
+      __listingScope: ListingScope | null;
+      __buildingName: string | null;
+      __availableUnits: AvailableUnit[] | null;
+      __floorPlanSummaries: Array<{
+        planName?: string | null;
+        bedrooms?: number | null;
+        bathrooms?: number | null;
+        sqft?: number | null;
+        minPrice?: number | null;
+        maxPrice?: number | null;
+        unitCount?: number | null;
+      }> | null;
+    };
+    identityMeta.__buildingId = raw.buildingId ?? null;
+    identityMeta.__listingIdentity = buildListingIdentity({
+      url: ctx.url.href,
+      zpid,
+      buildingId: raw.buildingId ?? null,
+    });
+function collapseSource(value: ListingModeSourceResult): 'sale' | 'rent' | 'none' | 'conflict' {
+  return value === 'unknown' ? 'none' : value;
+}
+identityMeta.__modeResolution = meta.modeResolution
+  ? {
+      resolverVersion: 'zillow_listing_mode_v2',
+      mode: meta.modeResolution.mode,
+      confidence: meta.modeResolution.confidence,
+      decisionSource: meta.modeResolution.decisionSource,
+      conflict: meta.modeResolution.conflict,
+      evidence: meta.modeResolution.evidence,
+      sources: {
+        jsonLd: collapseSource(meta.modeResolution.sources.jsonLd),
+        structured: collapseSource(meta.modeResolution.sources.structured),
+        hero: collapseSource(meta.modeResolution.sources.hero),
+      },
+      listingIdentity: meta.modeResolution.listingIdentity,
+    }
+  : undefined;
+    identityMeta.__listingScope = (meta.modeResolution?.listingScope ?? null) as ListingScope | null;
+    identityMeta.__buildingName = raw.buildingName ?? null;
+    {
+      const built = this.buildAvailableUnits(raw);
+      identityMeta.__availableUnits = built.availableUnits;
+      identityMeta.__floorPlanSummaries = built.floorPlanSummaries;
+    }
 
     if (meta.type === 'rent') {
-      const rent = await this.extractRentSpecificFields(ctx, common);
-      return mergeCommonAndRent(common, rent, ctx, meta);
+      const rent = this.buildRentFields(raw, common);
+      return mergeCommonAndRent(common, rent, ctx, identityMeta);
     }
     if (meta.type === 'sale') {
-      const sale = await this.extractSaleSpecificFields(ctx, common);
-      return mergeCommonAndSale(common, sale, ctx, meta);
+      const sale = this.buildSaleFields(raw, common);
+      return mergeCommonAndSale(common, sale, ctx, identityMeta);
     }
     // unknown: 只返回 common + listingType='unknown'，等待 ReportModeModal 选定
-    return mergeCommonAndUnknown(common, ctx, meta);
+    return mergeCommonAndUnknown(common, ctx, identityMeta);
   }
 
   // ==========================================================================
@@ -398,7 +535,7 @@ export class ZillowExtractor implements ListingExtractor, ModeAwareListingExtrac
     // 复用现有 4 步信号；保留全部 strict signal 逻辑
     const doc = ctx.document;
     const url = ctx.url;
-    // 收集 raw 触发 detectFromStructuredData/detectFromTargetedDom 等
+    // 收集 raw 触发 modeDetection 三源解析所需的最小字段（address / price / homeStatus / listingType / listing_sub_type / transactionType / buildingId）
     // 这些方法原为 private，从 extract() 内取过 rawData。这里用最小 raw：
     const raw = this.collectRawSignalsForDetection(doc);
     const result = this.detectListingTypeInternal(doc, url, raw);
@@ -433,23 +570,50 @@ export class ZillowExtractor implements ListingExtractor, ModeAwareListingExtrac
     forcedListingType: 'rent' | 'sale',
   ): Promise<StandardizedListingData> {
     // 复用已经跑过的 common fields，避免重新扫描页面（content script 持有 document）
+    // The user explicitly resolved the mode (modal). Surface that decision in
+    // a synthetic ListingModeResolution so downstream consumers can still tell
+    // the difference between "auto-detected" and "user-forced".
+    const raw = await this.collectRawData(ctx);
+    const zpid = extractZpidFromUrl(ctx.url.href);
+    const identityMeta = {
+      type: forcedListingType as 'rent' | 'sale',
+      source: 'dom' as const,
+      confidence: 'high' as const,
+      conflicts: [],
+      __buildingId: raw.buildingId ?? null,
+      __listingIdentity: buildListingIdentity({
+        url: ctx.url.href,
+        zpid,
+        buildingId: raw.buildingId ?? null,
+      }),
+      __listingScope: null as ListingScope | null,
+      __buildingName: raw.buildingName ?? null,
+      __availableUnits: (() => {
+        const b = this.buildAvailableUnits(raw);
+        return b.availableUnits;
+      })(),
+      __floorPlanSummaries: (() => {
+        const b = this.buildAvailableUnits(raw);
+        return b.floorPlanSummaries;
+      })(),
+      __modeResolution: {
+        resolverVersion: 'zillow_listing_mode_v2' as const,
+        mode: forcedListingType,
+        confidence: 'high' as const,
+        decisionSource: 'current_listing_hero',
+        conflict: false,
+        evidence: ['user_forced_via_modal'],
+        sources: { jsonLd: 'none', structured: 'none', hero: 'none' },
+        listingIdentity: '',
+      },
+    };
     if (forcedListingType === 'rent') {
-      const rent = await this.extractRentSpecificFields(ctx, common);
-      return mergeCommonAndRent(common, rent, ctx, {
-        type: 'rent',
-        source: common.listingTypeSource ?? 'dom',
-        confidence: 'high',
-        conflicts: [],
-      });
+      const rent = this.buildRentFields(raw, common);
+      return mergeCommonAndRent(common, rent, ctx, identityMeta as unknown as ListingTypeMeta);
     }
     if (forcedListingType === 'sale') {
-      const sale = await this.extractSaleSpecificFields(ctx, common);
-      return mergeCommonAndSale(common, sale, ctx, {
-        type: 'sale',
-        source: common.listingTypeSource ?? 'dom',
-        confidence: 'high',
-        conflicts: [],
-      });
+      const sale = this.buildSaleFields(raw, common);
+      return mergeCommonAndSale(common, sale, ctx, identityMeta as unknown as ListingTypeMeta);
     }
     throw new Error(`forceReextract: invalid forcedListingType=${forcedListingType}`);
   }
@@ -464,21 +628,30 @@ export class ZillowExtractor implements ListingExtractor, ModeAwareListingExtrac
    * 保留所有现有 4 步信号逻辑（不删/不改）。
    */
   private async collectRawData(ctx: ExtractContext): Promise<ZillowRawData> {
+    // Step 1: JSON-LD (always, unconditionally)
     let rawData = this.extractFromJsonLd(ctx.document);
 
+    // Step 2: __NEXT_DATA__ — only if JSON-LD didn't fully populate
     if (!rawData.address && !rawData.price) {
       rawData = { ...rawData, ...this.extractFromNextData(ctx.document) };
     }
+
+    // Step 3: Apollo Preloaded — still gated on address+price missing
     if (!rawData.address && !rawData.price && !rawData.propertyType) {
       rawData = { ...rawData, ...this.extractFromApolloData(ctx.document) };
     }
+
+    // Step 4: data-testid DOM — still gated
     if (!rawData.address && !rawData.price && !rawData.propertyType) {
       rawData = { ...rawData, ...this.extractFromTestId(ctx.document) };
     }
+
+    // Step 5: text scan — still gated
     if (!rawData.address && !rawData.price && !rawData.propertyType) {
       rawData = { ...rawData, ...this.extractFromText(ctx.document, ctx.url) };
     }
 
+    // Step 6: DOM section parsing — always runs, can supplement
     const domData = this.extractFromDom(ctx.document);
     rawData = { ...rawData, ...domData };
 
@@ -688,18 +861,99 @@ export class ZillowExtractor implements ListingExtractor, ModeAwareListingExtrac
       const pageProps = data?.props?.pageProps;
       const componentProps = pageProps?.componentProps;
 
-      // ?? Zillow ???componentProps.gdpClientCache
+      const currentZpid = extractZpidFromUrl(doc.URL || '');
+      const urlPath = normalizePath(doc.URL || '');
+
+      // === Building path: /apartments/ or /b/ ===
+      const isBuildingUrl =
+        urlPath.includes('/apartments/') ||
+        /^\/b\//.test(urlPath);
+
+      const urlBuildingId = isBuildingUrl ? extractApartmentTailId(doc.URL || '') : null;
+
+      // Helper: try to parse gdpClientCache with zpid filtering
+      //
+      // zpid-lock contract:
+      //   1. When the URL has a zpid, an entry is acceptable ONLY if:
+      //        entry.property.zpid === currentZpid   (preferred — entry-level truth)
+      //      OR
+      //        cacheKey === `${currentZpid}_zpid`    (fallback — when entry lacks property.zpid)
+      //   2. Entries whose zpid (whether read from entry.property.zpid or the cache key)
+      //      does NOT match currentZpid are REJECTED — their address / price / beds /
+      //      baths / sqft / description / homeStatus / listingType must not leak.
+      //   3. Entries that have no resolvable zpid at all (neither entry.property.zpid
+      //      nor a `^\\d+_zpid$` key) are also REJECTED when currentZpid is set, because
+      //      we cannot confirm they belong to the current listing.
       const gdpCache = componentProps?.gdpClientCache;
       if (gdpCache && typeof gdpCache === 'object') {
         for (const key of Object.keys(gdpCache)) {
           const item = gdpCache[key];
-          if (item && typeof item === 'object' && (item.zpid || item.zestimate || item.price)) {
-            return this.extractFromPropertyData(item);
+          if (!item || typeof item !== 'object') continue;
+
+          // Preferred: read zpid from entry.property.zpid (entry-level truth).
+          const propertyObj = (item as Record<string, unknown>).property;
+          const propertyZpid =
+            propertyObj && typeof propertyObj === 'object'
+              ? ((propertyObj as Record<string, unknown>).zpid ?? null)
+              : null;
+
+          // Fallback: parse zpid from the cache key itself.
+          const keyZpid = key.match(/^(\d+)_zpid$/)?.[1] ?? null;
+
+          // The authoritative zpid we will compare against currentZpid.
+          // Prefer entry.property.zpid; fall back to the cache key.
+          const candidateZpid =
+            propertyZpid != null ? String(propertyZpid) : keyZpid;
+
+          // If URL has a zpid, REQUIRE an explicit zpid match.
+          // Entries without any zpid (no entry.property.zpid, no _zpid key)
+          // MUST NOT be trusted when a URL zpid is present.
+          if (currentZpid) {
+            if (!candidateZpid) continue;
+            if (candidateZpid !== currentZpid) continue;
+          }
+
+          // Final safety: if the entry has BOTH a property.zpid and a key zpid
+          // and they disagree, reject — that's a structural anomaly we should
+          // not silently trust.
+          if (propertyZpid != null && keyZpid != null && String(propertyZpid) !== keyZpid) {
+            continue;
+          }
+
+          if (item.zpid || item.zestimate || item.price) {
+            const raw = this.extractFromPropertyData(item);
+            // Only accept if we actually found address or price
+            if (raw.address || raw.price || raw.priceAmount) return raw;
           }
         }
       }
 
-      // ??????????
+      if (isBuildingUrl) {
+        // Try the confirmed candidate paths from the audit references
+        const reduxGdp = componentProps?.initialReduxState?.gdp;
+        const building = reduxGdp?.building;
+        if (building && typeof building === 'object') {
+          const raw = this.extractFromBuildingData(building as Record<string, unknown>, currentZpid, urlBuildingId);
+          if (raw.address || raw.buildingName || (raw.floorPlans && raw.floorPlans.length > 0)) {
+            return raw;
+          }
+        }
+
+        // Fallback: try other candidate paths
+        const altPaths = [
+          componentProps?.buildingData,
+          pageProps?.buildingData,
+          pageProps?.building,
+        ];
+        for (const alt of altPaths) {
+          if (alt && typeof alt === 'object') {
+            const raw = this.extractFromBuildingData(alt as Record<string, unknown>, currentZpid, urlBuildingId);
+            if (raw.address || raw.buildingName) return raw;
+          }
+        }
+      }
+
+      // Fallback: generic propertyData
       const props = pageProps ?? data?.props ?? data;
       const propertyData =
         props?.propertyData ??
@@ -756,10 +1010,32 @@ export class ZillowExtractor implements ListingExtractor, ModeAwareListingExtrac
     // ????
     const photoUrls = this.extractPhotoUrls(propertyData);
 
+    // === PR 1A: raw structured status fields (Source B)
+    //   Read original Zillow values; do NOT derive from any prior mode detection.
+    //   resolveStructuredRawStatus() will recompute the mode from these.
+    const homeStatus =
+      propertyData.homeStatus ?? propertyData.home_status ?? propertyData.homeStatusString;
+    const listingTypeRaw =
+      propertyData.listingType ?? propertyData.listing_type ?? propertyData.listing_type_string;
+    const listingSubType =
+      propertyData.listing_sub_type ?? propertyData.listingSubType ?? propertyData.listingSubTypeString;
+    const transactionType =
+      propertyData.transactionType ?? propertyData.transaction_type ?? propertyData.transactionTypeString;
+    const buildingId =
+      propertyData.buildingId ?? propertyData.building_id ?? propertyData.communityId;
+    // For rent, the gdpClientCache "price" is a per-month value but
+    // the unformattedPrice/price is a number, not a $/mo string.
+    // The /mo suffix is what parseMonthlyRent looks for, so re-annotate
+    // the displayed price string for rent listings here.
+    const priceWithSuffix =
+      homeStatus === 'FOR_RENT' && price && !/\/(?:mo|month|monthly)\b/i.test(price)
+        ? `${price}/mo`
+        : price;
+
     return {
       address,
-      price,
-      priceAmount: this.parsePrice(price),
+      price: priceWithSuffix,
+      priceAmount: this.parsePrice(priceWithSuffix),
       bedrooms: bedrooms as number | undefined,
       bathrooms: bathrooms as number | undefined,
       sqft: sqft as number | undefined,
@@ -767,6 +1043,7 @@ export class ZillowExtractor implements ListingExtractor, ModeAwareListingExtrac
       yearBuilt: yearBuilt as number | undefined,
       propertyType: propertyType as string | undefined,
       description: description as string | undefined,
+      whatsSpecialText: propertyData.whatsSpecialText as string | undefined,
       photoUrls,
       zestimate: zestimate as string | undefined,
       rentZestimate: rentZestimate as string | undefined,
@@ -774,7 +1051,184 @@ export class ZillowExtractor implements ListingExtractor, ModeAwareListingExtrac
       propertyTax: propertyTax as string | undefined,
       schoolRatings,
       daysOnZillow: daysOnZillow as number | undefined,
+      homeStatus: homeStatus as string | undefined,
+      listingType: listingTypeRaw as string | undefined,
+      listingSubType: listingSubType as string | undefined,
+      transactionType: transactionType as string | undefined,
+      buildingId: buildingId as string | undefined,
     };
+  }
+
+  /**
+   * Extract fields from an initialReduxState.gdp.building object.
+   * Unions floorPlans, units, and ungroupedUnits and dedupes by (name, beds, price).
+   * Pinned to a specific zpid via bestMatchedUnit.hdpUrl when currentZpid is provided.
+   *
+   * If `urlBuildingId` is provided and the returned buildingId does NOT match
+   * the URL's apartment tail id, the building payload is rejected — this is the
+   * SPA cross-building pollution guard (the next-data hydration may still carry
+   * the previous building's record).
+   */
+  private extractFromBuildingData(
+    building: Record<string, unknown>,
+    currentZpid: string | null,
+    urlBuildingId?: string | null,
+  ): Partial<ZillowRawData> {
+    const buildingIdRaw = building.buildingId ?? building.building_id ?? building.communityId;
+    const buildingId = typeof buildingIdRaw === 'string' ? buildingIdRaw : null;
+
+    // SPA cross-building pollution guard: if URL has a buildingId and the
+    // hydrated building payload disagrees, REJECT the payload entirely.
+    if (urlBuildingId && buildingId && buildingId !== urlBuildingId) {
+      return {};
+    }
+
+    const buildingName =
+      (building.buildingName as string | undefined) ??
+      (building.name as string | undefined) ??
+      (building.fullAddress as string | undefined) ??
+      null;
+
+    const bmu = building.bestMatchedUnit as Record<string, unknown> | undefined;
+    const bmuHdpUrl = bmu?.hdpUrl as string | undefined;
+    // Only honor bestMatchedUnit when the URL has a zpid pointing INTO this
+    // building — otherwise this is a multi-unit building page and the matched
+    // unit zpid is irrelevant.
+    const bmuZpid = currentZpid ?? null;
+
+    // Union all three sources
+    const fpSources: unknown[] = [];
+    const fps = building.floorPlans;
+    const units = building.units;
+    const ungrouped = building.ungroupedUnits;
+    if (Array.isArray(fps)) fpSources.push(...fps);
+    if (Array.isArray(units)) fpSources.push(...units);
+    if (Array.isArray(ungrouped)) fpSources.push(...ungrouped);
+
+    const rawPlans: FloorPlan[] = [];
+    const dedupKeys = new Set<string>();
+    for (const item of fpSources) {
+      if (!item || typeof item !== 'object') continue;
+      const obj = item as Record<string, unknown>;
+      const name = (obj.name ?? obj.label ?? obj.floorPlanName ?? obj.unitName ?? obj.unitNumber ?? null) as string | null;
+      const beds = this.coerceNum(obj.beds ?? obj.bedrooms ?? null);
+      const baths = this.coerceNum(obj.baths ?? obj.bathrooms ?? obj.fullBaths ?? null);
+      const sqft = this.coerceNum(obj.sqft ?? obj.squareFootage ?? obj.minSqft ?? null);
+      const minPrice = this.coerceNum(obj.priceMin ?? obj.price ?? obj.minPrice ?? null);
+      const maxPrice = this.coerceNum(obj.maxPrice ?? obj.price ?? null);
+
+      // Build unitId from zpid if available
+      const itemZpid = (obj.zpid as string | number | undefined)?.toString() ?? null;
+
+      // If a specific zpid is pinned and this item doesn't match, skip
+      if (bmuZpid && itemZpid && itemZpid !== bmuZpid) continue;
+
+      const key = `${name ?? ''}|${beds ?? ''}|${minPrice ?? ''}`;
+      if (dedupKeys.has(key)) continue;
+      dedupKeys.add(key);
+
+      const planUnits: FloorPlanUnit[] = [];
+      const innerUnits = obj.units as unknown[] | undefined;
+      if (Array.isArray(innerUnits)) {
+        for (const u of innerUnits) {
+          if (!u || typeof u !== 'object') continue;
+          const uo = u as Record<string, unknown>;
+          const unitZpid = (uo.zpid ?? uo.unitId ?? uo.id ?? null) as string | number | null;
+          const unitZpidStr = unitZpid != null ? unitZpid.toString() : null;
+          if (bmuZpid && unitZpidStr && unitZpidStr !== bmuZpid) continue;
+          planUnits.push({
+            unitId: unitZpidStr,
+            name: (uo.name ?? uo.unitName ?? uo.unitNumber ?? null) as string | null,
+            beds: this.coerceNum(uo.beds ?? uo.bedrooms ?? null),
+            baths: this.coerceNum(uo.baths ?? uo.bathrooms ?? null),
+            sqft: this.coerceNum(uo.sqft ?? uo.squareFootage ?? null),
+            price: this.coerceNum(uo.price ?? uo.minPrice ?? null),
+            availableFrom: (uo.availableFrom ?? uo.availFrom ?? uo.availability ?? null) as string | null,
+            photoUrl: (uo.imageURL ?? (uo.image as Record<string, unknown>)?.url ?? (uo.photo as Record<string, unknown>)?.url ?? null) as string | null,
+          });
+        }
+      }
+
+      rawPlans.push({ name, beds, baths, sqft, minPrice, maxPrice, units: planUnits });
+    }
+
+    const isBuilding = rawPlans.length > 0;
+    const streetAddress = (building.streetAddress as string | undefined) ?? null;
+    const city = (building.city as string | undefined) ?? null;
+    const state = (building.state as string | undefined) ?? null;
+    const zipcode = (building.zipcode as string | undefined) ?? null;
+    const addressParts = [streetAddress, city, state, zipcode].filter(Boolean);
+    const address = addressParts.length > 0 ? addressParts.join(', ') : '';
+
+    // If a specific unit is pinned, prefer its price/beds from planUnits
+    let monthlyRent: number | undefined;
+    let bedrooms: number | undefined;
+    if (bmuZpid) {
+      for (const plan of rawPlans) {
+        if (plan.units) {
+          for (const u of plan.units) {
+            if (u.unitId === bmuZpid) {
+              const uPrice = u.price ?? null;
+              const pPrice = plan.minPrice ?? null;
+              if (uPrice != null) monthlyRent = uPrice;
+              else if (pPrice != null) monthlyRent = pPrice;
+              const uBeds = u.beds ?? null;
+              const pBeds = plan.beds ?? null;
+              if (uBeds != null) bedrooms = uBeds;
+              else if (pBeds != null) bedrooms = pBeds;
+              break;
+            }
+          }
+        }
+        if (monthlyRent !== undefined) break;
+      }
+    }
+
+    // Fall back to cheapest available plan
+    if (monthlyRent === undefined && rawPlans.length > 0) {
+      const withPrice = rawPlans.filter(p => p.minPrice != null);
+      if (withPrice.length > 0) {
+        withPrice.sort((a, b) => (a.minPrice ?? 0) - (b.minPrice ?? 0));
+        const cheapest = withPrice[0];
+        monthlyRent = cheapest.minPrice ?? undefined;
+        const b = cheapest.beds ?? null;
+        bedrooms = b != null ? b : undefined;
+      }
+    }
+
+    // For multi-unit buildings (no pinned zpid), we DO NOT fabricate a single
+    // price / bedrooms / sqft — those fields belong only to a selected unit.
+    // The available units are exposed via availableUnits on the merge step.
+    const isSelectedUnit = bmuZpid != null;
+
+    return {
+      address: address || undefined,
+      price: isSelectedUnit && monthlyRent != null ? `$${monthlyRent.toLocaleString()}/mo` : '',
+      priceAmount: isSelectedUnit ? monthlyRent : undefined,
+      bedrooms: isSelectedUnit ? bedrooms : undefined,
+      buildingId: buildingId ?? undefined,
+      buildingName: buildingName ?? undefined,
+      floorPlans: rawPlans.length > 0 ? rawPlans : undefined,
+      isBuilding,
+      bestMatchedUnitHdpUrl: bmuHdpUrl,
+      bestMatchedUnitZpid: bmuZpid,
+      homeStatus: 'FOR_RENT',
+      listingType: 'FOR_RENT',
+      listingSubType: 'FOR_RENT',
+    };
+  }
+
+  /**
+   * Coerce a value to number | null.
+   */
+  private coerceNum(v: unknown): number | null {
+    if (v == null) return null;
+    if (typeof v === 'number') return v;
+    if (typeof v === 'string') {
+      const n = parseFloat(v.replace(/,/g, ''));
+      return isNaN(n) ? null : n;
+    }
+    return null;
   }
 
   /**
@@ -846,10 +1300,21 @@ export class ZillowExtractor implements ListingExtractor, ModeAwareListingExtrac
       const bedMatch = text.match(/(\d+)\s*bed/);
       const bathMatch = text.match(/(\d+(?:\.\d+)?)\s*bath/);
       const sqftMatch = text.match(/([\d,]+)\s*sqft/);
-      
-      if (bedMatch) data.bedrooms = parseInt(bedMatch[1]);
-      if (bathMatch) data.bathrooms = parseFloat(bathMatch[1]);
-      if (sqftMatch) data.sqft = parseInt(sqftMatch[1].replace(/,/g, ''));
+
+      // IMPORTANT: a truthy write (`if (bedMatch) data.bedrooms = ...`) would
+      // uncritically OVERWRITE a structured `bedrooms=0` (Studio) with whatever
+      // number the regex finds — including 0, 1, etc. — from the body text.
+      // We use `data.bedrooms == null` so a CONFIRMED value already in
+      // `data.bedrooms` (even 0) is preserved and the structured truth wins.
+      if (bedMatch && data.bedrooms == null) {
+        data.bedrooms = parseInt(bedMatch[1], 10);
+      }
+      if (bathMatch && data.bathrooms == null) {
+        data.bathrooms = parseFloat(bathMatch[1]);
+      }
+      if (sqftMatch && data.sqft == null) {
+        data.sqft = parseInt(sqftMatch[1].replace(/,/g, ''), 10);
+      }
     }
 
     // ??
@@ -884,14 +1349,21 @@ export class ZillowExtractor implements ListingExtractor, ModeAwareListingExtrac
     }
 
     // ?/???
-    const bedMatch = bodyText.match(/(\d+)\s*(?:bed(?:s|room)?|bd)/i);
-    const bathMatch = bodyText.match(/(\d+(?:\.\d+)?)\s*(?:bath(?:s)?|ba)/i);
+    // Same Studio-safety rule as extractFromTestId: structured truth wins.
+    // Building description copy like "studios and one-bedroom apartments"
+    // would otherwise win with "1 bedroom" and overwrite a real Studio's 0.
+    const bedMatch = bodyText.match(/(\d+)\s*(?:bed(?:s|room)?|bd)\b/i);
+    const bathMatch = bodyText.match(/(\d+(?:\.\d+)?)\s*(?:bath(?:s)?|ba)\b/i);
     const sqftMatch = bodyText.match(/([\d,]+)\s*sq\s*ft|([\d,]+)\s*sqft/i);
-    
-    if (bedMatch) data.bedrooms = parseInt(bedMatch[1]);
-    if (bathMatch) data.bathrooms = parseFloat(bathMatch[1]);
-    if (sqftMatch) {
-      data.sqft = parseInt((sqftMatch[1] || sqftMatch[2]).replace(/,/g, ''));
+
+    if (bedMatch && data.bedrooms == null) {
+      data.bedrooms = parseInt(bedMatch[1], 10);
+    }
+    if (bathMatch && data.bathrooms == null) {
+      data.bathrooms = parseFloat(bathMatch[1]);
+    }
+    if (sqftMatch && data.sqft == null) {
+      data.sqft = parseInt((sqftMatch[1] || sqftMatch[2]).replace(/,/g, ''), 10);
     }
 
     // ????
@@ -995,422 +1467,167 @@ export class ZillowExtractor implements ListingExtractor, ModeAwareListingExtrac
     if (wsData.highlights) data.highlights = wsData.highlights;
 
     // === LAYER 2 ===
-    console.log('[extract] finalData.whatsSpecialText length:', (data.whatsSpecialText || '').length);
-    console.log('[extract] finalData.whatsSpecialText preview:', (data.whatsSpecialText || '').slice(0, 120));
-    console.log('[extract] finalData.description length:', (data.description || '').length);
-    console.log('[extract] finalData.description preview:', (data.description || '').slice(0, 120));
-    console.log('[extract] address:', data.address, '| price:', data.price, '| sqft:', data.sqft, '| yearBuilt:', data.yearBuilt);
 
     return data;
   }
 
   /**
-   * Strict rent / sale detection for US listings.
+   * Strict rent / sale detection for US listings — PR 1A three-source resolver.
    *
-   * Priority:
-   *   1) JSON-LD / __NEXT_DATA__ (high-confidence signals only; offers.price alone does NOT qualify)
-   *   2) Targeted DOM nodes (price / status / title / Facts-Policies / CTA), never full-page innerText
-   *   3) URL fallback (rent only — homedetails/ is NOT a default for sale)
-   *   4) Price-text fallback (rent only — no sale default)
+   * Three independent sources, joined by deterministic rules (see modeDetection.ts):
+   *   A. JSON-LD businessFunction  — highest quality, but only counts when the
+   *      node actually matches the current listing (zpid / pathname).
+   *   B. structured raw status    — original Zillow fields (homeStatus,
+   *      listingType, listing_sub_type, transactionType). Exact-enum matching;
+   *      sale+rent → conflict.
+   *   C. current-listing Hero DOM — explicit status text stands alone; price
+   *      alone never counts.
+   * + URL fallback (rent only, low quality) when no source has an answer.
    *
-   * Returns 'unknown' whenever the strict signals are missing or conflicting.
+   * Does NOT scan document.body.innerText. Does NOT fuzzy-match `SALE|RENT`.
+   * The product of this function is a ListingTypeMeta (legacy contract) plus a
+   * detached ListingModeResolution (PR 1A) that the caller can store on the
+   * StandardizedListingData for backend submission.
    */
   private detectListingTypeInternal(
     doc: Document,
     url: URL,
     raw: Partial<ZillowRawData>,
+    preComputed?: ListingModeResolution,
   ): {
     type: 'rent' | 'sale' | 'unknown';
     source: 'jsonld' | 'dom' | 'url' | 'price' | 'fallback';
     confidence: 'high' | 'medium' | 'low';
     conflicts: Array<'rent' | 'sale'>;
+    modeResolution?: ListingModeResolution;
   } {
-    const conflicts: Array<'rent' | 'sale'> = [];
-
-    // Step 0: hard-truth body-text scan.
-    //   On multi-unit homedetails pages, Zillow's JSON-LD / __NEXT_DATA__ often marks a
-    //   property as FOR_SALE even when the listing itself is a tenant-facing rental. The
-    //   user's visible UI, however, is always correct: if the page shows "$2,300/mo" or
-    //   an "Apply now" CTA, the listing IS a rental. These signals are sourced from the
-    //   rendered DOM body, not from "What's special" agent marketing copy, so they win.
-    const hardSignal = this.detectHardTruthFromBody(doc, conflicts);
-    if (hardSignal === 'rent') {
-      return { type: 'rent', source: 'dom', confidence: 'high', conflicts };
-    }
-    if (hardSignal === 'sale') {
-      return { type: 'sale', source: 'dom', confidence: 'high', conflicts };
-    }
-
-    // Step 1: structured (JSON-LD + __NEXT_DATA__)
-    //   Only commit to 'rent' or 'sale' if structured data is unambiguous AND no DOM
-    //   description signals contradict it. Zillow's structured data sometimes marks a
-    //   property as FOR_SALE when the listing itself is a tenant-facing rental — in
-    //   that case the description will contain 2+ tenant signals that override.
-    const jsonldSignal = this.detectFromStructuredData(doc, conflicts);
-    if (jsonldSignal === 'rent') {
-      return { type: 'rent', source: 'jsonld', confidence: 'high', conflicts };
-    }
-    if (jsonldSignal === 'sale') {
-      // Before committing to 'sale' from structured data alone, run the DOM check to
-      // see if the listing description is tenant-facing. Multi-unit homedetails pages
-      // sometimes have wrong FOR_SALE metadata.
-      const domOverride = this.detectFromTargetedDom(doc, raw, conflicts);
-      if (domOverride === 'rent') {
-        return { type: 'rent', source: 'dom', confidence: 'medium', conflicts };
-      }
-      // DOM didn't find rent signals → trust structured data
-      return { type: 'sale', source: 'jsonld', confidence: 'high', conflicts };
-    }
-    if (conflicts.length > 0) {
-      // JSON-LD had both rent and sale signals — fall through to DOM for arbitration.
-    }
-
-    // ── Phase B: detect rent from targeted DOM/description (independent path).
-    //   Zillow's __NEXT_DATA__.gdpClientCache sometimes marks a property as FOR_SALE
-    //   even when the listing itself is a tenant-facing rental (multi-unit homedetails).
-    //   We treat DOM/description signals as authoritative for the "FOR_SALE" override
-    //   when 2+ tenant signals are present.
-    const domSignal = this.detectFromTargetedDom(doc, raw, conflicts);
-    if (domSignal === 'rent') {
-      // DOM found 2+ tenant signals — this wins over a "FOR_SALE" from structured data.
-      return { type: 'rent', source: 'dom', confidence: 'medium', conflicts };
-    }
-    if (domSignal === 'sale') {
-      return { type: 'sale', source: 'dom', confidence: 'medium', conflicts };
-    }
-
-    // Step 3: URL fallback (rent only)
-    const urlSignal = this.detectFromUrl(url);
-    if (urlSignal) {
-      return { type: urlSignal, source: 'url', confidence: 'low', conflicts };
-    }
-
-    // Step 4: price-text fallback (rent only)
-    const priceSignal = this.detectFromPriceText(raw);
-    if (priceSignal) {
-      return { type: priceSignal, source: 'price', confidence: 'low', conflicts };
-    }
-
-    return { type: 'unknown', source: 'fallback', confidence: 'low', conflicts };
+    const resolution = preComputed ?? this.resolveListingModeInternal(doc, url, raw);
+    const legacySource: 'jsonld' | 'dom' | 'url' | 'price' | 'fallback' =
+      resolution.decisionSource === 'rent_url_fallback'
+        ? 'url'
+        : resolution.decisionSource === 'current_listing_hero'
+          ? 'dom'
+          : resolution.decisionSource === 'structured_raw_status'
+            ? 'jsonld'
+            : 'jsonld';
+    const conflicts: Array<'rent' | 'sale'> = resolution.conflict
+      ? ['rent', 'sale']
+      : [];
+    return {
+      type: resolution.mode,
+      source: legacySource,
+      confidence: resolution.confidence,
+      conflicts,
+      modeResolution: resolution,
+    };
   }
 
   /**
-   * Step 0 — scan the rendered page body (innerText) for hard-truth rent/sale signals
-   * that override structured data. These are signals the user can see directly:
-   *   - Rent:
-   *       * "$X,XXX/mo" or "$X,XXX/month" anywhere on the page (NOT price/sqft)
-   *       * "Apply now" CTA button text
-   *       * "For rent" / "Rental listing" status header
-   *       * Lease length/deposit language + tenant/landlord/owner-pays language
-   *         (combined; either alone is not enough)
-   *   - Sale:
-   *       * "Make an offer" CTA button text
-   *       * "For sale" status header (must NOT be accompanied by rent signals)
-   *
-   * Returns 'rent' | 'sale' | null. Returns null when no hard signal is found, in which
-   * case the caller falls through to structured-data + targeted-DOM checks.
+   * Three-source resolver for the current listing. Extracted from
+   * detectListingTypeInternal so it can be reused independently and tested
+   * with synthetic Source B inputs. Renamed from `resolveListingMode` to
+   * avoid name collision with the exported resolver function imported from
+   * `./modeDetection`.
    */
-  private detectHardTruthFromBody(
+  private resolveListingModeInternal(
     doc: Document,
-    conflicts: Array<'rent' | 'sale'>,
-  ): 'rent' | 'sale' | null {
-    let sawRent = false;
-    let sawSale = false;
-
-    const bodyText = (doc.body?.innerText || doc.body?.textContent || '').toLowerCase();
-    if (!bodyText) return null;
-
-    // 1) $/mo price chip — strong rent signal. Require amount + unit suffix.
-    //    Excludes price/sqft ($NNN/sqft) and total price ($NNN,NNN alone).
-    //    Pattern: "$2,300 /mo" or "$2,300/mo" or "$2,300 month" — not just "$2,300".
-    const monthlyPriceRegex = /\$\s?[\d,]+(?:\.\d{2})?\s*\/\s*(?:mo|month|monthly)\b/;
-    if (monthlyPriceRegex.test(bodyText)) {
-      sawRent = true;
-    }
-
-    // 2) CTA buttons in the visible UI.
-    //    "Apply now" → rent, "Make an offer" → sale.
-    //    We scan every <button> and anchor inside a likely action bar, including any
-    //    element whose aria-label / innerText contains the trigger phrase.
-    const applyNowRegex = /\bapply\s*now\b/i;
-    const makeOfferRegex = /\bmake\s+an?\s+offer\b/i;
-
-    const ctaEls = Array.from(
-      doc.querySelectorAll(
-        'button, a[role="button"], a.Button, [role="button"], [class*="Button"]',
-      ),
-    );
-    for (const el of ctaEls) {
-      const txt = (
-        el.getAttribute('aria-label') ||
-        (el as HTMLElement).innerText ||
-        el.textContent ||
-        ''
-      ).trim();
-      if (!txt) continue;
-      if (applyNowRegex.test(txt)) {
-        sawRent = true;
-      }
-      if (makeOfferRegex.test(txt)) {
-        sawSale = true;
-      }
-    }
-    // Also search aria-label across the whole document — Apply Now can be on
-    // a button whose textContent is empty (icon-only button).
-    const allEls = Array.from(doc.querySelectorAll('*'));
-    for (const el of allEls) {
-      const aria = el.getAttribute('aria-label') || '';
-      if (applyNowRegex.test(aria)) {
-        sawRent = true;
-      }
-      if (makeOfferRegex.test(aria)) {
-        sawSale = true;
-      }
-    }
-
-    // 3) Status header text. Rent: "for rent" / "rental listing" / "this is a rental".
-    //    Sale: "for sale" — but only if no rent signal was seen.
-    const rentHeaderRegex = /\bfor\s+rent\b|\brental\s+listing\b|\bthis\s+home\s+is\s+for\s+rent\b/;
-    const saleHeaderRegex = /\bfor\s+sale\b|\bhome\s+for\s+sale\b/;
-    if (rentHeaderRegex.test(bodyText)) {
-      sawRent = true;
-    }
-    if (saleHeaderRegex.test(bodyText) && !monthlyPriceRegex.test(bodyText)) {
-      sawSale = true;
-    }
-
-    if (sawRent && !sawSale) {
-      return 'rent';
-    }
-    if (sawSale && !sawRent) {
-      return 'sale';
-    }
-    if (sawRent && sawSale) {
-      // Even on conflicting pages, if we found a $/mo price chip OR a Apply Now CTA,
-      // the listing IS a rental — the "For sale" is a stale multi-unit header artifact.
-      // This is the explicit override the bug demanded.
-      conflicts.push('rent', 'sale');
-      return 'rent';
-    }
-    return null;
-  }
-
-  /**
-   * Step 1 — read JSON-LD `RealEstateListing` and `__NEXT_DATA__.gdpClientCache`.
-   * Sale MUST be signalled by explicit ForSale / FOR_SALE / homeStatus markers; never by offers.price alone.
-   */
-  private detectFromStructuredData(
-    doc: Document,
-    conflicts: Array<'rent' | 'sale'>,
-  ): 'rent' | 'sale' | null {
-    let sawRent = false;
-    let sawSale = false;
-
-    // JSON-LD
-    try {
-      const scripts = doc.querySelectorAll('script[type="application/ld+json"]');
-      for (const script of scripts) {
-        try {
-          const data = JSON.parse(script.textContent || '');
-          const candidates = Array.isArray(data)
-            ? data
-            : (data['@graph'] ? data['@graph'] : [data]);
-
-          for (const item of candidates) {
-            const type = (item['@type'] || '').toString().toLowerCase();
-            if (!type.includes('realestate') && !type.includes('product')) continue;
-
-            const itemOffered = item.itemOffered || item;
-            const blob = JSON.stringify(item).toLowerCase();
-            const blob2 = JSON.stringify(itemOffered).toLowerCase();
-
-            // rent signal — explicit markers only
-            const priceSpec = item?.offers?.priceSpecification || itemOffered?.offers?.priceSpecification;
-            const unitText = String(priceSpec?.unitText || priceSpec?.unitCode || priceSpec?.referenceQuantity?.unitCode || '').toUpperCase();
-            if (unitText === 'MON') sawRent = true;
-            if (blob.includes('forrent') || blob.includes('for_rent') || blob.includes('rental listing')) sawRent = true;
-
-            // sale signal — explicit ForSale markers only
-            if (
-              blob.includes('forsale') ||
-              blob.includes('for_sale') ||
-              blob.includes('"additionalproperty"') && blob.includes('"name":"forsale"') ||
-              blob2.includes('forsale')
-            ) {
-              sawSale = true;
-            }
-
-            // NOTE: offers.price presence alone does NOT qualify as sale signal
-          }
-        } catch {
-          // skip unparseable ld+json
-        }
-      }
-    } catch {
-      // ignore
-    }
-
-    // __NEXT_DATA__.gdpClientCache
-    try {
-      const nextDataScript = doc.querySelector('script[id="__NEXT_DATA__"]');
-      if (nextDataScript) {
-        const nextData = JSON.parse(nextDataScript.textContent || '');
-        const gdpCache = nextData?.props?.pageProps?.componentProps?.gdpClientCache;
-        if (gdpCache && typeof gdpCache === 'object') {
-          for (const value of Object.values(gdpCache)) {
-            if (!value || typeof value !== 'object') continue;
-            const v = value as Record<string, unknown>;
-            const listingType = String(v.listingType || '').toUpperCase();
-            const homeStatus = String(v.homeStatus || '').toUpperCase();
-            if (listingType === 'FOR_RENT' || homeStatus === 'FOR_RENT') sawRent = true;
-            if (listingType === 'FOR_SALE' || homeStatus === 'FOR_SALE') sawSale = true;
-          }
-        }
-      }
-    } catch {
-      // ignore
-    }
-
-    if (sawRent && sawSale) {
-      conflicts.push('rent', 'sale');
-      return null;
-    }
-    if (sawRent) return 'rent';
-    if (sawSale) return 'sale';
-    return null;
-  }
-
-  /**
-   * Step 2 — read targeted DOM nodes (price node, status, h1, breadcrumbs, facts/policies, CTA).
-   * Treats "Request tour / Schedule tour / Get a tour / Listed by / Contact agent" as NEUTRAL.
-   */
-  private detectFromTargetedDom(
-    doc: Document,
+    url: URL,
     raw: Partial<ZillowRawData>,
-    conflicts: Array<'rent' | 'sale'>,
-  ): 'rent' | 'sale' | null {
-    let sawRent = false;
-    let sawSale = false;
+  ): ListingModeResolution {
+    const zpid = extractZpidFromUrl(url.href);
+    const currentPathname = normalizePath(url.href);
+    const jsonLd = resolveModeFromCurrentListingJsonLd(doc, {
+      url,
+      zpid,
+      currentPathname,
+    });
+    const structured = resolveStructuredRawStatus({
+      homeStatus: raw.homeStatus,
+      listingType: raw.listingType,
+      listingSubType: raw.listingSubType,
+      transactionType: raw.transactionType,
+    });
+    const hero = resolveModeFromCurrentListingHero(doc);
+    const resolution = resolveListingMode({
+      jsonLd,
+      structured,
+      hero,
+      url: url.href,
+    });
+    const buildingId = raw.buildingId ?? null;
+    resolution.listingIdentity = buildListingIdentity({
+      url: url.href,
+      zpid,
+      buildingId,
+    });
 
-    // 1) Price node — only the leading price chip
-    const priceNode =
-      doc.querySelector('[data-testid="price"]') ||
-      doc.querySelector('[data-testid="list-price"]') ||
-      doc.querySelector('h3[class*="price"]') ||
-      doc.querySelector('[class*="ListPrice"]');
-    if (priceNode) {
-      const txt = (priceNode.textContent || '').toLowerCase();
-      if (/\/(mo|month|monthly)\b/.test(txt) || /\bmonthly\b/.test(txt)) sawRent = true;
+    // === SPA cross-building guard ===
+    // If the URL is a building URL (apartments or /b/), the URL supplies a
+    // buildingId, AND the raw payload has no matching buildingId, the data
+    // belongs to a different building and should NOT be trusted. Force the
+    // resolution to 'unknown' so the URL fallback cannot pretend to "rent".
+    const isBuildingUrl =
+      currentPathname.includes('/apartments/') ||
+      /^\/b\//.test(currentPathname);
+    const urlBuildingId = isBuildingUrl ? extractApartmentTailId(url.href) : null;
+    if (urlBuildingId && !buildingId) {
+      resolution.mode = 'unknown';
+      resolution.confidence = 'low';
+      resolution.decisionSource = 'insufficient_evidence';
+      resolution.evidence = ['spa_cross_building_rejected'];
     }
 
-    // 2) Status node
-    const statusNode =
-      doc.querySelector('[data-testid="status"]') ||
-      doc.querySelector('.status-message');
-    if (statusNode) {
-      const txt = (statusNode.textContent || '').toLowerCase();
-      if (/for\s*rent|rent\s*this\s*home/.test(txt)) sawRent = true;
-      if (/for\s*sale|sale\s*by\s*owner|listed\s*for\s*sale/.test(txt)) sawSale = true;
-    }
-
-    // 3) Title (h1) + breadcrumbs
-    const h1 = doc.querySelector('h1');
-    if (h1) {
-      const txt = (h1.textContent || '').toLowerCase();
-      if (/\bfor\s*rent\b|\bapartment\s*for\s*rent\b/.test(txt)) sawRent = true;
-      if (/\bfor\s*sale\b/.test(txt)) sawSale = true;
-    }
-    const breadcrumbs = doc.querySelector('[data-testid="breadcrumbs"]');
-    if (breadcrumbs) {
-      const txt = (breadcrumbs.textContent || '').toLowerCase();
-      if (/for\s*rent|rentals/.test(txt)) sawRent = true;
-      if (/for\s*sale|listings/.test(txt)) sawSale = true;
-    }
-
-    // 4) Facts/Policies — search for explicit lease/deposit/application keywords
-    const factsSection =
-      Array.from(doc.querySelectorAll('h2, h3, div'))
-        .find(el => /facts\s*(&|and)\s*features|lease\s*terms|rental\s*policies|pricing\s*(&|and)\s*availability/i.test(el.textContent || ''));
-    if (factsSection) {
-      const txt = (factsSection.parentElement?.textContent || '').toLowerCase();
-      if (/lease\s*length|security\s*deposit|pet\s*deposit|application\s*fee|move-?in\s*fee|holding\s*deposit/.test(txt)) {
-        sawRent = true;
+    // Derive listingScope from URL pattern + zpid
+    const hasZpid = !!zpid;
+    let listingScope: 'multi_unit_building' | 'selected_unit' | 'single_property' | 'entire_home' | 'private_room' | 'unknown' = 'unknown';
+    if (isBuildingUrl) {
+      if (hasZpid) {
+        listingScope = 'selected_unit';
+      } else {
+        listingScope = 'multi_unit_building';
       }
+    } else if (hasZpid) {
+      // private_room detection from description / hero signals
+      const isPrivateRoom = this.detectPrivateRoomSignal(doc, raw);
+      listingScope = isPrivateRoom ? 'private_room' : 'entire_home';
     }
 
-    // 4b) Listing description keywords — critical for multi-unit / homedetails listings
-    // where Zillow's structured data may say FOR_SALE while the listing itself is a
-    // tenant-facing rental description. We require at least TWO distinct rent signals
-    // (utility metering, tenant/landlord language, deposit language, lease language) to
-    // avoid false positives from a single incidental word.
-    const desc = String(raw.description || raw.whatsSpecialText || '').toLowerCase();
-    if (desc) {
-      const rentHits: string[] = [];
-      if (/\btenant\s+(pays|paid|responsib|is\s+responsib)\b/.test(desc)) rentHits.push('tenant-pays');
-      if (/\blandlord\s+(pays|responsib|is\s+responsib)\b/.test(desc)) rentHits.push('landlord-pays');
-      if (/\b(owner\s+pays|owner\s+is\s+responsible)\b/.test(desc)) rentHits.push('owner-pays');
-      if (/\b(monthly\s+rent|rent\s+covers|rent\s+includes)\b/.test(desc)) rentHits.push('rent-includes');
-      if (/\b(security\s+deposit|pet\s+deposit|holding\s+deposit|move-?in\s+fees?)\b/.test(desc)) rentHits.push('deposit-language');
-      if (/\b(lease\s+(length|term)|12-?month\s+lease|month-?to-?month)\b/.test(desc)) rentHits.push('lease-language');
-      if (/\b(application\s+fee|credit\s+check|background\s+check)\b/.test(desc)) rentHits.push('application-language');
-      if (/\b(reason\s+for\s+moving|tenant\s+is\s+relocating|landlord\s+is\s+relocating)\b/.test(desc)) rentHits.push('tenant-relocating');
-      if (/\b(utilities?\s+(are\s+)?included|water\s+and\s+gas|gas\s+and\s+electric)\b/.test(desc)) rentHits.push('utilities-language');
-      if (rentHits.length >= 2) {
-        sawRent = true;
-      }
-      // Sale signal: only strong phrases
-      if (/\b(for\s+sale|listed\s+for\s+sale|sale\s+by\s+owner|motivated\s+seller)\b/.test(desc) &&
-          !/\bfor\s+rent\b/.test(desc)) {
-        sawSale = true;
-      }
-    }
-
-    // 5) CTA buttons — only Apply now / Make offer count; tours are NEUTRAL
-    const ctaCandidates = Array.from(
-      doc.querySelectorAll('button, a[role="button"], a.Button')
-    );
-    for (const el of ctaCandidates) {
-      const txt = (el.textContent || '').trim().toLowerCase();
-      if (/^apply\s*now\b/.test(txt)) sawRent = true;
-      if (/^make\s*(an?\s*)?offer\b/.test(txt)) sawSale = true;
-      // Request/Schedule/Get a tour, Listed by, Contact agent/property → NEUTRAL (no decision)
-    }
-
-    // 6) Title text "List price" alone is NOT enough for sale; must combine with another sale signal
-    // (already covered by the title check above)
-
-    if (sawRent && sawSale) {
-      conflicts.push('rent', 'sale');
-      return null;
-    }
-    if (sawRent) return 'rent';
-    if (sawSale) return 'sale';
-    return null;
+    const scope: ListingScope = resolution.mode === 'sale' ? 'single_property' : listingScope;
+    resolution.listingScope = scope;
+    return resolution;
   }
 
-  /**
-   * Step 3 — URL fallback (rent only). homedetails/ is NOT a default for sale.
-   */
-  private detectFromUrl(url: URL): 'rent' | 'sale' | null {
-    const path = (url.pathname || '').toLowerCase();
-    if (path.includes('/rent/') || path.includes('/rental/') || path.includes('/apartments/') ||
-        path.includes('/for-rent/') || path.includes('/community/')) {
-      return 'rent';
-    }
-    return null;
-  }
+  // ============================================================================
+  // REMOVED IN PR 1A — body-text + raw-gdpClientCache detection
+  // ----------------------------------------------------------------------------
+  // The previous implementation contained five methods that were the source of
+  // the "sale listing misidentified as rent" bug:
+  //
+  //   detectHardTruthFromBody    — scanned document.body.innerText. The
+  //                                $6,600/mo in the BuyAbility mortgage
+  //                                estimate and the "For Rent" entry in the
+  //                                Nearby homes ItemList both flipped the
+  //                                sale sample to rent.
+  //   detectFromStructuredData   — iterated every gdpClientCache value
+  //                                without matching to the current zpid, so
+  //                                a sub-app overlay (e.g. for-rent data for
+  //                                zpid 13304275 on the sale page for zpid
+  //                                13356678) leaked into the decision.
+  //   detectFromTargetedDom      — required "2+ tenant-signal keywords in the
+  //                                description" to FLIP a sale to rent. This
+  //                                is the explicit override the audit says
+  //                                must be removed.
+  //   detectFromUrl / detectFromPriceText — cheap fallbacks that polluted
+  //                                the decision tree. The new resolver handles
+  //                                URL fallback internally (rent only, low
+  //                                quality) and never falls back to price
+  //                                text alone.
+  //
+  // The replacement sources (JSON-LD businessFunction, structured raw
+  // status, current-listing Hero DOM) live in modeDetection.ts and are
+  // joined by resolveListingMode().
+  // ============================================================================
 
-  /**
-   * Step 4 — price-text fallback (rent only). Plain "$XXX,XXX" with no period hint is NOT a sale default.
-   */
-  private detectFromPriceText(raw: Partial<ZillowRawData>): 'rent' | 'sale' | null {
-    const txt = String(raw.price || '').toLowerCase();
-    if (!txt) return null;
-    if (/\/(mo|month)\b|\bmonthly\b/.test(txt) || /\blease\b/.test(txt)) return 'rent';
-    // sale only when explicitly mentioned (sale price / one-time payment)
-    if (/\bone-?time\b|\bsale\s*price\b/.test(txt)) return 'sale';
-    return null;
-  }
 
   /**
    * ??? summary ??????
@@ -1782,12 +1999,10 @@ export class ZillowExtractor implements ListingExtractor, ModeAwareListingExtrac
 
     // ?? STRATEGY 1: scoped listing-overview ??????????????????????????????????????
     const overview = doc.querySelector('[data-testid="listing-overview"]');
-    console.log('[Zillow Extractor][WhatsSpecial scoped] running | overview exists:', !!overview);
 
     if (overview) {
       const h2 = overview.querySelector('h2');
       const headingText = h2?.textContent?.trim() || '';
-      console.log('[Zillow Extractor][WhatsSpecial scoped] headingText:', headingText);
 
       if (/what'?s\s*special/i.test(headingText)) {
         const highlights: string[] = [];
@@ -1814,9 +2029,6 @@ export class ZillowExtractor implements ListingExtractor, ModeAwareListingExtrac
           }
         }
 
-        console.log('[Zillow Extractor][WhatsSpecial scoped] highlightCount:', highlights.length);
-        console.log('[Zillow Extractor][WhatsSpecial scoped] bodyLines count:', bodyLines.length);
-
         const parts: string[] = [];
         if (highlights.length > 0) parts.push(...highlights);
         if (bodyLines.length > 0) parts.push(...bodyLines);
@@ -1827,7 +2039,6 @@ export class ZillowExtractor implements ListingExtractor, ModeAwareListingExtrac
             data.whatsSpecialText = clean;
             data.description = clean;
             data.descriptionSource = 'listing_overview';
-            console.log('[Zillow Extractor][WhatsSpecial scoped] ? SUCCESS | whatsSpecialText length:', clean.length, '| preview:', clean.slice(0, 120));
             return data;
           }
         }
@@ -1856,12 +2067,10 @@ export class ZillowExtractor implements ListingExtractor, ModeAwareListingExtrac
         data.whatsSpecialText = clean;
         data.description = clean;
         data.descriptionSource = 'heading_scan';
-        console.log('[Zillow Extractor][WhatsSpecial heading-scan] ? SUCCESS | length:', clean.length);
         return data;
       }
     }
 
-    console.log('[Zillow Extractor][WhatsSpecial] ? no real content found | returning empty');
     return data;
   }
 
@@ -2286,6 +2495,236 @@ export class ZillowExtractor implements ListingExtractor, ModeAwareListingExtrac
 
     return Math.min(1, confidence);
   }
+
+  /**
+   * Detect private room signals from description text and structured fields.
+   *
+   * STRICT policy — only the following explicit, unambiguous phrasings qualify:
+   *   - "room for rent"
+   *   - "private room"
+   *   - "private bedroom"
+   *   - "housemates" / "housemate"
+   *   - "no private bath"
+   *   - "bedrooms can be rented separately"
+   *   - "room in townhome"
+   *   - "room in house"
+   *   - listingType / listingSubType / JSON-LD itemOffered carries roomForRent=true
+   *     or @type === "Room"
+   *
+   * Weak / ambiguous signals (shared bathroom, roommate, "available to rent", etc.)
+   * NEVER trigger private_room on their own. They are only used to STRENGTHEN an
+   * already-present explicit signal — i.e. they require a strong single-bed-rental
+   * phrasing in the same text. "Bedroom on the 2nd floor" is NOT a private room
+   * signal — it is a common whole-home description.
+   *
+   * Does NOT use bedroom count, price, or address alone.
+   */
+  private detectPrivateRoomSignal(doc: Document, raw: Partial<ZillowRawData>): boolean {
+    const desc = (raw.description ?? '').toLowerCase();
+    const ws = (raw.whatsSpecialText ?? '').toLowerCase();
+    const combined = desc + ' ' + ws;
+
+    // Strong, explicit phrasings. Any one of these ALONE is sufficient to trigger.
+    // IMPORTANT: each pattern is wrapped so that common negation phrasings
+    // (e.g. "No private room offered", "Private room not available") do NOT
+    // match. We achieve this by:
+    //   (a) pairing the strong signal with a positive rental-intent token in
+    //       the same sentence, OR
+    //   (b) explicitly excluding 'no …' / 'not …' prefixes.
+    //
+    // The patterns are applied to the LOWER-CASED description + whatsSpecial.
+    const strongSignals: RegExp[] = [
+      /\broom\s*for\s*rent\b(?!\s*not)/,
+      /\bprivate\s*room\b(?!\s*(?:offered|not|unless))/,
+      /\bprivate\s*bedroom\b(?!\s*(?:offered|not|unless))/,
+      /\broom\s*in\s*townhome\b/,
+      /\broom\s*in\s*house\b/,
+      /\bbedrooms?\s*can\s*be\s*rented\s*separately\b/,
+      /\bno\s*private\s*bath\b/,
+      /\bhousemate?s?\b/,
+      // Compound: explicit private bedroom in shared home with RENTAL intent
+      /\bprivate\s*room[^.\n]{0,80}\b(?:for\s*rent|to\s*rent|sublet|available\s*to\s*rent)\b/,
+      // Compound: "rooms available" / "bedrooms can be rented" — explicit per-room
+      /\b(?:rooms?|bedrooms?)\s*available\s*(?:to\s*be\s*)?rented\s*(?:separately|individually)\b/,
+    ];
+
+    // Weak signals — ONLY used to reinforce an already-present strong signal.
+    const weakSignals: RegExp[] = [
+      /\bshared\s*(?:bathroom|bath|common\s*areas?|living)\b/,
+      /\broommate?s?\b/,
+      /\bavailable\s*to\s*rent\b/,
+      /\bco-?tenant\b/,
+      /\bcommon\s*space\b/,
+    ];
+
+    const hasStrong = strongSignals.some((re) => re.test(combined));
+    if (!hasStrong) {
+      // Weak signals alone must not trigger private_room.
+      // Fall through to structured checks below.
+    } else {
+      return true;
+    }
+
+    // Structured field checks — explicit roomForRent flag.
+    if ((raw as Record<string, unknown>).roomForRent === true) return true;
+
+    const listingSubType = (raw.listingSubType ?? '').toLowerCase();
+    if (listingSubType === 'room' || listingSubType.includes('room for rent')) {
+      return true;
+    }
+
+    // JSON-LD itemOffered @type === "Room" is a strong explicit signal.
+    const scripts = doc.querySelectorAll('script[type="application/ld+json"]');
+    for (const script of scripts) {
+      try {
+        const data = JSON.parse(script.textContent || '');
+        const candidates = Array.isArray(data)
+          ? data
+          : (data['@graph'] ? data['@graph'] : [data]);
+        for (const item of candidates) {
+          const t = (item?.itemOffered?.['@type'] ?? item?.['@type'] ?? '')
+            .toString()
+            .toLowerCase();
+          if (t === 'room' || t === 'private room') return true;
+        }
+      } catch {
+        // ignore
+      }
+    }
+
+    return false;
+  }
+
+  /**
+   * Build availableUnits (concrete addressable units) and floorPlanSummaries
+   * (roll-ups) from the raw floorPlans collected during extraction.
+   *
+   * SEPARATION OF SEMANTICS:
+   *   - availableUnits    = only entries that resolve to a concrete unit
+   *                         (have unitId / zpid / unitNumber OR a stable
+   *                          name|beds|baths|sqft|rent|availableFrom fingerprint).
+   *                         Two units with identical price/beds but distinct
+   *                         unitNumbers MUST produce two distinct entries.
+   *   - floorPlanSummaries = roll-ups emitted by floor-plans that summarise
+   *                         many identical units.
+   */
+  private buildAvailableUnits(raw: ZillowRawData): {
+    availableUnits: AvailableUnit[] | null;
+    floorPlanSummaries: Array<{
+      planName?: string | null;
+      bedrooms?: number | null;
+      bathrooms?: number | null;
+      sqft?: number | null;
+      minPrice?: number | null;
+      maxPrice?: number | null;
+      unitCount?: number | null;
+    }> | null;
+  } {
+    const unitsOut: AvailableUnit[] = [];
+    const summaries: Array<{
+      planName?: string | null;
+      bedrooms?: number | null;
+      bathrooms?: number | null;
+      sqft?: number | null;
+      minPrice?: number | null;
+      maxPrice?: number | null;
+      unitCount?: number | null;
+    }> = [];
+    const seenUnitKeys = new Set<string>();
+
+    const fingerprint = (u: {
+      unitId?: string | null;
+      name?: string | null;
+      unitNumber?: string | null;
+      zpid?: string | null;
+      beds?: number | null;
+      baths?: number | null;
+      sqft?: number | null;
+      price?: number | null;
+      availableFrom?: string | null;
+    }) => {
+      // Priority: unitId / zpid / unitNumber — when available, these are stable.
+      const stable =
+        u.unitId != null && u.unitId !== ''
+          ? `id:${u.unitId}`
+          : u.zpid != null && u.zpid !== ''
+            ? `zpid:${u.zpid}`
+            : u.unitNumber != null && u.unitNumber !== ''
+              ? `unit:${u.unitNumber}`
+              : null;
+      if (stable) return stable;
+      // Fallback fingerprint — name + numeric fields.
+      return [
+        `name:${u.name ?? ''}`,
+        `beds:${u.beds ?? ''}`,
+        `baths:${u.baths ?? ''}`,
+        `sqft:${u.sqft ?? ''}`,
+        `price:${u.price ?? ''}`,
+        `avail:${u.availableFrom ?? ''}`,
+      ].join('|');
+    };
+
+    const fp = raw.floorPlans ?? [];
+    for (const plan of fp) {
+      const planUnits = plan.units ?? [];
+      if (planUnits.length > 0) {
+        for (const u of planUnits) {
+          const key = fingerprint({
+            unitId: u.unitId ?? null,
+            zpid: u.zpid ?? null,
+            unitNumber: u.unitNumber ?? null,
+            name: u.name ?? plan.name ?? null,
+            beds: u.beds ?? plan.beds ?? null,
+            baths: u.baths ?? plan.baths ?? null,
+            sqft: u.sqft ?? plan.sqft ?? null,
+            price: u.price ?? plan.minPrice ?? null,
+            availableFrom: u.availableFrom ?? null,
+          });
+          if (seenUnitKeys.has(key)) continue;
+          seenUnitKeys.add(key);
+          unitsOut.push({
+            unitId: u.unitId ?? null,
+            name: u.name ?? plan.name ?? null,
+            unitNumber: u.unitNumber ?? null,
+            zpid: u.zpid ?? null,
+            bedrooms: u.beds ?? plan.beds ?? null,
+            bathrooms: u.baths ?? plan.baths ?? null,
+            sqft: u.sqft ?? plan.sqft ?? null,
+            monthlyRent: u.price ?? plan.minPrice ?? null,
+            availableFrom: u.availableFrom ?? null,
+            photoUrl: u.photoUrl ?? null,
+          });
+        }
+        // Always emit the floor-plan roll-up so downstream callers can see
+        // the summary even when we have per-unit entries.
+        summaries.push({
+          planName: plan.name ?? null,
+          bedrooms: plan.beds ?? null,
+          bathrooms: plan.baths ?? null,
+          sqft: plan.sqft ?? null,
+          minPrice: plan.minPrice ?? null,
+          maxPrice: plan.maxPrice ?? plan.minPrice ?? null,
+          unitCount: planUnits.length,
+        });
+      } else {
+        // No per-unit entries — emit ONLY a floor-plan summary, never a unit.
+        summaries.push({
+          planName: plan.name ?? null,
+          bedrooms: plan.beds ?? null,
+          bathrooms: plan.baths ?? null,
+          sqft: plan.sqft ?? null,
+          minPrice: plan.minPrice ?? null,
+          maxPrice: plan.maxPrice ?? plan.minPrice ?? null,
+          unitCount: plan.unitCount ?? null,
+        });
+      }
+    }
+
+    return {
+      availableUnits: unitsOut.length > 0 ? unitsOut : null,
+      floorPlanSummaries: summaries.length > 0 ? summaries : null,
+    };
+  }
 }
 
 // ============================================================================
@@ -2464,7 +2903,20 @@ function mergeCommonAndRent(
     amenityFee: rent.amenityFee ?? null,
     qualificationRequirements: rent.qualificationRequirements ?? null,
 
+    // === PR 1A: listing identity + mode resolution ===
+    listingUrl: getCanonicalListingUrl(ctx.url.href),
+    pageUrl: ctx.url.href,
+    zpid: extractZpidFromUrl(ctx.url.href),
+    buildingId: (meta as any).__buildingId ?? null,
+    listingIdentity: (meta as any).__listingIdentity || null,
+    modeResolution: (meta as any).__modeResolution ?? undefined,
     // sale 字段在 rent 路径下不写入（undefined）— 由类型系统隐式表达
+
+    // === Phase 1: building-specific fields ===
+    buildingName: (meta as any).__buildingName ?? null,
+    availableUnits: (meta as any).__availableUnits ?? null,
+    floorPlanSummaries: (meta as any).__floorPlanSummaries ?? null,
+    listingScope: (meta as any).__listingScope ?? null,
   };
 }
 
@@ -2564,7 +3016,19 @@ function mergeCommonAndSale(
     priceHistory: sale.priceHistory ?? null,
     lotDimensions: sale.lotDimensions ?? null,
 
+    // === PR 1A: listing identity + mode resolution ===
+    listingUrl: getCanonicalListingUrl(ctx.url.href),
+    pageUrl: ctx.url.href,
+    zpid: extractZpidFromUrl(ctx.url.href),
+    buildingId: (meta as any).__buildingId ?? null,
+    listingIdentity: (meta as any).__listingIdentity || null,
+    modeResolution: (meta as any).__modeResolution ?? undefined,
     // rent 字段在 sale 路径下不写入（undefined）
+
+    // === Phase 1: building-specific fields ===
+    buildingName: null,
+    availableUnits: null,
+    listingScope: 'single_property',
   };
 }
 
@@ -2642,6 +3106,19 @@ function mergeCommonAndUnknown(
     parkingDescription: common.parkingDescription,
     managementCompany: common.managementCompany,
 
+    // === PR 1A: listing identity + mode resolution ===
+    listingUrl: getCanonicalListingUrl(ctx.url.href),
+    pageUrl: ctx.url.href,
+    zpid: extractZpidFromUrl(ctx.url.href),
+    buildingId: (meta as any).__buildingId ?? null,
+    listingIdentity: (meta as any).__listingIdentity || null,
+    modeResolution: (meta as any).__modeResolution ?? undefined,
     // rent/sale specific 字段全部 undefined — 等待 forceReextract
+
+    // === Phase 1: building-specific fields ===
+    buildingName: (meta as any).__buildingName ?? null,
+    availableUnits: (meta as any).__availableUnits ?? null,
+    floorPlanSummaries: (meta as any).__floorPlanSummaries ?? null,
+    listingScope: (meta as any).__listingScope ?? null,
   };
 }

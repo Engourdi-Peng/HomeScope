@@ -39,8 +39,6 @@ const HS_ALIVE_ALARM = 'hs_keep_alive';
 
 chrome.alarms.onAlarm.addListener((alarm) => {
   if (alarm.name === HS_ALIVE_ALARM) {
-    // No-op ping �?just keeps SW alive
-    console.debug(`${LOG_PREFIX} [ALIVE] keep-alive tick`);
   }
 });
 
@@ -480,6 +478,30 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   return true;
 });
 
+// ===== PR 1A: Helper: derive reportMode from listingData (strict, no default sale) =====
+// Returns 'sale' | 'rent' | null. Never defaults to sale.
+// PR 1A: drop pricePeriod/monthlyRent fallback (polluted on Sale HDP pages).
+// Priority: reportMode > listingType > null. Never infer from price signals.
+function deriveReportModeStrict(listingData, tabUrl) {
+  if (!listingData && !tabUrl) return null;
+  if (listingData?.reportMode === 'sale' || listingData?.reportMode === 'rent') {
+    return listingData.reportMode;
+  }
+  if (listingData?.listingType === 'sale' || listingData?.listingType === 'rent') {
+    return listingData.listingType;
+  }
+  // NO pricePeriod / monthlyRent fallback — they are polluted on Sale HDP pages
+  return null;
+}
+
+// PR 1A: derive listingUrl with priority: listingUrl > pageUrl > url > tabUrl
+function deriveListingUrl(listingData, tabUrl) {
+  return (listingData && listingData.listingUrl) ||
+         (listingData && listingData.pageUrl) ||
+         (listingData && listingData.url) ||
+         tabUrl || '';
+}
+
 async function handleMessage(message, sender, sendResponse) {
   const { action } = message;
 
@@ -693,35 +715,9 @@ async function handleMessage(message, sender, sendResponse) {
       break;
     }
 
-    // ===== Helper: derive reportMode from listingData (strict, no default sale) =====
-  // Returns 'sale' | 'rent' | null. Never defaults to sale; if both fail we return null
-  // and the caller (store) should have blocked before reaching here.
-  function deriveReportModeStrict(listingData, tabUrl) {
-    if (!listingData && !tabUrl) return null;
-    // 1. Explicit reportMode set by the modal
-    if (listingData?.reportMode === 'sale' || listingData?.reportMode === 'rent') {
-      return listingData.reportMode;
-    }
-    // 2. listingType inferred by content script (rent | sale | unknown)
-    if (listingData?.listingType === 'sale' || listingData?.listingType === 'rent') {
-      return listingData.listingType;
-    }
-    // 3. pricePeriod
-    const pp = String(listingData?.pricePeriod || '').toLowerCase();
-    if (pp === 'month' || pp === 'week') return 'rent';
-    // 4. URL fallback (rent only — homedetails/ is NOT a default for sale)
-    const u = String(tabUrl || listingData?.url || '').toLowerCase();
-    if (u.includes('/rent/') || u.includes('/rental/') || u.includes('/apartments/') ||
-        u.includes('/for-rent/') || u.includes('/community/')) {
-      return 'rent';
-    }
-    return null;
-  }
-
-  // ===== Lightweight Basic Analysis (Anonymous, no images, sync) =====
+    // ===== Lightweight Basic Analysis (Anonymous, no images, sync) =====
     case 'analyze_basic': {
       const listingData = message.data;
-
       // ── Dedup: suppress duplicate in-flight requests ─────────────────────────
       const dedupeKey = message._dedupeKey;
       if (dedupeKey && _basicDedupeSet.has(dedupeKey)) {
@@ -735,7 +731,8 @@ async function handleMessage(message, sender, sendResponse) {
 
       // ── Unified source/market derivation ────────────────────────────────────────────
       const tabUrl = listingData?.tabUrl || listingData?.url || '';
-      const { source, sourceDomain, market, listingUrl } = deriveListingSourceInfo(listingData, tabUrl);
+      const { source, sourceDomain, market } = deriveListingSourceInfo(listingData, tabUrl);
+      const listingUrl = deriveListingUrl(listingData, tabUrl);
       const description = listingData?.description || listingData?.rawText || listingData?.title || 'Property listing information';
       // === LAYER 3a — strict derive; never default to sale ===
       const reportMode = deriveReportModeStrict(listingData, tabUrl);
@@ -749,19 +746,82 @@ async function handleMessage(message, sender, sendResponse) {
         return;
       }
 
-      // Build optionalDetails: pass ALL property info for comprehensive analysis
-      const priceText = listingData?.priceText || listingData?.price || null;
+      // Building pages carry a price range and unit rows, not one implicit unit.
+      const isBuilding = listingData?.listingScope === 'multi_unit_building';
+      const priceText = isBuilding ? null : (listingData?.priceText || listingData?.price || null);
       const optionalDetails = {};
-      if (priceText) {
+      if (isBuilding) {
+        optionalDetails.listingScope = 'multi_unit_building';
+        optionalDetails.availableUnits = Array.isArray(listingData.availableUnits)
+          ? listingData.availableUnits
+          : [];
+        // availableUnitCount represents the building total (sum of floor-plan
+        // unit counts). identifiedUnitCount is the subset with concrete
+        // identity (unitNumber / zpid / hdpUrl). Floor-plan roll-ups are the
+        // authoritative source for the total; fall back to the legacy length
+        // when the patch didn't compute one.
+        const totalAvailableUnitCount =
+          (typeof listingData.availableUnitCount === 'number'
+            && Number.isFinite(listingData.availableUnitCount)
+            && listingData.availableUnitCount >= 0)
+            ? listingData.availableUnitCount
+            : optionalDetails.availableUnits.length;
+        optionalDetails.availableUnitCount = totalAvailableUnitCount;
+        optionalDetails.identifiedUnitCount =
+          (typeof listingData.identifiedUnitCount === 'number'
+            && Number.isFinite(listingData.identifiedUnitCount)
+            && listingData.identifiedUnitCount >= 0)
+            ? listingData.identifiedUnitCount
+            : optionalDetails.availableUnits.length;
+        // Pass through all building-specific extraction that already exists on listingData
+        // so the Step 2 prompt and post-processing see the full multi-unit picture.
+        optionalDetails.floorPlanSummaries = Array.isArray(listingData.floorPlanSummaries)
+          ? listingData.floorPlanSummaries
+          : [];
+        optionalDetails.buildingName = listingData.buildingName ?? null;
+        optionalDetails.buildingAddress = listingData.buildingAddress ?? null;
+        optionalDetails.buildingId = listingData.buildingId ?? null;
+        optionalDetails.baseRent = listingData.baseRent ?? null;
+        optionalDetails.requiredMonthlyFeeMin = listingData.requiredMonthlyFeeMin ?? null;
+        optionalDetails.requiredMonthlyFeeMax = listingData.requiredMonthlyFeeMax ?? null;
+        optionalDetails.listPriceIncludesRequiredMonthlyFees = listingData.listPriceIncludesRequiredMonthlyFees ?? null;
+        optionalDetails.buildingAmenities = listingData.buildingAmenities ?? null;
+        optionalDetails.availableUnitOptions = listingData.availableUnitOptions ?? null;
+        optionalDetails.unitNumber = listingData.unitNumber ?? null;
+        optionalDetails.zpid = listingData.zpid ?? null;
+        optionalDetails.hdpUrl = listingData.hdpUrl ?? null;
+        // Special offer + rental cost calculator — pass-through, never generate
+        // fallback copy when the field is missing.
+        optionalDetails.specialOfferText =
+          (typeof listingData.specialOfferText === 'string'
+            && listingData.specialOfferText.trim().length > 0)
+            ? listingData.specialOfferText
+            : null;
+        optionalDetails.specialOffers = Array.isArray(listingData.specialOffers)
+          ? listingData.specialOffers
+          : null;
+        optionalDetails.rentalCostCalculator =
+          (listingData.rentalCostCalculator && typeof listingData.rentalCostCalculator === 'object')
+            ? listingData.rentalCostCalculator
+            : null;
+        delete optionalDetails.monthlyRent;
+        delete optionalDetails.bedrooms;
+        delete optionalDetails.bathrooms;
+        delete optionalDetails.sqft;
+      } else if (priceText && priceText.trim()) {
         if (reportMode === 'rent') {
-          // US uses monthly rent; AU uses weekly rent — respect pricePeriod when available
+          // PR 1A: strict mutual exclusion — rent gets monthlyRent/weeklyRent only
           if (market === 'US') {
             optionalDetails.monthlyRent = priceText;
           } else {
             optionalDetails.weeklyRent = priceText;
           }
-        } else {
+          delete optionalDetails.askingPrice;
+        } else if (reportMode === 'sale') {
+          // PR 1A: strict mutual exclusion — sale gets askingPrice only
           optionalDetails.askingPrice = priceText;
+          delete optionalDetails.monthlyRent;
+          delete optionalDetails.weeklyRent;
         }
       }
 
@@ -781,9 +841,9 @@ async function handleMessage(message, sender, sendResponse) {
       const fullAddress = listingData?.address || listingData?.suburb || null;
       const parsedRegion = parseRegionFromAddress(fullAddress);
 
-      // Basic property details
-      if (listingData?.bedrooms != null) optionalDetails.bedrooms = listingData.bedrooms;
-      if (listingData?.bathrooms != null) optionalDetails.bathrooms = listingData.bathrooms;
+      // Building pages intentionally omit a specific unit's sizing fields.
+      if (!isBuilding && listingData?.bedrooms != null) optionalDetails.bedrooms = listingData.bedrooms;
+      if (!isBuilding && listingData?.bathrooms != null) optionalDetails.bathrooms = listingData.bathrooms;
       // Send full address so backend has it for hero.displayAddress
       if (listingData?.address) optionalDetails.address = listingData.address;
       // suburb = neighborhood/city (parsed from full address)
@@ -795,7 +855,7 @@ async function handleMessage(message, sender, sendResponse) {
       // content.js extracts homeType/propertyType/propertySubtype into identity but not
       // as top-level listingData fields �?so we need this fallback.
       const identity = listingData?.propertyFactsV2?.identity ?? {};
-      if (listingData?.sqft != null) optionalDetails.sqft = listingData.sqft;
+      if (!isBuilding && listingData?.sqft != null) optionalDetails.sqft = listingData.sqft;
       if (listingData?.yearBuilt != null) optionalDetails.yearBuilt = listingData.yearBuilt;
       if (listingData?.propertyType) optionalDetails.propertyType = listingData.propertyType;
       else if (identity?.propertyType) optionalDetails.propertyType = identity.propertyType;
@@ -860,6 +920,21 @@ async function handleMessage(message, sender, sendResponse) {
       if (listingData?.financialDetails) optionalDetails.financialDetails = listingData.financialDetails;
       if (listingData?.gasMeters != null) optionalDetails.gasMeters = listingData.gasMeters;
 
+      // === Rental facts (patch + DOM facts). Strict passthrough — never
+      //     overwrite monthlyRent / askingPrice / reportMode. ===
+      if (listingData?.baseRent != null) optionalDetails.baseRent = listingData.baseRent;
+      if (listingData?.listPriceIncludesRequiredMonthlyFees != null) {
+        optionalDetails.listPriceIncludesRequiredMonthlyFees = listingData.listPriceIncludesRequiredMonthlyFees;
+      }
+      if (listingData?.requiredMonthlyFeeMin != null) optionalDetails.requiredMonthlyFeeMin = listingData.requiredMonthlyFeeMin;
+      if (listingData?.requiredMonthlyFeeMax != null) optionalDetails.requiredMonthlyFeeMax = listingData.requiredMonthlyFeeMax;
+      if (listingData?.availabilityStatus) optionalDetails.availabilityStatus = listingData.availabilityStatus;
+      if (listingData?.leaseTerm) optionalDetails.leaseTerm = listingData.leaseTerm;
+      if (listingData?.petPolicy) optionalDetails.petPolicy = listingData.petPolicy;
+      if (listingData?.laundry) optionalDetails.laundry = listingData.laundry;
+      if (listingData?.buildingName) optionalDetails.buildingName = listingData.buildingName;
+      if (listingData?.roof) optionalDetails.roof = listingData.roof;
+
       // Highlights/features list
       if (listingData?.highlights && Array.isArray(listingData.highlights)) {
         optionalDetails.highlights = listingData.highlights;
@@ -890,6 +965,9 @@ async function handleMessage(message, sender, sendResponse) {
       if (listingData?.schoolRatings && Array.isArray(listingData.schoolRatings)) {
         optionalDetails.schoolRatings = listingData.schoolRatings;
       }
+      if (listingData?.transitScore != null) {
+        optionalDetails.transitScore = listingData.transitScore;
+      }
 
       // Walk Score / Bike Score / Neighborhood / Architectural Style / Flood Zone (from Zillow Facts & Features)
       if (listingData?.walkScore) optionalDetails.walkScore = listingData.walkScore;
@@ -899,10 +977,26 @@ async function handleMessage(message, sender, sendResponse) {
       if (listingData?.stories) optionalDetails.stories = listingData.stories;
       if (listingData?.hoaStatus) optionalDetails.hoaStatus = listingData.hoaStatus;
       if (listingData?.floodZone) optionalDetails.floodZone = listingData.floodZone;
+      // HOA explicitly included services (from Community & HOA section)
+      if (listingData?.hoaIncludedServices && Array.isArray(listingData.hoaIncludedServices)) {
+        optionalDetails.hoaIncludedServices = listingData.hoaIncludedServices;
+      }
+      // Estimated Sales Range from Zillow
+      if (listingData?.estimatedSalesRangeMin != null) {
+        optionalDetails.estimatedSalesRangeMin = listingData.estimatedSalesRangeMin;
+      }
+      if (listingData?.estimatedSalesRangeMax != null) {
+        optionalDetails.estimatedSalesRangeMax = listingData.estimatedSalesRangeMax;
+      }
 
       // Additional raw facts for fallback analysis
       if (listingData?.facts && typeof listingData.facts === 'object') {
         optionalDetails.facts = listingData.facts;
+      }
+
+      // === PR: full structured Facts & features groups (schema-agnostic) ===
+      if (listingData?.factsAndFeatures && typeof listingData.factsAndFeatures === 'object') {
+        optionalDetails.factsAndFeatures = listingData.factsAndFeatures;
       }
 
       // ── Enrich optionalDetails with source info for backend fallback ─────────────────
@@ -926,6 +1020,7 @@ async function handleMessage(message, sender, sendResponse) {
         const requestBody = {
           description,
           reportMode,
+          listingScope: listingData?.listingScope || null,
           optionalDetails,
           source,
           sourceDomain,
@@ -933,6 +1028,7 @@ async function handleMessage(message, sender, sendResponse) {
           listingUrl,
           zillowFinancials: listingData?.zillowFinancials || null,
         };
+
         const response = await fetch(url, {
           method: 'POST',
           headers: buildSupabaseFunctionHeaders(accessToken, serverConfig),
@@ -959,9 +1055,6 @@ async function handleMessage(message, sender, sendResponse) {
     case 'analyze': {
       // Prevent SW from being killed during the full submit+run request cycle
       ensureAlive();
-
-      // ── DIAG LOG ──
-      const listingDataRaw = message.data;
 
       // Step 1: Get fresh session (auto-refresh if needed)
       const auth = await getAuth();
@@ -990,22 +1083,87 @@ async function handleMessage(message, sender, sendResponse) {
         return;
       }
 
-      const { source, sourceDomain, market, listingUrl } = deriveListingSourceInfo(listingData, tabUrl);
+      const { source, sourceDomain, market } = deriveListingSourceInfo(listingData, tabUrl);
+      const listingUrl = deriveListingUrl(listingData, tabUrl);
       const serverConfig = getAnalyzeApiUrl(sourceDomain);
 
-      // Build optionalDetails: pass ALL property info to AI for accurate analysis
-      const priceText = listingData?.priceText || listingData?.price || null;
+      // Building pages carry a price range and unit rows, not one implicit unit.
+      const isBuilding = listingData?.listingScope === 'multi_unit_building';
+      const priceText = isBuilding ? null : (listingData?.priceText || listingData?.price || null);
       const priceHidden = listingData?.priceHidden || false;
       const optionalDetails = {};
-      if (priceText) {
+      if (isBuilding) {
+        optionalDetails.listingScope = 'multi_unit_building';
+        optionalDetails.availableUnits = Array.isArray(listingData.availableUnits)
+          ? listingData.availableUnits
+          : [];
+        // availableUnitCount represents the building total (sum of floor-plan
+        // unit counts). identifiedUnitCount is the subset with concrete
+        // identity (unitNumber / zpid / hdpUrl). Floor-plan roll-ups are the
+        // authoritative source for the total; fall back to the legacy length
+        // when the patch didn't compute one.
+        const totalAvailableUnitCount =
+          (typeof listingData.availableUnitCount === 'number'
+            && Number.isFinite(listingData.availableUnitCount)
+            && listingData.availableUnitCount >= 0)
+            ? listingData.availableUnitCount
+            : optionalDetails.availableUnits.length;
+        optionalDetails.availableUnitCount = totalAvailableUnitCount;
+        optionalDetails.identifiedUnitCount =
+          (typeof listingData.identifiedUnitCount === 'number'
+            && Number.isFinite(listingData.identifiedUnitCount)
+            && listingData.identifiedUnitCount >= 0)
+            ? listingData.identifiedUnitCount
+            : optionalDetails.availableUnits.length;
+        // Pass through all building-specific extraction that already exists on listingData
+        // so the Step 2 prompt and post-processing see the full multi-unit picture.
+        optionalDetails.floorPlanSummaries = Array.isArray(listingData.floorPlanSummaries)
+          ? listingData.floorPlanSummaries
+          : [];
+        optionalDetails.buildingName = listingData.buildingName ?? null;
+        optionalDetails.buildingAddress = listingData.buildingAddress ?? null;
+        optionalDetails.buildingId = listingData.buildingId ?? null;
+        optionalDetails.baseRent = listingData.baseRent ?? null;
+        optionalDetails.requiredMonthlyFeeMin = listingData.requiredMonthlyFeeMin ?? null;
+        optionalDetails.requiredMonthlyFeeMax = listingData.requiredMonthlyFeeMax ?? null;
+        optionalDetails.listPriceIncludesRequiredMonthlyFees = listingData.listPriceIncludesRequiredMonthlyFees ?? null;
+        optionalDetails.buildingAmenities = listingData.buildingAmenities ?? null;
+        optionalDetails.availableUnitOptions = listingData.availableUnitOptions ?? null;
+        optionalDetails.unitNumber = listingData.unitNumber ?? null;
+        optionalDetails.zpid = listingData.zpid ?? null;
+        optionalDetails.hdpUrl = listingData.hdpUrl ?? null;
+        // Special offer + rental cost calculator — pass-through, never generate
+        // fallback copy when the field is missing.
+        optionalDetails.specialOfferText =
+          (typeof listingData.specialOfferText === 'string'
+            && listingData.specialOfferText.trim().length > 0)
+            ? listingData.specialOfferText
+            : null;
+        optionalDetails.specialOffers = Array.isArray(listingData.specialOffers)
+          ? listingData.specialOffers
+          : null;
+        optionalDetails.rentalCostCalculator =
+          (listingData.rentalCostCalculator && typeof listingData.rentalCostCalculator === 'object')
+            ? listingData.rentalCostCalculator
+            : null;
+        delete optionalDetails.monthlyRent;
+        delete optionalDetails.bedrooms;
+        delete optionalDetails.bathrooms;
+        delete optionalDetails.sqft;
+      } else if (priceText && priceText.trim()) {
         if (reportMode === 'rent') {
+          // PR 1A: strict mutual exclusion — rent gets monthlyRent/weeklyRent only
           if (market === 'US') {
             optionalDetails.monthlyRent = priceText;
           } else {
             optionalDetails.weeklyRent = priceText;
           }
-        } else {
+          delete optionalDetails.askingPrice;
+        } else if (reportMode === 'sale') {
+          // PR 1A: strict mutual exclusion — sale gets askingPrice only
           optionalDetails.askingPrice = priceText;
+          delete optionalDetails.monthlyRent;
+          delete optionalDetails.weeklyRent;
         }
       }
       if (priceHidden) {
@@ -1028,9 +1186,9 @@ async function handleMessage(message, sender, sendResponse) {
       const fullAddress = listingData?.address || listingData?.suburb || null;
       const parsedRegion = parseRegionFromAddress(fullAddress);
 
-      // Basic property details
-      if (listingData?.bedrooms != null) optionalDetails.bedrooms = listingData.bedrooms;
-      if (listingData?.bathrooms != null) optionalDetails.bathrooms = listingData.bathrooms;
+      // Building pages intentionally omit a specific unit's sizing fields.
+      if (!isBuilding && listingData?.bedrooms != null) optionalDetails.bedrooms = listingData.bedrooms;
+      if (!isBuilding && listingData?.bathrooms != null) optionalDetails.bathrooms = listingData.bathrooms;
       // Send full address so backend has it for hero.displayAddress
       if (listingData?.address) optionalDetails.address = listingData.address;
       // suburb = neighborhood/city (parsed from full address)
@@ -1042,7 +1200,7 @@ async function handleMessage(message, sender, sendResponse) {
       // content.js extracts homeType/propertyType/propertySubtype into identity but not
       // as top-level listingData fields �?so we need this fallback.
       const identity = listingData?.propertyFactsV2?.identity ?? {};
-      if (listingData?.sqft != null) optionalDetails.sqft = listingData.sqft;
+      if (!isBuilding && listingData?.sqft != null) optionalDetails.sqft = listingData.sqft;
       if (listingData?.yearBuilt != null) optionalDetails.yearBuilt = listingData.yearBuilt;
       if (listingData?.propertyType) optionalDetails.propertyType = listingData.propertyType;
       else if (identity?.propertyType) optionalDetails.propertyType = identity.propertyType;
@@ -1107,6 +1265,21 @@ async function handleMessage(message, sender, sendResponse) {
       if (listingData?.financialDetails) optionalDetails.financialDetails = listingData.financialDetails;
       if (listingData?.gasMeters != null) optionalDetails.gasMeters = listingData.gasMeters;
 
+      // === Rental facts (patch + DOM facts). Strict passthrough — never
+      //     overwrite monthlyRent / askingPrice / reportMode. ===
+      if (listingData?.baseRent != null) optionalDetails.baseRent = listingData.baseRent;
+      if (listingData?.listPriceIncludesRequiredMonthlyFees != null) {
+        optionalDetails.listPriceIncludesRequiredMonthlyFees = listingData.listPriceIncludesRequiredMonthlyFees;
+      }
+      if (listingData?.requiredMonthlyFeeMin != null) optionalDetails.requiredMonthlyFeeMin = listingData.requiredMonthlyFeeMin;
+      if (listingData?.requiredMonthlyFeeMax != null) optionalDetails.requiredMonthlyFeeMax = listingData.requiredMonthlyFeeMax;
+      if (listingData?.availabilityStatus) optionalDetails.availabilityStatus = listingData.availabilityStatus;
+      if (listingData?.leaseTerm) optionalDetails.leaseTerm = listingData.leaseTerm;
+      if (listingData?.petPolicy) optionalDetails.petPolicy = listingData.petPolicy;
+      if (listingData?.laundry) optionalDetails.laundry = listingData.laundry;
+      if (listingData?.buildingName) optionalDetails.buildingName = listingData.buildingName;
+      if (listingData?.roof) optionalDetails.roof = listingData.roof;
+
       // Highlights/features list
       if (listingData?.highlights && Array.isArray(listingData.highlights)) {
         optionalDetails.highlights = listingData.highlights;
@@ -1137,6 +1310,9 @@ async function handleMessage(message, sender, sendResponse) {
       if (listingData?.schoolRatings && Array.isArray(listingData.schoolRatings)) {
         optionalDetails.schoolRatings = listingData.schoolRatings;
       }
+      if (listingData?.transitScore != null) {
+        optionalDetails.transitScore = listingData.transitScore;
+      }
 
       // Walk Score / Bike Score / Neighborhood / Architectural Style (from Zillow Facts & Features)
       if (listingData?.walkScore) optionalDetails.walkScore = listingData.walkScore;
@@ -1146,10 +1322,26 @@ async function handleMessage(message, sender, sendResponse) {
       if (listingData?.stories) optionalDetails.stories = listingData.stories;
       if (listingData?.hoaStatus) optionalDetails.hoaStatus = listingData.hoaStatus;
       if (listingData?.floodZone) optionalDetails.floodZone = listingData.floodZone;
+      // HOA explicitly included services (from Community & HOA section)
+      if (listingData?.hoaIncludedServices && Array.isArray(listingData.hoaIncludedServices)) {
+        optionalDetails.hoaIncludedServices = listingData.hoaIncludedServices;
+      }
+      // Estimated Sales Range from Zillow
+      if (listingData?.estimatedSalesRangeMin != null) {
+        optionalDetails.estimatedSalesRangeMin = listingData.estimatedSalesRangeMin;
+      }
+      if (listingData?.estimatedSalesRangeMax != null) {
+        optionalDetails.estimatedSalesRangeMax = listingData.estimatedSalesRangeMax;
+      }
 
       // Additional raw facts for fallback analysis
       if (listingData?.facts && typeof listingData.facts === 'object') {
         optionalDetails.facts = listingData.facts;
+      }
+
+      // === PR: full structured Facts & features groups (schema-agnostic) ===
+      if (listingData?.factsAndFeatures && typeof listingData.factsAndFeatures === 'object') {
+        optionalDetails.factsAndFeatures = listingData.factsAndFeatures;
       }
 
       // ── Enrich optionalDetails with source info for backend fallback ─────────────────
@@ -1162,6 +1354,7 @@ async function handleMessage(message, sender, sendResponse) {
         imageUrls,
         description,
         reportMode,
+        listingScope: listingData?.listingScope || null,
         optionalDetails,
         source,
         sourceDomain,

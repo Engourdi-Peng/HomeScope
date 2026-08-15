@@ -111,9 +111,13 @@ export interface PropertyIntelligenceProfile {
 }
 
 // ---- meta ----
+export type ListingScope = 'single_property' | 'entire_home' | 'private_room' | 'multi_unit_building' | 'selected_unit' | 'unknown';
+
 export interface ReportMeta {
   market: Market;
   reportMode: ReportMode;
+  /** Page scope from Zillow extractor — used to route multi-unit building reports */
+  listingScope?: ListingScope | null;
   source?: string;
   sourceDomain?: string;
   isBasic: boolean;

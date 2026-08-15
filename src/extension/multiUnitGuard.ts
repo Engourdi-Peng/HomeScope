@@ -26,21 +26,29 @@ export interface MultiUnitBlockResult {
 export const MULTI_UNIT_MESSAGE =
   'This building has multiple available units. Open or select a specific unit before generating a report.';
 
+export const NO_USABLE_MULTI_UNIT_DATA_MESSAGE =
+  'No usable multi-unit building data was extracted. Open or select a specific unit before generating a report.';
+
 /**
- * Refuse to submit multi-unit building overview pages for analysis.
+ * Guard against submitting a multi-unit building page that has neither
+ * unit data nor floor-plan data for analysis.
  *
  * Submission MUST be rejected, no analyze request sent, no credit deducted.
  *
- * Triggers (any one):
- *   - listingScope === 'multi_unit_building' AND complete building-level data is missing
- *   - availableUnits.length > 1 and listingScope is missing (defensive)
- *
- * v6 (2026-08-02): allow complete building-level data through.
- * A multi_unit_building payload is allowed when ALL of:
- *   - buildingName OR buildingAddress present
+ * v7 (2026-08-13): relax building-level requirements. The guard now only
+ * blocks when BOTH `availableUnits` and `floorPlanSummaries` are empty/missing.
+ * A multi_unit_building payload is allowed when ANY of:
+ *   - availableUnits non-empty
  *   - floorPlanSummaries non-empty
- *   - top-level monthlyRent / bedrooms / bathrooms / sqft are all null
- * (empty availableUnits is allowed; floorPlanSummaries carries the unit-type info)
+ *
+ * buildingName / buildingAddress / top-level monthlyRent / bedrooms /
+ * bathrooms / sqft are NOT required. The Zillow building overview page
+ * already supplies enough unit data and gallery images for the backend
+ * to attempt a building-level report.
+ *
+ * For non-multi_unit_building listings, the guard never blocks (defensive
+ * fallback for missing listingScope with many units was removed because
+ * the frontend never sets availableUnits without also setting listingScope).
  */
 export function getMultiUnitBuildingBlock(
   data: SubmitGuardInput | null | undefined,
@@ -49,20 +57,13 @@ export function getMultiUnitBuildingBlock(
   const scope = data.listingScope;
   const units = data.availableUnits;
   if (scope === 'multi_unit_building') {
-    const hasIdentity = !!data.buildingName || !!data.buildingAddress;
+    const hasAvailableUnits = Array.isArray(units) && units.length > 0;
     const hasPlans = Array.isArray(data.floorPlanSummaries)
       && data.floorPlanSummaries.length > 0;
-    const topLevelAllNull = data.monthlyRent == null
-      && data.bedrooms == null
-      && data.bathrooms == null
-      && data.sqft == null;
-    if (hasIdentity && hasPlans && topLevelAllNull) {
+    if (hasAvailableUnits || hasPlans) {
       return { blocked: false };
     }
-    return { blocked: true, message: MULTI_UNIT_MESSAGE };
-  }
-  if (Array.isArray(units) && units.length > 1 && !scope) {
-    return { blocked: true, message: MULTI_UNIT_MESSAGE };
+    return { blocked: true, message: NO_USABLE_MULTI_UNIT_DATA_MESSAGE };
   }
   return { blocked: false };
 }

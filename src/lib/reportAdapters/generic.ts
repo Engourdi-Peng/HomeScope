@@ -201,12 +201,6 @@ function buildSections(result: AnyResult, isBasic: boolean, analysisProfile?: Pr
   const sections: ReportSection[] = [];
 
   if (isBasic) {
-    // ── DEBUG LOG: trace what's available ─────────────────────────────────────
-    console.log('[basic-buildSections] result keys:', Object.keys(result).join(', '));
-    console.log('[basic-buildSections] whats_missing:', JSON.stringify(result.whats_missing ?? result.whatsMissing ?? []));
-    console.log('[basic-buildSections] top_3_things_to_check:', JSON.stringify(result.top_3_things_to_check ?? result.top3ThingsToCheck ?? []));
-    console.log('[basic-buildSections] questions_to_ask:', JSON.stringify(result.questions_to_ask ?? result.questionsToAsk ?? []));
-
     // ── what-we-know (US Basic v2) ─────────────────────────────────────────
     const wwKnow = result.what_we_know ?? result.whatWeKnow ?? {};
     // Fill gaps from property_snapshot (authoritative source from optionalDetails)
@@ -492,6 +486,7 @@ export function normalizeGenericReport(result: AnyResult, opts?: { analysisProfi
         }
         return 'unknown';
       })(),
+      listingScope: toText(result.listingScope ?? null) || null,
       source: toText(result.source ?? ''),
       sourceDomain: toText(result.sourceDomain ?? result.source_domain ?? ''),
       isBasic,

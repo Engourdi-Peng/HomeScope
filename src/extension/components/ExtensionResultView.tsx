@@ -128,79 +128,53 @@ export function ExtensionResultView() {
 
   // Helper: find a matching history item with full report
   const findMatchingHistoryItem = (url: string, address: string): typeof history[0] | undefined => {
-    console.log('[DEBUG findMatchingHistoryItem] START - url:', url, '| address:', address);
-    console.log('[DEBUG findMatchingHistoryItem] history.length:', history?.length);
-
     const result = history?.find((item, index) => {
       const fullResult = item.full_result as AnalysisResult | undefined;
-      console.log(`[DEBUG findMatchingHistoryItem] Checking item[${index}]: id=${item.id}`);
-      console.log(`[DEBUG findMatchingHistoryItem]   - hasFullResult:`, !!fullResult);
-      console.log(`[DEBUG findMatchingHistoryItem]   - analysisType:`, fullResult?.analysisType);
-      console.log(`[DEBUG findMatchingHistoryItem]   - item.address:`, item.address);
-      console.log(`[DEBUG findMatchingHistoryItem]   - fullResult.listingUrl:`, fullResult?.listingUrl);
-      console.log(`[DEBUG findMatchingHistoryItem]   - fullResult.listingInfo?.address:`, (fullResult as any)?.listingInfo?.address);
-      console.log(`[DEBUG findMatchingHistoryItem]   - fullResult.address:`, (fullResult as any)?.address);
 
       if (!fullResult) {
-        console.log(`[DEBUG findMatchingHistoryItem]   - SKIP: no fullResult`);
         return false;
       }
       if (fullResult.analysisType !== 'full') {
-        console.log(`[DEBUG findMatchingHistoryItem]   - SKIP: analysisType !== 'full' (got:`, fullResult.analysisType, ')');
         return false;
       }
 
       // Check URL match
       if (url) {
         const historyUrl = fullResult?.listingUrl || '';
-        console.log(`[DEBUG findMatchingHistoryItem]   - Checking URL match:`, { url, historyUrl });
         if (urlsMatch(url, historyUrl)) {
-          console.log(`[DEBUG findMatchingHistoryItem]   - URL MATCH!`);
           return true;
         }
       }
 
       // Check address match (try multiple sources)
       if (address) {
-        console.log(`[DEBUG findMatchingHistoryItem]   - Checking address match:`, address);
         // 1. item.address (from history)
         if (item.address) {
           const addrMatch1 = addressesMatch(address, item.address);
-          console.log(`[DEBUG findMatchingHistoryItem]     - vs item.address (${item.address}):`, addrMatch1);
           if (addrMatch1) return true;
         }
         // 2. fullResult.listingInfo.address
         const resultAddress = (fullResult as any)?.listingInfo?.address;
         if (resultAddress) {
           const addrMatch2 = addressesMatch(address, resultAddress);
-          console.log(`[DEBUG findMatchingHistoryItem]     - vs listingInfo.address (${resultAddress}):`, addrMatch2);
           if (addrMatch2) return true;
         }
         // 3. fullResult.address (top-level)
         const topAddress = (fullResult as any)?.address;
         if (topAddress) {
           const addrMatch3 = addressesMatch(address, topAddress);
-          console.log(`[DEBUG findMatchingHistoryItem]     - vs top-level address (${topAddress}):`, addrMatch3);
           if (addrMatch3) return true;
         }
       }
 
-      console.log(`[DEBUG findMatchingHistoryItem]   - NO MATCH for this item`);
       return false;
     });
 
-    console.log('[DEBUG findMatchingHistoryItem] END - result:', result ? `MATCHED: ${result.id}` : 'NO MATCH');
     return result;
   };
 
   const hasFullReport = React.useMemo(() => {
-    console.log('[DEBUG hasFullReport] Computing...');
-    console.log('[DEBUG hasFullReport] - currentUrl:', currentUrl);
-    console.log('[DEBUG hasFullReport] - currentAddress:', currentAddress);
-    console.log('[DEBUG hasFullReport] - history length:', history?.length);
-    const result = !!findMatchingHistoryItem(currentUrl, currentAddress);
-    console.log('[DEBUG hasFullReport] - RESULT:', result);
-    return result;
+    return !!findMatchingHistoryItem(currentUrl, currentAddress);
   }, [history, currentAddress, currentUrl]);
 
   // Define isAnalysing and isError here to avoid TDZ issues

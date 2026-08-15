@@ -51,6 +51,13 @@ export interface ListingData {
   listingTypeConflicts?: Array<'rent' | 'sale'>;
   // === user-confirmed mode (set after ReportModeModal interaction) ===
   reportMode?: 'rent' | 'sale';
+
+  // === Page scope (added by Zillow extractor / multi-unit building pages) ===
+  // Read with optional chaining by submission guards — kept optional to avoid
+  // forcing changes on every non-Zillow extractor path.
+  listingScope?: 'single_property' | 'entire_home' | 'private_room' | 'multi_unit_building' | 'selected_unit' | 'unknown';
+  availableUnits?: unknown[];
+  buildingName?: string | null;
 }
 
 // ===== Website-specific UI types =====

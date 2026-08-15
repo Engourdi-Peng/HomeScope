@@ -328,7 +328,8 @@ function buildHero(result: USSaleResult): HeroData {
   // Monthly payment from Zillow financials
   const zf = (result as any).zillowFinancials ?? {};
   const monthlyPayment = (() => {
-    const mp = zf.monthlyPayment?.estimatedPayment?.value
+    const mp = (result as any).carrying_costs?.primary_monthly_estimate
+      ?? zf.monthlyPayment?.estimatedPayment?.value
       ?? zf.monthlyPayment?.estimatedMonthlyPayment?.value
       ?? zf.estimatedMonthlyPayment?.value
       ?? (result as any).monthly_payment
@@ -373,9 +374,10 @@ function buildHero(result: USSaleResult): HeroData {
   const scoreToConfidence = (s: number | null): string => {
     if (s == null) return '';
     if (s >= 80) return 'High';
-    if (s >= 60) return 'Moderate';
-    if (s >= 40) return 'Low';
-    return 'Need More Evidence';
+    if (s >= 65) return 'Moderate';
+    if (s >= 50) return 'Low';
+    if (s >= 35) return 'Need More Evidence';
+    return 'High Uncertainty';
   };
 
   return {
@@ -389,28 +391,12 @@ function buildHero(result: USSaleResult): HeroData {
     monthlyPayment: monthlyPayment || undefined,
     score: computedScore,
     verdict: (() => {
-      // Prefer a meaningful (>=4 chars, non-placeholder) buyer-recommendation
-      // verdict from the AI. Never fall through to evidenceVerdict unless the
-      // AI gave us nothing usable, because score-driven verdict labels would
-      // semantically clash with recommendation verdicts like
-      // "Proceed With Caution".
-      const PLACEHOLDER_RE = /^(n\/?a|not enough data|unknown|null|undefined|-{1,3}|—?)$/i;
-      const aiVerdict = toText(
-        result.overall_verdict
-        ?? result.verdict
-        ?? (result as any).finalRecommendation?.verdict
-        ?? ''
-      );
-      if (aiVerdict && aiVerdict.length >= 4 && !PLACEHOLDER_RE.test(aiVerdict)) {
-        return aiVerdict;
-      }
-      // Fallback only when AI truly gave nothing — derive evidence level
-      try {
-        const fbScore = computeEvidenceScore(result, result.listingInfo ?? result.listingInfoData ?? undefined);
-        return evidenceVerdict(fbScore);
-      } catch {
-        return 'Not enough data';
-      }
+      // Hero verdict is score-driven exclusively: prevents LLM free-text verdict
+      // (e.g. "Worth a closer look") from mapping to "Need More Evidence" via
+      // mapSaleVerdict's default branch on a 99-point report. The LLM text
+      // is still available in result.overall_verdict for body rendering.
+      const score = computedScore ?? 50;
+      return evidenceVerdict(score);
     })(),
     confidence: (() => {
       // Report Confidence is score-driven: it can NEVER disagree with the
@@ -585,6 +571,9 @@ function buildSections(result: USSaleResult): ReportSection[] {
   if (snap.yearBuilt ?? snap.year_built) snapItems.push({ title: 'Year Built', value: toText(snap.yearBuilt ?? snap.year_built) });
 
   if (snap.roof) snapItems.push({ title: 'Roof', value: toText(snap.roof) });
+  if (snap.basement) snapItems.push({ title: 'Basement', value: toText(snap.basement) });
+  if (snap.laundry) snapItems.push({ title: 'Laundry', value: toText(snap.laundry) });
+  if (snap.transitScore != null) snapItems.push({ title: 'Transit Score', value: toText(snap.transitScore) + ' / 100' });
   if (snap.lotSize ?? snap.lot_size) snapItems.push({ title: 'Lot Size', value: toText(snap.lotSize ?? snap.lot_size) });
   if (snap.taxAssessedValue ?? snap.tax_assessed_value) snapItems.push({ title: 'Tax Assessed Value', value: fmtMoney(snap.taxAssessedValue ?? snap.tax_assessed_value) });
   if (snap.tax_assessed_value_display) snapItems.push({ title: 'Tax Assessed Value', value: toText(snap.tax_assessed_value_display) });
@@ -623,6 +612,12 @@ function buildSections(result: USSaleResult): ReportSection[] {
   // ── price_assessment ───────────────────────────────────────────────────────
   const price = result.price_assessment ?? result.priceAssessment ?? {};
   const priceItems: SectionItem[] = [];
+  // Zestimate: show both numeric and display versions
+  if (price.zestimate != null) {
+    priceItems.push({ title: 'Zestimate', value: fmtMoney(price.zestimate) });
+  } else if (price.zillow_estimate != null) {
+    priceItems.push({ title: 'Zestimate', value: fmtMoney(price.zillow_estimate) });
+  }
   if (price.estimated_min ?? price.estimatedMin) priceItems.push({ title: 'Est. Min', value: fmtMoney(price.estimated_min ?? price.estimatedMin) });
   if (price.estimated_max ?? price.estimatedMax) priceItems.push({ title: 'Est. Max', value: fmtMoney(price.estimated_max ?? price.estimatedMax) });
   if (price.asking_price ?? price.askingPrice) priceItems.push({ title: 'Asking Price', value: fmtMoney(price.asking_price ?? price.askingPrice) });
@@ -663,6 +658,13 @@ function buildSections(result: USSaleResult): ReportSection[] {
   // Monthly breakdown from Zillow financials — key for "What It May Really Cost Monthly" section
   const mb = (costs as any).monthly_breakdown;
   if (mb) {
+    // Show monthly payment source badge: Zillow 估算 vs derived
+    const mpSource = (costs as any).monthlyPaymentSource ?? (result as any).monthlyPaymentSource;
+    if (mpSource === 'zillow_estimated') {
+      costItems.push({ title: 'Payment Source', value: 'Zillow 估算', badge: 'Zillow' });
+    } else if (mpSource === 'derived') {
+      costItems.push({ title: 'Payment Source', value: '计算得出', badge: 'Derived' });
+    }
     if (mb.estimatedMonthlyPayment?.value != null)
       costItems.push({ title: 'Estimated Monthly', value: fmtMoney(mb.estimatedMonthlyPayment.value) });
     if (mb.principalAndInterest?.value != null)
@@ -684,6 +686,12 @@ function buildSections(result: USSaleResult): ReportSection[] {
     }
     if ((mb.utilities as any)?.status === 'not_included')
       costItems.push({ title: 'Utilities', value: 'Not included' });
+
+    // HOA included services (from Community & HOA section): show as a list when available
+    const hoaServices = (costs as any).hoa_included_services ?? (snap as any).hoaIncludedServices;
+    if (hoaServices && Array.isArray(hoaServices) && hoaServices.length > 0) {
+      costItems.push({ title: 'HOA Includes', description: hoaServices.join(', ') });
+    }
   }
 
   if (costItems.length > 0) sections.push({ id: 'carrying-costs', title: 'Carrying Costs', subtitle: 'Tax, HOA, and ongoing costs', items: costItems });
@@ -763,17 +771,44 @@ function buildSections(result: USSaleResult): ReportSection[] {
   const verifications: string[] = [];
 
   // page_signals → What the listing claims
-  const pageSignals = neigh.page_signals ?? {};
-  for (const [, value] of Object.entries(pageSignals)) {
-    const text = toText(value);
-    if (text) claims.push(text);
+  // verifiedFacts inject schoolFacts as structured array; page_signals is a string[]
+  const pageSignals = neigh.page_signals;
+  if (Array.isArray(pageSignals)) {
+    for (const value of pageSignals) {
+      const text = toText(value);
+      if (text) claims.push(text);
+    }
+  } else if (pageSignals && typeof pageSignals === 'object') {
+    for (const [, value] of Object.entries(pageSignals)) {
+      const text = toText(value);
+      if (text) claims.push(text);
+    }
   }
 
   // external_data_needed → What to verify (deduplicated, cleaned)
-  const external = neigh.external_data_needed ?? {};
-  for (const [, value] of Object.entries(external)) {
-    const text = toText(value);
-    if (text) verifications.push(text);
+  // Also check for schoolFacts from verifiedFacts that was injected into neigh.schoolFacts
+  const schoolFacts = (neigh as any).schoolFacts;
+  const external = neigh.external_data_needed;
+  if (Array.isArray(external)) {
+    for (const value of external) {
+      const text = toText(value);
+      if (text) verifications.push(text);
+    }
+  } else if (external && typeof external === 'object') {
+    for (const [, value] of Object.entries(external)) {
+      const text = toText(value);
+      if (text) verifications.push(text);
+    }
+  }
+  // Add school facts as verified claims (they come from verifiedFacts, not AI generation)
+  if (Array.isArray(schoolFacts)) {
+    for (const school of schoolFacts) {
+      const name = toText(school.name);
+      const rating = toText(school.rating);
+      if (name || rating) {
+        claims.push(`School: ${name}${rating ? ' — Rating ' + rating + '/10' : ''}`);
+      }
+    }
   }
 
   if (claims.length > 0 || verifications.length > 0) {
@@ -830,15 +865,18 @@ function buildSections(result: USSaleResult): ReportSection[] {
       const c = rc[key];
       if (!c || typeof c !== 'object') continue;
       const signal = toText((c as any).signal) || 'Needs verification';
-      const evidence = toText((c as any).evidence) || 'Unknown — listing does not prove';
       const missing = toText((c as any).missing) || '';
+      const evidence = toText((c as any).evidence);
+      const description = evidence
+        ? (missing ? `${evidence}\n\nNot proven: ${missing}` : evidence)
+        : (missing ? missing : 'Unknown — listing does not prove');
       const qs: string[] = Array.isArray((c as any).questions)
         ? (c as any).questions.filter((x: unknown) => typeof x === 'string' && x.trim())
         : [];
       const sev = severityOf(signal);
       rcItems.push({
         title: label,
-        description: evidence + (missing ? `\n\nNot proven: ${missing}` : ''),
+        description,
         badge: signal,
         severity: sev ?? 'medium',
       });
