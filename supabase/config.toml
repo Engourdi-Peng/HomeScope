@@ -9,3 +9,9 @@ verify_jwt = false
 
 # create-order 使用默认 verify_jwt=true，由 Supabase 网关验证 JWT
 # 函数内部也会再次验证 token
+
+[functions.articles-admin]
+verify_jwt = false
+
+[functions.articles-public]
+verify_jwt = false

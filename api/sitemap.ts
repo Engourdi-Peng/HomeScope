@@ -16,6 +16,11 @@ const SUPABASE_ANON_KEY = process.env.SUPABASE_ANON_KEY || '';
 const API_KEY = SUPABASE_SERVICE_ROLE_KEY || SUPABASE_ANON_KEY;
 const SITE_URL = process.env.SITE_URL || 'https://www.tryhomescope.com';
 
+// Configuration constants (declared at top of module to avoid TDZ)
+const MAX_SHARE_PAGES = 15;
+const SHARE_PAGE_AGE_DAYS = 30;
+const MAX_ARTICLE_PAGES = 500;
+
 /**
  * Patterns used to detect test / draft / garbage slugs
  * that should be excluded from the public sitemap.
@@ -43,9 +48,11 @@ function isTestSlug(slug: string): boolean {
 }
 
 interface SitemapRow {
-  share_slug: string;
-  shared_at: string | null;
-  updated_at: string;
+  share_slug?: string;
+  slug?: string;
+  shared_at?: string | null;
+  published_at?: string | null;
+  updated_at?: string;
 }
 
 /** Calculate date threshold for filtering old analyses */
@@ -88,6 +95,35 @@ async function fetchPublicAnalyses(): Promise<SitemapRow[]> {
 }
 
 /**
+ * Fetch published articles from Supabase REST API.
+ * Returns up to MAX_ARTICLE_PAGES most recently published articles.
+ */
+async function fetchPublishedArticles(): Promise<SitemapRow[]> {
+  const query = new URL(`${SUPABASE_URL}/rest/v1/articles`);
+  query.searchParams.set('status', 'eq.published');
+  query.searchParams.set('select', 'slug,published_at,updated_at');
+  query.searchParams.set('order', 'published_at.desc.nullslast');
+  query.searchParams.set('limit', String(MAX_ARTICLE_PAGES));
+
+  const response = await fetch(query.toString(), {
+    headers: {
+      apikey: API_KEY,
+      Authorization: `Bearer ${API_KEY}`,
+      'Content-Type': 'application/json',
+    },
+  });
+
+  // 404 is fine — articles table may not exist yet (404 from PostgREST).
+  if (response.status === 404) return [];
+  if (!response.ok) {
+    const body = await response.text();
+    throw new Error(`Failed to fetch articles: ${response.status} ${body}`);
+  }
+
+  return response.json() as Promise<SitemapRow[]>;
+}
+
+/**
  * Deduplicate rows by share_slug, keeping the one with the latest shared_at.
  * Also filters out test/draft slugs.
  */
@@ -97,7 +133,6 @@ function dedupeAndFilter(rows: SitemapRow[]): SitemapRow[] {
   for (const row of rows) {
     if (!row.share_slug || isTestSlug(row.share_slug)) continue;
 
-    // Prefer rows that have a shared_at timestamp
     const existing = seen.get(row.share_slug);
     if (!existing) {
       seen.set(row.share_slug, row);
@@ -124,13 +159,10 @@ function formatDate(isoString: string | null | undefined): string {
   return new Date().toISOString().split('T')[0];
 }
 
-/** Static pages to include in the sitemap. */
-const MAX_SHARE_PAGES = 15; // 最多保留 15 个 Share 页面
-const SHARE_PAGE_AGE_DAYS = 30; // 只保留 30 天内的分析
-
 const STATIC_PAGES = [
   { loc: `${SITE_URL}/`, changefreq: 'weekly', priority: '1.0' },
   { loc: `${SITE_URL}/tools/realestate-com-au`, changefreq: 'weekly', priority: '0.9' },
+  { loc: `${SITE_URL}/blog`, changefreq: 'daily', priority: '0.9' },
   { loc: `${SITE_URL}/pricing`, changefreq: 'monthly', priority: '0.7' },
   { loc: `${SITE_URL}/privacy`, changefreq: 'yearly', priority: '0.3' },
   { loc: `${SITE_URL}/terms`, changefreq: 'yearly', priority: '0.3' },
@@ -138,13 +170,12 @@ const STATIC_PAGES = [
   { loc: `${SITE_URL}/contact`, changefreq: 'monthly', priority: '0.5' },
 ];
 
-function buildXml(shareRows: SitemapRow[]): string {
+function buildXml(shareRows: SitemapRow[], articleRows: SitemapRow[]): string {
   const lines: string[] = [
     `<?xml version="1.0" encoding="UTF-8"?>`,
     `<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">`,
   ];
 
-  // Static pages
   for (const page of STATIC_PAGES) {
     lines.push(`  <url>`);
     lines.push(`    <loc>${page.loc}</loc>`);
@@ -153,14 +184,24 @@ function buildXml(shareRows: SitemapRow[]): string {
     lines.push(`  </url>`);
   }
 
-  // Share pages (limited to most recent analyses)
   for (const row of shareRows) {
     const lastmod = formatDate(row.shared_at ?? row.updated_at);
     lines.push(`  <url>`);
-    lines.push(`    <loc>${SITE_URL}/share/${encodeURIComponent(row.share_slug)}</loc>`);
+    lines.push(`    <loc>${SITE_URL}/share/${encodeURIComponent(row.share_slug!)}</loc>`);
     lines.push(`    <lastmod>${lastmod}</lastmod>`);
     lines.push(`    <changefreq>weekly</changefreq>`);
     lines.push(`    <priority>0.6</priority>`);
+    lines.push(`  </url>`);
+  }
+
+  for (const row of articleRows) {
+    if (!row.slug || isTestSlug(row.slug)) continue;
+    const lastmod = formatDate(row.published_at ?? row.updated_at);
+    lines.push(`  <url>`);
+    lines.push(`    <loc>${SITE_URL}/blog/${encodeURIComponent(row.slug)}</loc>`);
+    lines.push(`    <lastmod>${lastmod}</lastmod>`);
+    lines.push(`    <changefreq>monthly</changefreq>`);
+    lines.push(`    <priority>0.8</priority>`);
     lines.push(`  </url>`);
   }
 
@@ -169,7 +210,6 @@ function buildXml(shareRows: SitemapRow[]): string {
 }
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
-  // Only allow GET — sitemap should never be POSTed
   if (req.method !== 'GET' && req.method !== 'HEAD') {
     res.setHeader('Allow', 'GET, HEAD');
     res.status(405).end();
@@ -177,9 +217,13 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   }
 
   try {
-    const rows = await fetchPublicAnalyses();
-    const filtered = dedupeAndFilter(rows);
-    const xml = buildXml(filtered);
+    const [shareRows, articleRows] = await Promise.all([
+      fetchPublicAnalyses(),
+      fetchPublishedArticles().catch(() => []),
+    ]);
+
+    const filteredShares = dedupeAndFilter(shareRows);
+    const xml = buildXml(filteredShares, articleRows);
 
     res.setHeader('Content-Type', 'application/xml; charset=utf-8');
     res.setHeader('Cache-Control', 'public, max-age=3600, s-maxage=3600, stale-while-revalidate=86400');

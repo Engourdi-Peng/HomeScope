@@ -90,6 +90,44 @@ function useIsSectionUsed(id: string): boolean {
   return React.useContext(UsedSectionsCtx).has(id);
 }
 
+/**
+ * Layout decision: should this report be rendered as a Basic report?
+ *
+ * Priority:
+ *   1. If `raw.analysisType === 'basic'`, the result is Basic. This is the
+ *      authoritative author signal from the backend and must NOT be overridden
+ *      by the presence of fields like property_snapshot or market='US' (Basic
+ *      US Sale v2 results carry both by design).
+ *   2. Otherwise, infer Full from:
+ *        - raw.analysisType === 'full', OR
+ *        - presence of Full-only schema fields (risk_categories,
+ *          listing_does_not_prove, before_you_book_showing, maintenance_risk,
+ *          carrying_costs). property_snapshot and market are NOT Full-only —
+ *          Basic reports carry them too.
+ *
+ * Exported so unit tests can lock the contract against regressions.
+ */
+// eslint-disable-next-line react-refresh/only-export-components
+export function resolveIsBasicLayout(
+  raw: Record<string, unknown> | null | undefined,
+  propIsBasic: boolean,
+  viewModelIsBasic?: boolean,
+): boolean {
+  const r = (raw ?? {}) as Record<string, unknown>;
+  const rawIsBasic = r.analysisType === 'basic';
+  const rawIsFull =
+    !rawIsBasic && (
+      r.analysisType === 'full' ||
+      r.risk_categories != null ||
+      r.listing_does_not_prove != null ||
+      r.before_you_book_showing != null ||
+      r.maintenance_risk != null ||
+      r.carrying_costs != null
+    );
+  const inferredProp = propIsBasic ?? viewModelIsBasic ?? false;
+  return (inferredProp || rawIsBasic) && !rawIsFull;
+}
+
 // ── Safe Text Utilities ────────────────────────────────────────────────────────
 
 function safeText(value: unknown): string {
@@ -2285,7 +2323,8 @@ function getFallbackQuestions(isNYC: boolean, reportProfile?: string): Array<{ q
 
 function QuestionsToAskSection({ report, viewModel, isBasic }: { report: NormalizedReport; viewModel?: ReportViewModel; isBasic?: boolean }) {
   const { sections, hero } = report;
-  const maxQuestions = isBasic ? 5 : 6;
+  // Basic shows only 3 prioritized questions; full shows up to 6.
+  const maxQuestions = isBasic ? 3 : 6;
   const rawResultForTrace = (report as any)?.raw ?? {};
 
   const isNYC = viewModel?.meta?.isNYC
@@ -2372,12 +2411,33 @@ function QuestionsToAskSection({ report, viewModel, isBasic }: { report: Normali
   let finalQuestions: Array<{ question: string; tag: string; tagColor: string; whereToVerify: string }> = [];
 
   if (vmQuestions.length > 0) {
+    // ── Listing-specific prioritization for Basic mode ─────────────────────────
+    // The AI returns a generic pool of questions; for Basic we want listing-specific
+    // items (HOA/reserves/balcony/waterproofing/rental restrictions) to bubble up.
+    const SPECIFIC_KEYWORDS = [
+      /hoa|reserve|assessment|maintenance|board\s*approval/i,
+      /balcon|waterproof|water\s*intrusion|membrane|deck|decking|leak|terrace/i,
+      /rental\s*restrict|pet\s*policy|sublet|flip\s*tax/i,
+      /master\s*insurance|insurance\s*policy/i,
+      /special\s*assessment|reserve\s*study|reserve\s*fund/i,
+      /deeded|underground\s*parking|parking\s*space/i,
+    ];
+    const isListingSpecific = (q: string) => SPECIFIC_KEYWORDS.some(p => p.test(q));
+
     finalQuestions = vmQuestions.map(q => ({
       question: q.text,
       tag: q.category,
       tagColor: q.tagColor,
       whereToVerify: '',
     }));
+
+    // Sort: listing-specific first, then preserve original order. No-op for full mode.
+    if (isBasic) {
+      finalQuestions = [
+        ...finalQuestions.filter(q => isListingSpecific(q.question)),
+        ...finalQuestions.filter(q => !isListingSpecific(q.question)),
+      ];
+    }
     // ── Multi-layer question deduplication pipeline ─────────────────────────────────
     // Layer 1: Substring dedup — keep longer version when one question fully contains the other
     const dedupedBySubstring: typeof finalQuestions = [];
@@ -4827,6 +4887,62 @@ function MonthlyCostSnapshotSection({ report }: { report: NormalizedReport }) {
   );
 }
 
+// ── BasicCarryingCostsSection — "Known Carrying Costs" for Basic mode ────────
+function BasicCarryingCostsSection({ report }: { report: NormalizedReport }) {
+  const section = report.sections.find((s) => s.id === 'carrying-costs');
+  if (!section || section.items.length === 0) return null;
+
+  // ── Identify total row vs breakdown rows ──────────────────────────────────
+  // Total carries the "Zillow Estimated Payment" title; breakdown rows are the
+  // component items. The disclaimer (if any) is rendered separately.
+  const totalItem = section.items.find((i) => /zillow estimated payment|estimated monthly payment|known monthly cost/i.test(renderValue(i.title)));
+  const breakdownRows = section.items.filter((i) => {
+    const t = renderValue(i.title);
+    if (!t) return false;
+    if (/zillow estimated payment|estimated monthly payment|known monthly cost|source/i.test(t)) return false;
+    return true;
+  });
+  const sourceItem = section.items.find((i) => /^source$/i.test(renderValue(i.title)));
+
+  return (
+    <div className="bg-white rounded-2xl p-6 sm:p-8 md:p-10 mb-8 border border-slate-200">
+      <div className="flex items-center gap-3 mb-6">
+        <div className="w-10 h-10 rounded-xl bg-violet-500/10 flex items-center justify-center shrink-0">
+          <DollarSign className="w-5 h-5 text-violet-600/70" />
+        </div>
+        <div>
+          <h2 className="text-xl sm:text-2xl font-bold text-slate-900">Known Carrying Costs</h2>
+          <p className="text-xs text-stone-400 mt-0.5">{section.subtitle || 'From the Zillow listing estimate'}</p>
+        </div>
+      </div>
+
+      {totalItem && (
+        <div className="flex justify-between items-center py-3 border-b border-slate-200 mb-3">
+          <span className="text-sm font-semibold text-slate-900">{renderValue(totalItem.title)}</span>
+          <span className="text-lg font-bold text-slate-900">{renderValue(totalItem.value)}</span>
+        </div>
+      )}
+
+      {breakdownRows.length > 0 && (
+        <div className="space-y-1 mb-3">
+          {breakdownRows.map((item, i) => (
+            <div key={i} className="flex justify-between items-start py-1.5">
+              <span className="text-sm text-slate-500">{renderValue(item.title)}</span>
+              <span className="text-sm font-medium text-slate-700">{renderValue(item.value)}</span>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {sourceItem && (
+        <p className="text-xs text-slate-400 italic mt-2 pt-2 border-t border-slate-100">
+          {renderValue(sourceItem.description ?? sourceItem.value ?? '')}
+        </p>
+      )}
+    </div>
+  );
+}
+
 // ── ListingClaimsSection — "Listing Claims to Verify" for Basic mode ──────────────────
 function ListingClaimsSection({ report }: { report: NormalizedReport }) {
   const section = report.sections.find((s) => s.id === 'listing-claims');
@@ -5348,33 +5464,22 @@ export function NewReportUI({
 }: NewReportUIProps) {
   const { sections, highlights, quickFacts, hero } = report;
 
-// Resolve isBasic: explicit prop wins; fall back to viewModel.meta.isBasic
-      const propIsBasic = isBasicProp ?? viewModel?.meta?.isBasic ?? false;
-
-      // Hard guard: any of the following MUST mean this is a Full report and we must
+// Hard guard: any of the following MUST mean this is a Full report and we must
   // never let it fall into the Basic layout, regardless of what normalizeReport's
   // detectBasicResult() inferred from upstream signal loss.
   //   1. The backend stamped analysisType: 'full' on the result object.
   //   2. Full-only sections are present (risk_categories / listing_does_not_prove
   //      / before_you_book_showing / maintenance_risk / carrying_costs).
-  //   3. The Full-only structured property_snapshot exists.
-  //   4. A US-market marker is present.
-  // Otherwise a US Sale Full report that loses a single upstream signal can be
-  // silently downgraded to the Basic layout and lose the Risk Categories,
-  // Before You Book a Showing, and other Full-only modules.
+  // The legacy guard also required property_snapshot or market==='US'/'AU', but
+  // Basic US Sale v2 results carry those fields by design — so they are NOT
+  // Full-only signals. See `resolveIsBasicLayout` above for the full contract;
+  // unit tests cover both branches.
   const rawObj: Record<string, unknown> = (report?.raw as Record<string, unknown>) ?? {};
-  const rawIsFull =
-    rawObj.analysisType === 'full' ||
-    rawObj.property_snapshot != null ||
-    rawObj.risk_categories != null ||
-    rawObj.listing_does_not_prove != null ||
-    rawObj.before_you_book_showing != null ||
-    rawObj.maintenance_risk != null ||
-    rawObj.carrying_costs != null ||
-    rawObj.market === 'US' ||
-    rawObj.market === 'AU';
-
-  const effectiveIsBasic = propIsBasic && !rawIsFull;
+  const effectiveIsBasic = resolveIsBasicLayout(
+    rawObj,
+    isBasicProp ?? false,
+    viewModel?.meta?.isBasic,
+  );
 
   // ── Resolve effective reportMode (sale | rent | unknown) ─────────────────
   // Priority:
@@ -5463,19 +5568,23 @@ export function NewReportUI({
           {/* 2. What We Know */}
           <WhatWeKnowSection report={report} />
 
-          {/* 3. Listing Signals */}
+          {/* 3. Known Carrying Costs — show the Zillow monthly cost breakdown
+              when monthly_cost_snapshot is available. */}
+          <BasicCarryingCostsSection report={report} />
+
+          {/* 4. Listing Signals */}
           <ListingSignalsSection report={report} />
 
-          {/* 4. What's Missing */}
+          {/* 5. What's Missing */}
           <WhatsMissingSection report={report} />
 
-          {/* 5. Key Things To Check */}
+          {/* 6. Key Things To Check */}
           <KeyThingsToCheckSection report={report} />
 
-          {/* 6. Questions to Ask */}
+          {/* 7. Questions to Ask */}
           <QuestionsToAskSection report={report} viewModel={viewModel} isBasic={true} />
 
-          {/* 7. Unlock Full Analysis */}
+          {/* 8. Unlock Full Analysis */}
           <BasicCTA
             report={report}
             analysisId={analysisId}

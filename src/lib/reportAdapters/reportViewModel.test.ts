@@ -282,9 +282,12 @@ describe('US Basic v2 — normalizeGenericReport', () => {
     const top3 = normalized.sections.find((s) => s.id === 'key-things-to-check');
     expect(top3).toBeDefined();
     expect(top3!.items).toHaveLength(3);
-    expect(top3!.items[0].title).toBe('Roof and Major Systems');
-    expect(top3!.items[0].description).toContain('Roof age');
-    expect(top3!.items[0].action).toContain('Ask for roof age');
+    // Basic mode prioritizes listing-specific items above generic ones. The fixture's
+    // "Basement Legality" mentions a listing-specific concern (basement permits /
+    // egress) and is promoted to the top position.
+    expect(top3!.items[0].title).toBe('Basement Legality');
+    expect(top3!.items[0].description).toContain('finished basement');
+    expect(top3!.items[0].action).toContain('permitted');
   });
 });
 

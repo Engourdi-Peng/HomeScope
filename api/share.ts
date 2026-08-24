@@ -1,10 +1,17 @@
 /**
- * Vercel Serverless Function - Dynamic Share Page SEO
- * 
- * Handles requests with slug as query parameter
+ * Vercel Serverless Function - Share Page SEO HTML Renderer
+ *
+ * Hits:
+ *   - GET /api/share?slug=<slug>     (current rewrite)
+ *   - GET /api/share/<slug>           (future rewrite if added)
+ *
+ * Fetches analysis data from Supabase and renders the SPA shell with
+ * injected dynamic meta tags. Returns a hard 404 when the slug is not
+ * found, so search engines don't index soft-404 pages.
  */
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { parseAddress } from '../shared/address/index.js';
+import { buildNotFoundHtml, injectSeoTags } from '../shared/seoHtml.js';
 
 const SUPABASE_URL =
   process.env.SUPABASE_URL || 'https://trteewgplkqiedonomzg.supabase.co';
@@ -40,27 +47,15 @@ function generateDescription(suburb: string | null, bedrooms: number | null): st
   return "AI-powered rental property analysis. Discover pros, cons, hidden risks and whether it's worth applying.";
 }
 
-function escapeHtml(text: string): string {
-  const map: Record<string, string> = {
-    '&': '&amp;',
-    '<': '&lt;',
-    '>': '&gt;',
-    '"': '&quot;',
-    "'": '&#039;',
-  };
-  return text.replace(/[&<>"']/g, (char) => map[char]);
-}
-
 async function fetchSEOData(slug: string): Promise<SEOData | null> {
   try {
-    // Query by share_slug field
     const response = await fetch(
       `${SUPABASE_URL}/rest/v1/analyses?share_slug=eq.${encodeURIComponent(slug)}&is_public=eq.true&select=address,seo_title,seo_description,cover_image_url,summary,full_result`,
       {
         headers: {
-          'apikey': SUPABASE_ANON_KEY,
-          'Authorization': `Bearer ${SUPABASE_ANON_KEY}`,
-          'Accept': 'application/json',
+          apikey: SUPABASE_ANON_KEY,
+          Authorization: `Bearer ${SUPABASE_ANON_KEY}`,
+          Accept: 'application/json',
         },
       }
     );
@@ -71,13 +66,11 @@ async function fetchSEOData(slug: string): Promise<SEOData | null> {
     const analysis = analyses[0];
     const parsed = parseAddress(analysis.address);
     const suburb = parsed.suburb;
-    const title = analysis.seo_title || null;
-    const description = analysis.seo_description || null;
 
     let bedrooms: number | null = null;
     const summary = analysis.summary || {};
     const fullResult = analysis.full_result || {};
-    
+
     if (summary.bedrooms) {
       const match = String(summary.bedrooms).match(/(\d+)/);
       if (match) bedrooms = parseInt(match[1], 10);
@@ -87,8 +80,8 @@ async function fetchSEOData(slug: string): Promise<SEOData | null> {
       if (count) bedrooms = count;
     }
 
-    const finalTitle = title || generateTitle(suburb, bedrooms);
-    const finalDesc = description || generateDescription(suburb, bedrooms);
+    const finalTitle = analysis.seo_title || generateTitle(suburb, bedrooms);
+    const finalDesc = analysis.seo_description || generateDescription(suburb, bedrooms);
 
     return {
       title: finalTitle,
@@ -104,96 +97,48 @@ async function fetchSEOData(slug: string): Promise<SEOData | null> {
   }
 }
 
-function buildSEOHtml(defaultHtml: string, seo: SEOData, slug: string): string {
-  const { title, description, ogImage } = seo;
-  const escapedTitle = escapeHtml(title);
-  const escapedDesc = escapeHtml(description);
-  const canonicalUrl = `${SITE_URL}/share/${slug}`;
-  const escapedCanonical = escapeHtml(canonicalUrl);
-  const ogImageUrl = ogImage || `${SITE_URL}/og-default.png`;
-  const escapedOgImage = escapeHtml(ogImageUrl);
-
-  let html = defaultHtml;
-
-  html = html.replace(/<title>[^<]*<\/title>/i, `<title>${escapedTitle}</title>`);
-  html = html.replace(
-    /<meta\s+name=["']description["']\s+content=["'][^"']*["'][^>]*>/i,
-    `<meta name="description" content="${escapedDesc}" />`
-  );
-  html = html.replace(
-    /<meta\s+property=["']og:title["']\s+content=["'][^"']*["'][^>]*>/i,
-    `<meta property="og:title" content="${escapedTitle}" />`
-  );
-  html = html.replace(
-    /<meta\s+property=["']og:description["']\s+content=["'][^"']*["'][^>]*>/i,
-    `<meta property="og:description" content="${escapedDesc}" />`
-  );
-  html = html.replace(
-    /<meta\s+property=["']og:image["']\s+content=["'][^"']*["'][^>]*>/i,
-    `<meta property="og:image" content="${escapedOgImage}" />`
-  );
-  html = html.replace(
-    /<meta\s+property=["']og:url["']\s+content=["'][^"']*["'][^>]*>/i,
-    `<meta property="og:url" content="${escapedCanonical}" />`
-  );
-  html = html.replace(
-    /<meta\s+property=["']og:type["']\s+content=["'][^"']*["'][^>]*>/i,
-    `<meta property="og:type" content="article" />`
-  );
-  html = html.replace(
-    /<meta\s+name=["']twitter:title["']\s+content=["'][^"']*["'][^>]*>/i,
-    `<meta name="twitter:title" content="${escapedTitle}" />`
-  );
-  html = html.replace(
-    /<meta\s+name=["']twitter:description["']\s+content=["'][^"']*["'][^>]*>/i,
-    `<meta name="twitter:description" content="${escapedDesc}" />`
-  );
-  html = html.replace(
-    /<meta\s+name=["']twitter:image["']\s+content=["'][^"']*["'][^>]*>/i,
-    `<meta name="twitter:image" content="${escapedOgImage}" />`
-  );
-  if (!html.includes('rel="canonical"')) {
-    html = html.replace('</head>', `<link rel="canonical" href="${escapedCanonical}" /></head>`);
-  }
-  if (!html.includes('name="robots"')) {
-    html = html.replace('</head>', `<meta name="robots" content="index,follow" /></head>`);
-  }
-
-  return html;
+function readSlug(req: VercelRequest): string {
+  const param = req.query?.slug;
+  if (typeof param === 'string') return param;
+  if (Array.isArray(param) && typeof param[0] === 'string') return param[0];
+  return '';
 }
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
-  if (req.method !== 'GET') {
-    return res.status(405).json({ error: 'Method not allowed' });
+  if (req.method !== 'GET' && req.method !== 'HEAD') {
+    res.setHeader('Allow', 'GET, HEAD');
+    return res.status(405).end();
   }
 
-  // Support both query param and route param
-  const slugParam = req.query?.slug;
-  const slug = typeof slugParam === 'string' ? slugParam : String(slugParam || '');
-  if (!slug) {
-    return res.status(400).json({ error: 'Missing slug' });
-  }
-
-  console.log('Fetching SEO data for slug:', slug);
+  const slug = readSlug(req);
+  if (!slug) return res.status(400).json({ error: 'Missing slug' });
 
   const seoData = await fetchSEOData(slug);
-
   if (!seoData || !seoData.exists) {
-    console.log('SEO data not found for slug:', slug);
-    return res.status(404).json({ error: 'Analysis not found' });
+    res.setHeader('X-Robots-Tag', 'noindex, nofollow');
+    res.setHeader('Cache-Control', 'public, max-age=60, s-maxage=120, stale-while-revalidate=600');
+    return res.status(404).send(buildNotFoundHtml('Property report not found or no longer public.'));
   }
 
   try {
-    console.log('Fetching index.html from:', `${SITE_URL}/index.html`);
     const indexResponse = await fetch(`${SITE_URL}/index.html`);
-    let html = await indexResponse.text();
-    html = buildSEOHtml(html, seoData, slug);
+    if (!indexResponse.ok) throw new Error(`index.html ${indexResponse.status}`);
+    const html = await indexResponse.text();
+
+    const finalHtml = injectSeoTags(html, {
+      title: seoData.title,
+      description: seoData.description,
+      canonicalUrl: `${SITE_URL}/share/${slug}`,
+      ogImage: seoData.ogImage ?? undefined,
+      ogType: 'article',
+      robots: 'index,follow',
+    });
 
     res.setHeader('Content-Type', 'text/html; charset=utf-8');
     res.setHeader('Cache-Control', 'public, max-age=60, s-maxage=300, stale-while-revalidate=600');
-    return res.status(200).send(html);
+    return res.status(200).send(finalHtml);
   } catch (error) {
-    console.error('Error:', error);
+    console.error('Error rendering share HTML:', error);
     return res.status(500).json({ error: 'Internal server error' });
   }
 }

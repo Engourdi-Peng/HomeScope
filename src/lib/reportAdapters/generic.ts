@@ -174,6 +174,7 @@ function buildHighlights(result: AnyResult): HighlightsData {
  */
 function applyPropertySnapshot(wwKnow: Record<string, unknown>, result: AnyResult): void {
   const snap = (result as any).property_snapshot ?? {};
+  const opts = (result as any).optionalDetails ?? {};
   const setIfEmpty = (key: string, value: unknown) => {
     if ((wwKnow[key] == null || wwKnow[key] === '') && value != null && value !== '') {
       wwKnow[key] = value;
@@ -189,16 +190,69 @@ function applyPropertySnapshot(wwKnow: Record<string, unknown>, result: AnyResul
   setIfEmpty('lot_size',      snap.lot_size ?? snap.lotSize);
   setIfEmpty('tax_year',      snap.annual_tax_display ?? snap.annual_tax ?? snap.annualTax);
   setIfEmpty('price_per_sqft',snap.price_per_sqft_display ?? snap.price_per_sqft ?? snap.pricePerSqft);
+  // Parking: prefer a description-derived summary (e.g. "Two deeded underground
+  // parking spaces") over the raw count. "Parking 4" is ambiguous and can be
+  // misread as 4 deeded spots.
+  setIfEmpty('parking',       describeParking(opts, snap));
   // monthly_payment: the backend builds monthly_cost_snapshot separately;
   // read from result.monthly_cost_snapshot if present.
+  // The snapshot uses snake_case keys from the deterministic fill:
+  //   estimated_monthly_payment, principal_and_interest, mortgage_insurance,
+  //   property_taxes, home_insurance, hoa_fees, utilities.
   const mcs = (result as any).monthly_cost_snapshot;
   if (mcs && !wwKnow['monthly_payment']) {
-    setIfEmpty('monthly_payment', mcs.principalAndInterest ?? mcs.monthlyPayment ?? mcs.totalMonthlyPayment);
+    const total = (mcs.estimated_monthly_payment != null && mcs.estimated_monthly_payment > 0)
+      ? mcs.estimated_monthly_payment
+      : null;
+    setIfEmpty('monthly_payment', total);
+    setIfEmpty('monthly_payment_source', mcs.source ?? 'Zillow/listing estimate');
+    setIfEmpty(
+      'monthly_payment_components',
+      {
+        principal_and_interest: mcs.principal_and_interest ?? null,
+        property_taxes: mcs.property_taxes ?? null,
+        home_insurance: mcs.home_insurance ?? null,
+        mortgage_insurance: mcs.mortgage_insurance ?? null,
+        hoa_fees: mcs.hoa_fees ?? null,
+        utilities: mcs.utilities ?? null,
+      },
+    );
   }
+}
+
+/**
+ * Builds a human-readable parking description. The Zillow extraction returns
+ * "Total spaces: 4, Garage spaces: 2" but the listing description often says
+ * "Two deeded underground parking spaces & guest parking". The latter is far
+ * more useful for a buyer, so prefer it when present.
+ */
+function describeParking(opts: Record<string, unknown>, snap: Record<string, unknown>): string {
+  const description = String(
+    opts.description ?? opts.listingDescription ?? opts.whatsSpecialText ?? opts.listingText ?? '',
+  );
+  // Phrases like "Two deeded underground parking spaces", "3 deeded parking spots"
+  const deededMatch = description.match(
+    /(\d+|one|two|three|four|five|six|seven|eight|nine|ten)\s+deeded\s+(underground\s+|covered\s+|assigned\s+|heated\s+|private\s+)?(parking\s+(spaces?|spots|stalls?)|garage\s+spaces?)/i,
+  );
+  if (deededMatch) return `Deeded parking: ${deededMatch[0]}`;
+  const spacesVal = snap.parking ?? opts.parking ?? opts.garageSpaces ?? snap.garage_spaces;
+  if (spacesVal != null && spacesVal !== '') return `${spacesVal} parking spaces`;
+  return '';
+}
+
+/** Format a numeric or string value as "$X,XXX/mo". Returns '' when too small. */
+function formatMonthlyPayment(value: unknown): string {
+  if (value == null || value === '') return '';
+  const num = typeof value === 'number' ? value : Number(String(value).replace(/[$,\s]/g, ''));
+  if (!Number.isFinite(num) || num < 100 || num > 50000) return '';
+  return '$' + Math.round(num).toLocaleString('en-US') + '/mo';
 }
 
 function buildSections(result: AnyResult, isBasic: boolean, analysisProfile?: PropertyIntelligenceProfile): ReportSection[] {
   const sections: ReportSection[] = [];
+  // Hoist property_snapshot so the labelMap (which uses wwKnow + snap) can
+  // reference it before any conditional logic declares it.
+  const snap = (result as any).property_snapshot ?? {};
 
   if (isBasic) {
     // ── what-we-know (US Basic v2) ─────────────────────────────────────────
@@ -216,7 +270,8 @@ function buildSections(result: AnyResult, isBasic: boolean, analysisProfile?: Pr
       ['Lot Size', wwKnow.lot_size ?? wwKnow.lotSize],
       ['Tax / Year', formatTax(wwKnow.tax_year ?? wwKnow.taxYear ?? wwKnow.taxes ?? wwKnow.annual_tax)],
       ['Price per Sqft', wwKnow.price_per_sqft ?? wwKnow.pricePerSqft],
-      ['Estimated Monthly Payment', wwKnow.monthly_payment ?? wwKnow.monthlyPayment],
+      ['Parking', wwKnow.parking ?? snap.parking ?? snap.garage_spaces ?? snap.garageSpaces],
+      ['Estimated Monthly Payment', formatMonthlyPayment(wwKnow.monthly_payment ?? wwKnow.monthlyPayment)],
       ['HOA', wwKnow.hoa ?? wwKnow.HOA ?? wwKnow.hoa_fee ?? wwKnow.hoaFee],
     ];
     for (const [label, val] of labelMap) {
@@ -225,10 +280,74 @@ function buildSections(result: AnyResult, isBasic: boolean, analysisProfile?: Pr
     }
     if (wwItems.length > 0) sections.push({ id: 'what-we-know', title: 'What We Know', items: wwItems });
 
+    // ── carrying-costs (US Basic v2) ─────────────────────────────────────────
+    // Show the deterministic monthly cost snapshot when at least one component
+    // is available. The frontend view derives a total from the components when
+    // estimated_monthly_payment is missing.
+    const mcsRaw = (result as any).monthly_cost_snapshot ?? null;
+    // Detect at least one valid numeric component (or the estimated total).
+    // monthly_payment_components is also seeded by applyPropertySnapshot but
+    // mcsRaw is the authoritative source for rendering the breakdown rows.
+    const hasComponents =
+      mcsRaw &&
+      (
+        (mcsRaw.estimated_monthly_payment != null && mcsRaw.estimated_monthly_payment > 0) ||
+        (mcsRaw.principal_and_interest != null && mcsRaw.principal_and_interest > 0) ||
+        (mcsRaw.property_taxes != null && mcsRaw.property_taxes > 0) ||
+        (mcsRaw.home_insurance != null && mcsRaw.home_insurance > 0) ||
+        (mcsRaw.hoa_fees != null && mcsRaw.hoa_fees > 0)
+      );
+    if (hasComponents) {
+      const carryingItems: SectionItem[] = [];
+      // Total derived from components when estimated_monthly_payment is null
+      const derivedTotal = (() => {
+        if (mcsRaw.estimated_monthly_payment != null && mcsRaw.estimated_monthly_payment > 0) return mcsRaw.estimated_monthly_payment;
+        const parts = [
+          mcsRaw.principal_and_interest,
+          mcsRaw.property_taxes,
+          mcsRaw.home_insurance,
+          mcsRaw.mortgage_insurance,
+          mcsRaw.hoa_fees,
+        ];
+        const sum = parts.reduce((acc: number, v: number) => acc + (typeof v === 'number' && v > 0 ? v : 0), 0);
+        return sum > 0 ? sum : null;
+      })();
+      if (derivedTotal) {
+        carryingItems.push({
+          title: 'Zillow Estimated Payment',
+          value: '$' + Math.round(Number(derivedTotal)).toLocaleString('en-US') + '/mo',
+          badge: 'Zillow estimate',
+        });
+      }
+      const pushComponent = (label: string, raw: unknown) => {
+        if (raw == null) return;
+        const num = typeof raw === 'number' ? raw : Number(String(raw).replace(/[$,\s]/g, ''));
+        if (!Number.isFinite(num) || num < 0) return;
+        carryingItems.push({ title: label, value: '$' + Math.round(num).toLocaleString('en-US') });
+      };
+      pushComponent('Principal & Interest', mcsRaw.principal_and_interest);
+      pushComponent('Property Tax',          mcsRaw.property_taxes);
+      pushComponent('Home Insurance',        mcsRaw.home_insurance);
+      pushComponent('HOA',                   mcsRaw.hoa_fees);
+      pushComponent('Mortgage Insurance',    mcsRaw.mortgage_insurance);
+      if (mcsRaw.utilities != null) {
+        const u = String(mcsRaw.utilities).trim();
+        if (u) carryingItems.push({ title: 'Utilities', value: u });
+      }
+      if (mcsRaw.disclaimer) {
+        carryingItems.push({ title: 'Source', description: String(mcsRaw.disclaimer) });
+      }
+      sections.push({
+        id: 'carrying-costs',
+        title: 'Known Carrying Costs',
+        subtitle: 'From the Zillow listing estimate',
+        items: carryingItems,
+      });
+    }
+
     // ── listing-signals (US Basic v2) ─────────────────────────────────────────
     // Prefer AI-generated signals; if none returned, derive from structured fields
     const aiSignals: any[] = Array.isArray(result.listing_signals) ? result.listing_signals : [];
-    const snap = (result as any).property_snapshot ?? {};
     const yearBuilt = wwKnow.year_built ?? wwKnow.yearBuilt ?? snap.year_built ?? snap.yearBuilt ?? null;
     const propertyType = ((wwKnow.property_type ?? wwKnow.propertyType ?? snap.home_type ?? snap.property_type ?? '')).toLowerCase();
     const pricePerSqft = wwKnow.price_per_sqft ?? wwKnow.pricePerSqft ?? snap.price_per_sqft ?? snap.pricePerSqft ?? null;
@@ -352,13 +471,36 @@ function buildSections(result: AnyResult, isBasic: boolean, analysisProfile?: Pr
         } as SectionItem;
       })
       .filter(Boolean) as SectionItem[];
-    // Show 2–4 items; if fewer than 2, hide the section entirely
-    if (top3Items.length >= 2) {
+
+    // ── Listing-specific prioritization for Basic mode ─────────────────────────
+    // Promote items that reference specific listing features (balcony, dewlling
+    // membranes, HOA reserves, etc.) above boilerplate ones (e.g. "Built in 1971",
+    // generic comps). The Basic report should highlight at least one problem
+    // unique to this listing, not just generic advice.
+    const SPECIFIC_KEYWORDS = [
+      /balcon|waterproof|water\s*intrusion|membrane|deck|decking|leak|terrace/i,
+      /parking|deeded|underground/i,
+      /hoa|reserve|assessment|board\s*approval|flip\s*tax/i,
+      /rental\s*restrict|pet\s*policy|sublet/i,
+      /basement|cellar|egress|walk.?out|below.?grade/i,
+    ];
+    const isListingSpecific = (item: SectionItem) => {
+      const text = `${toText(item.title)} ${toText(item.description)} ${toText(item.action)}`;
+      return SPECIFIC_KEYWORDS.some(p => p.test(text));
+    };
+
+    const top3ItemsSorted = [
+      ...top3Items.filter(isListingSpecific),
+      ...top3Items.filter((i) => !isListingSpecific(i)),
+    ];
+
+    // Show 2–3 items; if fewer than 2, hide the section entirely
+    if (top3ItemsSorted.length >= 2) {
       sections.push({
         id: 'key-things-to-check',
         title: 'Key Things To Check',
         subtitle: 'Decisions that can change before you commit',
-        items: top3Items.slice(0, 4),
+        items: top3ItemsSorted.slice(0, 3),
       });
     }
   }

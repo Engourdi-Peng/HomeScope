@@ -201,10 +201,13 @@ function injectAuthConfig(extDir) {
   }
 }
 
-// ===== 清理目录 =====
+// ===== 清理目录（失败时跳过构建，避免 Windows EPERM 阻塞整个 build） =====
 function cleanDir(dir: string) {
-  if (existsSync(dir)) {
+  if (!existsSync(dir)) return;
+  try {
     rmSync(dir, { recursive: true, force: true });
+  } catch (err) {
+    console.warn(`[vite] cleanDir skipped for ${dir}:`, (err as Error).message);
   }
 }
 
@@ -255,7 +258,9 @@ export default defineConfig(({ command }) => {
     },
     build: {
       outDir,
-      emptyOutDir: command === 'build',
+      // 关闭 Vite 自己的 emptyOutDir：extension/dist 在 Windows 上常被进程锁住，
+      // 交给外层 cleanDir 控制（失败时仅警告，不会阻塞整个 build）。
+      emptyOutDir: false,
       copyPublicDir: true, // 确保 public 目录的文件被复制到 dist
       sourcemap: isExtensionBuild,
       rollupOptions: {

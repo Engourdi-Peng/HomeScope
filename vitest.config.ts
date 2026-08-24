@@ -49,6 +49,8 @@ export default defineConfig({
       'src/lib/reportAdapters/saleScoreConsistency.test.ts',
       'src/lib/reportAdapters/imageDedup.test.ts',
       'supabase/functions/analyze/imageDedup.test.ts',
+      'src/lib/reportAdapters/basicReport.test.ts',
+      'src/components/report/NewReportUI.layout.test.ts',
     ],
   },
 });

@@ -2,8 +2,14 @@
   "rewrites": [
     { "source": "/api/sitemap", "destination": "/api/sitemap" },
     { "source": "/api/share", "destination": "/api/share" },
+    { "source": "/api/blog-list", "destination": "/api/blog-list" },
+    { "source": "/api/article", "destination": "/api/article" },
     { "source": "/sitemap.xml", "destination": "/api/sitemap" },
+    { "source": "/sitemap-articles.xml", "destination": "/api/sitemap" },
+    { "source": "/rss.xml", "destination": "/api/rss" },
     { "source": "/share/:slug", "destination": "/api/share?slug=:slug" },
+    { "source": "/blog/category/:slug", "destination": "/api/blog-list?category=:slug" },
+    { "source": "/blog/:slug", "destination": "/api/article?slug=:slug" },
     { "source": "/(.*)", "destination": "/index.html" }
   ]
 }

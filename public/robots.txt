@@ -1,5 +1,6 @@
 User-agent: *
 Allow: /
+Allow: /blog
 Allow: /share/*
 
 # Internal / private pages — do not index
@@ -11,5 +12,9 @@ Disallow: /payment
 Disallow: /result
 Disallow: /auth/*
 Disallow: /api/*
+Disallow: /admin/*
+Disallow: /blog/preview/*
+Disallow: /blog/*?preview=
 
 Sitemap: https://www.tryhomescope.com/sitemap.xml
+Sitemap: https://www.tryhomescope.com/sitemap-articles.xml

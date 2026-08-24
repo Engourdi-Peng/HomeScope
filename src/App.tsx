@@ -19,6 +19,11 @@ import { LoginPage } from './pages/Login';
 import { AuthCompletePage } from './pages/AuthComplete';
 import { AuthorizePage } from './pages/Authorize';
 import { RealEstateToolsPage } from './pages/RealEstateTools';
+import { BlogIndexPage } from './pages/Blog';
+import { ArticleDetailPage } from './pages/Article';
+import { AdminArticlesListPage } from './pages/admin/ArticlesList';
+import { AdminArticleEditorPage } from './pages/admin/ArticleEditor';
+import { RequireAdmin } from './components/RequireAdmin';
 import { useEffect, useState } from 'react';
 
 function AnimatedRoutes() {
@@ -59,6 +64,11 @@ function AnimatedRoutes() {
         <Route path="/auth-complete" element={<AuthCompletePage />} />
         <Route path="/auth/authorize" element={<AuthorizePage />} />
         <Route path="/tools/realestate-com-au" element={<RealEstateToolsPage />} />
+        <Route path="/blog" element={<BlogIndexPage />} />
+        <Route path="/blog/:slug" element={<ArticleDetailPage />} />
+        <Route path="/admin/articles" element={<RequireAdmin><AdminArticlesListPage /></RequireAdmin>} />
+        <Route path="/admin/articles/new" element={<RequireAdmin><AdminArticleEditorPage /></RequireAdmin>} />
+        <Route path="/admin/articles/:id/edit" element={<RequireAdmin><AdminArticleEditorPage /></RequireAdmin>} />
       </Routes>
     </div>
   );

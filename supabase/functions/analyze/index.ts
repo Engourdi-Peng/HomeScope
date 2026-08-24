@@ -886,7 +886,12 @@ function applySingleFamilyFinalGuard(
   const listingText = String(opts.description ?? opts.listingDescription ?? '').toLowerCase();
   const yearBuilt = opts.yearBuilt ?? wwKnow.year_built ?? null;
   const hasPrice = !!(opts.askingPrice ?? wwKnow.asking_price ?? wwKnow.price);
-  const hasBasementMention = /basement|cellar|below.?grade|walk.?out/i.test(listingText);
+  // ── Structured basement fact: when "Basement: No" is explicit, never add
+  // basement items to the SF guard's missing list.
+  const basementFactRaw = String(opts.basement ?? wwKnow.basement ?? '').toLowerCase().trim();
+  const explicitlyNoBasement = /^(no|none|absent|n\/a|not\s+applicable|unknown|see\s+remarks|see\s+listing)$/i.test(basementFactRaw)
+    || /does\s+not\s+have\s+(a\s+)?basement|has\s+no\s+basement|no[\s_-]?basement/i.test(basementFactRaw);
+  const hasBasementMention = !explicitlyNoBasement && /basement|cellar|below.?grade|walk.?out/i.test(listingText);
   const hasRenovationMention = /renovation|updated|remodel|newly.?done/i.test(listingText);
 
   // ── Patterns that indicate multi-family / mixed-use — must be stripped ──────────
@@ -3566,7 +3571,13 @@ function normalizeTop3Checks(result: any, optionalDetails?: Record<string, unkno
   const hasBaths = !!(opts.bathrooms ?? wwKnow.baths ?? wwKnow.bathrooms);
   const hasPrice = !!(askingPrice);
   const hasHOA = !!(opts.hoaFee ?? wwKnow.hoa ?? wwKnow.HOA ?? wwKnow.hoa_fee ?? wwKnow.hoaFee);
-  const hasBasementMention = /basement|cellar|below.?grade|walk.?out/i.test(listingText);
+  // ── Structured basement fact: explicit "Basement: No/None/Absent" should
+  // suppress any basement fallback even when listing text mentions the word.
+  const basementFact = String(opts.basement ?? wwKnow.basement ?? '').toLowerCase().trim();
+  const explicitlyNoBasement = /^(no|none|absent|n\/a|not\s+applicable|unknown|see\s+remarks|see\s+listing)$/i.test(basementFact)
+    || /does\s+not\s+have\s+(a\s+)?basement|has\s+no\s+basement|no[\s_-]?basement/i.test(basementFact);
+  const hasBasementMention = !explicitlyNoBasement &&
+    /basement|cellar|below.?grade|walk.?out/i.test(listingText);
   const isCondoOrCoop = /condo|co.?op|townhouse/i.test(propertyType);
   const isMultiFamily = /duplex|multi.?family|2\.?family|3\.?family|4\.?family|two.?family/i.test(propertyType);
   const hasComps = !!(wwKnow.comparable_sales ?? wwKnow.comparableSales ?? wwKnow.zestimate);
@@ -3647,6 +3658,10 @@ function normalizeTop3Checks(result: any, optionalDetails?: Record<string, unkno
   for (const item of rawList) {
     const s = sanitizeItem(item);
     if (!s || !s.title) continue;
+    // ── Strip basement items when the structured fact says no basement ─────
+    if (explicitlyNoBasement && /basement|cellar|egress|walk.?out|below.?grade/i.test(s.title + ' ' + s.why_it_matters + ' ' + s.action)) {
+      continue;
+    }
     const itemCat = getItemCategory(s.title);
     if (itemCat && seenCategories.has(itemCat)) continue;  // same category, skip
     if (itemCat) seenCategories.add(itemCat);
@@ -3829,14 +3844,22 @@ const US_WHATS_MISSING_FALLBACKS: string[] = [
 
 function normalizeWhatsMissing(result: any, optionalDetails?: Record<string, unknown>, profile?: PropertyIntelligenceProfile): any {
   const opts = optionalDetails ?? {};
+  const wwKnowRaw = result.what_we_know ?? {};
   const rawList: any[] = Array.isArray(result.whats_missing) ? result.whats_missing : [];
   const seen = new Set<string>();
   const cleaned: string[] = [];
+
+  // ── Pre-compute basement "no" fact: suppress any basement item when the
+  // structured fact explicitly says no basement.
+  const basementFact = String(opts.basement ?? wwKnowRaw.basement ?? '').toLowerCase().trim();
+  const explicitlyNoBasement = /^(no|none|absent|n\/a|not\s+applicable|unknown|see\s+remarks|see\s+listing)$/i.test(basementFact)
+    || /does\s+not\s+have\s+(a\s+)?basement|has\s+no\s+basement|no[\s_-]?basement/i.test(basementFact);
 
   for (const item of rawList) {
     if (typeof item !== 'string') continue;
     const t = item.replace(/\.+$/g, '').trim();
     if (!t) continue;
+    if (explicitlyNoBasement && /basement|cellar|egress|walk.?out|below.?grade/i.test(t)) continue;
     const key = t.toLowerCase();
     if (seen.has(key)) continue;
     seen.add(key);
@@ -3862,7 +3885,16 @@ function normalizeWhatsMissing(result: any, optionalDetails?: Record<string, unk
   const hasTax = !!(opts.annualTax ?? opts.annualTaxAmount ?? opts.taxAnnual ?? wwKnow.tax_year ?? wwKnow.taxes ?? wwKnow.annual_tax);
   const hasComps = !!(wwKnow.comparable_sales ?? wwKnow.comparableSales ?? wwKnow.zestimate);
 
-  const hasBasementMention = /basement| cellar|below.?grade|walk.?out/i.test(listingText);
+  const hasBasementMention = !explicitlyNoBasement && (() => {
+    if (opts.basement || wwKnow.basement) {
+      const basementFact = String(opts.basement ?? wwKnow.basement ?? '').toLowerCase().trim();
+      if (/^(no|none|absent|n\/a|not\s+applicable|unknown|see\s+remarks|see\s+listing)$/i.test(basementFact)
+        || /does\s+not\s+have\s+(a\s+)?basement|has\s+no\s+basement|no[\s_-]?basement/i.test(basementFact)) {
+        return false;
+      }
+    }
+    return /basement| cellar|below.?grade|walk.?out/i.test(listingText);
+  })();
   const hasRenovationMention = /renovation|updated|remodel|newly.?done|refurbish/i.test(listingText);
   const isOld = yearBuilt && Number(yearBuilt) < 1975;
   const hasHighPricePerSqft = !!(wwKnow.price_per_sqft ?? wwKnow.pricePerSqft);

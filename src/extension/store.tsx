@@ -348,8 +348,14 @@ function convertBasicToFullResult(basicResult: BasicSyncResult): AnalysisResult 
       overallScore,
       verdict,
       quickSummary: basicResult.quickSummary || 'Basic analysis complete.',
-      whatLooksGood: basicResult.whatLooksGood || [],
-      riskSignals: basicResult.riskSignals || [],
+      // Strip AI failure fallback text ("Analysis could not be completed", etc.)
+      // so the Basic report never surfaces analysis errors as risk signals.
+      whatLooksGood: (basicResult.whatLooksGood || []).filter(
+        (s: unknown) => typeof s === 'string' && !/^analysis could not be completed$/i.test(s.trim()),
+      ),
+      riskSignals: (basicResult.riskSignals || []).filter(
+        (s: unknown) => typeof s === 'string' && !/^analysis could not be completed$/i.test(s.trim()),
+      ),
       realityCheck: '',
       questionsToAsk: [],
       decisionPriority: priority,
@@ -380,6 +386,8 @@ function convertBasicToFullResult(basicResult: BasicSyncResult): AnalysisResult 
       'whats_missing', 'top_3_things_to_check',
       'what_we_know', 'evidence_score', 'bottom_line', 'upsell_cta',
       'listing_signals', 'questions_to_ask', 'verdict',
+      // Deterministic snapshots from the Basic sync response
+      'monthly_cost_snapshot', 'optionalDetails',
     ];
     for (const field of passthroughFields) {
       if (field in basicResult) {
