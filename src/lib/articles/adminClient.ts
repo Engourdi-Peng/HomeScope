@@ -73,10 +73,26 @@ export async function adminListArticles(opts: { page?: number; limit?: number; s
 }
 
 export async function adminGetArticle(idOrSlug: string) {
-  const params = new URLSearchParams();
   const isUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(idOrSlug);
-  params.set(isUuid ? 'id' : 'slug', idOrSlug);
-  return call<{ article: Article }>(`get&${params.toString()}`);
+  const token = await getAccessToken();
+  const url = new URL(ADMIN_FN);
+  url.searchParams.set('action', 'get');
+  url.searchParams.set(isUuid ? 'id' : 'slug', idOrSlug);
+  const res = await fetch(url.toString(), {
+    headers: { Authorization: `Bearer ${token}`, Accept: 'application/json' },
+  });
+  if (!res.ok) {
+    let body: any = null;
+    try {
+      body = await res.json();
+    } catch {
+      body = await res.text();
+    }
+    throw new Error(
+      `adminGetArticle failed: ${res.status} ${typeof body === 'string' ? body : JSON.stringify(body)}`
+    );
+  }
+  return (await res.json()) as { article: Article };
 }
 
 export async function adminCreateArticle(payload: Record<string, unknown>) {

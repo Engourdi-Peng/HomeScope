@@ -57,6 +57,7 @@ export function AdminArticleEditorPage() {
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [uploading, setUploading] = useState(false);
+  const [loadFailed, setLoadFailed] = useState(false);
 
   useEffect(() => {
     adminFetchCategories().then((res) => setCategories(res.categories || [])).catch(() => {});
@@ -65,6 +66,8 @@ export function AdminArticleEditorPage() {
   useEffect(() => {
     if (isNew) return;
     setLoading(true);
+    setError(null);
+    setLoadFailed(false);
     adminGetArticle(id!)
       .then((res) => {
         const a = res.article;
@@ -86,8 +89,12 @@ export function AdminArticleEditorPage() {
           noindex: !!a.noindex,
           author_name: a.author_name || 'HomeScope Team',
         });
+        setLoadFailed(false);
       })
-      .catch((err) => setError(err instanceof Error ? err.message : 'Failed to load article'))
+      .catch((err) => {
+        setError(err instanceof Error ? err.message : 'Failed to load article');
+        setLoadFailed(true);
+      })
       .finally(() => setLoading(false));
   }, [id, isNew]);
 
@@ -108,6 +115,10 @@ export function AdminArticleEditorPage() {
   };
 
   const onSave = async (status: FormState['status']) => {
+    if (!isNew && loadFailed) {
+      setError('Cannot save: the original article failed to load. Refresh the page and try again.');
+      return;
+    }
     setSaving(true);
     setError(null);
     try {
@@ -325,9 +336,9 @@ export function AdminArticleEditorPage() {
       </div>
 
       <div className="mt-6 flex flex-wrap gap-2 sticky bottom-0 bg-white/80 backdrop-blur py-3 border-t border-stone-200">
-        <button type="button" disabled={saving} onClick={() => onSave('draft')} className="px-4 py-2 rounded-lg bg-stone-100 text-stone-700 text-sm">Save draft</button>
-        <button type="button" disabled={saving} onClick={() => onSave('review')} className="px-4 py-2 rounded-lg bg-amber-100 text-amber-800 text-sm">Send to review</button>
-        <button type="button" disabled={saving} onClick={() => onSave('published')} className="px-4 py-2 rounded-lg bg-stone-900 text-white text-sm">Publish</button>
+        <button type="button" disabled={saving || loadFailed} onClick={() => onSave('draft')} className="px-4 py-2 rounded-lg bg-stone-100 text-stone-700 text-sm disabled:opacity-50 disabled:cursor-not-allowed">Save draft</button>
+        <button type="button" disabled={saving || loadFailed} onClick={() => onSave('review')} className="px-4 py-2 rounded-lg bg-amber-100 text-amber-800 text-sm disabled:opacity-50 disabled:cursor-not-allowed">Send to review</button>
+        <button type="button" disabled={saving || loadFailed} onClick={() => onSave('published')} className="px-4 py-2 rounded-lg bg-stone-900 text-white text-sm disabled:opacity-50 disabled:cursor-not-allowed">Publish</button>
       </div>
     </SiteLayout>
   );
