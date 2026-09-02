@@ -247,132 +247,169 @@ export function ExtensionResultView() {
     setTimeout(() => setCopied(false), 2000);
   };
 
-  // NavBar：sticky 整条顶栏，Back 左、Logo 右，滚动报告时始终可见
+  // NavBar：sticky 整条顶栏，Back 左、Share 右，滚动报告时始终固定在顶部
+  //
+  // 实现要点（确保真正"固定在顶部"）：
+  //  1. 不使用负 margin（`-mt-*`）—— sticky 依赖元素的正常盒模型计算；
+  //     负 margin 会让"自然位置"提前到达视口顶部，导致它在不该黏住时黏住，
+  //     或在应该黏住时下方留出不必要的空白。
+  //  2. 背景必须**完全不透明** + 与 ReportShell 的 `bg-[#FDFCF9]` 一致，
+  //     否则报告内容（深色 HeroSection / 各 section）滚动到顶栏区域时会
+  //     透过来，视觉上感觉"没黏住"。同时给一个细微的底部边框作为视觉锚点。
+  //  3. `z-50` 必须大于任何报告内容的 z-index（报告 section 不设 z-index，
+  //     所以 z-50 已足够）。
+  //  4. NavBar 现在被**移到了 ReportShell 外面**——直接作为 `.ext-app--report`
+  //     的子元素。这样 sticky 的滚动祖先就是 `.ext-app--report`（它有
+  //     `overflow-y: auto`），行为完全可预期，不再受 ReportShell 内部
+  //     `overflow-x-hidden` 边角情况影响；同时 NavBar 横跨整个 sidepanel
+  //     宽度，不被 ReportShell 的 `max-w-[1200px]` 内边距收缩。
   const NavBar = (
-    <div className="flex items-center justify-between mb-8 sticky top-0 z-50 bg-[#FDFCF9]/95 backdrop-blur-sm py-3 -mt-2">
-      <button
-        type="button"
-        onClick={navigateToHome}
-        className="group flex items-center gap-2 text-stone-500 hover:text-stone-900 transition-colors cursor-pointer"
-      >
-        <div className="w-7 h-7 rounded-full border border-stone-200 flex items-center justify-center bg-white group-hover:bg-stone-50 transition-colors">
-          <ArrowLeft size={12} strokeWidth={1.5} />
-        </div>
-        <span className="text-xs font-medium">Back</span>
-      </button>
-
-      {!shareResult ? (
+    <div
+      className="
+        sticky top-0 z-50
+        w-full
+        bg-[#FDFCF9]
+        border-b border-stone-200
+        py-3
+      "
+      style={{
+        // 兜底：保证背景色完全不透明，避免 Tailwind JIT 在扩展里漏编译
+        backgroundColor: '#FDFCF9',
+      }}
+    >
+      <div className="flex items-center justify-between px-4 sm:px-6 lg:px-8">
         <button
           type="button"
-          onClick={handleTopBarShare}
-          disabled={isSharing}
-          className="flex items-center gap-1.5 px-3 py-1.5 text-stone-500 hover:text-stone-900 transition-colors cursor-pointer disabled:opacity-50"
+          onClick={navigateToHome}
+          className="group flex items-center gap-2 text-stone-500 hover:text-stone-900 transition-colors cursor-pointer"
         >
-          <Share2 size={14} strokeWidth={1.5} />
-          <span className="text-xs font-medium">
-            {isSharing ? 'Sharing...' : 'Share'}
-          </span>
+          <div className="w-7 h-7 rounded-full border border-stone-200 flex items-center justify-center bg-white group-hover:bg-stone-50 transition-colors">
+            <ArrowLeft size={12} strokeWidth={1.5} />
+          </div>
+          <span className="text-xs font-medium">Back</span>
         </button>
-      ) : (
-        <div className="flex items-center gap-1.5 bg-green-50 text-green-700 px-2.5 py-1 rounded-full">
-          {copied ? (
-            <>
-              <CheckCircle size={12} />
-              <span className="text-xs font-medium">Copied!</span>
-            </>
-          ) : (
-            <>
-              <CheckCircle size={12} />
-              <span className="text-xs font-medium">Copied</span>
-              <button
-                onClick={handleCopyShareLink}
-                className="ml-0.5 p-0.5 hover:bg-green-100 rounded transition-colors cursor-pointer"
-                title="Copy link again"
-              >
-                <Copy size={11} />
-              </button>
-            </>
-          )}
-        </div>
-      )}
+
+        {!shareResult ? (
+          <button
+            type="button"
+            onClick={handleTopBarShare}
+            disabled={isSharing}
+            className="flex items-center gap-1.5 px-3 py-1.5 text-stone-500 hover:text-stone-900 transition-colors cursor-pointer disabled:opacity-50"
+          >
+            <Share2 size={14} strokeWidth={1.5} />
+            <span className="text-xs font-medium">
+              {isSharing ? 'Sharing...' : 'Share'}
+            </span>
+          </button>
+        ) : (
+          <div className="flex items-center gap-1.5 bg-green-50 text-green-700 px-2.5 py-1 rounded-full">
+            {copied ? (
+              <>
+                <CheckCircle size={12} />
+                <span className="text-xs font-medium">Copied!</span>
+              </>
+            ) : (
+              <>
+                <CheckCircle size={12} />
+                <span className="text-xs font-medium">Copied</span>
+                <button
+                  onClick={handleCopyShareLink}
+                  className="ml-0.5 p-0.5 hover:bg-green-100 rounded transition-colors cursor-pointer"
+                  title="Copy link again"
+                >
+                  <Copy size={11} />
+                </button>
+              </>
+            )}
+          </div>
+        )}
+      </div>
     </div>
   );
 
   // Loading state
   if (isAnalysing) {
     return (
-      <ReportShell mode="extension">
+      <>
         {NavBar}
-        <PhaseProgressInline phase={analysisPhase} progress={analysisProgress} isBasic={currentAnalysisType === 'basic'} />
-      </ReportShell>
+        <ReportShell mode="extension">
+          <PhaseProgressInline phase={analysisPhase} progress={analysisProgress} isBasic={currentAnalysisType === 'basic'} />
+        </ReportShell>
+      </>
     );
   }
 
   // Error state
   if (isError) {
     return (
-      <ReportShell mode="extension">
+      <>
         {NavBar}
-        <ErrorStateInline error={analysisError} onRetry={retryAnalysis} onBack={navigateToHome} />
-      </ReportShell>
+        <ReportShell mode="extension">
+          <ErrorStateInline error={analysisError} onRetry={retryAnalysis} onBack={navigateToHome} />
+        </ReportShell>
+      </>
     );
   }
 
   // No result yet (but no error either — e.g. network failed before getting result)
   if (!hasResult) {
     return (
-      <ReportShell mode="extension">
+      <>
         {NavBar}
-        <div className="flex flex-col items-center justify-center py-24 gap-4">
-          <div className="ext-spinner" />
-          <div className="text-sm text-stone-500 text-center">
-            {analysisError ? null : (
-              <span>Waiting for analysis result...</span>
+        <ReportShell mode="extension">
+          <div className="flex flex-col items-center justify-center py-24 gap-4">
+            <div className="ext-spinner" />
+            <div className="text-sm text-stone-500 text-center">
+              {analysisError ? null : (
+                <span>Waiting for analysis result...</span>
+              )}
+            </div>
+            {analysisError && (
+              <div className="flex flex-col items-center gap-3 max-w-sm">
+                <div className="ext-analysis-error">
+                  <div className="ext-analysis-error-icon">!</div>
+                  <div className="ext-analysis-error-title">Analysis failed</div>
+                  <div className="ext-analysis-error-msg">{analysisError}</div>
+                </div>
+                <button
+                  type="button"
+                  className="ext-btn-secondary-v2"
+                  onClick={retryAnalysis}
+                >
+                  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="23 4 23 10 17 10"></polyline><polyline points="1 20 1 14 7 14"></polyline><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"></path></svg>
+                  Retry
+                </button>
+              </div>
             )}
           </div>
-          {analysisError && (
-            <div className="flex flex-col items-center gap-3 max-w-sm">
-              <div className="ext-analysis-error">
-                <div className="ext-analysis-error-icon">!</div>
-                <div className="ext-analysis-error-title">Analysis failed</div>
-                <div className="ext-analysis-error-msg">{analysisError}</div>
-              </div>
-              <button
-                type="button"
-                className="ext-btn-secondary-v2"
-                onClick={retryAnalysis}
-              >
-                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="23 4 23 10 17 10"></polyline><polyline points="1 20 1 14 7 14"></polyline><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"></path></svg>
-                Retry
-              </button>
-            </div>
-          )}
-        </div>
-      </ReportShell>
+        </ReportShell>
+      </>
     );
   }
 
   // Has result: use ReportScreen (handles both basic and full analysis)
   return (
-    <ReportShell mode="extension">
+    <>
       {NavBar}
-      <ReportScreen
-        mode="extension"
-        result={analysisResult}
-        onBack={navigateToHome}
-        onShare={authStatus === 'logged_in' ? handleShare : undefined}
-        onUpgrade={handleUpgrade}
-        analysisId={analysisResult?.id}
-        noShell
-        authStatus={authStatus}
-        credits={credits}
-        hasFullReport={hasFullReport}
-        isFullRunning={isFullRunning}
-        onSignIn={handleSignIn}
-        onOpenCheckout={handleOpenCheckout}
-        onViewFullReport={handleViewFullReport}
-      />
-    </ReportShell>
+      <ReportShell mode="extension">
+        <ReportScreen
+          mode="extension"
+          result={analysisResult}
+          onBack={navigateToHome}
+          onShare={authStatus === 'logged_in' ? handleShare : undefined}
+          onUpgrade={handleUpgrade}
+          analysisId={analysisResult?.id}
+          noShell
+          authStatus={authStatus}
+          credits={credits}
+          hasFullReport={hasFullReport}
+          isFullRunning={isFullRunning}
+          onSignIn={handleSignIn}
+          onOpenCheckout={handleOpenCheckout}
+          onViewFullReport={handleViewFullReport}
+        />
+      </ReportShell>
+    </>
   );
 }
 

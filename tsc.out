@@ -1,0 +1,295 @@
+shared/errors.ts(6,13): error TS1294: This syntax is not allowed when 'erasableSyntaxOnly' is enabled.
+shared/types/analysis.ts(65,3): error TS2300: Duplicate identifier 'basement'.
+shared/types/analysis.ts(137,3): error TS2300: Duplicate identifier 'basement'.
+shared/types/analysis.ts(137,3): error TS2717: Subsequent property declarations must have the same type.  Property 'basement' must be of type 'string | undefined', but here has type 'string | null | undefined'.
+src/components/BasicResultCard.tsx(3,81): error TS6133: 'Star' is declared but its value is never read.
+src/components/BasicResultCard.tsx(3,87): error TS6133: 'Copy' is declared but its value is never read.
+src/components/BasicResultCard.tsx(93,3): error TS6133: 'isExtension' is declared but its value is never read.
+src/components/BasicResultCard.tsx(105,9): error TS6133: 'RecIcon' is declared but its value is never read.
+src/components/ListingHeader.tsx(1,34): error TS2307: Cannot find module '../../types' or its corresponding type declarations.
+src/components/LoginModal.tsx(4,21): error TS6133: 'Loader2' is declared but its value is never read.
+src/components/OptionalDetails.tsx(98,15): error TS2322: Type 'string | number' is not assignable to type 'string'.
+  Type 'number' is not assignable to type 'string'.
+src/components/OptionalDetails.tsx(105,15): error TS2322: Type 'string | number' is not assignable to type 'string'.
+  Type 'number' is not assignable to type 'string'.
+src/components/report/NewReportUI.tsx(55,3): error TS6133: 'Activity' is declared but its value is never read.
+src/components/report/NewReportUI.tsx(56,3): error TS6133: 'FileSearch' is declared but its value is never read.
+src/components/report/NewReportUI.tsx(57,3): error TS6133: 'CircleHelp' is declared but its value is never read.
+src/components/report/NewReportUI.tsx(58,3): error TS6133: 'Ban' is declared but its value is never read.
+src/components/report/NewReportUI.tsx(59,3): error TS6133: 'ThumbsUp' is declared but its value is never read.
+src/components/report/NewReportUI.tsx(60,3): error TS6133: 'Signal' is declared but its value is never read.
+src/components/report/NewReportUI.tsx(62,3): error TS6133: 'ShieldAlert' is declared but its value is never read.
+src/components/report/NewReportUI.tsx(63,3): error TS6133: 'HelpCircle' is declared but its value is never read.
+src/components/report/NewReportUI.tsx(74,1): error TS6133: 'UPSELL_CTA_FALLBACK' is declared but its value is never read.
+src/components/report/NewReportUI.tsx(355,11): error TS6133: '_capitalize' is declared but its value is never read.
+src/components/report/NewReportUI.tsx(451,11): error TS6133: 'rawSummary2' is declared but its value is never read.
+src/components/report/NewReportUI.tsx(520,9): error TS6133: 'nextBestMove' is declared but its value is never read.
+src/components/report/NewReportUI.tsx(772,10): error TS6133: '_getRiskShortExplanation' is declared but its value is never read.
+src/components/report/NewReportUI.tsx(874,9): error TS6133: '_photoVM' is declared but its value is never read.
+src/components/report/NewReportUI.tsx(1120,10): error TS6133: '_makeSpecificAction' is declared but its value is never read.
+src/components/report/NewReportUI.tsx(1151,9): error TS6133: '_vmRisks' is declared but its value is never read.
+src/components/report/NewReportUI.tsx(1314,9): error TS6133: '_isMultiFamily' is declared but its value is never read.
+src/components/report/NewReportUI.tsx(1315,9): error TS6133: '_isCondo' is declared but its value is never read.
+src/components/report/NewReportUI.tsx(1316,9): error TS6133: '_isTownhouse' is declared but its value is never read.
+src/components/report/NewReportUI.tsx(1317,9): error TS6133: '_isLand' is declared but its value is never read.
+src/components/report/NewReportUI.tsx(1455,9): error TS6133: 'hasRealZestimate' is declared but its value is never read.
+src/components/report/NewReportUI.tsx(1456,9): error TS6133: 'hasRealSalesRange' is declared but its value is never read.
+src/components/report/NewReportUI.tsx(1688,9): error TS6133: '_sections' is declared but its value is never read.
+src/components/report/NewReportUI.tsx(2050,13): error TS6133: '_lowerFirst' is declared but its value is never read.
+src/components/report/NewReportUI.tsx(2224,7): error TS6133: 'FIELD_NAME_PATTERNS' is declared but its value is never read.
+src/components/report/NewReportUI.tsx(2229,10): error TS6133: 'fieldToQuestion' is declared but its value is never read.
+src/components/report/NewReportUI.tsx(2270,10): error TS6133: 'getQuestionTag' is declared but its value is never read.
+src/components/report/NewReportUI.tsx(2278,7): error TS6133: 'CORE_QUESTION_FAMILIES' is declared but its value is never read.
+src/components/report/NewReportUI.tsx(2294,10): error TS6133: 'getFallbackQuestions' is declared but its value is never read.
+src/components/report/NewReportUI.tsx(2294,31): error TS6133: 'isNYC' is declared but its value is never read.
+src/components/report/NewReportUI.tsx(2325,9): error TS6133: 'rawResultForTrace' is declared but its value is never read.
+src/components/report/NewReportUI.tsx(2327,9): error TS6133: 'isNYC' is declared but its value is never read.
+src/components/report/NewReportUI.tsx(2350,9): error TS6133: '_heroAddress' is declared but its value is never read.
+src/components/report/NewReportUI.tsx(2351,9): error TS6133: '_heroTitle' is declared but its value is never read.
+src/components/report/NewReportUI.tsx(2655,9): error TS6133: '_effectiveProfile' is declared but its value is never read.
+src/components/report/NewReportUI.tsx(2693,10): error TS6133: '_InvestmentPotentialSection' is declared but its value is never read.
+src/components/report/NewReportUI.tsx(2815,10): error TS6133: '_DetailedRiskAnalysisSection' is declared but its value is never read.
+src/components/report/NewReportUI.tsx(3207,71): error TS2322: Type 'string | false' is not assignable to type 'boolean'.
+  Type 'string' is not assignable to type 'boolean'.
+src/components/report/NewReportUI.tsx(3211,64): error TS2322: Type 'string | false' is not assignable to type 'boolean'.
+  Type 'string' is not assignable to type 'boolean'.
+src/components/report/NewReportUI.tsx(3684,24): error TS2345: Argument of type 'number | null | undefined' is not assignable to parameter of type 'number | null'.
+  Type 'undefined' is not assignable to type 'number | null'.
+src/components/report/NewReportUI.tsx(3687,24): error TS2345: Argument of type 'number | null | undefined' is not assignable to parameter of type 'number | null'.
+  Type 'undefined' is not assignable to type 'number | null'.
+src/components/report/NewReportUI.tsx(3695,9): error TS2345: Argument of type 'number | null | undefined' is not assignable to parameter of type 'number | null'.
+  Type 'undefined' is not assignable to type 'number | null'.
+src/components/report/NewReportUI.tsx(3703,23): error TS2345: Argument of type 'number | null | undefined' is not assignable to parameter of type 'number | null'.
+  Type 'undefined' is not assignable to type 'number | null'.
+src/components/report/NewReportUI.tsx(3937,10): error TS6133: 'BuildingIcon' is declared but its value is never read.
+src/components/report/NewReportUI.tsx(3950,3): error TS6133: 'tone' is declared but its value is never read.
+src/components/report/NewReportUI.tsx(4784,10): error TS6133: 'BasicDecisionSection' is declared but its value is never read.
+src/components/report/NewReportUI.tsx(4784,41): error TS6133: 'isExtension' is declared but its value is never read.
+src/components/report/NewReportUI.tsx(4830,10): error TS6133: 'MonthlyCostSnapshotSection' is declared but its value is never read.
+src/components/report/NewReportUI.tsx(4908,10): error TS6133: 'ListingClaimsSection' is declared but its value is never read.
+src/components/report/NewReportUI.tsx(5000,3): error TS6133: 'analysisId' is declared but its value is never read.
+src/components/report/NewReportUI.tsx(5032,45): error TS2345: Argument of type '{ authStatus: "logged_out" | "logging_in" | "logged_in" | undefined; credits: number | undefined; hasFullReport: boolean | undefined; isFullRunning: boolean | undefined; }' is not assignable to parameter of type 'BasicCTAProps'.
+  Property 'report' is missing in type '{ authStatus: "logged_out" | "logging_in" | "logged_in" | undefined; credits: number | undefined; hasFullReport: boolean | undefined; isFullRunning: boolean | undefined; }' but required in type 'BasicCTAProps'.
+src/components/report/PhotoSpaceAnalysisCard.tsx(12,18): error TS6133: 'AlertTriangle' is declared but its value is never read.
+src/components/report/PhotoSpaceAnalysisCard.tsx(12,33): error TS6133: 'Search' is declared but its value is never read.
+src/components/report/PhotoSpaceAnalysisCard.tsx(673,19): error TS2739: Type 'PhotoReviewAreaRecord' is missing the following properties from type 'PhotoReviewArea': whatLooksLike, visibleConcerns, cannotTellFromPhotos, whatToCheckNext
+src/components/report/PhotoSpaceAnalysisCard.tsx(674,54): error TS2345: Argument of type 'PhotoReviewAreaRecord' is not assignable to parameter of type 'PhotoReviewArea'.
+  Type 'PhotoReviewAreaRecord' is missing the following properties from type 'PhotoReviewArea': whatLooksLike, visibleConcerns, cannotTellFromPhotos, whatToCheckNext
+src/components/ResultCard.tsx(199,103): error TS6133: 'analysisId' is declared but its value is never read.
+src/components/ResultCard.tsx(282,9): error TS6133: 'realityCheck' is declared but its value is never read.
+src/components/ResultCard.tsx(288,9): error TS6133: 'reality_check' is declared but its value is never read.
+src/components/ResultCard.tsx(1377,24): error TS18048: 'recommendation' is possibly 'undefined'.
+src/components/us/ActionChecklist.tsx(1,37): error TS2307: Cannot find module '../../shared/types/analysis' or its corresponding type declarations.
+src/components/us/QuickBalance.tsx(1,37): error TS2307: Cannot find module '../../shared/types/analysis' or its corresponding type declarations.
+src/components/us/RiskCard.tsx(2,37): error TS2307: Cannot find module '../../shared/types/analysis' or its corresponding type declarations.
+src/components/us/RiskCard.tsx(3,25): error TS6133: 'AlertCircle' is declared but its value is never read.
+src/components/us/RiskCard.tsx(3,65): error TS6133: 'Droplets' is declared but its value is never read.
+src/components/us/RiskCard.tsx(59,11): error TS6196: 'RiskItem' is declared but never used.
+src/components/us/USSaleReport.tsx(1,37): error TS2307: Cannot find module '../../shared/types/analysis' or its corresponding type declarations.
+src/components/us/USSaleReport.tsx(29,10): error TS6133: 'InfoRow' is declared but its value is never read.
+src/components/us/USSaleReport.tsx(106,54): error TS6133: 'homeType' is declared but its value is never read.
+src/components/us/USSaleReport.tsx(604,10): error TS6133: 'QuestionsToAskCard' is declared but its value is never read.
+src/components/us/USSaleReport.tsx(736,10): error TS6133: 'ProsConsCard' is declared but its value is never read.
+src/components/us/USSaleReport.tsx(934,91): error TS2322: Type 'string | false' is not assignable to type 'boolean'.
+  Type 'string' is not assignable to type 'boolean'.
+src/components/us/USSaleReport.tsx(935,92): error TS2322: Type 'string | false' is not assignable to type 'boolean'.
+  Type 'string' is not assignable to type 'boolean'.
+src/components/us/USSaleReport.tsx(936,89): error TS2322: Type 'string | false' is not assignable to type 'boolean'.
+  Type 'string' is not assignable to type 'boolean'.
+src/components/us/USSaleReport.tsx(1242,9): error TS6133: 'er' is declared but its value is never read.
+src/components/us/USSaleReport.tsx(1243,9): error TS6133: 'gaps' is declared but its value is never read.
+src/content/detectors/propertySignals.ts(6,54): error TS2307: Cannot find module '../../shared/types/analysis' or its corresponding type declarations.
+src/content/detectors/propertySignals.ts(11,38): error TS2307: Cannot find module '../../shared/constants' or its corresponding type declarations.
+src/content/extractors/contract.test.ts(135,14): error TS2352: Conversion of type '{ source: "zillow"; url: string; address: string; price: string; priceAmount: number | undefined; pricePeriod: "total"; bedrooms: number | null; bathrooms: number | null; propertyType: string; ... 23 more ...; extractionConfidence: number; }' to type 'StandardizedListingData' may be a mistake because neither type sufficiently overlaps with the other. If this was intentional, convert the expression to 'unknown' first.
+  Property 'title' is missing in type '{ source: "zillow"; url: string; address: string; price: string; priceAmount: number | undefined; pricePeriod: "total"; bedrooms: number | null; bathrooms: number | null; propertyType: string; ... 23 more ...; extractionConfidence: number; }' but required in type 'StandardizedListingData'.
+src/content/extractors/contract.test.ts(377,16): error TS6133: 'commonFor' is declared but its value is never read.
+src/content/extractors/contract.test.ts(380,16): error TS6133: 'rentFor' is declared but its value is never read.
+src/content/extractors/contract.test.ts(387,16): error TS6133: 'saleFor' is declared but its value is never read.
+src/content/extractors/generic.ts(7,10): error TS1484: 'ListingExtractor' is a type and must be imported using a type-only import when 'verbatimModuleSyntax' is enabled.
+src/content/extractors/generic.ts(7,28): error TS1484: 'ExtractContext' is a type and must be imported using a type-only import when 'verbatimModuleSyntax' is enabled.
+src/content/extractors/generic.ts(8,24): error TS6133: 'normalizePricePeriod' is declared but its value is never read.
+src/content/extractors/generic.ts(37,9): error TS2416: Property 'extract' in type 'GenericPropertyExtractor' is not assignable to the same property in base type 'ListingExtractor'.
+  Type '(ctx: ExtractContext) => Promise<Partial<ExtractedListingData>>' is not assignable to type '(ctx: ExtractContext) => Promise<StandardizedListingData>'.
+    Type 'Promise<Partial<ExtractedListingData>>' is not assignable to type 'Promise<StandardizedListingData>'.
+      Type 'Partial<ExtractedListingData>' is missing the following properties from type 'StandardizedListingData': url, images, extractedAt
+src/content/extractors/realestate.ts(11,10): error TS6133: 'extractFromPictureSources' is declared but its value is never read.
+src/content/extractors/realestate.ts(11,37): error TS6133: 'extractOgImage' is declared but its value is never read.
+src/content/extractors/realestate.ts(53,49): error TS6133: 'street' is declared but its value is never read.
+src/content/extractors/realestate.ts(148,7): error TS2322: Type 'number | null' is not assignable to type 'number | undefined'.
+  Type 'null' is not assignable to type 'number | undefined'.
+src/content/extractors/studioSafety.test.ts(17,31): error TS7006: Parameter 'text' implicitly has an 'any' type.
+src/content/extractors/studioSafety.test.ts(25,5): error TS2322: Type '0' is not assignable to type 'null'.
+src/content/extractors/studioSafety.test.ts(32,7): error TS2322: Type 'number' is not assignable to type 'null'.
+src/content/extractors/studioSafety.test.ts(39,31): error TS2322: Type 'number' is not assignable to type 'null'.
+src/content/extractors/studioSafety.test.ts(46,18): error TS2322: Type 'number' is not assignable to type 'null'.
+src/content/extractors/studioSafety.test.ts(52,31): error TS2322: Type 'number' is not assignable to type 'null'.
+src/content/extractors/zillow.ts(717,47): error TS6133: 'common' is declared but its value is never read.
+src/content/extractors/zillow.ts(744,47): error TS6133: 'common' is declared but its value is never read.
+src/content/extractors/zillow.ts(2294,11): error TS6133: 'determinePricePeriod' is declared but its value is never read.
+src/content/extractors/zillow.ts(2484,11): error TS6133: 'calculateConfidence' is declared but its value is never read.
+src/content/extractors/zillow.ts(2552,11): error TS6133: 'weakSignals' is declared but its value is never read.
+src/content/extractors/zillow.ts(2674,21): error TS2339: Property 'zpid' does not exist on type 'FloorPlanUnit'.
+src/content/extractors/zillow.ts(2675,27): error TS2339: Property 'unitNumber' does not exist on type 'FloorPlanUnit'.
+src/content/extractors/zillow.ts(2688,27): error TS2339: Property 'unitNumber' does not exist on type 'FloorPlanUnit'.
+src/content/extractors/zillow.ts(2689,21): error TS2339: Property 'zpid' does not exist on type 'FloorPlanUnit'.
+src/content/extractors/zillow.ts(2718,27): error TS2339: Property 'unitCount' does not exist on type 'FloorPlan'.
+src/content/normalize/listingNormalizer.ts(109,5): error TS2353: Object literal may only specify known properties, and 'status' does not exist in type 'ExtractedListingData'.
+src/content/pageObserver.ts(7,38): error TS2307: Cannot find module '../detectors/propertySignals' or its corresponding type declarations.
+src/content/pageObserver.ts(30,5): error TS1294: This syntax is not allowed when 'erasableSyntaxOnly' is enabled.
+src/content/pageObserver.ts(31,5): error TS1294: This syntax is not allowed when 'erasableSyntaxOnly' is enabled.
+src/content/pageObserver.ts(31,13): error TS6138: Property 'onStateUpdate' is declared but its value is never read.
+src/contexts/AuthContext.tsx(110,55): error TS2304: Cannot find name 'Session'.
+src/extension/App.tsx(1,1): error TS6133: 'React' is declared but its value is never read.
+src/extension/components/AccountSection.tsx(1,1): error TS6133: 'React' is declared but its value is never read.
+src/extension/components/AnalyseSection.tsx(5,1): error TS6133: 'getAnalysisProgressSteps' is declared but its value is never read.
+src/extension/components/AnalyseSection.tsx(59,6): error TS6196: 'PhaseKey' is declared but never used.
+src/extension/components/AnalyseSection.tsx(81,10): error TS6133: 'SourceBadge' is declared but its value is never read.
+src/extension/components/AnalyseSection.tsx(100,22): error TS6133: 'phase' is declared but its value is never read.
+src/extension/components/AnalyseSection.tsx(206,9): error TS6133: 'sourceConfig' is declared but its value is never read.
+src/extension/components/ExtensionHeader.tsx(1,1): error TS6133: 'React' is declared but its value is never read.
+src/extension/components/ExtensionHeader.tsx(5,27): error TS6133: 'listingData' is declared but its value is never read.
+src/extension/components/ExtensionHeader.tsx(5,40): error TS6133: 'propertyDetection' is declared but its value is never read.
+src/extension/components/ExtensionResultView.tsx(131,41): error TS6133: 'index' is declared but its value is never read.
+src/extension/components/ExtensionResultView.tsx(132,46): error TS2304: Cannot find name 'AnalysisResult'.
+src/extension/components/ExtensionResultView.tsx(367,9): error TS2322: Type 'AuthStatus' is not assignable to type '"logged_out" | "logging_in" | "logged_in" | undefined'.
+  Type '"checking"' is not assignable to type '"logged_out" | "logging_in" | "logged_in" | undefined'.
+src/extension/components/ListingSummary.tsx(1,1): error TS6133: 'React' is declared but its value is never read.
+src/extension/components/ListingSummary.tsx(84,9): error TS6133: 'priceDisplay' is declared but its value is never read.
+src/extension/components/ListingSummary.tsx(90,9): error TS6133: 'bedrooms' is declared but its value is never read.
+src/extension/components/ListingSummary.tsx(91,9): error TS6133: 'bathrooms' is declared but its value is never read.
+src/extension/components/ListingSummary.tsx(92,9): error TS6133: 'parking' is declared but its value is never read.
+src/extension/components/ListingSummary.tsx(106,16): error TS18048: 'images' is possibly 'undefined'.
+src/extension/components/ReportModeModal.tsx(1,1): error TS6133: 'React' is declared but its value is never read.
+src/lib/api.ts(32,10): error TS6133: 'decodeJwtPayload' is declared but its value is never read.
+src/lib/articles/adminClient.ts(51,29): error TS2344: Type '"id" | "updated_at" | "title" | "status" | "slug" | "category_id" | "tags" | "excerpt" | "published_at" | "scheduled_for" | "author_name"' does not satisfy the constraint 'keyof Article'.
+  Type '"scheduled_for"' is not assignable to type 'keyof Article'.
+src/lib/extensionAuthSync.ts(49,9): error TS2353: Object literal may only specify known properties, and 'payload' does not exist in type 'ChromeRuntimeMessage'.
+src/lib/reportAdapters/auRent.ts(48,10): error TS6133: 'severityOf' is declared but its value is never read.
+src/lib/reportAdapters/auRent.ts(152,89): error TS2353: Object literal may only specify known properties, and 'title' does not exist in type '{ badge?: string | undefined; severity?: "high" | "medium" | "low" | undefined; }'.
+src/lib/reportAdapters/auRent.ts(177,49): error TS2353: Object literal may only specify known properties, and 'title' does not exist in type '{ badge?: string | undefined; severity?: "high" | "medium" | "low" | undefined; }'.
+src/lib/reportAdapters/auRent.ts(185,27): error TS18046: 'item' is of type 'unknown'.
+src/lib/reportAdapters/auRent.ts(185,42): error TS18046: 'item' is of type 'unknown'.
+src/lib/reportAdapters/auRent.ts(185,59): error TS18046: 'item' is of type 'unknown'.
+src/lib/reportAdapters/auRent.ts(186,28): error TS18046: 'item' is of type 'unknown'.
+src/lib/reportAdapters/auRent.ts(186,44): error TS18046: 'item' is of type 'unknown'.
+src/lib/reportAdapters/auRent.ts(186,60): error TS18046: 'item' is of type 'unknown'.
+src/lib/reportAdapters/auRent.ts(191,23): error TS18046: 'item' is of type 'unknown'.
+src/lib/reportAdapters/auRent.ts(191,39): error TS18046: 'item' is of type 'unknown'.
+src/lib/reportAdapters/auRent.ts(208,50): error TS2353: Object literal may only specify known properties, and 'title' does not exist in type '{ badge?: string | undefined; severity?: "high" | "medium" | "low" | undefined; }'.
+src/lib/reportAdapters/auRent.ts(213,44): error TS2353: Object literal may only specify known properties, and 'title' does not exist in type '{ badge?: string | undefined; severity?: "high" | "medium" | "low" | undefined; }'.
+src/lib/reportAdapters/auRent.ts(218,43): error TS2353: Object literal may only specify known properties, and 'title' does not exist in type '{ badge?: string | undefined; severity?: "high" | "medium" | "low" | undefined; }'.
+src/lib/reportAdapters/auSale.ts(240,49): error TS2353: Object literal may only specify known properties, and 'title' does not exist in type '{ badge?: string | undefined; severity?: "high" | "medium" | "low" | undefined; }'.
+src/lib/reportAdapters/auSale.ts(261,59): error TS2353: Object literal may only specify known properties, and 'title' does not exist in type '{ badge?: string | undefined; severity?: "high" | "medium" | "low" | undefined; }'.
+src/lib/reportAdapters/auSale.ts(284,63): error TS2353: Object literal may only specify known properties, and 'title' does not exist in type '{ badge?: string | undefined; severity?: "high" | "medium" | "low" | undefined; }'.
+src/lib/reportAdapters/auSale.ts(289,43): error TS2353: Object literal may only specify known properties, and 'title' does not exist in type '{ badge?: string | undefined; severity?: "high" | "medium" | "low" | undefined; }'.
+src/lib/reportAdapters/Fallbacks.ts(120,137): error TS6133: 'isAU' is declared but its value is never read.
+src/lib/reportAdapters/generic.ts(631,7): error TS2322: Type 'string | null' is not assignable to type 'ListingScope | null | undefined'.
+  Type 'string' is not assignable to type 'ListingScope | null | undefined'.
+src/lib/reportAdapters/imageDedup.test.ts(23,20): error TS2304: Cannot find name 'normalizeAndDedupImageUrls'.
+src/lib/reportAdapters/imageDedup.test.ts(34,20): error TS2304: Cannot find name 'normalizeAndDedupImageUrls'.
+src/lib/reportAdapters/imageDedup.test.ts(44,20): error TS2304: Cannot find name 'normalizeAndDedupImageUrls'.
+src/lib/reportAdapters/imageDedup.test.ts(55,20): error TS2304: Cannot find name 'normalizeAndDedupImageUrls'.
+src/lib/reportAdapters/imageDedup.test.ts(65,20): error TS2304: Cannot find name 'normalizeAndDedupImageUrls'.
+src/lib/reportAdapters/imageDedup.test.ts(76,20): error TS2304: Cannot find name 'normalizeAndDedupImageUrls'.
+src/lib/reportAdapters/imageDedup.test.ts(85,12): error TS2304: Cannot find name 'normalizeAndDedupImageUrls'.
+src/lib/reportAdapters/imageDedup.test.ts(89,12): error TS2304: Cannot find name 'normalizeAndDedupImageUrls'.
+src/lib/reportAdapters/imageDedup.test.ts(90,12): error TS2304: Cannot find name 'normalizeAndDedupImageUrls'.
+src/lib/reportAdapters/imageDedup.test.ts(98,20): error TS2304: Cannot find name 'normalizeAndDedupImageUrls'.
+src/lib/reportAdapters/normalizeReport.ts(292,3): error TS2322: Type 'string | null' is not assignable to type 'ListingScope | null | undefined'.
+  Type 'string' is not assignable to type 'ListingScope | null | undefined'.
+src/lib/reportAdapters/photoFieldsCompatibility.test.ts(67,12): error TS2322: Type '{} | null' is not assignable to type 'Record<string, unknown> | null'.
+  Type '{}' is not assignable to type 'Record<string, unknown>'.
+    Index signature for type 'string' is missing in type '{}'.
+src/lib/reportAdapters/photoFieldsCompatibility.test.ts(67,34): error TS2322: Type '{} | null' is not assignable to type 'Record<string, unknown>[] | null'.
+  Type '{}' is missing the following properties from type 'Record<string, unknown>[]': length, pop, push, concat, and 29 more.
+src/lib/reportAdapters/photoFieldsCompatibility.test.ts(198,34): error TS2339: Property 'areas' does not exist on type '{ detectedAreas: string[]; }'.
+src/lib/reportAdapters/reportRules.test.ts(1,32): error TS6133: 'vi' is declared but its value is never read.
+src/lib/reportAdapters/reportRules.test.ts(3,1): error TS6133: 'BuyerReportMode' is declared but its value is never read.
+src/lib/reportAdapters/reportRules.ts(24,15): error TS2440: Import declaration conflicts with local declaration of 'BuyerReportMode'.
+src/lib/reportAdapters/reportRules.ts(24,32): error TS2440: Import declaration conflicts with local declaration of 'EvidenceType'.
+src/lib/reportAdapters/reportViewModel.test.ts(123,21): error TS2339: Property 'location' does not exist on type 'ReportViewModel'.
+src/lib/reportAdapters/reportViewModel.test.ts(124,21): error TS2339: Property 'location' does not exist on type 'ReportViewModel'.
+src/lib/reportAdapters/reportViewModel.test.ts(125,17): error TS2339: Property 'location' does not exist on type 'ReportViewModel'.
+src/lib/reportAdapters/reportViewModel.test.ts(139,35): error TS2339: Property 'location' does not exist on type 'ReportViewModel'.
+src/lib/reportAdapters/reportViewModel.ts(230,38): error TS6133: 'raw' is declared but its value is never read.
+src/lib/reportAdapters/reportViewModel.ts(1192,9): error TS6133: 'FALLBACKS' is declared but its value is never read.
+src/lib/reportAdapters/reportViewModel.ts(1617,12): error TS6133: 'ensureSingleFamilySafetyQuestions' is declared but its value is never read.
+src/lib/reportAdapters/usRent.test.ts(5,7): error TS6133: 'MODULE_FALLBACKS' is declared but its value is never read.
+src/lib/reportAdapters/usRent.test.ts(179,30): error TS2559: Type '{ id: string; }' has no properties in common with type '{ items?: { title?: string | undefined; description?: string | undefined; value?: string | undefined; }[] | undefined; }'.
+src/lib/reportAdapters/usRent.test.ts(197,30): error TS2559: Type '{ id: string; }' has no properties in common with type '{ items?: { title?: string | undefined; description?: string | undefined; value?: string | undefined; }[] | undefined; }'.
+src/lib/reportAdapters/usRent.test.ts(297,30): error TS2559: Type '{ id: string; }' has no properties in common with type '{ items?: { title?: string | undefined; description?: string | undefined; value?: string | undefined; }[] | undefined; }'.
+src/lib/reportAdapters/usRent.test.ts(318,30): error TS2559: Type '{ id: string; }' has no properties in common with type '{ items?: { title?: string | undefined; description?: string | undefined; value?: string | undefined; }[] | undefined; }'.
+src/lib/reportAdapters/usRent.test.ts(341,30): error TS2559: Type '{ id: string; }' has no properties in common with type '{ items?: { title?: string | undefined; description?: string | undefined; value?: string | undefined; }[] | undefined; }'.
+src/lib/reportAdapters/usRent.test.ts(365,30): error TS2559: Type '{ id: string; }' has no properties in common with type '{ items?: { title?: string | undefined; description?: string | undefined; value?: string | undefined; }[] | undefined; }'.
+src/lib/reportAdapters/usRent.test.ts(389,32): error TS2559: Type '{ id: string; }' has no properties in common with type '{ items?: { title?: string | undefined; description?: string | undefined; value?: string | undefined; }[] | undefined; }'.
+src/lib/reportAdapters/usRent.test.ts(413,30): error TS2559: Type '{ id: string; }' has no properties in common with type '{ items?: { title?: string | undefined; description?: string | undefined; value?: string | undefined; }[] | undefined; }'.
+src/lib/reportAdapters/usRent.test.ts(506,30): error TS2559: Type '{ id: string; }' has no properties in common with type '{ items?: { title?: string | undefined; description?: string | undefined; value?: string | undefined; }[] | undefined; }'.
+src/lib/reportAdapters/usRent.test.ts(519,30): error TS2559: Type '{ id: string; }' has no properties in common with type '{ items?: { title?: string | undefined; description?: string | undefined; value?: string | undefined; }[] | undefined; }'.
+src/lib/reportAdapters/usRent.test.ts(531,30): error TS2559: Type '{ id: string; }' has no properties in common with type '{ items?: { title?: string | undefined; description?: string | undefined; value?: string | undefined; }[] | undefined; }'.
+src/lib/reportAdapters/usRent.test.ts(542,30): error TS2559: Type '{ id: string; }' has no properties in common with type '{ items?: { title?: string | undefined; description?: string | undefined; value?: string | undefined; }[] | undefined; }'.
+src/lib/reportAdapters/usRent.test.ts(548,24): error TS2559: Type '{ id: string; }' has no properties in common with type '{ items?: { title?: string | undefined; description?: string | undefined; value?: string | undefined; }[] | undefined; }'.
+src/lib/reportAdapters/usRent.test.ts(555,30): error TS2559: Type '{ id: string; }' has no properties in common with type '{ items?: { title?: string | undefined; description?: string | undefined; value?: string | undefined; }[] | undefined; }'.
+src/lib/reportAdapters/usRent.test.ts(569,30): error TS2559: Type '{ id: string; }' has no properties in common with type '{ items?: { title?: string | undefined; description?: string | undefined; value?: string | undefined; }[] | undefined; }'.
+src/lib/reportAdapters/usRent.test.ts(588,24): error TS2559: Type '{ id: string; }' has no properties in common with type '{ items?: { title?: string | undefined; description?: string | undefined; value?: string | undefined; }[] | undefined; }'.
+src/lib/reportAdapters/usRent.test.ts(630,30): error TS2559: Type '{ id: string; }' has no properties in common with type '{ items?: { title?: string | undefined; description?: string | undefined; value?: string | undefined; }[] | undefined; }'.
+src/lib/reportAdapters/usRent.test.ts(647,24): error TS2559: Type '{ id: string; }' has no properties in common with type '{ items?: { title?: string | undefined; description?: string | undefined; value?: string | undefined; }[] | undefined; }'.
+src/lib/reportAdapters/usRent.test.ts(655,30): error TS2559: Type '{ id: string; }' has no properties in common with type '{ items?: { title?: string | undefined; description?: string | undefined; value?: string | undefined; }[] | undefined; }'.
+src/lib/reportAdapters/usRent.test.ts(668,24): error TS2559: Type '{ id: string; }' has no properties in common with type '{ items?: { title?: string | undefined; description?: string | undefined; value?: string | undefined; }[] | undefined; }'.
+src/lib/reportAdapters/usRent.test.ts(678,24): error TS2559: Type '{ id: string; }' has no properties in common with type '{ items?: { title?: string | undefined; description?: string | undefined; value?: string | undefined; }[] | undefined; }'.
+src/lib/reportAdapters/usRent.test.ts(687,24): error TS2559: Type '{ id: string; }' has no properties in common with type '{ items?: { title?: string | undefined; description?: string | undefined; value?: string | undefined; }[] | undefined; }'.
+src/lib/reportAdapters/usRent.test.ts(688,24): error TS2559: Type '{ id: string; }' has no properties in common with type '{ items?: { title?: string | undefined; description?: string | undefined; value?: string | undefined; }[] | undefined; }'.
+src/lib/reportAdapters/usRent.test.ts(689,24): error TS2559: Type '{ id: string; }' has no properties in common with type '{ items?: { title?: string | undefined; description?: string | undefined; value?: string | undefined; }[] | undefined; }'.
+src/lib/reportAdapters/usRent.test.ts(690,24): error TS2559: Type '{ id: string; }' has no properties in common with type '{ items?: { title?: string | undefined; description?: string | undefined; value?: string | undefined; }[] | undefined; }'.
+src/lib/reportAdapters/usRent.test.ts(692,24): error TS2559: Type '{ id: string; }' has no properties in common with type '{ items?: { title?: string | undefined; description?: string | undefined; value?: string | undefined; }[] | undefined; }'.
+src/lib/reportAdapters/usRent.test.ts(693,24): error TS2559: Type '{ id: string; }' has no properties in common with type '{ items?: { title?: string | undefined; description?: string | undefined; value?: string | undefined; }[] | undefined; }'.
+src/lib/reportAdapters/usRent.test.ts(694,24): error TS2559: Type '{ id: string; }' has no properties in common with type '{ items?: { title?: string | undefined; description?: string | undefined; value?: string | undefined; }[] | undefined; }'.
+src/lib/reportAdapters/usRent.test.ts(695,24): error TS2559: Type '{ id: string; }' has no properties in common with type '{ items?: { title?: string | undefined; description?: string | undefined; value?: string | undefined; }[] | undefined; }'.
+src/lib/reportAdapters/usRent.test.ts(696,24): error TS2559: Type '{ id: string; }' has no properties in common with type '{ items?: { title?: string | undefined; description?: string | undefined; value?: string | undefined; }[] | undefined; }'.
+src/lib/reportAdapters/usRent.test.ts(710,30): error TS2559: Type '{ id: string; }' has no properties in common with type '{ items?: { title?: string | undefined; description?: string | undefined; value?: string | undefined; }[] | undefined; }'.
+src/lib/reportAdapters/usRent.test.ts(725,30): error TS2559: Type '{ id: string; }' has no properties in common with type '{ items?: { title?: string | undefined; description?: string | undefined; value?: string | undefined; }[] | undefined; }'.
+src/lib/reportAdapters/usRent.test.ts(737,30): error TS2559: Type '{ id: string; }' has no properties in common with type '{ items?: { title?: string | undefined; description?: string | undefined; value?: string | undefined; }[] | undefined; }'.
+src/lib/reportAdapters/usRent.test.ts(748,30): error TS2559: Type '{ id: string; }' has no properties in common with type '{ items?: { title?: string | undefined; description?: string | undefined; value?: string | undefined; }[] | undefined; }'.
+src/lib/reportAdapters/usRent.test.ts(765,32): error TS2559: Type '{ id: string; }' has no properties in common with type '{ items?: { title?: string | undefined; description?: string | undefined; value?: string | undefined; }[] | undefined; }'.
+src/lib/reportAdapters/usRent.test.ts(766,34): error TS2559: Type '{ id: string; }' has no properties in common with type '{ items?: { title?: string | undefined; description?: string | undefined; value?: string | undefined; }[] | undefined; }'.
+src/lib/reportAdapters/usRent.test.ts(803,32): error TS2559: Type '{ id: string; }' has no properties in common with type '{ items?: { title?: string | undefined; description?: string | undefined; value?: string | undefined; }[] | undefined; }'.
+src/lib/reportAdapters/usRent.test.ts(804,34): error TS2559: Type '{ id: string; }' has no properties in common with type '{ items?: { title?: string | undefined; description?: string | undefined; value?: string | undefined; }[] | undefined; }'.
+src/lib/reportAdapters/usRent.test.ts(818,25): error TS2339: Property 'items' does not exist on type '{ id: string; }'.
+src/lib/reportAdapters/usRent.test.ts(827,34): error TS2559: Type '{ id: string; }' has no properties in common with type '{ items?: { title?: string | undefined; description?: string | undefined; value?: string | undefined; }[] | undefined; }'.
+src/lib/reportAdapters/usRent.ts(292,9): error TS6133: 'trust' is declared but its value is never read.
+src/lib/reportAdapters/usSale.ts(13,7): error TS6133: 'MAX_PER_AREA_FINDINGS' is declared but its value is never read.
+src/lib/reportAdapters/usSale.ts(33,10): error TS6133: 'deduplicateStrings' is declared but its value is never read.
+src/lib/reportAdapters/usSale.ts(109,10): error TS6133: 'makeItemsFromArray' is declared but its value is never read.
+src/lib/reportAdapters/usSale.ts(118,10): error TS6133: 'stringsToItems' is declared but its value is never read.
+src/lib/reportAdapters/usSale.ts(208,10): error TS6133: 'firstValidTitle' is declared but its value is never read.
+src/lib/reportAdapters/usSale.ts(464,20): error TS6133: 'displayType' is declared but its value is never read.
+src/lib/reportAdapters/usSale.ts(560,20): error TS6133: 'displayType' is declared but its value is never read.
+src/lib/reportAdapters/validateAndRepair.test.ts(51,9): error TS6133: 'reportTextLower' is declared but its value is never read.
+src/lib/reportAdapters/validateAndRepair.test.ts(478,37): error TS2339: Property 'bathDisplay' does not exist on type '{}'.
+src/lib/reportAdapters/validateAndRepair.test.ts(484,37): error TS2339: Property 'bathTotalDisplay' does not exist on type '{}'.
+src/lib/reportAdapters/validateAndRepair.test.ts(490,33): error TS2339: Property 'bathDisplay' does not exist on type '{}'.
+src/lib/reportAdapters/validateAndRepair.test.ts(496,37): error TS2339: Property 'bathDisplay' does not exist on type '{}'.
+src/lib/seo-utils.ts(145,65): error TS6133: 'verdict' is declared but its value is never read.
+src/lib/seo-utils.ts(298,66): error TS6133: 'quickSummary' is declared but its value is never read.
+src/pages/Account.tsx(115,26): error TS2352: Conversion of type 'AnalysisSummary' to type 'Record<string, unknown>' may be a mistake because neither type sufficiently overlaps with the other. If this was intentional, convert the expression to 'unknown' first.
+  Index signature for type 'string' is missing in type 'AnalysisSummary'.
+src/pages/Account.tsx(122,29): error TS2352: Conversion of type 'AnalysisResult' to type 'Record<string, unknown>' may be a mistake because neither type sufficiently overlaps with the other. If this was intentional, convert the expression to 'unknown' first.
+  Index signature for type 'string' is missing in type 'AnalysisResult'.
+src/pages/Account.tsx(154,35): error TS2352: Conversion of type 'AnalysisSummary' to type 'Record<string, unknown>' may be a mistake because neither type sufficiently overlaps with the other. If this was intentional, convert the expression to 'unknown' first.
+  Index signature for type 'string' is missing in type 'AnalysisSummary'.
+src/pages/admin/ArticleEditor.tsx(78,31): error TS2339: Property 'content_markdown' does not exist on type 'Article'.
+src/pages/admin/ArticleEditor.tsx(84,28): error TS2339: Property 'scheduled_for' does not exist on type 'Article'.
+src/pages/AuthCallback.tsx(22,9): error TS6133: 'hasAccessToken' is declared but its value is never read.
+src/pages/AuthCallback.tsx(23,9): error TS6133: 'hasRefreshToken' is declared but its value is never read.
+src/pages/AuthCallback.tsx(24,9): error TS6133: 'userId' is declared but its value is never read.
+src/pages/AuthCallback.tsx(73,32): error TS2345: Argument of type '{ user: { id: string; }; access_token: string; refresh_token?: string | undefined; }' is not assignable to parameter of type 'Session'.
+  Type '{ user: { id: string; }; access_token: string; refresh_token?: string | undefined; }' is missing the following properties from type 'Session': expires_in, token_type
+src/pages/AuthCallback.tsx(93,21): error TS6133: 'error' is declared but its value is never read.
+src/pages/PaymentSuccess.tsx(31,10): error TS6133: 'pollExhausted' is declared but its value is never read.
+src/pages/Pricing.tsx(66,25): error TS6133: 'setBuyingProduct' is declared but its value is never read.
+src/pages/RealEstateTools.tsx(21,9): error TS6133: 'isAuthenticated' is declared but its value is never read.
+src/pages/Share.tsx(2,48): error TS2305: Module '"../types"' has no exported member 'ListingInfo'.
+src/pages/Share.tsx(110,121): error TS2339: Property 'rent_price' does not exist on type 'AnalysisSummary'.
+src/pages/Share.tsx(110,151): error TS2339: Property 'rent_price' does not exist on type 'AnalysisSummary'.
+src/pages/Support.tsx(3,18): error TS6133: 'FileText' is declared but its value is never read.
+src/shared/report/ReportScreen.tsx(19,77): error TS6133: 'resolveBuildingDetails' is declared but its value is never read.
+supabase/functions/analyze/reportMode.ts(24,7): error TS6133: 'STRUCTURED_LISTING_VALID_SOURCES' is declared but its value is never read.

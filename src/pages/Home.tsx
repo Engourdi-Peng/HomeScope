@@ -1,8 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
-import { Link, useNavigate } from 'react-router-dom';
-import { InputCard } from '../components/InputCard';
-import type { AnalysisStage, Photo, OptionalDetails } from '../types';
-import { submitAnalysis, runAnalysis, compressImageForUpload, uploadImagesToStorage, getAnalysisProgress, analyzeBasicSync } from '../lib/api';
+import { useState } from 'react';
 import { Sparkles, Camera, FileText, LayoutGrid, AlertTriangle, TrendingUp, CheckCircle, ChevronLeft, ChevronRight } from 'lucide-react';
 import { FAQItem } from '../components/FAQItem';
 import { PricingCard } from '../components/PricingCard';
@@ -11,7 +7,6 @@ import { ExtensionPromo } from '../components/ExtensionPromo';
 import { PurchaseModal } from '../components/PurchaseModal';
 import { SiteLayout } from '../components/SiteLayout';
 import { useAuth } from '../contexts/AuthContext';
-import { supabase } from '../lib/supabase';
 import * as Accordion from '@radix-ui/react-accordion';
 
 // 产品配置
@@ -64,20 +59,7 @@ const PRODUCTS = [
 ];
 
 export function Home() {
-  const navigate = useNavigate();
-  const { user, isAuthenticated, creditsRemaining, refreshProfile } = useAuth();
-  const [photos, setPhotos] = useState<Photo[]>([]);
-  const [description, setDescription] = useState('');
-  const [optionalDetails, setOptionalDetails] = useState<OptionalDetails>({});
-  const [isLoading, setIsLoading] = useState(false);
-  const [isComplete, setIsComplete] = useState(false);
-  const [error, setError] = useState('');
-  const [activeStage, setActiveStage] = useState<AnalysisStage | null>(null);
-  const [analyzingCount, setAnalyzingCount] = useState(0);
-  const [progressPct, setProgressPct] = useState<number>(0);
-  const [progressLabel, setProgressLabel] = useState<string>('');
-  const pollTimerRef = useRef<number | null>(null);
-  const [isLoginModalOpen, setIsLoginModalOpen] = useState(false);
+  const { isAuthenticated } = useAuth();
   const [previewIndex, setPreviewIndex] = useState(0);
   const [selectedProduct, setSelectedProduct] = useState<typeof PRODUCTS[0] | null>(null);
 
@@ -90,10 +72,12 @@ export function Home() {
   const nextPreview = () => setPreviewIndex((prev) => (prev + 1) % previewImages.length);
   const prevPreview = () => setPreviewIndex((prev) => (prev - 1 + previewImages.length) % previewImages.length);
 
+  // 未登录用户请通过顶栏 UserMenu 登录（SiteLayout 管理的 LoginModal）。
+  const requireAuthOrSkip = (): boolean => isAuthenticated;
+
   const handleSelectProduct = (productId: string) => {
     // 1. 检查登录状态
-    if (!isAuthenticated || !user) {
-      setIsLoginModalOpen(true);
+    if (!requireAuthOrSkip()) {
       return;
     }
 
@@ -106,304 +90,6 @@ export function Home() {
 
   const handlePurchaseModalClose = () => {
     setSelectedProduct(null);
-  };
-
-  const clearPollTimer = () => {
-    if (pollTimerRef.current) {
-      clearTimeout(pollTimerRef.current);
-      pollTimerRef.current = null;
-    }
-  };
-
-  const stageToPct = (stage: AnalysisStage | null): number => {
-    if (!stage) return 0;
-    const mapping: Record<AnalysisStage, number> = {
-      upload_received: 10,
-      detecting_rooms: 30,
-      evaluating_spaces: 45,
-      extracting_strengths_and_issues: 65,
-      estimating_competition: 80,
-      building_final_report: 92,
-      done: 100,
-      failed: 100,
-    };
-    return mapping[stage] ?? 0;
-  };
-
-  useEffect(() => {
-    return () => {
-      clearPollTimer();
-    };
-  }, []);
-
-  // ========== 轻量化 Basic Analysis ==========
-  // 无需登录、无需图片、同步直接返回结果
-  const handleBasicAnalysis = async () => {
-    // 1. 权限检查 - 无需登录，任何人都可以使用
-    // 注意：basic 分析不需要登录
-
-    // 2. 数据验证
-    if (!description.trim()) {
-      setError('Please enter a listing description for basic analysis.');
-      return;
-    }
-
-    setIsLoading(true);
-    setError('');
-    setProgressLabel('Analyzing listing...');
-    setProgressPct(10);
-
-    try {
-      // 3. 直接调用同步 API（无需上传图片）
-      setProgressPct(50);
-      const result = await analyzeBasicSync({
-        reportMode: optionalDetails.reportMode || 'rent',
-        description,
-        optionalDetails: Object.keys(optionalDetails).length > 0 ? optionalDetails : undefined,
-      });
-
-      setProgressPct(100);
-
-      // 4. 直接保存结果并跳转，无需轮询
-      // 构建 listingInfo
-      const isRent = (optionalDetails.reportMode || 'rent') === 'rent';
-      const listingInfo = {
-        title: optionalDetails.suburb ? `${optionalDetails.suburb}` : undefined,
-        price: isRent
-          ? optionalDetails.weeklyRent ? `$${optionalDetails.weeklyRent} per week` : undefined
-          : optionalDetails.askingPrice ? `$${parseInt(optionalDetails.askingPrice.replace(/[^0-9]/g, ''), 10).toLocaleString()}` : undefined,
-        priceAmount: isRent
-          ? optionalDetails.weeklyRent ? parseInt(optionalDetails.weeklyRent, 10) : undefined
-          : optionalDetails.askingPrice ? parseInt(optionalDetails.askingPrice.replace(/[^0-9]/g, ''), 10) : undefined,
-        bedrooms: optionalDetails.bedrooms ? parseInt(optionalDetails.bedrooms, 10) : undefined,
-        bathrooms: optionalDetails.bathrooms ? parseInt(optionalDetails.bathrooms, 10) : undefined,
-        parking: optionalDetails.parking ? parseInt(optionalDetails.parking, 10) : undefined,
-      };
-
-      const resultWithListingInfo = {
-        ...result,
-        listingInfo,
-      };
-
-      // Clear any previous listing's cached result before writing the new one
-      // so a half-loaded /result tab from a prior listing cannot render stale data.
-      sessionStorage.removeItem('analysisResult');
-      sessionStorage.setItem('analysisResult', JSON.stringify(resultWithListingInfo));
-
-      setIsLoading(false);
-      setIsComplete(true);
-
-      // 5. 跳转到结果页
-      setTimeout(() => {
-        navigate('/result');
-      }, 300);
-
-    } catch (err) {
-      console.error('[BasicAnalysis] Error:', err);
-      const errorMessage = err instanceof Error ? err.message : 'Basic analysis failed';
-      setError(errorMessage);
-      setIsLoading(false);
-      setProgressPct(0);
-      setProgressLabel('');
-    }
-  };
-
-  const handleSubmit = async (analysisType: 'basic' | 'full' = 'full') => {
-    // ========== Basic Analysis - 轻量路径 ==========
-    if (analysisType === 'basic') {
-      return handleBasicAnalysis();
-    }
-
-    // ========== Full Analysis - 完整路径 (需要积分) ==========
-    // ========== 权限检查 ==========
-    // 1. 未登录用户不能 Analyze
-    if (!isAuthenticated) {
-      setError('Please sign in first to analyze listings.');
-      setIsLoginModalOpen(true);
-      return;
-    }
-
-    // 2. 已登录但无可用积分 - 深度分析需要积分，基础分析不需要
-    if (analysisType === 'full' && creditsRemaining <= 0) {
-      setError('You\'ve used all credits. Use Basic Analysis for free!');
-      return;
-    }
-
-    if (photos.length === 0 && description.trim() === '') {
-      return;
-    }
-
-    setIsLoading(true);
-    setError('');
-    setAnalyzingCount(Math.min(photos.length, analysisType === 'basic' ? 4 : 10));
-    setIsComplete(false);
-    setActiveStage(null);
-    setProgressPct(0);
-
-    try {
-      const photosToAnalyze = analysisType === 'basic'
-        ? photos.slice(0, 4)
-        : photos.slice(0, 10);
-
-      // ========== Step 1: Compress images ==========
-      setProgressLabel('Preparing photos...');
-      const compressedFiles = [];
-      for (let i = 0; i < photosToAnalyze.length; i++) {
-        setProgressPct(Math.round(((i / Math.max(photosToAnalyze.length, 1)) * 30) || 0));
-        setProgressLabel(`Preparing photos... (${i + 1}/${photosToAnalyze.length})`);
-        // eslint-disable-next-line no-await-in-loop
-        const compressed = await compressImageForUpload(photosToAnalyze[i].file);
-        compressedFiles.push(compressed);
-      }
-
-      // ========== Step 2: Upload to Supabase Storage ==========
-      setProgressPct(30);
-      setProgressLabel('Uploading photos...');
-
-      // Use batch upload for efficiency
-      const uploadedFiles = compressedFiles.map(c => c.file);
-      const imageUrls = await uploadImagesToStorage(uploadedFiles);
-
-      // ========== Step 3: Build request with imageUrls ==========
-      // If user did not paste a listingUrl, fall back to window.location.href
-      // when the user is already on a known listing site (Zillow / Realtor /
-      // Redfin). Otherwise leave empty. This helps Result.tsx cross-listing
-      // guard and the "Open listing" navigation.
-      const effectiveListingUrl = (() => {
-        const explicit = (optionalDetails as any)?.listingUrl as string | undefined;
-        if (explicit && explicit.trim()) return explicit.trim();
-        if (typeof window === 'undefined') return undefined;
-        try {
-          const host = window.location.host.toLowerCase();
-          if (/(zillow\.com|realtor\.com|redfin\.com|trulia\.com|homes\.com|compass\.com)/.test(host)) {
-            return window.location.href;
-          }
-        } catch { /* ignore */ }
-        return undefined;
-      })();
-
-      const requestData = {
-        reportMode: optionalDetails.reportMode || 'rent',
-        analysisType,
-        imageUrls,
-        description,
-        optionalDetails: (() => {
-          if (Object.keys(optionalDetails).length === 0) return undefined;
-          return { ...optionalDetails, listingUrl: effectiveListingUrl };
-        })(),
-      };
-
-      // ========== Step 4: Submit to create analysis ID ==========
-      setProgressPct(60);
-      setProgressLabel('Starting analysis...');
-
-      const submitResult = await submitAnalysis(requestData);
-      const analysisId = submitResult.id;
-
-      // ========== Step 5: Trigger the analysis runner ==========
-      setProgressLabel(analysisType === 'basic' ? 'Running basic analysis...' : 'Analyzing property...');
-      setActiveStage('upload_received');
-      setProgressPct(Math.max(65, stageToPct('upload_received')));
-
-      // Fire the run request - it will process in background
-      runAnalysis(analysisId, requestData).catch((runErr) => {
-        console.error('Run analysis error:', runErr);
-        // Continue polling - the backend might still process even if this fails
-      });
-
-      // ========== Step 6: Start polling for progress ==========
-      const poll = async () => {
-        try {
-          const progress = await getAnalysisProgress(analysisId);
-
-          setActiveStage(progress.stage);
-          setProgressLabel(progress.message || 'Analyzing...');
-          setProgressPct(progress.progress ?? stageToPct(progress.stage));
-
-          if (progress.status === 'done' && progress.result) {
-            // Build listingInfo from current form data for the report header
-            const coverImageUrl = imageUrls.length > 0 ? imageUrls[0] : undefined;
-            const isRent = (optionalDetails.reportMode || 'rent') === 'rent';
-            const listingInfo = {
-              title: optionalDetails.suburb ? `${optionalDetails.suburb}` : undefined,
-              price: isRent
-                ? optionalDetails.weeklyRent ? `$${optionalDetails.weeklyRent} per week` : undefined
-                : optionalDetails.askingPrice ? `$${parseInt(optionalDetails.askingPrice.replace(/[^0-9]/g, ''), 10).toLocaleString()}` : undefined,
-              priceAmount: isRent
-                ? optionalDetails.weeklyRent ? parseInt(optionalDetails.weeklyRent, 10) : undefined
-                : optionalDetails.askingPrice ? parseInt(optionalDetails.askingPrice.replace(/[^0-9]/g, ''), 10) : undefined,
-              bedrooms: optionalDetails.bedrooms ? parseInt(optionalDetails.bedrooms, 10) : undefined,
-              bathrooms: optionalDetails.bathrooms ? parseInt(optionalDetails.bathrooms, 10) : undefined,
-              parking: optionalDetails.parking ? parseInt(optionalDetails.parking, 10) : undefined,
-              coverImageUrl,
-            };
-            const resultWithListingInfo = {
-              ...progress.result,
-              // Persist the requested analysis mode into sessionStorage so that
-              // /result → ReportScreen → NewReportUI can confirm it's a Full
-              // report even when upstream polling/progress payloads don't
-              // include analysisType.
-              ...(progress.result && typeof progress.result === 'object'
-                ? { analysisType: (progress.result as any).analysisType ?? analysisType }
-                : { analysisType }),
-              listingInfo,
-            };
-            // Clear stale cache from any previous listing before storing the new
-            // result, so a half-loaded /result tab from a different listing
-            // cannot accidentally render old listing data.
-            sessionStorage.removeItem('analysisResult');
-            sessionStorage.setItem('analysisResult', JSON.stringify(resultWithListingInfo));
-            setIsComplete(true);
-            setProgressPct(100);
-            setProgressLabel('Analysis complete');
-            clearPollTimer();
-            // Refresh user profile to update credits display
-            if (analysisType === 'full') {
-              refreshProfile();
-            }
-            setTimeout(() => {
-              navigate('/result');
-            }, 500);
-            return;
-          }
-
-          if (progress.status === 'failed') {
-            throw new Error(progress.error || progress.message || 'Analysis failed');
-          }
-
-          // Continue polling
-          pollTimerRef.current = window.setTimeout(poll, 1000);
-        } catch (e) {
-          const msg = e instanceof Error ? e.message : 'Failed to get analysis progress';
-          setError(msg);
-          setIsLoading(false);
-          setIsComplete(false);
-          setActiveStage(null);
-          setProgressPct(0);
-          setProgressLabel('');
-          clearPollTimer();
-        }
-      };
-
-      clearPollTimer();
-      pollTimerRef.current = window.setTimeout(poll, 500);
-      return;
-    } catch (err) {
-      // 打印完整错误对象以便调试
-      console.error('=== handleSubmit Error ===');
-      console.error('Error object:', err);
-      console.error('Error message:', err instanceof Error ? err.message : String(err));
-      console.error('Error stack:', err instanceof Error ? err.stack : 'N/A');
-
-      const errorMessage = err instanceof Error ? err.message : 'Failed to analyze listing';
-      setError(errorMessage);
-      setIsLoading(false);
-      setIsComplete(false);
-      setActiveStage(null);
-      setProgressPct(0);
-      setProgressLabel('');
-      clearPollTimer();
-    }
   };
 
   return (
@@ -439,63 +125,7 @@ export function Home() {
         {/* Extension Promo */}
         <ExtensionPromo />
 
-        {/* 2. Upload Tool - First Screen */}
-        <div className="mb-16 animate-in fade-in slide-in-from-bottom-8 duration-700 ease-out" style={{ animationDelay: '100ms' }}>
-          <div className="bg-white rounded-[2rem] shadow-[0_8px_40px_-12px_rgba(0,0,0,0.08)] border border-stone-200 p-8 md:p-12">
-            <h2 className="text-xl font-semibold text-stone-900 mb-2 text-center">Paste a Listing or Upload Screenshots</h2>
-            <p className="text-sm text-stone-500 text-center mb-8">
-              Add a property listing, screenshots, or notes. HomeScope will turn them into a buyer-focused property report.
-            </p>
-            
-            <InputCard
-              photos={photos}
-              onPhotosChange={setPhotos}
-              description={description}
-              onDescriptionChange={setDescription}
-              optionalDetails={optionalDetails}
-              onOptionalDetailsChange={setOptionalDetails}
-              onSubmit={handleSubmit}
-              onLoginClick={() => setIsLoginModalOpen(true)}
-              isLoading={isLoading}
-              isComplete={isComplete}
-              activeStage={activeStage}
-              analyzingCount={analyzingCount}
-              progressPct={progressPct}
-              progressLabel={progressLabel}
-              creditsRemaining={creditsRemaining}
-              isAuthenticated={isAuthenticated}
-            />
-            
-            {error && (
-              <div className="mt-6 p-4 bg-red-50 border border-red-200 rounded-2xl">
-                <div className="flex items-start gap-3">
-                  <div className="text-red-600 mt-0.5">
-                    <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                      <circle cx="12" cy="12" r="10"></circle>
-                      <line x1="12" y1="8" x2="12" y2="12"></line>
-                      <line x1="12" y1="16" x2="12.01" y2="16"></line>
-                    </svg>
-                  </div>
-                  <div className="flex-1">
-                    <p className="text-red-700 text-sm font-medium">{error}</p>
-                    {(error.includes('No credits remaining') || error.includes('used all credits')) && (
-                      <button
-                        onClick={() => {
-                          navigate('/pricing');
-                        }}
-                        className="mt-3 px-4 py-2 bg-amber-500 text-white text-sm font-medium rounded-lg hover:bg-amber-600 transition-colors"
-                      >
-                        Go to Pricing
-                      </button>
-                    )}
-                  </div>
-                </div>
-              </div>
-            )}
-          </div>
-        </div>
-
-        <div className={`transition-all duration-500 ${isLoading ? 'opacity-35 blur-[0.5px] pointer-events-none select-none' : 'opacity-100'}`}>
+        {/* 2. Upload Tool - First Screen (已移除：仅支持浏览器扩展分析) */}
         {/* 3. Don't Trust Listing Photos - Analysis Section */}
         <ListingAnalysisSection />
 
@@ -636,9 +266,7 @@ export function Home() {
                 </p>
                 <button
                   onClick={() => {
-                    if (!isAuthenticated) {
-                      setIsLoginModalOpen(true);
-                    } else {
+                    if (requireAuthOrSkip()) {
                       window.scrollTo({ top: 0, behavior: 'smooth' });
                     }
                   }}
@@ -716,6 +344,31 @@ export function Home() {
             />
           </Accordion.Root>
         </div>
+
+        {/* Final CTA Section */}
+        <div className="mb-12 animate-in fade-in slide-in-from-bottom-8 duration-700 ease-out">
+          <div className="bg-stone-900 rounded-2xl text-center px-4 py-16">
+            <h2 className="text-2xl md:text-3xl font-light text-white mb-4">
+              Start with a free Basic Check.
+            </h2>
+            <p className="text-base text-stone-300 mb-8 max-w-md mx-auto">
+              No credit card. 3 free analyses. Get a clearer read before you book a showing.
+            </p>
+            <button
+              onClick={() => {
+                if (requireAuthOrSkip()) {
+                  window.scrollTo({ top: 0, behavior: 'smooth' });
+                }
+              }}
+              className="inline-flex items-center justify-center gap-2 bg-amber-400 hover:bg-amber-300 text-stone-900 font-medium px-8 py-4 rounded-full transition-colors text-base"
+            >
+              Get 3 Free Reports
+              <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M5 12h14" />
+                <path d="m12 5 7 7-7 7" />
+              </svg>
+            </button>
+          </div>
         </div>
 
         {/* 购买确认弹窗 */}

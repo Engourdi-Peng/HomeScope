@@ -8,7 +8,10 @@
 // 关网关 JWT 校验（与 analyze / paddle-webhook 一致）：supabase/config.toml 中
 // `verify_jwt = false`，函数内部自行校验登录态与管理员白名单。
 
+// @ts-ignore Deno jsr: imports are resolved at deploy time, not by the local tsconfig
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
+// @ts-ignore Deno jsr: imports are resolved at deploy time, not by the local tsconfig
+import { createClient } from "jsr:@supabase/supabase-js@2.45.4";
 
 declare const Deno: {
   serve: (handler: (req: Request) => Response | Promise<Response>) => void;
@@ -25,6 +28,15 @@ const SUPABASE_SERVICE_ROLE_KEY =
   Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ||
   Deno.env.get("SERVICE_ROLE_KEY") ||
   "";
+
+// Storage 单例：用 service_role 调 storage 上传签名接口
+const STORAGE_BUCKET = "article-media";
+const supabaseAdmin = (() => {
+  if (!SUPABASE_URL || !SUPABASE_SERVICE_ROLE_KEY) return null;
+  return createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, {
+    auth: { persistSession: false, autoRefreshToken: false },
+  });
+})();
 
 const corsHeaders: Record<string, string> = {
   "Access-Control-Allow-Origin": "*",
@@ -527,27 +539,108 @@ async function deleteArticle(id: string) {
 }
 
 // ===== Media upload (signed URL flow) =====
+//
+// 注意：保留 signed upload 架构（前端拿 signedURL 走 PUT 上传）。
+// 但函数内不再用 SDK 封装，因为 SDK 的错误对象会丢失上游 HTTP status / body。
+// 这里直接 fetch Storage 的 REST 端点，把原始 status / body 透传给日志和前端，
+// 方便排查 "404/403 被吞成 400" 这类问题。
 async function createUploadUrl(fileName: string, contentType: string) {
-  const url = new URL(`${SUPABASE_URL}/storage/v1/object/upload/sign/article-media`);
-  url.searchParams.set("transform", "resize=cover,quality=80,width=1600,height=900");
-  const filePath = `covers/${Date.now()}-${Math.random().toString(36).slice(2, 8)}-${fileName.replace(/[^a-zA-Z0-9._-]/g, "_").slice(0, 80)}`;
-  const res = await fetch(url.toString(), {
-    method: "POST",
-    headers: authHeader(),
-    body: JSON.stringify({ fileName: filePath, contentType }),
-  });
-  if (!res.ok) {
-    const text = await res.text();
-    return { status: res.status, body: { error: text } };
+  if (!SUPABASE_URL || !SUPABASE_SERVICE_ROLE_KEY) {
+    const msg = "Supabase admin client unavailable (missing SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY)";
+    console.error("[upload] " + msg);
+    return { status: 500, body: { error: msg } };
   }
-  const json = await res.json();
-  const publicUrl = `${SUPABASE_URL}/storage/v1/render/image/public/article-media/${filePath}`;
+
+  const safeName = fileName.replace(/[^a-zA-Z0-9._-]/g, "_").slice(0, 80) || "image.jpg";
+  const filePath = `covers/${Date.now()}-${Math.random().toString(36).slice(2, 8)}-${safeName}`;
+
+  // 精准诊断：环境画像（不打 key），只记 host / bucket / path / key 存在性。
+  let urlHost = "";
+  try { urlHost = new URL(SUPABASE_URL).host; } catch { urlHost = "<unparseable>"; }
+  const keyPresent = Boolean(SUPABASE_SERVICE_ROLE_KEY);
+  console.log("[upload] diag", JSON.stringify({
+    supabaseUrlHost: urlHost,
+    bucket: STORAGE_BUCKET,
+    path: filePath,
+    serviceRolePresent: keyPresent,
+    contentType,
+  }));
+
+  // 探测 1：用同一对 URL + service_role 直接读 bucket，确认函数当前视角下
+  // article-media 是否存在。这是后续判断 "函数看不到 bucket" 还是 "fetch 端点错" 的关键证据。
+  try {
+    const bucketRes = await fetch(`${SUPABASE_URL}/storage/v1/bucket/${STORAGE_BUCKET}`, {
+      method: "GET",
+      headers: {
+        Authorization: `Bearer ${SUPABASE_SERVICE_ROLE_KEY}`,
+        apikey: SUPABASE_SERVICE_ROLE_KEY,
+      },
+    });
+    const bucketText = await bucketRes.text();
+    console.log("[upload] bucketGet", JSON.stringify({
+      status: bucketRes.status,
+      ok: bucketRes.ok,
+      bucket: STORAGE_BUCKET,
+      bodyPreview: bucketText.length > 1000 ? bucketText.slice(0, 1000) + "...<truncated>" : bucketText,
+    }));
+  } catch (e) {
+    console.log("[upload] bucketGet threw", JSON.stringify({ err: String(e) }));
+  }
+
+  // 直接打 Storage REST。这里不发 ?transform=（之前是 400 的真正原因）。
+  const signUrl = `${SUPABASE_URL}/storage/v1/object/upload/sign/${STORAGE_BUCKET}/${filePath}`;
+  const res = await fetch(signUrl, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${SUPABASE_SERVICE_ROLE_KEY}`,
+      apikey: SUPABASE_SERVICE_ROLE_KEY,
+      "Content-Type": "application/json",
+    },
+    body: "{}",
+  });
+
+  // 读原始 status + 完整 body，绝不打 key（key 走的是 Authorization header，
+  // fetch 不会出现在 body 里，但 body 字段名也再做一次白名单清洗）。
+  const rawText = await res.text();
+  const safeBodyPreview = rawText.length > 4000 ? rawText.slice(0, 4000) + "...<truncated>" : rawText;
+
+  console.log("[upload] upstream", JSON.stringify({
+    status: res.status,
+    ok: res.ok,
+    bucket: STORAGE_BUCKET,
+    path: filePath,
+    body: safeBodyPreview,
+  }));
+
+  if (!res.ok) {
+    // 透传 Storage 上游真实 status（之前是被 SDK 包装成 400，实际上是 404）
+    return {
+      status: res.status,
+      body: { error: "Storage createSignedUploadUrl failed", upstreamStatus: res.status, upstreamBody: safeBodyPreview },
+    };
+  }
+
+  // 尝试解析 JSON。官方响应字段是 { signedUrl, path, token }。
+  let parsed: any = null;
+  try { parsed = JSON.parse(rawText); } catch { /* ignore */ }
+  const signedUrl = parsed?.signedUrl ?? parsed?.signedURL ?? parsed?.url ?? null;
+  const token = parsed?.token ?? null;
+
+  if (!signedUrl) {
+    return {
+      status: 500,
+      body: { error: "Storage returned non-JSON or missing signedUrl field", upstreamBody: safeBodyPreview },
+    };
+  }
+
+  const publicUrl = `${SUPABASE_URL}/storage/v1/object/public/${STORAGE_BUCKET}/${filePath}`;
   return {
     status: 200,
     body: {
-      signedUrl: json?.signedURL ?? json?.signed_url ?? null,
+      signedUrl,
       publicUrl,
       path: filePath,
+      token,
     },
   };
 }

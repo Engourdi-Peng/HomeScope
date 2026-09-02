@@ -2,7 +2,8 @@ import { useEffect, useState } from 'react';
 import { useNavigate, Link } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
 import { getAllAnalysisHistory, getAnalysisById, checkAffiliateStatus } from '../lib/api';
-import type { AnalysisSummary, AnalysisResult, ListingInfo } from '../types';
+import type { AnalysisSummary, AnalysisResult } from '../types';
+import { buildCanonicalReportInput } from '../lib/reportAdapters';
 import { User, Sparkles, Clock, ChevronRight, ChevronLeft, LogOut, AlertCircle, RefreshCw, RefreshCcw, FileText, Shield, Mail, ArrowLeft, Gift } from 'lucide-react';
 
 export function AccountPage() {
@@ -95,20 +96,30 @@ export function AccountPage() {
       if (result) {
         result.id = analysis.id;
 
-        // Inject listingInfo from analysis metadata (same as Share.tsx)
-        const listingInfo: ListingInfo = {
-          title: analysis.title || undefined,
-          address: analysis.address || undefined,
-          coverImageUrl: analysis.cover_image_url || undefined,
-          priceAmount: analysis.weekly_rent || undefined,
-          bedrooms: analysis.bedrooms || undefined,
-          bathrooms: analysis.bathrooms || undefined,
-          parking: analysis.car_spaces || undefined,
-        };
-        (result as AnalysisResult & { listingInfo: ListingInfo }).listingInfo = listingInfo;
+        // Canonical input pipeline: backend result + analysis-summary
+        // metadata → shared assembler used by the extension and Share.tsx.
+        // This ensures both web history replay and the extension render the
+        // same fields (address, beds, baths, parking, price, cover image,
+        // reportMode) for the same analysisId.
+        const canonical = buildCanonicalReportInput(
+          result as AnalysisResult,
+          {
+            title: analysis.title ?? undefined,
+            address: analysis.address ?? undefined,
+            coverImageUrl: analysis.cover_image_url ?? undefined,
+            imageUrls: analysis.cover_image_url ? [analysis.cover_image_url] : undefined,
+            priceAmount: analysis.weekly_rent ?? undefined,
+            bedrooms: analysis.bedrooms ?? undefined,
+            bathrooms: analysis.bathrooms ?? undefined,
+            parking: analysis.car_spaces ?? undefined,
+            reportMode: (analysis as Record<string, unknown>).report_mode as 'rent' | 'sale' | undefined,
+          },
+        );
+        const merged: AnalysisResult = canonical.result;
 
-        // Rebuild property_snapshot from individual fields so US-market sections render correctly
-        const typedResult = result as Record<string, unknown>;
+        // Rebuild property_snapshot from individual fields so US-market
+        // sections render correctly when the backend omitted it.
+        const typedResult = merged as Record<string, unknown>;
         if (!typedResult.property_snapshot) {
           typedResult.property_snapshot = {
             beds: analysis.bedrooms ?? null,
@@ -124,7 +135,8 @@ export function AccountPage() {
           };
         }
 
-        // Rebuild what_we_know from optionalDetails so "What We Know" section is not empty
+        // Rebuild what_we_know from optionalDetails so "What We Know"
+        // section is not empty for historical basic analyses.
         const optionalDetails = typedResult.optionalDetails as Record<string, unknown> | undefined;
         if (!typedResult.what_we_know && optionalDetails) {
           (typedResult as Record<string, unknown>).what_we_know = {
@@ -144,7 +156,7 @@ export function AccountPage() {
           typedResult.reportMode = reportModeFromDb;
         }
 
-        sessionStorage.setItem('analysisResult', JSON.stringify(result));
+        sessionStorage.setItem('analysisResult', JSON.stringify(merged));
         navigate('/result');
       }
     } catch (err) {

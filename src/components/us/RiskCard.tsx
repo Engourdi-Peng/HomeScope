@@ -33,8 +33,8 @@ export function RiskCard({ icon, title, severity, summary, action, delay = 0 }: 
           <span className={iconColor}>{icon}</span>
         </div>
         <div className="flex-1 min-w-0">
-          <div className="flex items-center gap-2 mb-1">
-            <h4 className="text-sm font-semibold text-stone-900">{title}</h4>
+          <h4 className="text-sm font-semibold text-stone-900 mb-1.5 break-words">{title}</h4>
+          <div className="mt-1.5">
             <RiskBadge level={severity} />
           </div>
         </div>

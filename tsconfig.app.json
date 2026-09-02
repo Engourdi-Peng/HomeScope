@@ -16,11 +16,10 @@
     "noEmit": true,
     "jsx": "react-jsx",
 
-    /* Path aliases - must be full key+value (tsconfig doesn't inherit vite aliases) */
-    "baseUrl": ".",
+    /* Path aliases - use new paths syntax to avoid baseUrl deprecation */
     "paths": {
-      "~shared": ["shared"],
-      "~shared/*": ["shared/*"]
+      "~shared": ["./shared"],
+      "~shared/*": ["./shared/*"]
     },
 
     /* Linting */
@@ -31,5 +30,6 @@
     "noFallthroughCasesInSwitch": true,
     "noUncheckedSideEffectImports": true
   },
-  "include": ["src", "shared"]
+  "include": ["src", "shared"],
+  "exclude": ["supabase/functions"]
 }

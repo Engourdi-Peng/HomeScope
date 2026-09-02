@@ -59,19 +59,72 @@ export function SiteLayout({ children, hideFooter = false }: SiteLayoutProps) {
         <main>{children}</main>
 
         {!hideFooter && (
-          <footer className="text-center pt-8 pb-4 border-t border-stone-200 mt-12">
-            <p className="text-xs text-stone-500 mb-3 italic max-w-md mx-auto">
-              HomeScope is an independent AI tool. Not affiliated with Zillow, StreetEasy, or any real estate marketplace. Reports are for informational purposes only and are not home inspections, appraisals, legal advice, or financial advice.
-            </p>
-            <div className="flex justify-center gap-4 mb-3 flex-wrap">
-              <Link to="/privacy" className="text-xs text-stone-400 hover:text-stone-600 transition-colors">Privacy Policy</Link>
-              <Link to="/terms" className="text-xs text-stone-400 hover:text-stone-600 transition-colors">Terms of Service</Link>
-              <Link to="/refund" className="text-xs text-stone-400 hover:text-stone-600 transition-colors">Refund Policy</Link>
-              <Link to="/support" className="text-xs text-stone-400 hover:text-stone-600 transition-colors">Support</Link>
-              <Link to="/contact" className="text-xs text-stone-400 hover:text-stone-600 transition-colors">Contact</Link>
-              <Link to="/blog" className="text-xs text-stone-400 hover:text-stone-600 transition-colors">Blog</Link>
+          <footer className="bg-white border-t border-stone-200 mt-16">
+            {/* Footer Top */}
+            <div className="max-w-[1200px] mx-auto px-4 md:px-6 py-14">
+              <div className="grid grid-cols-1 md:grid-cols-12 gap-12 mb-12">
+                {/* Brand Column */}
+                <div className="md:col-span-4">
+                  <Link to="/" className="inline-flex items-center gap-3 mb-4">
+                    <svg xmlns="http://www.w3.org/2000/svg" width="36" height="36" viewBox="0 0 36 36" className="shrink-0">
+                      <rect width="36" height="36" rx="8" fill="#1c1917" />
+                      <text x="50%" y="56%" dominantBaseline="middle" textAnchor="middle" fill="white" fontSize="16" fontWeight="600" fontFamily="sans-serif">H</text>
+                    </svg>
+                    <span className="text-lg font-semibold text-stone-900">HomeScope</span>
+                  </Link>
+                  <p className="text-sm text-stone-500 leading-relaxed max-w-xs">
+                    An independent AI tool that helps buyers review listings before they book a showing.
+                  </p>
+                </div>
+
+                {/* Nav Columns */}
+                <div className="md:col-span-8 grid grid-cols-2 md:grid-cols-4 gap-8">
+                  {/* Product */}
+                  <div>
+                    <h3 className="text-sm font-semibold text-stone-900 mb-4">Product</h3>
+                    <ul className="space-y-3">
+                      <li><Link to="/" className="text-sm text-stone-600 hover:text-stone-900 transition-colors">Home</Link></li>
+                      <li><Link to="/pricing" className="text-sm text-stone-600 hover:text-stone-900 transition-colors">Pricing</Link></li>
+                      <li><a href="#" className="text-sm text-stone-600 hover:text-stone-900 transition-colors">Browser Extension</a></li>
+                    </ul>
+                  </div>
+                  {/* Resources */}
+                  <div>
+                    <h3 className="text-sm font-semibold text-stone-900 mb-4">Resources</h3>
+                    <ul className="space-y-3">
+                      <li><Link to="/blog" className="text-sm text-stone-600 hover:text-stone-900 transition-colors">Blog</Link></li>
+                    </ul>
+                  </div>
+                  {/* Company */}
+                  <div>
+                    <h3 className="text-sm font-semibold text-stone-900 mb-4">Company</h3>
+                    <ul className="space-y-3">
+                      <li><Link to="/contact" className="text-sm text-stone-600 hover:text-stone-900 transition-colors">Contact</Link></li>
+                      <li><Link to="/support" className="text-sm text-stone-600 hover:text-stone-900 transition-colors">Support</Link></li>
+                    </ul>
+                  </div>
+                  {/* Legal */}
+                  <div>
+                    <h3 className="text-sm font-semibold text-stone-900 mb-4">Legal</h3>
+                    <ul className="space-y-3">
+                      <li><Link to="/privacy" className="text-sm text-stone-600 hover:text-stone-900 transition-colors">Privacy Policy</Link></li>
+                      <li><Link to="/terms" className="text-sm text-stone-600 hover:text-stone-900 transition-colors">Terms of Service</Link></li>
+                      <li><Link to="/refund" className="text-sm text-stone-600 hover:text-stone-900 transition-colors">Refund Policy</Link></li>
+                    </ul>
+                  </div>
+                </div>
+              </div>
+
+              {/* Footer Bottom */}
+              <div className="border-t border-stone-200 pt-6 flex flex-col md:flex-row justify-between items-center gap-4">
+                <p className="text-xs text-stone-400">
+                  HomeScope is an independent AI tool. Not affiliated with Zillow, StreetEasy, or any real estate marketplace.
+                </p>
+                <p className="text-xs text-stone-400 font-medium">
+                  © 2026 HomeScope · AI Property Risk Assistant
+                </p>
+              </div>
             </div>
-            <p className="text-xs text-stone-400 font-medium">AI Property Risk Assistant</p>
           </footer>
         )}
       </div>

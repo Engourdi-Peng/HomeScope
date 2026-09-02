@@ -8,7 +8,7 @@ function RiskBadge({ level }: { level?: string }) {
   };
   const c = config[level || 'Unknown'] || config.Unknown;
   return (
-    <span className={`text-[10px] font-bold uppercase tracking-widest px-2.5 py-0.5 rounded border ${c.cls}`}>
+    <span className={`inline-block text-[10px] font-bold uppercase tracking-widest px-2.5 py-0.5 rounded border break-normal ${c.cls}`}>
       {c.label}
     </span>
   );

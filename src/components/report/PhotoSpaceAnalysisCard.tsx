@@ -4,8 +4,12 @@
  *
  * 支持 Photo & Condition Review 格式（买家视角）
  * 同时保持向后兼容旧的 spaceAnalysis 格式
+ *
+ * v2 (Presentation Layer only): 重新组织为
+ *   Observation → Meaning → Confidence → Action
+ * 不动数据、adapter、prompt、business logic。
  */
-import { Camera, CheckCircle, AlertTriangle, HelpCircle, Search, ChevronRight } from 'lucide-react';
+import { Camera, AlertTriangle, Search } from 'lucide-react';
 import {
   mergePhotoReviewAreas,
   type PhotoReviewAreaRecord,
@@ -105,24 +109,58 @@ function getSpaceTypeLabel(spaceType: string): string {
   return map[spaceType?.toLowerCase()] || spaceType;
 }
 
-function getScoreColor(score: number): string {
-  if (score >= 70) return 'text-green-600';
-  if (score >= 50) return 'text-amber-600';
-  return 'text-red-600';
+/**
+ * Severity classification for concerns & watch items.
+ * Uses ONLY left-border colour cues — never full coloured background blocks.
+ */
+type Severity = 'concern' | 'watch' | 'informational' | 'positive';
+
+function classifySeverity(text: string): Severity {
+  const t = text.toLowerCase();
+  // Strong concern keywords → concern
+  if (
+    /\b(mold|mould|rot|water damage|active leak|severe|cracked|failing|failed|hazard|unsafe)\b/.test(
+      t
+    )
+  ) {
+    return 'concern';
+  }
+  // Watch keywords
+  if (
+    /\b(wear|older|dated|discoloration|sealant|caulk|aging|unclear|possible|potential|may|might|could indicate|verify|inspect)\b/.test(
+      t
+    )
+  ) {
+    return 'watch';
+  }
+  return 'informational';
 }
 
-function getScoreBg(score: number): string {
-  if (score >= 70) return 'bg-green-50 border-green-200';
-  if (score >= 50) return 'bg-amber-50 border-amber-200';
-  return 'bg-red-50 border-red-200';
+function severityBorderClass(severity: Severity): string {
+  switch (severity) {
+    case 'concern':
+      return 'border-l-amber-700';
+    case 'watch':
+      return 'border-l-amber-800';
+    case 'positive':
+      return 'border-l-stone-400';
+    case 'informational':
+    default:
+      return 'border-l-stone-500';
+  }
 }
 
-function getConfidenceColor(confidence: string): string {
-  switch (confidence?.toLowerCase()) {
-    case 'high': return 'text-green-600 bg-green-100';
-    case 'medium': return 'text-amber-600 bg-amber-100';
-    case 'low': return 'text-red-600 bg-red-100';
-    default: return 'text-stone-600 bg-stone-100';
+function severityLabel(severity: Severity): string {
+  switch (severity) {
+    case 'concern':
+      return 'Concern';
+    case 'watch':
+      return 'Watch';
+    case 'positive':
+      return 'Positive';
+    case 'informational':
+    default:
+      return 'Note';
   }
 }
 
@@ -192,6 +230,8 @@ interface PhotoSpaceAnalysisCardProps {
       summary?: string;
       score?: number;
       signals?: string[];
+      imageUrl?: string;
+      url?: string;
     }>;
     analyzedPhotoCount?: number;
     detectedRooms?: string[];
@@ -199,233 +239,280 @@ interface PhotoSpaceAnalysisCardProps {
   };
 }
 
+// ── Helper: find a small set of photo URLs to attach as evidence to a finding.
+// We don't have explicit finding→photo wiring in the schema, so we use a simple
+// heuristic: prefer photos whose areaType matches the area label; fall back to
+// the first N photos overall. Returns empty array when no usable URLs are present.
+function pickEvidencePhotos(
+  area: PhotoReviewArea | null,
+  rawPhotos: PhotoSpaceAnalysisCardProps['raw']['photos'],
+  max = 3
+): Array<{ url: string; label: string }> {
+  if (!rawPhotos || rawPhotos.length === 0) return [];
+  const targetArea = (area?.area ?? '').toLowerCase();
+
+  const withUrl = rawPhotos
+    .map((p, idx) => ({
+      idx,
+      url: p.imageUrl || p.url || '',
+      areaType: (p.areaType ?? '').toLowerCase(),
+      summary: p.summary ?? '',
+    }))
+    .filter((p) => Boolean(p.url));
+
+  if (withUrl.length === 0) return [];
+
+  let pool = withUrl;
+  if (targetArea && targetArea !== 'unknown') {
+    const matched = withUrl.filter((p) =>
+      p.areaType && p.areaType.includes(targetArea)
+    );
+    if (matched.length > 0) pool = matched;
+  }
+
+  return pool.slice(0, max).map((p) => ({
+    url: p.url,
+    label: p.summary || (p.areaType ? getSpaceTypeLabel(p.areaType) : `Photo ${p.idx + 1}`),
+  }));
+}
+
 // ── Section Components ───────────────────────────────────────────────────────
 
 function SectionHeader({ title, subtitle }: { title: string; subtitle?: string }) {
   return (
-    <div className="flex items-center gap-3 mb-4">
-      <div className="w-10 h-10 rounded-xl bg-stone-100 flex items-center justify-center shrink-0">
-        <Camera size={18} className="text-stone-600" strokeWidth={1.5} />
+    <div className="flex items-start gap-4 mb-6">
+      <div className="w-11 h-11 rounded-xl bg-teal-50 border border-teal-100 flex items-center justify-center shrink-0">
+        <Camera size={18} className="text-teal-600" strokeWidth={1.5} />
       </div>
-      <div>
-        <h3 className="text-sm font-semibold text-stone-900">{title}</h3>
-        {subtitle && <p className="text-xs text-stone-500">{subtitle}</p>}
+      <div className="min-w-0">
+        <h2 className="report-display-2 text-stone-900">{title}</h2>
+        {subtitle && <p className="report-module-explainer mt-1">{subtitle}</p>}
       </div>
     </div>
   );
 }
 
-function KeyTakeawayBadge({ type, items, isRent = true }: { type: 'solid' | 'attention' | 'verify'; items: string[]; isRent?: boolean }) {
-  if (!items || items.length === 0) return null;
-
-  // Filter buyer-flavored items so they don't pollute the rent report photo module
-  const cleanItems = items
-    .map((item) => rentSafeText(item, isRent))
-    .filter((item): item is string => Boolean(item));
-
-  if (cleanItems.length === 0) return null;
-
-  const configs = {
-    solid: {
-      icon: CheckCircle,
-      bg: 'bg-green-50',
-      border: 'border-green-200',
-      iconColor: 'text-green-600',
-      labelColor: 'text-green-700',
-      dotColor: 'bg-green-500',
-      label: 'Solid Signs'
-    },
-    attention: {
-      icon: AlertTriangle,
-      bg: 'bg-amber-50',
-      border: 'border-amber-200',
-      iconColor: 'text-amber-600',
-      labelColor: 'text-amber-700',
-      dotColor: 'bg-amber-500',
-      label: 'Needs Attention'
-    },
-    verify: {
-      icon: HelpCircle,
-      bg: 'bg-stone-50',
-      border: 'border-stone-200',
-      iconColor: 'text-stone-600',
-      labelColor: 'text-stone-700',
-      dotColor: 'bg-stone-400',
-      label: "Can't Verify"
-    }
-  };
-
-  const config = configs[type];
-  const Icon = config.icon;
-
+/**
+ * Overall Visual Summary — editorial callout with a teal accent.
+ * No background fill; reads as the lead paragraph of the section.
+ */
+function OverallSummaryCallout({ summary }: { summary: string }) {
+  if (!summary) return null;
   return (
-    <div className={`p-3 rounded-xl border ${config.bg} ${config.border}`}>
-      <div className="flex items-center gap-2 mb-2">
-        <Icon size={14} className={config.iconColor} />
-        <span className={`text-[11px] font-semibold uppercase tracking-wider ${config.labelColor}`}>
-          {config.label}
-        </span>
-      </div>
-      <ul className="space-y-1">
-        {cleanItems.map((item, i) => (
-          <li key={i} className="flex items-start gap-2">
-            <span className={`w-1.5 h-1.5 rounded-full ${config.dotColor} mt-1.5 shrink-0`} />
-            <span className="text-xs text-stone-700 leading-snug">{item}</span>
-          </li>
-        ))}
-      </ul>
+    <div className="mb-7 pl-4 border-l-4 border-teal-500">
+      <div className="report-sublabel mb-1.5 text-teal-700">Overall Summary</div>
+      <p className="report-lead-2">{summary}</p>
     </div>
   );
 }
 
-function AreaReviewCard({ area, isRent = true }: { area: PhotoReviewArea; isRent?: boolean }) {
-  // Apply buyer-flavored phrase replacement / drop to all text fields
-  // For sale reports (isRent=false), keep the original text intact — don't replace "listing agent" etc.
+/**
+ * Inline dot list — used for Positive Signals / What Photos Cannot Confirm /
+ * Next Inspection Focus. No card, no background, no shadow.
+ */
+function InlineList({ items }: { items: string[] }) {
+  if (!items || items.length === 0) return null;
+  return (
+    <ul className="space-y-1.5">
+      {items.map((item, i) => (
+        <li key={i} className="flex items-start gap-2.5">
+          <span
+            aria-hidden="true"
+            className="mt-2 w-1 h-1 rounded-full bg-stone-400 shrink-0"
+          />
+          <span className="report-finding-body">{item}</span>
+        </li>
+      ))}
+    </ul>
+  );
+}
+
+/**
+ * Sub-section header (within the module): small uppercase label + H3 title.
+ */
+function SubSectionHeading({
+  eyebrow,
+  title,
+  hint,
+}: {
+  eyebrow: string;
+  title: string;
+  hint?: string;
+}) {
+  return (
+    <div className="mb-5">
+      <div className="report-sublabel mb-1 text-teal-700">{eyebrow}</div>
+      <h3 className="report-h3">{title}</h3>
+      {hint && <p className="report-module-explainer mt-1.5 text-stone-600">{hint}</p>}
+    </div>
+  );
+}
+
+/**
+ * Confidence pill — neutral stone scale. No red/amber/green to avoid implying
+ * an emotional risk reading on confidence.
+ */
+function ConfidencePill({ confidence }: { confidence: PhotoReviewArea['confidence'] }) {
+  const tone: Record<PhotoReviewArea['confidence'], string> = {
+    High: 'bg-stone-900 text-white',
+    Medium: 'bg-stone-200 text-stone-800',
+    Low: 'bg-stone-100 text-stone-600',
+  };
+  const safe = (confidence in tone ? confidence : 'Medium') as keyof typeof tone;
+  return (
+    <span
+      className={`inline-flex items-center text-[11px] font-medium px-2 py-0.5 rounded-full tabular-nums ${tone[safe]}`}
+    >
+      {safe} confidence
+    </span>
+  );
+}
+
+/**
+ * Finding row — flat sub-surface with new styling.
+ * Evidence thumbnail row is optional and only rendered when we have matching photos.
+ */
+function FindingRow({
+  area,
+  evidencePhotos,
+  isRent,
+}: {
+  area: PhotoReviewArea;
+  evidencePhotos: Array<{ url: string; label: string }>;
+  isRent: boolean;
+}) {
   const cleanWhatLooksLike = rentSafeText(area.whatLooksLike, isRent);
-  if (!cleanWhatLooksLike) return null; // drop card if description is entirely buyer-flavored
-
-  const cleanConcerns = (area.visibleConcerns ?? [])
-    .map((c) => rentSafeText(c, isRent))
-    .filter(Boolean) as string[];
-  const hasConcerns = cleanConcerns.length > 0;
-
-  // Drop entirely buyer-flavored items from "Can't Verify"
-  const cleanCannotVerify = (area.cannotTellFromPhotos ?? [])
-    .filter((c) => !hasBuyerFlavor(c))
-    .map((c) => rentSafeText(c, isRent))
-    .filter(Boolean) as string[];
-  const hasCannotVerify = cleanCannotVerify.length > 0;
-
-  // Replace buyer-flavored phrases in "What to Check Next"
-  const cleanNextSteps = (area.whatToCheckNext ?? [])
-    .map((s) => rentSafeText(s, isRent))
-    .filter(Boolean) as string[];
-  const hasNextSteps = cleanNextSteps.length > 0;
-
-  if (!hasConcerns && !hasCannotVerify && !hasNextSteps) return null;
+  if (!cleanWhatLooksLike) return null;
 
   const areaLabel = getSpaceTypeLabel(area.area) || area.area;
+  const photoCount = area.photoCount ?? 0;
 
   return (
-    <div className="bg-white rounded-xl border border-stone-200 p-4 shadow-sm">
-      {/* Area Header — title first, confidence badge below (not on the title row) */}
-      <div className="mb-3">
-        <h4 className="text-sm font-semibold text-stone-900 leading-tight">
-          {areaLabel}
-          {area.photoCount && (
-            <span className="ml-1 text-[10px] text-stone-400 font-normal">
-              ({area.photoCount} photo{area.photoCount !== 1 ? 's' : ''})
-            </span>
+    <article className="rounded-xl border border-stone-200 bg-white p-5 md:p-6 report-elevated">
+      {/* Title row */}
+      <header className="flex items-start justify-between gap-3 mb-4">
+        <div className="min-w-0">
+          <h4 className="report-finding-title">{areaLabel}</h4>
+          {photoCount > 0 && (
+            <div className="report-meta mt-0.5">
+              {photoCount} photo{photoCount !== 1 ? 's' : ''}
+            </div>
           )}
-        </h4>
-        <div className="mt-2">
-          <span className={`inline-block text-[10px] font-medium px-2 py-0.5 rounded-full ${getConfidenceColor(area.confidence)}`}>
-            {area.confidence} confidence
-          </span>
         </div>
-      </div>
+        <div className="shrink-0">
+          <ConfidencePill confidence={area.confidence} />
+        </div>
+      </header>
 
-      {/* What It Looks Like */}
-      {cleanWhatLooksLike && (
-        <div className="mb-3">
-          <p className="text-xs text-stone-600 leading-relaxed">
-            {cleanWhatLooksLike}
-          </p>
+      {/* Observation (the finding body) */}
+      <p className="report-finding-body">{cleanWhatLooksLike}</p>
+
+      {/* Evidence thumbnails */}
+      {evidencePhotos.length > 0 && (
+        <div
+          className="
+            mt-5 -mx-1 px-1
+            flex gap-2 overflow-x-auto
+            snap-x snap-mandatory
+            md:overflow-visible md:snap-none
+          "
+          aria-label="Photo evidence"
+        >
+          {evidencePhotos.map((p, i) => (
+            <figure
+              key={i}
+              className="
+                shrink-0 snap-start
+                w-[160px]
+                md:w-auto md:shrink md:flex-1 md:max-w-[200px]
+              "
+            >
+              <div className="relative w-full aspect-[4/3] overflow-hidden rounded-xl border border-stone-200 bg-stone-50">
+                <img
+                  src={p.url}
+                  alt={p.label}
+                  loading="lazy"
+                  className="absolute inset-0 w-full h-full object-cover"
+                />
+              </div>
+              {p.label && (
+                <figcaption className="report-meta mt-1.5 truncate">
+                  {p.label}
+                </figcaption>
+              )}
+            </figure>
+          ))}
         </div>
       )}
+    </article>
+  );
+}
 
-      {/* Visible Concerns */}
-      {hasConcerns && (
-        <div className="mb-3 p-3 bg-amber-50 rounded-lg border border-amber-100">
-          <div className="flex items-center gap-1.5 mb-2">
-            <AlertTriangle size={12} className="text-amber-600" />
-            <span className="text-[10px] font-semibold text-amber-700 uppercase tracking-wider">
-              Visible Concerns
-            </span>
+/**
+ * Concerns / Watch Items — flat row list. Left border conveys severity.
+ * No coloured backgrounds. No nested sub-blocks.
+ */
+function ConcernsBlock({ items }: { items: string[] }) {
+  if (!items || items.length === 0) return null;
+
+  return (
+    <div className="space-y-2.5">
+      {items.map((text, i) => {
+        const severity = classifySeverity(text);
+        return (
+          <div
+            key={i}
+            className={`pl-3 border-l-[3px] ${severityBorderClass(severity)} py-1`}
+          >
+            <div className="report-finding-body">{text}</div>
+            <div className="report-meta mt-0.5">{severityLabel(severity)}</div>
           </div>
-          <ul className="space-y-1">
-            {cleanConcerns.map((concern, i) => (
-              <li key={i} className="flex items-start gap-1.5">
-                <span className="w-1 h-1 rounded-full bg-amber-500 mt-1.5 shrink-0" />
-                <span className="text-xs text-amber-800 leading-snug">{concern}</span>
-              </li>
-            ))}
-          </ul>
-        </div>
-      )}
-
-      {/* Can't Verify */}
-      {hasCannotVerify && (
-        <div className="mb-3 p-3 bg-stone-50 rounded-lg border border-stone-200">
-          <div className="flex items-center gap-1.5 mb-2">
-            <HelpCircle size={12} className="text-stone-500" />
-            <span className="text-[10px] font-semibold text-stone-600 uppercase tracking-wider">
-              Can't Tell From Photos
-            </span>
-          </div>
-          <ul className="space-y-1">
-            {cleanCannotVerify.map((item, i) => (
-              <li key={i} className="flex items-start gap-1.5">
-                <span className="w-1 h-1 rounded-full bg-stone-400 mt-1.5 shrink-0" />
-                <span className="text-xs text-stone-600 leading-snug">{item}</span>
-              </li>
-            ))}
-          </ul>
-        </div>
-      )}
-
-      {/* What to Check Next */}
-      {hasNextSteps && (
-        <div className="p-3 bg-blue-50 rounded-lg border border-blue-100">
-          <div className="flex items-center gap-1.5 mb-2">
-            <Search size={12} className="text-blue-600" />
-            <span className="text-[10px] font-semibold text-blue-700 uppercase tracking-wider">
-              What to Check Next
-            </span>
-          </div>
-          <ul className="space-y-1">
-            {cleanNextSteps.map((step, i) => (
-              <li key={i} className="flex items-start gap-1.5">
-                <ChevronRight size={12} className="text-blue-500 mt-0.5 shrink-0" />
-                <span className="text-xs text-blue-800 leading-snug">{step}</span>
-              </li>
-            ))}
-          </ul>
-        </div>
-      )}
+        );
+      })}
     </div>
   );
 }
 
 // ── Legacy Space Analysis Card ───────────────────────────────────────────────
 
-function LegacySpaceCard({ space }: { 
-  space: { spaceType?: string; score?: number; explanation?: string; photoCount?: number; observations?: string[] }
+function LegacySpaceCard({
+  space,
+}: {
+  space: {
+    spaceType?: string;
+    score?: number;
+    explanation?: string;
+    photoCount?: number;
+    observations?: string[];
+  };
 }) {
   const score = space.score ?? 0;
-  
+
   return (
-    <div className={`p-4 rounded-xl border ${getScoreBg(score)}`}>
+    <div className="p-4 rounded-xl border border-stone-200 bg-white">
       <div className="flex items-start justify-between gap-3 mb-2">
-        <div className="text-[11px] font-semibold uppercase tracking-wider text-stone-600">
+        <div className="report-sublabel">
           {getSpaceTypeLabel(space.spaceType ?? '')}
         </div>
-        <div className={`text-3xl font-semibold leading-none ${getScoreColor(score)}`}>
+        <div className="tabular-nums text-lg font-semibold leading-none text-stone-700">
           {score}
         </div>
       </div>
       {space.photoCount && space.photoCount > 0 && (
-        <div className="text-[10px] text-stone-400 mb-2">
+        <div className="report-meta mb-2">
           {space.photoCount} photo{space.photoCount !== 1 ? 's' : ''}
         </div>
       )}
       {space.explanation && (
-        <div className="text-xs text-stone-500 mb-2 line-clamp-2">{space.explanation}</div>
+        <div className="report-finding-body line-clamp-2">{space.explanation}</div>
       )}
       {space.observations && space.observations.length > 0 && (
-        <ul className="space-y-1">
+        <ul className="mt-2 space-y-1">
           {space.observations.slice(0, 3).map((obs, j) => (
-            <li key={j} className="flex items-start gap-1.5 text-xs text-stone-600">
+            <li
+              key={j}
+              className="flex items-start gap-1.5 report-finding-body"
+            >
               <span className="text-stone-400 shrink-0 mt-0.5">•</span>
               {obs}
             </li>
@@ -439,7 +526,16 @@ function LegacySpaceCard({ space }: {
 // ── Main Component ───────────────────────────────────────────────────────────
 
 export function PhotoSpaceAnalysisCard({ raw }: PhotoSpaceAnalysisCardProps) {
-  const { photoReview, reportMode, spaceAnalysis, visualAnalysis, photos, analyzedPhotoCount, detectedRooms, roomCounts } = raw;
+  const {
+    photoReview,
+    reportMode,
+    spaceAnalysis,
+    visualAnalysis,
+    photos,
+    analyzedPhotoCount,
+    detectedRooms,
+    roomCounts,
+  } = raw;
 
   // Determine if this is a rent report (for rent-flavored text replacements)
   const isRent = reportMode === 'rent';
@@ -449,27 +545,43 @@ export function PhotoSpaceAnalysisCard({ raw }: PhotoSpaceAnalysisCardProps) {
   // report path. The nested visualAnalysis.photoReview / visualAnalysis.spaceAnalysis
   // are the canonical Zillow structured snapshot fields.
   const effectivePhotoReview = photoReview ?? visualAnalysis?.photoReview ?? null;
-  const effectiveSpaceAnalysis = spaceAnalysis ?? visualAnalysis?.spaceAnalysis ?? null;
+  const effectiveSpaceAnalysis =
+    spaceAnalysis ?? visualAnalysis?.spaceAnalysis ?? null;
 
   // Check for new Photo Review format
-  const hasPhotoReview = effectivePhotoReview &&
-    (effectivePhotoReview.areas?.length > 0 || effectivePhotoReview.overallSummary);
+  const hasPhotoReview =
+    effectivePhotoReview &&
+    (effectivePhotoReview.areas?.length > 0 ||
+      effectivePhotoReview.overallSummary);
 
   // Check for legacy formats
-  const hasSpaceAnalysis = Array.isArray(effectiveSpaceAnalysis) && effectiveSpaceAnalysis.length > 0;
-  const hasVisualRead = visualAnalysis && (
-    (visualAnalysis.renovationLevel && visualAnalysis.renovationLevel !== 'Unknown') ||
-    (visualAnalysis.cosmeticFlipRisk && visualAnalysis.cosmeticFlipRisk !== 'Unknown') ||
-    (visualAnalysis.naturalLight && visualAnalysis.naturalLight !== 'Unknown') ||
-    (visualAnalysis.spacePerception && visualAnalysis.spacePerception !== 'Unknown') ||
-    (visualAnalysis.maintenanceCondition && visualAnalysis.maintenanceCondition !== 'Unknown') ||
-    (visualAnalysis.maintenanceImpression && visualAnalysis.maintenanceImpression !== 'Unknown') ||
-    (visualAnalysis.kitchenCondition && visualAnalysis.kitchenCondition !== 'Unknown') ||
-    (visualAnalysis.bathroomCondition && visualAnalysis.bathroomCondition !== 'Unknown')
-  );
+  const hasSpaceAnalysis =
+    Array.isArray(effectiveSpaceAnalysis) && effectiveSpaceAnalysis.length > 0;
+  const hasVisualRead = visualAnalysis &&
+    ((visualAnalysis.renovationLevel &&
+      visualAnalysis.renovationLevel !== 'Unknown') ||
+      (visualAnalysis.cosmeticFlipRisk &&
+        visualAnalysis.cosmeticFlipRisk !== 'Unknown') ||
+      (visualAnalysis.naturalLight &&
+        visualAnalysis.naturalLight !== 'Unknown') ||
+      (visualAnalysis.spacePerception &&
+        visualAnalysis.spacePerception !== 'Unknown') ||
+      (visualAnalysis.maintenanceCondition &&
+        visualAnalysis.maintenanceCondition !== 'Unknown') ||
+      (visualAnalysis.maintenanceImpression &&
+        visualAnalysis.maintenanceImpression !== 'Unknown') ||
+      (visualAnalysis.kitchenCondition &&
+        visualAnalysis.kitchenCondition !== 'Unknown') ||
+      (visualAnalysis.bathroomCondition &&
+        visualAnalysis.bathroomCondition !== 'Unknown'));
   const hasPhotosFallback = Array.isArray(photos) && photos.length > 0;
 
-  if (!hasPhotoReview && !hasSpaceAnalysis && !hasVisualRead && !hasPhotosFallback) {
+  if (
+    !hasPhotoReview &&
+    !hasSpaceAnalysis &&
+    !hasVisualRead &&
+    !hasPhotosFallback
+  ) {
     return null;
   }
 
@@ -482,53 +594,149 @@ export function PhotoSpaceAnalysisCard({ raw }: PhotoSpaceAnalysisCardProps) {
     // For sale reports (isRent=false), keep the original text intact.
     const cleanSummary = rentSafeText(overallSummary, isRent);
 
+    // Build concerns list from keyTakeaways + per-area fields, then classify
+    const rawConcerns = [
+      ...(needsAttention ?? []),
+      ...((areas ?? []).flatMap((a) =>
+        (a.visibleConcerns ?? []).map((c) => rentSafeText(c, isRent))
+      )),
+    ]
+      .filter(Boolean) as string[];
+
+    const concernsItems = Array.from(new Set(rawConcerns)).filter(
+      (t) => t && t.trim().length > 0
+    );
+
+    // Build positive signals (drop buyer-flavored)
+    const solidItems = (solidSigns ?? [])
+      .map((s) => rentSafeText(s, isRent))
+      .filter(Boolean) as string[];
+
+    // Build "what photos cannot confirm" — combine cannotVerify + cannotTellFromPhotos
+    const verifyItems = [
+      ...(cannotVerify ?? []),
+      ...((areas ?? []).flatMap((a) =>
+        (a.cannotTellFromPhotos ?? [])
+          .filter((c) => !hasBuyerFlavor(c))
+          .map((c) => rentSafeText(c, isRent))
+      )),
+    ]
+      .filter(Boolean) as string[];
+
+    // Build "next inspection focus" from whatToCheckNext (no buyer-flavored items)
+    const nextItems = ((areas ?? []).flatMap((a) =>
+      (a.whatToCheckNext ?? [])
+        .filter((c) => !hasBuyerFlavor(c))
+        .map((c) => rentSafeText(c, isRent))
+    )).filter(Boolean) as string[];
+
+    const mergedAreas = mergePhotoReviewAreas(areas ?? []);
+
     return (
-      <div className="bg-white rounded-2xl p-5 border border-stone-100 shadow-[0_1px_4px_rgba(0,0,0,0.04)] animate-in fade-in slide-in-from-bottom-8 duration-700 ease-out mb-8">
-        {/* Header */}
-        <SectionHeader
-          title={effectivePhotoReview!.moduleTitle || "Photo & Condition Review"}
-          subtitle={effectivePhotoReview!.moduleSubtitle || "What the photos show, what looks solid, and what still needs checking."}
-        />
+      <section
+        aria-labelledby="photo-condition-review-heading"
+        className="report-space-section"
+      >
+        <div className="report-section">
+          {/* Header */}
+          <div id="photo-condition-review-heading">
+            <SectionHeader
+              title={
+                effectivePhotoReview!.moduleTitle || 'Photo & Condition Review'
+              }
+              subtitle={
+                effectivePhotoReview!.moduleSubtitle ||
+                'AI review of visible condition, finishes, maintenance signals, and what photos alone cannot confirm.'
+              }
+            />
+          </div>
 
-        {/* Overall Summary — rent-safe version */}
-        {cleanSummary && (
-          <div className="mb-5 p-4 bg-stone-50 rounded-xl border border-stone-200">
-            <p className="text-sm text-stone-700 leading-relaxed">{cleanSummary}</p>
+          {/* 1. Overall Visual Summary */}
+          <OverallSummaryCallout summary={cleanSummary} />
+
+        {/* 2. Key Visual Findings */}
+        {mergedAreas.length > 0 && (
+          <div className="mb-8">
+            <SubSectionHeading
+              eyebrow="02"
+              title="Key Visual Findings"
+              hint={
+                mergedAreas.length === 1
+                  ? '1 finding drawn from the listing photos.'
+                  : `${mergedAreas.length} findings drawn from the listing photos.`
+              }
+            />
+            <div className="space-y-3">
+              {mergedAreas.map((area) => (
+                <FindingRow
+                  key={`${area.area ?? area.areaType ?? area.spaceType ?? 'unknown'}-${area.unit ?? area.unitNumber ?? area.floor ?? area.floorNumber ?? area.subject ?? ''}`}
+                  area={area}
+                  evidencePhotos={pickEvidencePhotos(area, photos, 3)}
+                  isRent={isRent}
+                />
+              ))}
+            </div>
           </div>
         )}
 
-        {/* Key Takeaways Grid */}
-        {(solidSigns?.length > 0 || needsAttention?.length > 0 || cannotVerify?.length > 0) && (
-          <div className="grid grid-cols-1 @container[size>=600px]:grid-cols-3 gap-3 mb-5">
-            <KeyTakeawayBadge type="solid" items={solidSigns || []} isRent={isRent} />
-            <KeyTakeawayBadge type="attention" items={needsAttention || []} isRent={isRent} />
-            <KeyTakeawayBadge type="verify" items={cannotVerify || []} isRent={isRent} />
+        {/* 3. Concerns & Watch Items */}
+        {concernsItems.length > 0 && (
+          <div className="mb-8">
+            <SubSectionHeading
+              eyebrow="03"
+              title="Concerns & Watch Items"
+              hint="Items worth flagging before you commit."
+            />
+            <ConcernsBlock items={concernsItems} />
           </div>
         )}
 
-        {/* Area Reviews */}
-        {areas && areas.length > 0 && (
-          <div className="space-y-4">
-            {mergePhotoReviewAreas(areas).map((area) => (
-              <AreaReviewCard
-                key={`${area.area ?? area.areaType ?? area.spaceType ?? 'unknown'}-${area.unit ?? area.unitNumber ?? area.floor ?? area.floorNumber ?? area.subject ?? ''}`}
-                area={area}
-                isRent={isRent}
-              />
-            ))}
+        {/* 4. Positive Signals */}
+        {solidItems.length > 0 && (
+          <div className="mb-8">
+            <SubSectionHeading eyebrow="04" title="Positive Signals" />
+            <InlineList items={solidItems} />
+          </div>
+        )}
+
+        {/* 5. What Photos Cannot Confirm */}
+        {verifyItems.length > 0 && (
+          <div className="mb-8">
+            <SubSectionHeading
+              eyebrow="05"
+              title="What Photos Cannot Confirm"
+              hint="These items need an in-person check — not a deal-breaker, but worth verifying before you commit."
+            />
+            <InlineList items={verifyItems} />
+          </div>
+        )}
+
+        {/* 6. Next Inspection Focus */}
+        {nextItems.length > 0 && (
+          <div className="mb-8">
+            <SubSectionHeading
+              eyebrow="06"
+              title="Next Inspection Focus"
+              hint="What to verify during the showing or with a home inspector."
+            />
+            <InlineList items={nextItems} />
           </div>
         )}
       </div>
+      </section>
     );
   }
 
   // ── Render Legacy Format (Backward Compatibility) ──
   const summaryItems: Array<{ label: string; value: string }> = [];
   if (analyzedPhotoCount != null && analyzedPhotoCount > 0) {
-    summaryItems.push({ label: 'Photos analysed', value: String(analyzedPhotoCount) });
+    summaryItems.push({
+      label: 'Photos analysed',
+      value: String(analyzedPhotoCount),
+    });
   }
   if (detectedRooms && detectedRooms.length > 0) {
-    const labels = detectedRooms.slice(0, 6).map(r => getSpaceTypeLabel(r));
+    const labels = detectedRooms.slice(0, 6).map((r) => getSpaceTypeLabel(r));
     summaryItems.push({ label: 'Areas detected', value: labels.join(', ') });
   }
   if (roomCounts && Object.keys(roomCounts).length > 0) {
@@ -544,7 +752,8 @@ export function PhotoSpaceAnalysisCard({ raw }: PhotoSpaceAnalysisCardProps) {
   const visualItems: Array<{ label: string; value: string }> = [];
   if (visualAnalysis) {
     const addIf = (label: string, val?: string) => {
-      if (val && val !== 'Unknown' && val.trim()) visualItems.push({ label, value: val });
+      if (val && val !== 'Unknown' && val.trim())
+        visualItems.push({ label, value: val });
     };
     addIf('Renovation', visualAnalysis.renovationLevel);
     addIf('Flip Risk', visualAnalysis.cosmeticFlipRisk);
@@ -555,115 +764,137 @@ export function PhotoSpaceAnalysisCard({ raw }: PhotoSpaceAnalysisCardProps) {
     addIf('Bathroom', visualAnalysis.bathroomCondition);
   }
 
-  const spaceCards = hasSpaceAnalysis ? effectiveSpaceAnalysis!.map((space) => ({
-    spaceType: space.spaceType,
-    label: getSpaceTypeLabel(space.spaceType ?? ''),
-    score: space.score ?? 0,
-    photoCount: space.photoCount ?? 0,
-    explanation: space.explanation,
-    observations: (space.observations || []).slice(0, 3),
-  })) : [];
-
-  const fallbackPhotos = !hasSpaceAnalysis && hasPhotosFallback
-    ? photos!.slice(0, 6).map(p => ({
-        label: p.areaType ? getSpaceTypeLabel(p.areaType) : 'Photo',
-        score: p.score ?? 0,
-        summary: p.summary || '',
-        signals: (p.signals || []).slice(0, 2),
+  const spaceCards = hasSpaceAnalysis
+    ? effectiveSpaceAnalysis!.map((space) => ({
+        spaceType: space.spaceType,
+        label: getSpaceTypeLabel(space.spaceType ?? ''),
+        score: space.score ?? 0,
+        photoCount: space.photoCount ?? 0,
+        explanation: space.explanation,
+        observations: (space.observations || []).slice(0, 3),
       }))
     : [];
 
+  const fallbackPhotos =
+    !hasSpaceAnalysis && hasPhotosFallback
+      ? photos!.slice(0, 6).map((p) => ({
+          label: p.areaType ? getSpaceTypeLabel(p.areaType) : 'Photo',
+          score: p.score ?? 0,
+          summary: p.summary || '',
+          signals: (p.signals || []).slice(0, 2),
+        }))
+      : [];
+
   return (
-    <div className="bg-white rounded-2xl p-5 border border-stone-100 shadow-[0_1px_4px_rgba(0,0,0,0.04)] animate-in fade-in slide-in-from-bottom-8 duration-700 ease-out mb-8">
-      {/* Header */}
-      <SectionHeader 
-        title="Photo & Space Analysis" 
-        subtitle="What the listing photos reveal about condition, layout and liveability"
-      />
-
-      {/* A. Summary Row */}
-      {summaryItems.length > 0 && (
-        <div className="flex flex-wrap gap-x-6 gap-y-2 mb-5 p-3 bg-stone-50 rounded-xl">
-          {summaryItems.map((item, i) => (
-            <div key={i} className="flex items-center gap-2">
-              <span className="text-[10px] font-medium uppercase tracking-wider text-stone-500 shrink-0">{item.label}</span>
-              <span className="text-xs font-semibold text-stone-800">{item.value}</span>
-            </div>
-          ))}
+    <section
+      aria-labelledby="photo-condition-review-heading-legacy"
+      className="report-space-section"
+    >
+      <div className="report-section">
+        {/* Header */}
+        <div id="photo-condition-review-heading-legacy">
+          <SectionHeader
+            title="Photo & Space Analysis"
+            subtitle="What the listing photos reveal about condition, layout and liveability"
+          />
         </div>
-      )}
 
-      {/* B. Visual Read indicators */}
+        {/* A. Summary Row */}
+        {summaryItems.length > 0 && (
+          <OverallSummaryCallout
+            summary={summaryItems.map((item) => `${item.label}: ${item.value}`).join(' • ')}
+          />
+        )}
+
+        {/* B. Visual Read indicators */}
       {visualItems.length > 0 && (
-        <div className="mb-5">
-          <div className="text-[10px] font-semibold uppercase tracking-widest text-stone-500 mb-3">Visual Read</div>
-          <div className="grid grid-cols-2 @container[size>=400px]:grid-cols-3 gap-2">
+        <div className="mb-8">
+          <SubSectionHeading eyebrow="02" title="Key Visual Readings" />
+          <div className="grid grid-cols-2 @container/sz-400:grid-cols-3 gap-2">
             {visualItems.map((item, i) => (
-              <div key={i} className="flex flex-col p-3 bg-stone-50 rounded-xl">
-                <span className="text-[10px] font-medium text-stone-500 uppercase tracking-wider mb-1">{item.label}</span>
-                <span className="text-xs font-semibold text-stone-800 leading-snug">{item.value}</span>
+              <div key={i} className="p-3 bg-white rounded-xl border border-stone-200">
+                <div className="report-meta uppercase tracking-wider mb-1">
+                  {item.label}
+                </div>
+                <div className="report-finding-body font-semibold text-stone-900 leading-snug">
+                  {item.value}
+                </div>
               </div>
             ))}
           </div>
-          {visualAnalysis?.photoObservations && visualAnalysis.photoObservations.length > 0 && (
-            <div className="mt-3 space-y-1.5">
-              {visualAnalysis.photoObservations.slice(0, 3).map((obs, i) => (
-                <div key={i} className="flex items-start gap-2 text-xs text-stone-600">
-                  <span className="text-stone-400 shrink-0">•</span>
-                  {obs}
-                </div>
-              ))}
-            </div>
-          )}
+          {visualAnalysis?.photoObservations &&
+            visualAnalysis.photoObservations.length > 0 && (
+              <div className="mt-3">
+                <InlineList
+                  items={visualAnalysis.photoObservations.slice(0, 3)}
+                />
+              </div>
+            )}
         </div>
       )}
 
       {/* C. Space Cards */}
       {spaceCards.length > 0 && (
-        <div className="grid grid-cols-1 @container[size>=500px]:grid-cols-2 gap-3">
-          {spaceCards.map((card, i) => (
-            <LegacySpaceCard key={i} space={card} />
-          ))}
+        <div className="mb-8">
+          <SubSectionHeading eyebrow="03" title="Area Signals" />
+          <div className="grid grid-cols-1 @container/sz-500:grid-cols-2 gap-3">
+            {spaceCards.map((card, i) => (
+              <LegacySpaceCard key={i} space={card} />
+            ))}
+          </div>
         </div>
       )}
 
       {/* D. Fallback: photo-level summaries */}
       {fallbackPhotos.length > 0 && (
-        <div className="grid grid-cols-2 @container[size>=500px]:grid-cols-3 gap-3">
-          {fallbackPhotos.map((photo, i) => (
-            <div key={i} className={`p-3 rounded-xl border border-stone-100 ${getScoreBg(photo.score)}`}>
-              <div className="flex items-start justify-between gap-2 mb-1.5">
-                <span className="text-[10px] font-semibold uppercase tracking-wider text-stone-600">
-                  {photo.label}
-                </span>
-                <span className={`text-2xl font-semibold leading-none ${getScoreColor(photo.score)}`}>
-                  {photo.score}
-                </span>
-              </div>
-              {photo.summary && (
-                <div className="text-xs text-stone-500 line-clamp-2">{photo.summary}</div>
-              )}
-              {photo.signals.length > 0 && (
-                <div className="mt-1 space-y-0.5">
-                  {photo.signals.map((s, j) => (
-                    <div key={j} className="text-[10px] text-stone-400 truncate">+ {s}</div>
-                  ))}
+        <div className="mb-8">
+          <SubSectionHeading eyebrow="03" title="Photo Notes" />
+          <div className="grid grid-cols-2 @container/sz-500:grid-cols-3 gap-3">
+            {fallbackPhotos.map((photo, i) => (
+              <div
+                key={i}
+                className="p-3 rounded-xl border border-stone-200 bg-white"
+              >
+                <div className="flex items-start justify-between gap-2 mb-1.5">
+                  <span className="report-sublabel">{photo.label}</span>
+                  <span className="tabular-nums text-base font-semibold leading-none text-stone-700">
+                    {photo.score}
+                  </span>
                 </div>
-              )}
-            </div>
-          ))}
+                {photo.summary && (
+                  <div className="report-finding-body line-clamp-2">
+                    {photo.summary}
+                  </div>
+                )}
+                {photo.signals.length > 0 && (
+                  <div className="mt-1 space-y-0.5">
+                    {photo.signals.map((s, j) => (
+                      <div key={j} className="report-meta truncate">
+                        + {s}
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            ))}
+          </div>
         </div>
       )}
 
       {/* Missing Key Areas */}
-      {visualAnalysis?.missingKeyAreas && visualAnalysis.missingKeyAreas.length > 0 && (
-        <div className="mt-4 p-3 bg-amber-50 rounded-xl">
-          <div className="text-[10px] font-semibold text-amber-700 uppercase tracking-wider mb-1.5">No Photos Found</div>
-          <div className="text-xs text-amber-800">
-            {visualAnalysis.missingKeyAreas.join(', ')}
+      {visualAnalysis?.missingKeyAreas &&
+        visualAnalysis.missingKeyAreas.length > 0 && (
+          <div className="mt-6">
+            <SubSectionHeading eyebrow="05" title="No Photos Found" />
+            <div className="pl-3 border-l-[3px] border-l-stone-500 py-1">
+              <div className="report-finding-body">
+                {visualAnalysis.missingKeyAreas.join(', ')}
+              </div>
+              <div className="report-meta mt-0.5">Informational</div>
+            </div>
           </div>
-        </div>
-      )}
-    </div>
+        )}
+      </div>
+    </section>
   );
 }

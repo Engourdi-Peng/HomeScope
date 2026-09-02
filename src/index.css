@@ -1,7 +1,14 @@
 @import "tailwindcss";
+@import "./shared/report/reportStyles.css";
+
+/* Google Fonts loaded via <link> in index.html (preconnect + stylesheet) */
+
+/* Report design system tokens, components, and animations now live in
+   src/shared/report/reportStyles.css and are imported above so that the
+   web app and the browser extension render reports identically. */
 
 :root {
-  font-family: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
   line-height: 1.5;
   font-weight: 400;
 }
@@ -17,7 +24,11 @@ body {
   box-sizing: border-box;
 }
 
-/* 全局鼠标手势 - hover 时显示小手 */
+/* ─────────────────────────────────────────────────────────────
+   App-level base styles + animations + article prose styles
+   (Report design system tokens/components/animations now live in
+    src/shared/report/reportStyles.css and are imported at the top.)
+   ───────────────────────────────────────────────────────────── */
 button:hover,
 a:hover:not(.no-cursor-pointer),
 [role="button"]:hover {
@@ -136,4 +147,579 @@ a:hover:not(.no-cursor-pointer),
   -webkit-line-clamp: 3;
   -webkit-box-orient: vertical;
   overflow: hidden;
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   ARTICLE PROSE — Blog / Article Detail Page
+   Editorial reading experience for dangerouslySetInnerHTML content.
+   Newsreader (serif) for body, Inter for UI labels.
+   - Measure: ~70ch on desktop, single column on mobile
+   - Rhythm: 1.75 line-height, 1.25em paragraph gap
+   - Editorial elements: drop cap, pull quote, eyebrow, callout
+═══════════════════════════════════════════════════════════════ */
+
+/* Smooth in-page anchor scrolling for the TOC */
+html {
+  scroll-behavior: smooth;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  html {
+    scroll-behavior: auto;
+  }
+}
+
+/* Anchor offset so sticky header doesn't cover headings */
+.article-prose :is(h2, h3),
+.article-hero h1 {
+  scroll-margin-top: 96px;
+}
+
+/* Eyebrow label (category, kicker) used above hero title */
+.article-eyebrow {
+  font-family: 'Inter', system-ui, sans-serif;
+  font-size: 0.6875rem;
+  font-weight: 600;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--color-report-primary);
+}
+
+/* Hero title — Newsreader serif display */
+.article-hero-title {
+  font-family: 'Newsreader', Georgia, 'Times New Roman', serif;
+  font-weight: 600;
+  font-variation-settings: 'opsz' 72;
+  letter-spacing: -0.015em;
+  line-height: 1.05;
+  color: var(--color-report-text-primary);
+  text-wrap: balance;
+}
+
+/* Lead / dek — subtitle under hero */
+.article-hero-dek {
+  font-family: 'Newsreader', Georgia, serif;
+  font-weight: 400;
+  font-size: 1.25rem;
+  line-height: 1.55;
+  color: var(--color-report-text-secondary);
+  font-style: italic;
+  text-wrap: pretty;
+}
+
+/* Meta line under hero (author · date · reading time) */
+.article-meta {
+  font-family: 'Inter', system-ui, sans-serif;
+  font-size: 0.75rem;
+  font-weight: 500;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--color-report-text-muted);
+}
+
+/* ───────────────────────────────────────────────────────────────
+   Main prose container
+   Applies to <article class="article-prose"> wrapping content_html.
+   Owns its own 720px (≈70ch) measure and is centered inside its
+   parent — like Substack / Medium. The TOC is absolutely positioned
+   in the right gutter on wide screens (xl: ≥1280px), so the body
+   keeps symmetric outer gutters regardless of TOC presence.
+─────────────────────────────────────────────────────────────── */
+.article-prose {
+  font-family: 'Newsreader', Georgia, 'Times New Roman', serif;
+  font-size: 1.125rem;
+  line-height: 1.75;
+  color: var(--color-report-text-primary);
+  max-width: 720px;
+  margin-left: auto;
+  margin-right: auto;
+  width: 100%;
+  /* Subtle text rendering tuning for long reads */
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  hyphens: auto;
+  word-wrap: break-word;
+}
+
+/* Paragraphs — generous breathing room */
+.article-prose p {
+  margin: 0 0 1.25em 0;
+  orphans: 3;
+  widows: 3;
+}
+
+.article-prose p:last-child {
+  margin-bottom: 0;
+}
+
+/* Drop cap on the very first paragraph (article opener) */
+.article-prose > p:first-of-type::first-letter {
+  font-family: 'Newsreader', Georgia, serif;
+  font-weight: 600;
+  font-size: 4.25em;
+  line-height: 0.85;
+  float: left;
+  margin: 0.08em 0.12em -0.05em 0;
+  color: var(--color-report-primary);
+  font-variation-settings: 'opsz' 144;
+}
+
+/* Section headings — H2 */
+.article-prose h2 {
+  font-family: 'Newsreader', Georgia, serif;
+  font-weight: 600;
+  font-size: 1.875rem;
+  line-height: 1.2;
+  letter-spacing: -0.01em;
+  color: var(--color-report-text-primary);
+  margin: 2.5em 0 0.75em 0;
+  text-wrap: balance;
+  font-variation-settings: 'opsz' 48;
+}
+
+/* Add a small accent rule above H2 to mark new sections */
+.article-prose h2::before {
+  content: '';
+  display: block;
+  width: 32px;
+  height: 2px;
+  background-color: var(--color-report-primary);
+  margin-bottom: 0.6em;
+  border-radius: 1px;
+}
+
+/* H3 — sub-section */
+.article-prose h3 {
+  font-family: 'Newsreader', Georgia, serif;
+  font-weight: 600;
+  font-size: 1.375rem;
+  line-height: 1.25;
+  color: var(--color-report-text-primary);
+  margin: 1.75em 0 0.5em 0;
+  text-wrap: balance;
+}
+
+/* H4 — rarely used, treat as small label */
+.article-prose h4 {
+  font-family: 'Inter', system-ui, sans-serif;
+  font-size: 0.8125rem;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--color-report-text-muted);
+  margin: 2em 0 0.5em 0;
+}
+
+/* Links inside article body */
+.article-prose a {
+  color: var(--color-report-accent);
+  text-decoration: underline;
+  text-decoration-thickness: 1px;
+  text-underline-offset: 3px;
+  text-decoration-color: rgba(3, 105, 161, 0.35);
+  transition: text-decoration-color 0.15s ease, color 0.15s ease;
+}
+
+.article-prose a:hover {
+  color: var(--color-report-primary);
+  text-decoration-color: var(--color-report-primary);
+}
+
+/* Strong / emphasis */
+.article-prose strong {
+  font-weight: 600;
+  color: var(--color-report-text-primary);
+}
+
+.article-prose em {
+  font-style: italic;
+}
+
+/* Unordered & ordered lists */
+.article-prose ul,
+.article-prose ol {
+  margin: 0 0 1.25em 0;
+  padding-left: 1.5em;
+}
+
+.article-prose ul {
+  list-style: none;
+}
+
+.article-prose ul > li {
+  position: relative;
+  margin-bottom: 0.5em;
+  padding-left: 0.25em;
+}
+
+.article-prose ul > li::before {
+  content: '';
+  position: absolute;
+  left: -1em;
+  top: 0.7em;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background-color: var(--color-report-primary);
+}
+
+.article-prose ol {
+  list-style: decimal;
+  font-variant-numeric: tabular-nums;
+}
+
+.article-prose ol > li {
+  margin-bottom: 0.5em;
+  padding-left: 0.25em;
+}
+
+.article-prose li > ul,
+.article-prose li > ol {
+  margin-top: 0.5em;
+  margin-bottom: 0;
+}
+
+/* Blockquote — pull quote treatment */
+.article-prose blockquote {
+  margin: 2em 0;
+  padding: 0.25em 0 0.25em 1.5em;
+  border-left: 3px solid var(--color-report-primary);
+  font-family: 'Newsreader', Georgia, serif;
+  font-style: italic;
+  font-size: 1.375rem;
+  line-height: 1.45;
+  color: var(--color-report-text-primary);
+  font-weight: 400;
+  text-wrap: balance;
+}
+
+.article-prose blockquote p {
+  margin: 0 0 0.75em 0;
+}
+
+.article-prose blockquote p:last-child {
+  margin-bottom: 0;
+}
+
+.article-prose blockquote cite {
+  display: block;
+  margin-top: 0.75em;
+  font-family: 'Inter', system-ui, sans-serif;
+  font-style: normal;
+  font-size: 0.8125rem;
+  font-weight: 500;
+  color: var(--color-report-text-muted);
+  letter-spacing: 0.04em;
+}
+
+.article-prose blockquote cite::before {
+  content: '— ';
+}
+
+/* Inline code */
+.article-prose code {
+  font-family: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.875em;
+  background-color: var(--color-report-paper-muted);
+  padding: 0.15em 0.4em;
+  border-radius: 4px;
+  color: var(--color-report-text-primary);
+}
+
+/* Code block */
+.article-prose pre {
+  font-family: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.875rem;
+  line-height: 1.6;
+  background-color: #1c1917;
+  color: #fafaf9;
+  padding: 1.25em 1.5em;
+  border-radius: 12px;
+  overflow-x: auto;
+  margin: 1.5em 0;
+}
+
+.article-prose pre code {
+  background: none;
+  padding: 0;
+  color: inherit;
+  font-size: inherit;
+}
+
+/* Images inside paragraphs — never overflow the measure */
+.article-prose img {
+  max-width: 100%;
+  height: auto;
+  display: block;
+  margin: 2em auto;
+  border-radius: 12px;
+}
+
+/* Figure with caption */
+.article-prose figure {
+  margin: 2.5em 0;
+}
+
+.article-prose figure img {
+  margin: 0 auto;
+}
+
+.article-prose figcaption {
+  font-family: 'Inter', system-ui, sans-serif;
+  font-size: 0.8125rem;
+  color: var(--color-report-text-muted);
+  text-align: center;
+  margin-top: 0.75em;
+  font-style: italic;
+  line-height: 1.5;
+}
+
+/* Horizontal rule — section break */
+.article-prose hr {
+  border: none;
+  text-align: center;
+  margin: 3em 0;
+  height: auto;
+  color: var(--color-report-text-muted);
+}
+
+.article-prose hr::before {
+  content: '· · ·';
+  letter-spacing: 0.5em;
+  font-size: 1.25rem;
+  color: var(--color-report-text-muted);
+}
+
+/* Table — wrapped in scrollable container */
+.article-prose table {
+  width: 100%;
+  margin: 2em 0;
+  border-collapse: collapse;
+  font-family: 'Inter', system-ui, sans-serif;
+  font-size: 0.9375rem;
+  line-height: 1.5;
+  display: block;
+  overflow-x: auto;
+  border: 1px solid var(--color-report-border);
+  border-radius: 10px;
+}
+
+.article-prose table thead {
+  background-color: var(--color-report-paper-muted);
+}
+
+.article-prose table th,
+.article-prose table td {
+  padding: 0.75em 1em;
+  text-align: left;
+  border-bottom: 1px solid var(--color-report-border-light);
+}
+
+.article-prose table th {
+  font-weight: 600;
+  color: var(--color-report-text-primary);
+  font-size: 0.8125rem;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.article-prose table tbody tr:last-child td {
+  border-bottom: none;
+}
+
+.article-prose table tbody tr:nth-child(even) {
+  background-color: rgba(0, 0, 0, 0.015);
+}
+
+/* Callout — produced when the editor wraps a paragraph with .callout */
+.article-prose .callout {
+  margin: 2em 0;
+  padding: 1.25em 1.5em;
+  background-color: var(--color-report-paper-muted);
+  border-left: 3px solid var(--color-report-primary);
+  border-radius: 8px;
+  font-family: 'Inter', system-ui, sans-serif;
+  font-size: 1rem;
+  line-height: 1.6;
+  color: var(--color-report-text-secondary);
+}
+
+.article-prose .callout p {
+  margin: 0;
+}
+
+.article-prose .callout strong {
+  color: var(--color-report-text-primary);
+}
+
+/* Keyboard key — rare but available */
+.article-prose kbd {
+  display: inline-block;
+  font-family: 'JetBrains Mono', ui-monospace, monospace;
+  font-size: 0.8125em;
+  padding: 0.15em 0.5em;
+  border: 1px solid var(--color-report-border);
+  border-bottom-width: 2px;
+  border-radius: 4px;
+  background-color: white;
+  color: var(--color-report-text-primary);
+}
+
+/* Mark / highlight */
+.article-prose mark {
+  background-color: rgba(217, 119, 6, 0.18);
+  color: var(--color-report-text-primary);
+  padding: 0.05em 0.2em;
+  border-radius: 2px;
+}
+
+/* Reduced motion — kill drop cap float and link transition */
+@media (prefers-reduced-motion: reduce) {
+  .article-prose a {
+    transition: none;
+  }
+  .article-prose > p:first-of-type::first-letter {
+    font-size: 1em;
+    float: none;
+    margin: 0;
+    color: inherit;
+  }
+}
+
+/* Mobile adjustments */
+@media (max-width: 768px) {
+  .article-prose {
+    font-size: 1.0625rem;
+    line-height: 1.7;
+  }
+  .article-prose h2 {
+    font-size: 1.625rem;
+  }
+  .article-prose h3 {
+    font-size: 1.25rem;
+  }
+  .article-prose blockquote {
+    font-size: 1.1875rem;
+    padding-left: 1.25em;
+  }
+  .article-prose > p:first-of-type::first-letter {
+    font-size: 3.5em;
+  }
+}
+
+/* ───────────────────────────────────────────────────────────────
+   Reading progress bar (transform-driven for performance)
+─────────────────────────────────────────────────────────────── */
+.article-progress {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 3px;
+  background-color: rgba(0, 0, 0, 0.04);
+  z-index: 40;
+  pointer-events: none;
+}
+
+.article-progress__bar {
+  height: 100%;
+  background-color: var(--color-report-primary);
+  transform-origin: left center;
+  transition: transform 80ms linear;
+  will-change: transform;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .article-progress__bar {
+    transition: none;
+  }
+}
+
+/* ───────────────────────────────────────────────────────────────
+   Table of Contents (sticky right rail)
+─────────────────────────────────────────────────────────────── */
+.article-toc {
+  font-family: 'Inter', system-ui, sans-serif;
+}
+
+.article-toc__label {
+  font-size: 0.6875rem;
+  font-weight: 600;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--color-report-text-muted);
+  margin-bottom: 1rem;
+}
+
+.article-toc__list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  border-left: 1px solid var(--color-report-border);
+}
+
+.article-toc__item {
+  position: relative;
+}
+
+.article-toc__link {
+  display: block;
+  padding: 0.5em 0 0.5em 1em;
+  margin-left: -1px;
+  border-left: 1px solid transparent;
+  font-size: 0.8125rem;
+  line-height: 1.4;
+  color: var(--color-report-text-muted);
+  text-decoration: none;
+  transition: color 0.15s ease, border-color 0.15s ease;
+  border-radius: 0 4px 4px 0;
+}
+
+.article-toc__link:hover {
+  color: var(--color-report-text-primary);
+}
+
+.article-toc__link.is-active {
+  color: var(--color-report-primary);
+  font-weight: 600;
+  border-left-color: var(--color-report-primary);
+}
+
+.article-toc__link--level-3 {
+  padding-left: 1.75em;
+  font-size: 0.75rem;
+}
+
+.article-toc__link:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 2px var(--color-report-paper), 0 0 0 4px var(--color-report-primary);
+  border-radius: 4px;
+}
+
+/* ───────────────────────────────────────────────────────────────
+   Article entry animation (page enter for the detail page)
+─────────────────────────────────────────────────────────────── */
+@keyframes articleEnter {
+  from {
+    opacity: 0;
+    transform: translateY(12px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.article-enter {
+  animation: articleEnter 360ms ease-out both;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .article-enter {
+    animation: none;
+  }
 }

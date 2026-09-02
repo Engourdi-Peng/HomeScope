@@ -1,0 +1,271 @@
+    1  /**
+   81  function SectionRegistrar({ ids }: { ids: string[] }) {
+   93  /**
+  111  export function resolveIsBasicLayout(
+  228  function SeverityPill({ value }: { value: string }) {
+  231  return (
+  246  // MODULE 1: HeroSection — Decision Summary
+  249  function HeroSection({ report, isBasic }: { report: NormalizedReport; isBasic?: boolean }) {
+  256  return (
+  299  // Mirror of the list in usRent.ts adapter — kept local because
+  300  // HeroSection's `headline` useMemo runs in the browser where importing the
+  354  // Capitalize the first letter if needed
+  356  // Patterns: "Legal 2-family X" → "Listing claims legal 2-family X"
+  357  // Patterns: "The listing describes X as Y" → keep as is
+  358  // Patterns: "Listing claims X" → keep as is
+  361  // Check if it reads like a verified fact assertion
+  369  // Resolve rent mode once so useMemo bodies stay simple (manual memoization
+  381  // Schema fallback — if the rent-specific fields are populated, treat as rent
+  389  // Rent-mode headline — derived inline (no useMemo) so react-compiler's
+  391  // The result is ignored for non-rent reports.
+  399  // Generate headline based on top risk
+  403  // Prioritize the backend normalizeBottomLine output — it has real listing fields
+  408  // Fallback: listing-text-aware template only when backend is empty or generic
+  450  // Compute SFOC status for headline logic
+  469  // Condo: renovated condo with deeded parking and low HOA
+  498  // Check for interior photos from raw report's space analysis
+  519  // Next Best Move — NYC-aware, actionable, property-type-aware
+  524  // Compute effective profile using normalized category from backend
+  593  return (
+  610  return (
+  688  // MODULE 2: WhatCouldChangeYourDecisionSection
+  715  // Open violations: ONLY match when text confirms ACTUAL open violations exist.
+  725  // Price confidence
+  727  // Rental legality (general — without basement)
+  730  // These don't confirm violations exist; they ask to verify compliance.
+  735  // Renovation cost
+  817  // Basement legal & egress — affects legal use, needs offer-stage verification
+  846  function WhatCouldChangeYourDecisionSection({ report, viewModel, isBasic }: { report: NormalizedReport; viewMo
+  855  // Deduplicate risks across sources
+  901  // Detect short DOM for Fast-Moving Listing Risk injection
+  902  // Parse DOM from snapshot (viewModel) or from risk text
+  909  // Also scan allRisks text for short DOM mentions (e.g., "Only 5 days on market")
+  914  // If no risks were detected but listing is fast-moving, inject a risk card
+  919  // Detect utility metering signals for Multi-family properties
+  934  // Detect weak photo coverage: inject "Limited Photo Evidence" risk
+  957  // Filter out empty, badge-only, or meaningless risk items before rendering
+  962  // Skip very short items
+  966  // Skip if the risk text is just a badge label (e.g., "Risk Level" alone)
+  974  return (
+  993  // Previously getRiskTitle() and getRiskShortExplanation() used independent
+ 1000  // Guard: if title and explanation are identical (both raw risk text), it means
+ 1005  return (
+ 1023  // MODULE 3: DealChangingRisksSection
+ 1027  // Never duplicates the summary. Always starts with a verb and tells user
+ 1071  // Legacy alias — kept to avoid breaking internal calls
+ 1076  function DealChangingRisksSection({ report, viewModel }: { report: NormalizedReport; viewModel?: ReportViewMod
+ 1077  // Sale-only section — built from sale risk_categories fields.
+ 1079  // Schema-based guard.
+ 1088  // Compute effectiveProfile for action text
+ 1102  // Use validated actions from viewModel if available
+ 1122  // Skip if we already have a similar section
+ 1138  // Heuristic: if the raw action looks like a summary fragment (longer than 60 chars
+ 1142  // Heuristic: if the raw action is nearly identical to description, regenerate it.
+ 1150  // If not valid, use buildRiskAction fallback
+ 1172  // Never backfill from highlights.risks — those items are already shown in
+ 1184  return (
+ 1210  return (
+ 1249  // MODULE 4: PropertySnapshotSection — "Is the Price Fair?" + property facts
+ 1252  function PropertySnapshotSection({ report, isBasic }: { report: NormalizedReport; isBasic?: boolean }) {
+ 1255  // Sale-only section — never render for rent reports.
+ 1257  // Schema-based guard (defence in depth against meta loss).
+ 1260  // Effective property category for display and routing
+ 1272  return (
+ 1315  // Filter out Type field — user has asked to suppress all Type display
+ 1347  // Extract price confidence for explanation
+ 1352  // This guards against backend拼接 bugs where "could materially change value" or
+ 1359  // Remove duplicate "could materially change value" occurrences
+ 1380  // Detect uncertain verdict — do not say "appears fair" when verdict is unknown
+ 1414  // Extract daysOnZillow from raw result for market-time-aware copy
+ 1431  // Co-op: focus on maintenance cost verification, not interior condition
+ 1443  // Multi-family: focus on rental verification, comps, condition. We do NOT
+ 1446  // Buyer's price confidence depends on rental verification + comps +
+ 1498  return (
+ 1529  return (
+ 1545  return (
+ 1559  return (
+ 1580  return (
+ 1590  return (
+ 1611  return (
+ 1647  // MODULE 5: CarryingCostsSection — "What It May Really Cost Monthly"
+ 1650  function CarryingCostsSection({ report }: { report: NormalizedReport }) {
+ 1651  // Sale-only section — never render for rent reports.
+ 1653  // Schema-based guard.
+ 1663  // Helper to safely extract a dollar amount from various shapes
+ 1682  // Priority: carrying_costs.primary_monthly_estimate (backend deterministic
+ 1715  // Annual tax — with anomaly detection and derived fallback
+ 1735  // Derive effective annual tax from monthly payment breakdown
+ 1752  // Show derived annual tax only when raw is suppressed and derived is available
+ 1754  // Effective annual tax for display
+ 1768  // Status flag — when carrying_costs.status === "derived" the total was
+ 1778  return (
+ 1796  return (
+ 1907  // MODULE 7: AgentSpinDecoderSection
+ 1957  function AgentSpinDecoderSection({ report, viewModel }: { report: NormalizedReport; viewModel?: ReportViewMode
+ 1958  // Sale-only section — "Agent Spin" is a sale concept.
+ 1960  // Schema-based guard.
+ 2002  // Fallback: build from section items (legacy path)
+ 2022  // Sanitize meaning — never let listing claims appear as verified facts
+ 2034  return (
+ 2086  // MODULE 8: WhoThisPropertyWorksForSection
+ 2140  // Never substitute invented buyer profiles.  When both arrays are empty the
+ 2149  function WhoThisPropertyWorksForSection({ report }: { report: NormalizedReport }) {
+ 2150  // Sale-only section — rent has its own "Who This Rental Works For" component.
+ 2152  // Schema-based guard.
+ 2156  // Render nothing only if there's no data and all fallbacks were used
+ 2159  return (
+ 2223  // MODULE 9: QuestionsToAskSection
+ 2226  // Field-name patterns that are NOT real questions — skip or convert these
+ 2231  // Convert field-name text into a real question
+ 2280  // Core question families for deduplication — one question per topic area
+ 2296  // Region-aware fallback questions — varies by NYC vs non-NYC AND by reportProfile
+ 2324  function QuestionsToAskSection({ report, viewModel, isBasic }: { report: NormalizedReport; viewModel?: ReportV
+ 2326  // Basic shows only 3 prioritized questions; full shows up to 6.
+ 2352  // Derive known fields from hero + sections to avoid redundant questions.
+ 2384  // Broader: if beds+baths are known, skip anything asking for beds+baths
+ 2390  // Year built — skip if known
+ 2400  // Property type — skip if known
+ 2409  // Prefer viewModel questions (pre-validated) when available
+ 2415  // The AI returns a generic pool of questions; for Basic we want listing-specific
+ 2434  // Sort: listing-specific first, then preserve original order. No-op for full mode.
+ 2464  // Layer 2: Prefix dedup — if two questions share the same opening content phrase
+ 2490  // Same prefix — keep longer (more specific)
+ 2551  // No AI questions — don't render the Questions module
+ 2583  return (
+ 2635  // MODULE 10: NextBestMoveSection
+ 2638  function NextBestMoveSection({ report }: { report: NormalizedReport }) {
+ 2643  // Schema-based guard (defence in depth against meta loss).
+ 2651  // Only fall back to listing-text classification as a last resort.
+ 2684  return (
+ 2749  return (
+ 2842  return (
+ 2875  // Replace generic verify text with specific action
+ 2886  return (
+ 2919  return (
+ 2967  function RiskCategoriesSection({ report }: { report: NormalizedReport }) {
+ 2969  // Rent has its own RentalRiskCategoriesSection that uses rent lanes.
+ 3024  return (
+ 3038  return (
+ 3108  function ListingDoesNotProveSection({ report }: { report: NormalizedReport }) {
+ 3109  // Sale-only heading copy ("buyer-relevant facts") — rent uses GenericSectionCard.
+ 3111  // Schema-based guard — defence in depth against meta loss.
+ 3118  return (
+ 3158  // Layer 1: substring dedup (keep longer)
+ 3171  // Layer 2: prefix dedup
+ 3185  // Layer 3: token overlap (Jaccard > 0.5)
+ 3208  function BeforeYouBookShowingSection({ report, viewModel }: { report: NormalizedReport; viewModel?: ReportView
+ 3209  // Sale-only section — "Before You Book a Showing" is a purchase concept.
+ 3211  // Schema-based guard.
+ 3222  // Priority: bybs (most targeted) ∪ viewModel questions ∪ raw questions_to_ask
+ 3227  return (
+ 3252  function LocationRealityCheckSection({ report }: { report: NormalizedReport }) {
+ 3255  // Schema-based guard.
+ 3316  // Normalize schoolRatings once so it's available in both extractedClaims injection
+ 3326  // Inject extracted Zillow claims when AI-generated claims are absent or sparse
+ 3340  // Merge: prepend extracted claims, then AI claims
+ 3346  // Standard "What to verify" questions — property-aware
+ 3372  // Supplement with data-provided verifications (skip generic external-data noise)
+ 3375  // Skip URLs and generic "check X website" noise
+ 3384  // Use real extracted data to generate a meaningful explanation
+ 3428  return (
+ 3491  function GenericSectionCard({ section }: { section: ReportSection }) {
+ 3507  return (
+ 3524  return (
+ 3584  // RENT-SPECIFIC DEEP REPORT SECTIONS
+ 3586  // Each component reads the corresponding section emitted by
+ 3589  // They are deliberately narrow — no sale-only fields, no Zillow taxes, no
+ 3610  // Renders only when the underlying result has structured Building Rent facts
+ 3612  // All values come from the existing buildingDetails payload — no synthesis.
+ 3637  function BuildingRentSection({ report }: { report: NormalizedReport }) {
+ 3724  return (
+ 3955  function BuildingIcon() {
+ 3956  return (
+ 3983  return (
+ 4000  return (
+ 4012  return (
+ 4031  function RentalListingScoreSection({ report }: { report: NormalizedReport }) {
+ 4032  return (
+ 4039  function RentalBottomLineSection({ report }: { report: NormalizedReport }) {
+ 4040  return (
+ 4047  function RentalSnapshotSection({ report }: { report: NormalizedReport }) {
+ 4048  return (
+ 4055  function RentalListingTrustSection({ report }: { report: NormalizedReport }) {
+ 4056  return (
+ 4063  function RentalAvailabilitySection({ report }: { report: NormalizedReport }) {
+ 4064  return (
+ 4071  function RentTrueCostSection({ report }: { report: NormalizedReport }) {
+ 4072  return (
+ 4079  function ApplicationPaymentRiskSection({ report }: { report: NormalizedReport }) {
+ 4080  return (
+ 4087  function LeaseTermsRulesSection({ report }: { report: NormalizedReport }) {
+ 4088  return (
+ 4095  function LocationDailyLifeSection({ report }: { report: NormalizedReport }) {
+ 4096  return (
+ 4103  function RentalRiskCategoriesSection({ report }: { report: NormalizedReport }) {
+ 4121  return (
+ 4141  return (
+ 4167  function BeforeYouTourApplyPaySection({ report }: { report: NormalizedReport }) {
+ 4168  return (
+ 4175  function RentalWhoItWorksForSection({ report }: { report: NormalizedReport }) {
+ 4176  return (
+ 4195  return (
+ 4205  // MODULE 11: ReportClosingCTA
+ 4225  function ReportClosingCTA({
+ 4330  // If clicking the already-selected rating, deselect (toggle off)
+ 4443  // Hide share and feedback sections for public share page
+ 4448  return (
+ 4650  function ListingSignalsSection({ report }: { report: NormalizedReport }) {
+ 4654  return (
+ 4689  function WhatsMissingSection({ report }: { report: NormalizedReport }) {
+ 4693  return (
+ 4721  function KeyThingsToCheckSection({ report }: { report: NormalizedReport }) {
+ 4725  return (
+ 4785  function WhatWeKnowSection({ report }: { report: NormalizedReport }) {
+ 4789  return (
+ 4804  return (
+ 4819  function BasicDecisionSection({ report }: { report: NormalizedReport }) {
+ 4823  return (
+ 4861  function MonthlyCostSnapshotSection({ report }: { report: NormalizedReport }) {
+ 4865  return (
+ 4891  function BasicCarryingCostsSection({ report }: { report: NormalizedReport }) {
+ 4896  // Total carries the "Zillow Estimated Payment" title; breakdown rows are the
+ 4907  return (
+ 4947  function ListingClaimsSection({ report }: { report: NormalizedReport }) {
+ 4951  return (
+ 5000  // Button action types for upgrade flow
+ 5030  /**
+ 5054  function BasicCTA({
+ 5081  // Pull CTA content from the adapter-generated section
+ 5087  // Unified button state
+ 5095  // Handle primary button click based on action
+ 5108  // Do nothing
+ 5117  // Show loading spinner for generating state
+ 5120  return (
+ 5173  function EmptyState() {
+ 5174  return (
+ 5188  // Main Component — Rendering Order
+ 5219  function ContradictionBanner({ contradictions }: { contradictions: ContradictionVM[] }) {
+ 5225  return (
+ 5272  return (
+ 5293  function VerifiedFromListingSection({ report, viewModel: _viewModel }: {
+ 5298  // Rent has its own RentalSnapshotSection.
+ 5300  // Schema-based guard.
+ 5315  // Year Built from property-snapshot section
+ 5320  // Zestimate from hero (populated by usSale adapter from price_assessment)
+ 5323  // Monthly payment from hero intentionally omitted here.
+ 5328  // Priority: risk_categories.*.missing  >  listing_does_not_prove.
+ 5329  // No static checklist — if there is no evidence, show nothing.
+ 5349  // Deduplicate by normalized text
+ 5365  return (
+ 5441  export function NewReportUI({
+ 5467  // Hard guard: any of the following MUST mean this is a Full report and we must
+ 5474  // Basic US Sale v2 results carry those fields by design — so they are NOT
+ 5475  // Full-only signals. See `resolveIsBasicLayout` above for the full contract;
+ 5485  // Priority:
+ 5489  //      Rent schema fields win over sale schema fields because rent reports
+ 5492  // We do NOT default to 'sale' here because that would silently route rent
+ 5503  // Only accept 'unknown' if no schema signal disagrees with it.
+ 5511  // Schema-based fallback (any explicit candidate absent)
+ 5538  return (
+ 5701  return (
+ 5725  return (

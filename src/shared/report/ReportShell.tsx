@@ -7,6 +7,11 @@
  * Platform differences (minimal, only what's necessary):
  * - web: full-page layout with background decoration, min-h-screen, centered
  * - extension: panel container, h-full, panel-scroll
+ *
+ * Visual tokens (background, font, padding, container max-width) are
+ * IDENTICAL between web and extension so the report content renders the
+ * same way in both surfaces. Only width / scroll behavior adapt to the
+ * narrower sidepanel.
  */
 import React from 'react';
 
@@ -15,32 +20,31 @@ type ReportShellProps = {
   children: React.ReactNode;
 };
 
+const SHARED_CLASSES =
+  'text-stone-800 font-sans relative flex flex-col items-center selection:bg-stone-200 selection:text-stone-900 overflow-x-hidden';
+
+const SHARED_INNER_CLASSES = 'relative z-10 w-full max-w-[1200px]';
+
 export function ReportShell({ mode, children }: ReportShellProps) {
   if (mode === 'web') {
     return (
-      <div className="min-h-screen bg-[#FDFCF9] text-stone-800 font-sans relative flex flex-col items-center py-12 px-4 sm:px-6 lg:px-8 selection:bg-stone-200 selection:text-stone-900 overflow-x-hidden">
-        {/* Background decoration — matches existing web Result.tsx */}
-        <div className="fixed inset-0 z-0 opacity-[0.06] mix-blend-multiply pointer-events-none overflow-hidden">
-          <img
-            src="https://images.unsplash.com/photo-1720442617080-c25f9955194c?crop=entropy&cs=tinysrgb&fit=max&fm=jpg&ixid=M3w3Nzg4Nzd8MHwxfHNlYXJjaHwxfHxtaW5pbWFsaXN0JTIwbW9kZXJuJTIwaG91c2UlMjBleHRlcmlvciUyMGFyY2hpdGVjdHVyZSUyMHdoaXRlfGVufDF8fHx8MTc3MzE5ODI5NHww&ixlib=rb-4.1.0&q=80&w=1080"
-            alt=""
-            className="absolute right-0 top-0 w-full md:w-2/3 h-full object-cover object-right grayscale"
-          />
-          <div className="absolute inset-0 bg-gradient-to-r from-[#FDFCF9] via-[#FDFCF9]/80 to-transparent" />
-        </div>
-        <div className="relative z-10 w-full max-w-[1200px]">
-          {children}
-        </div>
+      <div
+        className={`min-h-screen py-12 px-4 sm:px-6 lg:px-8 ${SHARED_CLASSES}`}
+        style={{ backgroundColor: '#FDFCF9' }}
+      >
+        <div className={SHARED_INNER_CLASSES}>{children}</div>
       </div>
     );
   }
 
-  // extension: panel container — no fixed decoration background
+  // extension: panel container — same visual tokens as web; only the
+  // container is sized for the sidepanel. No fixed decoration background.
   return (
-    <div className="min-h-screen bg-[#FDFCF9] text-stone-800 font-sans relative flex flex-col items-center py-4 px-4 sm:px-6 lg:px-8 selection:bg-stone-200 selection:text-stone-900">
-      <div className="relative z-10 w-full max-w-[1200px]">
-        {children}
-      </div>
+    <div
+      className={`min-h-screen py-4 px-4 sm:px-6 lg:px-8 ${SHARED_CLASSES}`}
+      style={{ backgroundColor: '#FDFCF9' }}
+    >
+      <div className={SHARED_INNER_CLASSES}>{children}</div>
     </div>
   );
 }

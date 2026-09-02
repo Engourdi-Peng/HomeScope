@@ -1,6 +1,8 @@
 /* ===== HomeScope Extension - Side Panel Styles ===== */
 /* 设计语言与网站保持一致，极简卡片式 */
 @import "tailwindcss";
+/* Report design system — shared between web and extension */
+@import "../shared/report/reportStyles.css";
 
 /* 注意：不要在这里覆盖 * { box-sizing }，会让 Tailwind 失效。只重置 margin/padding。
    放进 @layer base 以避免覆盖 Tailwind utilities（v4 cascade 规则：无 layer 样式优先于 layered 样式） */
@@ -93,6 +95,8 @@ html, body {
 .ext-app--report {
   overflow-y: auto;
   height: 100%;
+  display: flex;
+  flex-direction: column;
 }
 
 .ext-content {

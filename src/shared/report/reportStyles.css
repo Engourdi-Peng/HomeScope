@@ -1,0 +1,840 @@
+/* ─────────────────────────────────────────────────────────────────────
+   HomeScope Report Design System (Shared)
+   ─────────────────────────────────────────────────────────────────────
+   Shared between web (src/index.css) and extension (src/extension/styles.css).
+
+   This file contains the report-specific design tokens, components,
+   and animations. It does NOT include app-level resets (those live in
+   each consumer's entry CSS so they don't conflict with side-panel
+   chrome styles).
+
+   Design Philosophy: Editorial + Swiss Minimalism
+   - Trust through restraint and clarity
+   - Professional through editorial typography
+   - Approachable through warm neutrals
+
+   Typography (consumer must load via <link>):
+   - Headings: Poppins
+   - Body: Inter
+   ───────────────────────────────────────────────────────────────────── */
+
+/* Tailwind v4 theme tokens — must be at root for @theme to register */
+@theme {
+  /* Primary - Trust Teal */
+  --color-report-primary: #0F766E;
+  --color-report-primary-light: #14B8A6;
+  --color-report-primary-dark: #115E59;
+
+  /* Accent - Professional Blue */
+  --color-report-accent: #0369A1;
+  --color-report-accent-light: #0EA5E9;
+
+  /* Semantic - Risk/Status */
+  --color-report-risk-high: #DC2626;
+  --color-report-risk-medium: #D97706;
+  --color-report-risk-low: #059669;
+  --color-report-info: #0284C7;
+
+  /* Surface - Ink Block (Hero/CTA) */
+  --color-report-ink: #18181B;
+  --color-report-ink-soft: rgba(255, 255, 255, 0.08);
+  --color-report-ink-border: rgba(255, 255, 255, 0.12);
+
+  /* Surface - Paper (cards, sections) */
+  --color-report-paper: #FDFCF9;
+  --color-report-paper-block: #FFFFFF;
+  --color-report-paper-muted: #F5F2EC;
+  --color-report-paper-elevated: #FFFFFF;
+
+  /* Borders & Dividers */
+  --color-report-hairline: rgba(0, 0, 0, 0.08);
+  --color-report-border: #E7E5E4;
+  --color-report-border-light: rgba(0, 0, 0, 0.06);
+
+  /* Text - Stone Scale (warm, readable) */
+  --color-report-text-primary: #1C1917;
+  --color-report-text-secondary: #57534E;
+  --color-report-text-muted: #78716C;
+  --color-report-text-inverse: #FAFAF9;
+
+  /* Section spacing scale */
+  --spacing-report-section: 64px;
+  --spacing-report-section-mobile: 40px;
+  --spacing-report-sub: 32px;
+  --spacing-report-sub-mobile: 24px;
+  --spacing-report-tight: 16px;
+  --spacing-report-tight-mobile: 12px;
+  --spacing-report-breath: 96px;
+  --spacing-report-breath-mobile: 56px;
+
+  /* Card radius scale */
+  --radius-report-sm: 8px;
+  --radius-report-md: 12px;
+  --radius-report-lg: 16px;
+  --radius-report-xl: 20px;
+}
+
+/* ── Report Utility Classes ─────────────────────────────────────────────
+   Reusable editorial styles for Report UI.
+   Professional Real Estate Report System
+*/
+@layer components {
+  /* ═══════════════════════════════════════════════════════════════
+     SURFACES
+     Three surface types for content hierarchy
+  ═══════════════════════════════════════════════════════════════ */
+
+  /* Ink Block - Dark surface for Hero/CTA sections */
+  .report-ink-block {
+    background-color: var(--color-report-ink);
+    color: var(--color-report-text-inverse);
+    border-radius: var(--radius-report-xl);
+    position: relative;
+    overflow: hidden;
+  }
+
+  /* Subtle gradient overlay for depth */
+  .report-ink-block::before {
+    content: '';
+    position: absolute;
+    inset: 0;
+    background: linear-gradient(
+      135deg,
+      rgba(255, 255, 255, 0.03) 0%,
+      transparent 50%,
+      rgba(0, 0, 0, 0.1) 100%
+    );
+    pointer-events: none;
+  }
+
+  /* Paper Block - White card surface */
+  .report-paper-block {
+    background-color: var(--color-report-paper-block);
+    border-radius: var(--radius-report-lg);
+    border: 1px solid var(--color-report-border-light);
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.04);
+  }
+
+  /* Muted Strip - Subtle background for callouts */
+  .report-paper-muted {
+    background-color: var(--color-report-paper-muted);
+    border-radius: var(--radius-report-md);
+  }
+
+  /* Elevated Card - Subtle shadow for important cards */
+  .report-elevated {
+    background-color: var(--color-report-paper-elevated);
+    border-radius: var(--radius-report-lg);
+    border: 1px solid var(--color-report-border-light);
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.06);
+    transition: transform 0.2s ease, box-shadow 0.2s ease;
+  }
+
+  .report-elevated:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.08);
+  }
+
+  /* ═══════════════════════════════════════════════════════════════
+     HAIRLINES & DIVIDERS
+  ═══════════════════════════════════════════════════════════════ */
+
+  .report-hairline {
+    border-top: 1px solid var(--color-report-hairline);
+  }
+
+  .report-hairline-ink {
+    border-top: 1px solid var(--color-report-ink-border);
+  }
+
+  .report-hairline-bottom {
+    border-bottom: 1px solid var(--color-report-hairline);
+  }
+
+  .report-hairline-bottom-ink {
+    border-bottom: 1px solid var(--color-report-ink-border);
+  }
+
+  /* Accent border for callouts */
+  .report-accent-border {
+    border-left: 4px solid var(--color-report-primary);
+    padding-left: 16px;
+  }
+
+  /* ═══════════════════════════════════════════════════════════════
+     TYPOGRAPHY SCALE
+     Poppins for headings, Inter for body
+  ═══════════════════════════════════════════════════════════════ */
+
+  /* Display - Report title */
+  .report-display-1 {
+    font-family: 'Poppins', system-ui, sans-serif;
+    font-size: 1.875rem;
+    line-height: 1.15;
+    font-weight: 600;
+    letter-spacing: -0.01em;
+    color: var(--color-report-text-primary);
+  }
+
+  @media (min-width: 768px) {
+    .report-display-1 {
+      font-size: 2.25rem;
+      letter-spacing: -0.015em;
+    }
+  }
+
+  /* H2 - Section title */
+  .report-display-2 {
+    font-family: 'Poppins', system-ui, sans-serif;
+    font-size: 1.5rem;
+    line-height: 1.2;
+    font-weight: 600;
+    letter-spacing: -0.015em;
+    color: var(--color-report-text-primary);
+  }
+
+  @media (min-width: 768px) {
+    .report-display-2 {
+      font-size: 1.875rem;
+    }
+  }
+
+  /* H3 - Card title */
+  .report-display-3 {
+    font-family: 'Poppins', system-ui, sans-serif;
+    font-size: 1.125rem;
+    line-height: 1.3;
+    font-weight: 600;
+    color: var(--color-report-text-primary);
+  }
+
+  @media (min-width: 768px) {
+    .report-display-3 {
+      font-size: 1.25rem;
+    }
+  }
+
+  /* Lead - Summary/intro text */
+  .report-lead {
+    font-family: 'Inter', system-ui, sans-serif;
+    font-size: 1rem;
+    line-height: 1.625;
+    font-weight: 400;
+    color: var(--color-report-text-secondary);
+  }
+
+  @media (min-width: 768px) {
+    .report-lead {
+      font-size: 1.125rem;
+    }
+  }
+
+  /* Body - Regular content */
+  .report-body {
+    font-family: 'Inter', system-ui, sans-serif;
+    font-size: 0.9375rem;
+    line-height: 1.6;
+    color: var(--color-report-text-secondary);
+  }
+
+  @media (min-width: 768px) {
+    .report-body {
+      font-size: 1rem;
+    }
+  }
+
+  /* Caption - Small supporting text */
+  .report-caption {
+    font-family: 'Inter', system-ui, sans-serif;
+    font-size: 0.8125rem;
+    line-height: 1.5;
+    color: var(--color-report-text-muted);
+  }
+
+  /* Eyebrow - Section labels */
+  .report-eyebrow {
+    font-family: 'Inter', system-ui, sans-serif;
+    font-size: 0.75rem;
+    line-height: 1.4;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.1em;
+    color: var(--color-report-text-secondary);
+  }
+
+  /* ═══════════════════════════════════════════════════════════════
+     FIELD LABEL — card-internal column/section labels
+     Used inside report-paper-block cards to label individual fields
+     (e.g. "Listing Evidence", "Not Proven", "Why It Matters").
+     More prominent than plain eyebrow: slightly bolder, with a
+     subtle bottom divider so users can visually separate label
+     from the content below at a glance.
+  ═══════════════════════════════════════════════════════════════ */
+  .report-field-label {
+    font-family: 'Inter', system-ui, sans-serif;
+    font-size: 0.6875rem;
+    line-height: 1.4;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.12em;
+    /* teal-700: stronger visual anchor on white cards, matches brand accent */
+    color: var(--color-report-primary);
+    padding-bottom: 6px;
+    border-bottom: 1px solid var(--color-report-hairline);
+    margin-bottom: 6px;
+  }
+
+  /* ═══════════════════════════════════════════════════════════════
+     MODULE ANCHOR (Phase A scaffolding — Phase B will wire React)
+     Provides a strong visual anchor for the start of each report
+     module/section so users can locate sections at a glance.
+     Design choice: 3px left teal accent + numbered chip, editorial-restrained.
+  ═══════════════════════════════════════════════════════════════ */
+
+  .report-module-anchor {
+    position: relative;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 4px 0 14px 16px;
+    margin-bottom: 16px;
+    border-bottom: 1px solid var(--color-report-border);
+    /* The 3px teal accent strip — visual anchor */
+    background-image: linear-gradient(
+      to right,
+      var(--color-report-primary) 0,
+      var(--color-report-primary) 3px,
+      transparent 3px,
+      transparent 100%
+    );
+    background-repeat: no-repeat;
+    background-size: 100% 100%;
+  }
+
+  /* Active state hook — Phase B will toggle this via IntersectionObserver */
+  .report-module-anchor--active {
+    border-bottom-color: var(--color-report-primary);
+  }
+
+  .report-module-anchor__index {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 28px;
+    height: 24px;
+    padding: 0 8px;
+    border-radius: 6px;
+    background-color: rgba(15, 118, 110, 0.1);
+    color: var(--color-report-primary);
+    font-family: 'Poppins', system-ui, sans-serif;
+    font-size: 12px;
+    font-weight: 700;
+    font-variant-numeric: tabular-nums;
+    letter-spacing: 0.02em;
+    flex-shrink: 0;
+  }
+
+  .report-module-anchor__label {
+    font-family: 'Inter', system-ui, sans-serif;
+    font-size: 0.6875rem;
+    line-height: 1.4;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.12em;
+    color: var(--color-report-text-primary);
+    flex: 1 1 auto;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .report-module-anchor__progress {
+    font-family: 'Inter', system-ui, sans-serif;
+    font-size: 0.6875rem;
+    line-height: 1.4;
+    font-weight: 500;
+    color: var(--color-report-text-muted);
+    font-variant-numeric: tabular-nums;
+    letter-spacing: 0.02em;
+    flex-shrink: 0;
+  }
+
+  /* Stronger section divider (replaces faint hairline for module top) */
+  .report-section-divider {
+    border-top: 1px solid var(--color-report-border);
+  }
+
+  /* ═══════════════════════════════════════════════════════════════
+     SPECIAL DISPLAY ELEMENTS
+  ═══════════════════════════════════════════════════════════════ */
+
+  /* Large score number */
+  .report-mono-num {
+    font-family: 'Poppins', system-ui, sans-serif;
+    font-variant-numeric: tabular-nums;
+    font-weight: 700;
+    letter-spacing: -0.02em;
+    font-size: 3rem;
+    line-height: 1;
+    color: var(--color-report-primary);
+  }
+
+  @media (min-width: 768px) {
+    .report-mono-num {
+      font-size: 4.5rem;
+    }
+  }
+
+  /* Small mono number */
+  .report-mono-num-sm {
+    font-family: 'Inter', system-ui, sans-serif;
+    font-variant-numeric: tabular-nums;
+    font-weight: 600;
+    font-size: 1rem;
+    line-height: 1.4;
+  }
+
+  @media (min-width: 768px) {
+    .report-mono-num-sm {
+      font-size: 1.125rem;
+    }
+  }
+
+  /* Pill/Label text */
+  .report-pill-label {
+    font-family: 'Inter', system-ui, sans-serif;
+    font-size: 0.75rem;
+    font-weight: 600;
+    letter-spacing: 0.02em;
+  }
+
+  /* Quote/Summary block */
+  .report-quote {
+    font-family: 'Inter', system-ui, sans-serif;
+    font-size: 1.0625rem;
+    line-height: 1.6;
+    font-style: italic;
+    color: var(--color-report-text-primary);
+  }
+
+  /* ═══════════════════════════════════════════════════════════════
+     SECTION SPACING
+  ═══════════════════════════════════════════════════════════════ */
+
+  .report-space-section {
+    margin-top: var(--spacing-report-section);
+    margin-bottom: var(--spacing-report-section);
+  }
+
+  .report-space-sub {
+    margin-top: var(--spacing-report-sub);
+    margin-bottom: var(--spacing-report-sub);
+  }
+
+  .report-space-breath {
+    padding-top: var(--spacing-report-breath);
+    padding-bottom: var(--spacing-report-breath);
+  }
+
+  /* ═══════════════════════════════════════════════════════════════
+     CONTENT WIDTHS
+  ═══════════════════════════════════════════════════════════════ */
+
+  .report-prose {
+    max-width: 640px;
+  }
+
+  .report-wide {
+    max-width: 960px;
+  }
+
+  .report-container {
+    max-width: 1056px;
+  }
+
+  /* ═══════════════════════════════════════════════════════════════
+     MODULE-LEVEL TYPOGRAPHY
+     For Photo & Condition Review sections
+  ═══════════════════════════════════════════════════════════════ */
+
+  .report-module-explainer {
+    font-family: 'Inter', system-ui, sans-serif;
+    font-size: 0.9375rem;
+    line-height: 1.5;
+    color: var(--color-report-text-secondary);
+    font-weight: 400;
+  }
+
+  @media (min-width: 768px) {
+    .report-module-explainer {
+      font-size: 1rem;
+      line-height: 1.55;
+    }
+  }
+
+  .report-h3 {
+    font-family: 'Poppins', system-ui, sans-serif;
+    font-size: 1rem;
+    line-height: 1.3;
+    font-weight: 600;
+    color: var(--color-report-text-primary);
+    letter-spacing: -0.005em;
+  }
+
+  @media (min-width: 768px) {
+    .report-h3 {
+      font-size: 1.125rem;
+    }
+  }
+
+  .report-lead-2 {
+    font-family: 'Inter', system-ui, sans-serif;
+    font-size: 1rem;
+    line-height: 1.6;
+    color: var(--color-report-text-secondary);
+    font-weight: 400;
+  }
+
+  @media (min-width: 768px) {
+    .report-lead-2 {
+      font-size: 1.0625rem;
+      line-height: 1.6;
+    }
+  }
+
+  .report-finding-title {
+    font-family: 'Poppins', system-ui, sans-serif;
+    font-size: 1.0625rem;
+    line-height: 1.3;
+    font-weight: 600;
+    color: var(--color-report-text-primary);
+    letter-spacing: -0.005em;
+  }
+
+  .report-finding-body {
+    font-family: 'Inter', system-ui, sans-serif;
+    font-size: 0.9375rem;
+    line-height: 1.6;
+    color: var(--color-report-text-secondary);
+    font-weight: 400;
+  }
+
+  .report-sublabel {
+    font-family: 'Inter', system-ui, sans-serif;
+    font-size: 0.6875rem;
+    line-height: 1.4;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.1em;
+    color: var(--color-report-text-muted);
+  }
+
+  .report-meta {
+    font-family: 'Inter', system-ui, sans-serif;
+    font-size: 0.8125rem;
+    line-height: 1.4;
+    font-weight: 500;
+    color: var(--color-report-text-muted);
+  }
+
+  .report-measure {
+    max-width: 65ch;
+  }
+
+  /* ═══════════════════════════════════════════════════════════════
+     SEMANTIC BADGES & PILLS
+  ═══════════════════════════════════════════════════════════════ */
+
+  /* Severity badges */
+  .report-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 4px 10px;
+    border-radius: 9999px;
+    font-family: 'Inter', system-ui, sans-serif;
+    font-size: 0.75rem;
+    font-weight: 600;
+    letter-spacing: 0.02em;
+  }
+
+  .report-badge-high {
+    background-color: #FEE2E2;
+    color: #991B1B;
+  }
+
+  .report-badge-medium {
+    background-color: #FEF3C7;
+    color: #92400E;
+  }
+
+  .report-badge-low {
+    background-color: #D1FAE5;
+    color: #065F46;
+  }
+
+  .report-badge-info {
+    background-color: #E0F2FE;
+    color: #075985;
+  }
+
+  /* Score indicator pill */
+  .report-score-pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 6px 14px;
+    border-radius: 9999px;
+    background-color: rgba(15, 118, 110, 0.1);
+    color: var(--color-report-primary);
+    font-family: 'Inter', system-ui, sans-serif;
+    font-size: 0.8125rem;
+    font-weight: 600;
+  }
+
+  /* Status indicator dot */
+  .report-status-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    display: inline-block;
+  }
+
+  .report-status-high {
+    background-color: var(--color-report-risk-high);
+  }
+
+  .report-status-medium {
+    background-color: var(--color-report-risk-medium);
+  }
+
+  .report-status-low {
+    background-color: var(--color-report-risk-low);
+  }
+
+  /* ═══════════════════════════════════════════════════════════════
+     CARDS & CONTAINERS
+  ═══════════════════════════════════════════════════════════════ */
+
+  /* Risk card with left border indicator */
+  .report-risk-card {
+    background-color: var(--color-report-paper-block);
+    border-radius: var(--radius-report-lg);
+    border: 1px solid var(--color-report-border-light);
+    padding: 20px 24px;
+    border-left-width: 4px;
+    transition: transform 0.2s ease, box-shadow 0.2s ease;
+  }
+
+  .report-risk-card:hover {
+    transform: translateY(-1px);
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.06);
+  }
+
+  .report-risk-card-high {
+    border-left-color: var(--color-report-risk-high);
+  }
+
+  .report-risk-card-medium {
+    border-left-color: var(--color-report-risk-medium);
+  }
+
+  .report-risk-card-low {
+    border-left-color: var(--color-report-risk-low);
+  }
+
+  /* Data grid cell */
+  .report-data-cell {
+    padding: 16px 20px;
+    background-color: var(--color-report-paper-block);
+    border-radius: var(--radius-report-md);
+    border: 1px solid var(--color-report-border-light);
+  }
+
+  .report-data-cell-value {
+    font-family: 'Poppins', system-ui, sans-serif;
+    font-size: 1.5rem;
+    font-weight: 600;
+    color: var(--color-report-text-primary);
+    line-height: 1.2;
+  }
+
+  .report-data-cell-label {
+    font-family: 'Inter', system-ui, sans-serif;
+    font-size: 0.75rem;
+    font-weight: 500;
+    color: var(--color-report-text-muted);
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    margin-top: 4px;
+  }
+
+  /* Summary callout */
+  .report-callout {
+    background-color: var(--color-report-paper-muted);
+    border-radius: var(--radius-report-md);
+    padding: 16px 20px;
+    border-left: 4px solid var(--color-report-primary);
+  }
+
+  /* ═══════════════════════════════════════════════════════════════
+     SECTION CONTAINER
+     Unified container for all report sections
+     Ensures consistent padding, background, and alignment
+  ═══════════════════════════════════════════════════════════════ */
+
+  .report-section {
+    background-color: var(--color-report-paper-block);
+    border-radius: var(--radius-report-lg);
+    border: 1px solid var(--color-report-border-light);
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.04);
+    padding: 24px;
+  }
+
+  @media (min-width: 768px) {
+    .report-section {
+      padding: 32px;
+    }
+  }
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   RESPONSIVE ADJUSTMENTS
+═══════════════════════════════════════════════════════════════ */
+
+@media (max-width: 640px) {
+  .report-space-section {
+    margin-top: var(--spacing-report-section-mobile);
+    margin-bottom: var(--spacing-report-section-mobile);
+  }
+
+  .report-space-sub {
+    margin-top: var(--spacing-report-sub-mobile);
+    margin-bottom: var(--spacing-report-sub-mobile);
+  }
+
+  .report-space-breath {
+    padding-top: var(--spacing-report-breath-mobile);
+    padding-bottom: var(--spacing-report-breath-mobile);
+  }
+
+  .report-risk-card {
+    padding: 16px 18px;
+  }
+
+  .report-data-cell {
+    padding: 12px 16px;
+  }
+
+  .report-data-cell-value {
+    font-size: 1.25rem;
+  }
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   ANIMATIONS & MOTION
+   Professional, restrained animations
+═══════════════════════════════════════════════════════════════ */
+
+/* Page entrance animation */
+@keyframes reportFadeIn {
+  from {
+    opacity: 0;
+    transform: translateY(12px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes reportFadeInScale {
+  from {
+    opacity: 0;
+    transform: scale(0.98);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+/* Staggered reveal for lists */
+@keyframes reportSlideUp {
+  from {
+    opacity: 0;
+    transform: translateY(16px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+/* Score counter animation */
+@keyframes reportPulse {
+  0%, 100% {
+    transform: scale(1);
+  }
+  50% {
+    transform: scale(1.02);
+  }
+}
+
+/* Subtle shimmer for loading states */
+@keyframes reportShimmer {
+  0% {
+    background-position: -200% 0;
+  }
+  100% {
+    background-position: 200% 0;
+  }
+}
+
+/* Animation utility classes */
+.report-animate-fade-in {
+  animation: reportFadeIn 0.4s ease-out forwards;
+}
+
+.report-animate-fade-in-scale {
+  animation: reportFadeInScale 0.3s ease-out forwards;
+}
+
+.report-animate-slide-up {
+  animation: reportSlideUp 0.5s ease-out forwards;
+}
+
+/* Staggered animation delays */
+.report-stagger-1 { animation-delay: 0.1s; }
+.report-stagger-2 { animation-delay: 0.2s; }
+.report-stagger-3 { animation-delay: 0.3s; }
+.report-stagger-4 { animation-delay: 0.4s; }
+.report-stagger-5 { animation-delay: 0.5s; }
+
+/* Reduced motion support */
+@media (prefers-reduced-motion: reduce) {
+  .report-animate-fade-in,
+  .report-animate-fade-in-scale,
+  .report-animate-slide-up {
+    animation: none;
+    opacity: 1;
+    transform: none;
+  }
+
+  /* Phase B scroll-spy hook: instantly apply active state, no transition */
+  .report-module-anchor,
+  .report-module-anchor__index,
+  .report-module-anchor--active {
+    transition: none;
+  }
+}
+
+/* Smooth transition for Phase B active state — only when motion is allowed */
+.report-module-anchor {
+  transition: border-bottom-color 200ms ease-out;
+}
+
+.report-module-anchor__index {
+  transition: background-color 200ms ease-out, color 200ms ease-out;
+}

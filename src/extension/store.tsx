@@ -75,180 +75,7 @@ function hasResolvedListingType(data: ListingData | ListingDataV2 | null): boole
 }
 
 import { getMultiUnitBuildingBlock } from './multiUnitGuard';
-
-function isV2Data(data: ListingData | ListingDataV2 | null): data is ListingDataV2 {
-  // V2: 有 listingUrl 或同时有 images 和 source
-  // V1: 没有 listingUrl，有 source 但没有 images
-  if (!data) return false;
-  // 如果有 listingUrl，必定是 V2
-  if ('listingUrl' in data && data.listingUrl) return true;
-  // 如果有 images，必定是 V2
-  if ('images' in data && Array.isArray((data as any).images) && (data as any).images.length > 0) return true;
-  // 如果有 source 但没有 images 且没有 listingUrl，是 V1
-  if ('source' in data && !('images' in data)) return false;
-  return false;
-}
-
-function injectListingInfo(result: AnalysisResult, listingData: ListingData | ListingDataV2 | null): AnalysisResult {
-  // If no frontend listingData, return result as-is
-  if (!listingData) return result;
-
-  const isV2 = isV2Data(listingData);
-
-  // Get the first frontend image URL (thumbnail, lower priority)
-  let frontendFirstImageUrl: string | null = null;
-  if (isV2) {
-    frontendFirstImageUrl = ((listingData as ListingDataV2).imageUrls?.length ?? 0) > 0
-      ? (listingData as ListingDataV2).imageUrls![0]
-      : null;
-  } else {
-    frontendFirstImageUrl = ((listingData as ListingData).imageUrls?.length ?? 0) > 0
-      ? (listingData as ListingData).imageUrls![0]
-      : null;
-  }
-
-  // Get backend's existing listingInfo (from analysis result)
-  const backendListingInfo = result?.listingInfo as Record<string, unknown> | null;
-  const backendHasImages = Array.isArray(backendListingInfo?.images) && (backendListingInfo.images as unknown[]).length > 0;
-  const backendFirstImage = backendHasImages
-    ? (backendListingInfo!.images as string[])[0]
-    : (backendListingInfo?.coverImageUrl as string | undefined);
-
-  // Merge listingInfo: backend takes priority, frontend provides fallback
-  const mergedListingInfo: ListingInfo = {};
-
-  // Helper to get value from merged sources (backend first, then frontend fallback)
-  const getMergedString = (
-    field: keyof ListingInfo,
-    frontendValue: unknown
-  ): string | null => {
-    // Backend first (analysis result has authoritative data)
-    const backendValue = backendListingInfo?.[field];
-    if (backendValue != null) {
-      if (typeof backendValue === 'string' && backendValue.trim()) return backendValue.trim();
-      if (backendValue != null && String(backendValue).trim()) return String(backendValue).trim();
-    }
-    // Frontend fallback
-    if (frontendValue != null) {
-      if (typeof frontendValue === 'string' && frontendValue.trim()) return frontendValue.trim();
-      if (String(frontendValue).trim()) return String(frontendValue).trim();
-    }
-    return null;
-  };
-
-  const getMergedNumber = (
-    field: keyof ListingInfo,
-    frontendValue: unknown
-  ): number | null => {
-    // Backend first (analysis result has authoritative data)
-    const backendValue = backendListingInfo?.[field];
-    if (backendValue != null) {
-      if (typeof backendValue === 'number') return backendValue;
-    }
-    // Frontend fallback
-    if (frontendValue != null) {
-      if (typeof frontendValue === 'number') return frontendValue;
-      const parsed = parseFloat(String(frontendValue));
-      if (!isNaN(parsed)) return parsed;
-    }
-    return null;
-  };
-
-  // Get frontend values based on V1/V2 format
-  const getFrontendString = (field: keyof ListingInfo): string | null => {
-    if (isV2) {
-      const v = (listingData as ListingDataV2)[field];
-      if (typeof v === 'string' && v.trim()) return v.trim();
-      return null;
-    } else {
-      // V1 format: price uses priceText field
-      if (field === 'price') {
-        const v = (listingData as ListingData).priceText || (listingData as ListingData).price;
-        if (typeof v === 'string' && v.trim()) return v.trim();
-        return null;
-      }
-      const v = (listingData as ListingData)[field];
-      if (typeof v === 'string' && v.trim()) return v.trim();
-      return null;
-    }
-  };
-
-  const getFrontendNumber = (field: keyof ListingInfo): number | null => {
-    if (isV2) {
-      const v = (listingData as ListingDataV2)[field];
-      if (typeof v === 'number') return v;
-      return null;
-    } else {
-      const v = (listingData as ListingData)[field];
-      if (typeof v === 'number') return v;
-      return null;
-    }
-  };
-
-  // Build merged listingInfo — backend values take priority, frontend provides fallback
-  const title = getMergedString('title', getFrontendString('title'));
-  const address = getMergedString('address', getFrontendString('address'));
-  const price = getMergedString('price', getFrontendString('price'));
-  const priceAmount = getMergedNumber('priceAmount', getFrontendNumber('priceAmount'));
-  const bedrooms = getMergedNumber('bedrooms', getFrontendNumber('bedrooms'));
-  const bathrooms = getMergedNumber('bathrooms', getFrontendNumber('bathrooms'));
-  const parking = getMergedNumber('parking', getFrontendNumber('parking'));
-  const sqft = getMergedNumber('sqft', getFrontendNumber('sqft'));
-  const propertyType = getMergedString('propertyType', getFrontendString('propertyType'));
-  const yearBuilt = getMergedNumber('yearBuilt', getFrontendNumber('yearBuilt'));
-  const annualTax = getMergedString('annualTax', getFrontendString('annualTax'));
-  const floodZone = getMergedString('floodZone', getFrontendString('floodZone'));
-  const heating = getMergedString('heating', getFrontendString('heating'));
-  const cooling = getMergedString('cooling', getFrontendString('cooling'));
-  const basement = getMergedString('basement', getFrontendString('basement'));
-
-  // Image: prefer backend (analysis images) > frontend (thumbnails)
-  // Backend first image comes from analysis, frontend is just a fallback
-  const effectiveCoverImageUrl = backendFirstImage ?? frontendFirstImageUrl ?? null;
-
-  // Backend's images array (from analysis) is more valuable than frontend's
-  // Only copy frontend images if backend doesn't have any
-  const backendImages = backendListingInfo?.images as string[] | undefined;
-  const frontendImages = frontendFirstImageUrl ? [frontendFirstImageUrl] : [];
-
-  if (title != null) mergedListingInfo.title = title;
-  if (address != null) mergedListingInfo.address = address;
-  if (price != null) mergedListingInfo.price = price;
-  if (priceAmount != null) mergedListingInfo.priceAmount = priceAmount;
-  if (bedrooms != null) mergedListingInfo.bedrooms = bedrooms;
-  if (bathrooms != null) mergedListingInfo.bathrooms = bathrooms;
-  if (parking != null) mergedListingInfo.parking = parking;
-  if (sqft != null) mergedListingInfo.sqft = sqft;
-  if (propertyType != null) mergedListingInfo.propertyType = propertyType;
-  if (yearBuilt != null) mergedListingInfo.yearBuilt = yearBuilt;
-  if (annualTax != null) mergedListingInfo.annualTax = annualTax;
-  if (floodZone != null) mergedListingInfo.floodZone = floodZone;
-  if (heating != null) mergedListingInfo.heating = heating;
-  if (cooling != null) mergedListingInfo.cooling = cooling;
-  if (basement != null) mergedListingInfo.basement = basement;
-  if (effectiveCoverImageUrl != null) mergedListingInfo.coverImageUrl = effectiveCoverImageUrl;
-
-  // Images: use backend images if available, otherwise use frontend images
-  if (backendImages?.length) {
-    mergedListingInfo.images = backendImages;
-  } else if (frontendImages.length) {
-    mergedListingInfo.images = frontendImages;
-  }
-
-  // Inject top-level images array for pickFirstImage() fallback
-  // Use backend images (more reliable from analysis) or frontend as fallback
-  const resultWithImages = { ...result } as AnalysisResult & { images?: string[] };
-  if (backendImages?.length) {
-    resultWithImages.images = backendImages;
-  } else if (frontendFirstImageUrl) {
-    resultWithImages.images = [frontendFirstImageUrl];
-  }
-
-  return {
-    ...resultWithImages,
-    listingInfo: Object.keys(mergedListingInfo).length > 0 ? mergedListingInfo : null,
-  };
-}
+import { buildCanonicalReportInput } from '../lib/reportAdapters/canonicalInput';
 
 // ===== URL Guard Helpers =====
 
@@ -1695,12 +1522,19 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         swUnavailableCount = 0;
 
         if (statusResponse.status === 'done' && statusResponse.result) {
-          const resultWithListingInfo = injectListingInfo(statusResponse.result, state.listingData);
-          // Override reportMode from API top-level field (source of truth from analyses table)
-          const reportMode = (statusResponse as any).report_mode as string | undefined;
-          if (reportMode && resultWithListingInfo) {
-            (resultWithListingInfo as AnalysisResult).reportMode = reportMode as 'rent' | 'sale';
-          }
+          // Canonical input pipeline: backend result + frontend listingData
+          // → shared assembler used by web history/Share/Result pages.
+          const apiReportMode = (statusResponse as any).report_mode as string | undefined;
+          const canonical = buildCanonicalReportInput(
+            {
+              ...statusResponse.result,
+              ...(apiReportMode === 'rent' || apiReportMode === 'sale'
+                ? { reportMode: apiReportMode as 'rent' | 'sale' }
+                : {}),
+            },
+            state.listingData,
+          );
+          const resultWithListingInfo = canonical.result;
 
           // Analysis completed successfully
           dispatch({ type: 'SET_ANALYSIS_RESULT', result: resultWithListingInfo });
@@ -1842,8 +1676,8 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
             }
           }
 
-          const resultWithListingInfo = injectListingInfo(fullResult, listingData);
-          dispatch({ type: 'SET_ANALYSIS_RESULT', result: resultWithListingInfo });
+          const canonical = buildCanonicalReportInput(fullResult, listingData);
+          dispatch({ type: 'SET_ANALYSIS_RESULT', result: canonical.result });
           dispatch({ type: 'SET_ANALYSIS_PHASE', phase: 'done' });
           dispatch({ type: 'SET_CURRENT_VIEW', view: 'report' });
           return;

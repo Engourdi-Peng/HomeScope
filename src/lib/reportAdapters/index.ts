@@ -6,6 +6,8 @@ export { resolveReportVariant } from './reportVariant';
 export { resolveBuildingDetails } from './buildingDetails';
 export type { BuildingDetailsView } from './buildingDetails';
 export { computeReportProfile } from './usSale';
+export { buildCanonicalReportInput } from './canonicalInput';
+export type { CanonicalReportInput } from './canonicalInput';
 export { MODULE_FALLBACKS, RISK_ACTION_FALLBACKS, QUESTION_FALLBACKS } from './Fallbacks';
 export type {
   ReportViewModel, HeroVM, DecisionCardVM, DealRiskVM, PriceVM,

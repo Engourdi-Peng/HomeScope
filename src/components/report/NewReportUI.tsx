@@ -72,6 +72,7 @@ import { resolveBuildingDetails } from '../../lib/reportAdapters/buildingDetails
 import type { BuildingDetailsView } from '../../lib/reportAdapters/buildingDetails';
 import { PhotoSpaceAnalysisCard } from './PhotoSpaceAnalysisCard';
 import { UPSELL_CTA_FALLBACK } from '../../lib/reportAdapters/Fallbacks';
+import { ModuleAnchor } from './ModuleAnchor';
 
 // ── Section dedup context ──────────────────────────────────────────────────────
 
@@ -589,97 +590,118 @@ function HeroSection({ report, isBasic }: { report: NormalizedReport; isBasic?: 
 
   const score = hero.score;
   const scoreText = score !== null && score !== undefined ? String(score) : null;
+  
+  // Determine score color based on value
+  const getScoreColor = (score: number | null | undefined): string => {
+    if (score === null || score === undefined) return 'text-stone-500';
+    if (score >= 70) return 'text-emerald-400';
+    if (score >= 40) return 'text-amber-400';
+    return 'text-rose-400';
+  };
 
   return (
-    <div className="relative rounded-2xl p-6 sm:p-8 md:p-10 mb-8 overflow-hidden" style={{ backgroundColor: '#282828' }}>
-      <div className="relative z-10">
-        {/* Address */}
-        {identityText && (
-          <div className="text-slate-200 text-lg sm:text-xl md:text-2xl font-semibold mb-5 sm:mb-6 leading-snug">
-            {renderValue(identityText)}
+    <div className="report-ink-block px-5 py-8 sm:px-8 sm:py-10 md:px-12 md:py-14 mb-8 sm:mb-12 report-animate-fade-in">
+      {/* Hero image — fallback chain: hero.imageUrl → raw.listingInfo.coverImageUrl → raw.coverImageUrl → raw.images[0] */}
+      {(() => {
+        const heroImg = hero.imageUrl
+          || raw.listingInfo?.coverImageUrl
+          || raw.coverImageUrl
+          || (Array.isArray(raw.images) ? raw.images[0] : undefined);
+        if (!heroImg) return null;
+        return (
+          <div className="mb-8 sm:mb-10 rounded-xl overflow-hidden">
+            <img
+              src={heroImg}
+              alt={address || 'Property photo'}
+              className="w-full aspect-[16/10] object-cover"
+              loading="lazy"
+              onError={(event) => {
+                event.currentTarget.style.display = 'none';
+              }}
+            />
           </div>
-        )}
+        );
+      })()}
 
-        {/* Hero image — fallback chain: hero.imageUrl → raw.listingInfo.coverImageUrl → raw.coverImageUrl → raw.images[0] */}
-        {(() => {
-          const heroImg = hero.imageUrl
-            || raw.listingInfo?.coverImageUrl
-            || raw.coverImageUrl
-            || (Array.isArray(raw.images) ? raw.images[0] : undefined);
-          if (!heroImg) return null;
-          return (
-            <div className="overflow-hidden rounded-xl border border-white/10 bg-white/5 mb-6">
-              <img
-                src={heroImg}
-                alt={address || 'Property photo'}
-                className="w-full aspect-[16/10] object-cover"
-                loading="lazy"
-                onError={(event) => {
-                  event.currentTarget.style.display = 'none';
-                }}
-              />
-            </div>
-          );
-        })()}
+      {/* Address */}
+      {identityText && (
+        <div className="report-display-1 text-white mb-3">
+          {renderValue(identityText)}
+        </div>
+      )}
+      
+      {/* Caption — listing meta */}
+      {identityText && (
+        <div className="report-eyebrow text-stone-400 mb-10">
+          {[
+            (raw.listingInfo?.propertyType ?? raw.propertyType ?? raw.property_snapshot?.homeType ?? raw.property_snapshot?.home_type ?? '').toString(),
+            (raw.listingInfo?.city ?? '').toString(),
+            raw.listingInfo?.listedDate ?? raw.listingInfo?.listingDate ?? raw.listingDate ?? null,
+          ].filter(Boolean).join(' · ')}
+        </div>
+      )}
 
-        {/* Score + /100 */}
-        <div className="flex items-baseline gap-3 mb-6">
+      {/* ── Score + Verdict + Summary ────────────────────────────── */}
+      <div className="report-hairline-ink pt-8 pb-8">
+        {/* Score display */}
+        <div className="flex items-end gap-4 mb-6">
           {scoreText !== null ? (
-            <div className="text-7xl sm:text-8xl font-bold text-amber-400">
-              {scoreText}
-            </div>
+            <>
+              <span className={`report-mono-num ${getScoreColor(score)}`}>{scoreText}</span>
+              <div className="flex flex-col">
+                <span className="text-2xl md:text-3xl font-medium text-stone-500 tabular-nums">/100</span>
+                <span className="text-xs text-stone-500 mt-1">Evidence Score</span>
+              </div>
+            </>
           ) : (
-            <div className="text-7xl sm:text-8xl font-bold text-slate-500">—</div>
+            <span className="report-mono-num text-stone-500">—</span>
           )}
-          <div className="text-3xl text-[#B3B3B3]">/100</div>
         </div>
-
-        {/* Verdict badge */}
+        
+        {/* Verdict pill */}
         {hero.verdict && (
-          <div className="inline-flex items-center gap-2 backdrop-blur border px-6 py-3 rounded-xl mb-4 border-[#DAA520]/60 bg-[rgba(218,165,32,0.12)]">
-            <Activity className="w-4 h-4" style={{ color: '#DAA520' }} />
-            <span className="font-semibold tracking-wide" style={{ color: '#DAA520' }}>{renderValue(hero.verdict)}</span>
+          <div className="flex items-center gap-2 mb-6">
+            <span className="w-2 h-2 rounded-full bg-current" style={{ color: score && score >= 70 ? '#34d399' : score && score >= 40 ? '#fbbf24' : '#fb7185' }} />
+            <span className="report-pill-label text-white font-semibold tracking-wider uppercase text-xs">
+              {renderValue(hero.verdict)}
+            </span>
           </div>
         )}
-
-        {/* One-line headline */}
-        <div className="backdrop-blur border rounded-xl p-5 sm:p-6 mb-4" style={{ backgroundColor: '#2a2a2a', borderColor: 'rgba(218, 165, 32, 0.4)' }}>
-          <div className="flex items-center gap-2 mb-2 sm:mb-3">
-            <ThumbsUp className="w-3.5 h-3.5 text-amber-400" />
-            <span className="text-amber-300 uppercase tracking-wider text-xs font-semibold">Bottom Line</span>
+        
+        {/* Bottom Line / Headline */}
+        <div className="report-accent-border" style={{ borderLeftColor: '#0F766E' }}>
+          <div className="report-eyebrow text-teal-400 mb-3">
+            Bottom Line
           </div>
-          <p className="text-slate-100 text-base sm:text-lg leading-relaxed font-medium">{rentHeadline ?? headline}</p>
+          <p className="report-lead text-white font-medium max-w-none">
+            {rentHeadline ?? headline}
+          </p>
         </div>
+      </div>
 
-        {/* Short explanation paragraph — hidden in basic mode and rent mode
-            (rent: hero card shows bottom line; summary is redundant) */}
-        {!isBasic && sanitizedSummary && !isRentMode && (
-          <p className="text-[#D6D6D6] text-sm sm:text-base leading-relaxed mb-6">
+      {/* ── Short explanation (deep + non-rent only) ─────────────────── */}
+      {!isBasic && sanitizedSummary && !isRentMode && (
+        <div className="report-hairline-ink pt-8 pb-8">
+          <p className="report-body text-stone-400 max-w-none">
             {sanitizedSummary}
           </p>
-        )}
+        </div>
+      )}
 
-        {/* Main Reasons — hidden in basic mode (no unverified inference) */}
-        {!isBasic && mainReasons.length > 0 && (
-          <div className="mb-4">
-            <div className="flex items-center gap-2 mb-3 sm:mb-4">
-              <div className="w-1 h-4 bg-[#AAAAAA] rounded-full" />
-              <span className="text-[#AAAAAA] uppercase tracking-wider text-xs font-semibold">Why It Matters</span>
-            </div>
-            <ul className="space-y-3">
-              {mainReasons.map((reason, i) => (
-                <li key={i} className="flex items-start gap-3 text-white">
-                  <div className="w-6 h-6 rounded-lg bg-white/5 border border-white/10 flex items-center justify-center flex-shrink-0 mt-0.5">
-                    <div className="w-1.5 h-1.5 rounded-full bg-[#AAAAAA]" />
-                  </div>
-                  <span className="min-w-0 break-words">{reason}</span>
-                </li>
-              ))}
-            </ul>
-          </div>
-        )}
-
-      </div>
+      {/* ── Top reasons (deep only) ─────────────────── */}
+      {!isBasic && mainReasons.length > 0 && (
+        <div className="pt-8">
+          <div className="report-eyebrow text-stone-400 mb-4">Key Findings</div>
+          <ul className="space-y-3 max-w-none">
+            {mainReasons.map((reason, i) => (
+              <li key={i} className="report-body text-stone-300 flex items-start gap-3">
+                <span className="w-1.5 h-1.5 rounded-full bg-teal-500 shrink-0 mt-2.5" />
+                <span className="min-w-0 break-words">{reason}</span>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
     </div>
   );
 }
@@ -843,7 +865,7 @@ function getImpactLabel(text: string, isRent = false): string {
   return isRent ? 'Ask before applying' : 'Check before offer';
 }
 
-function WhatCouldChangeYourDecisionSection({ report, viewModel, isBasic }: { report: NormalizedReport; viewModel?: ReportViewModel; isBasic?: boolean }) {
+function WhatCouldChangeYourDecisionSection({ report, viewModel, isBasic, isExtension }: { report: NormalizedReport; viewModel?: ReportViewModel; isBasic?: boolean; isExtension?: boolean }) {
   const { highlights, sections } = report;
   const isRentMode = (report.meta?.reportMode ?? '').toString().toLowerCase() === 'rent' ||
     Boolean((report as any).raw?.rental_snapshot || (report as any).raw?.rental_listing_score);
@@ -972,50 +994,77 @@ function WhatCouldChangeYourDecisionSection({ report, viewModel, isBasic }: { re
   if (topRisks.length === 0) return null;
 
   return (
-    <div className="bg-white rounded-2xl p-6 sm:p-8 md:p-10 mb-8 border border-slate-200">
-      <div className="flex items-center gap-3 mb-2">
-        <div className="w-10 h-10 rounded-xl bg-amber-500/10 flex items-center justify-center">
-          <AlertTriangle className="w-5 h-5 text-amber-600/70" />
-        </div>
-        <div>
-          <h2 className="text-xl sm:text-2xl font-bold text-slate-900">What Could Change Your Decision</h2>
+    <section className="report-space-section" id="report-section-decision-changers">
+      <div className="report-section">
+        <div className="pt-2 sm:pt-2">
+          <ModuleAnchor index={2} total={12} label="Risk Assessment" />
+          <h2 className="report-display-2 text-stone-900 mb-3 sm:mb-4">What Could Change Your Decision</h2>
+          <p className="report-body text-stone-600 mb-10">
+            {isBasic
+              ? 'Based on listing signals only — not independent analysis.'
+              : 'These are the issues that could affect whether this property is still worth your time.'}
+          </p>
+
+          <div className="space-y-4">
+            {topRisks.map((risk, i) => {
+              // ── P0-8 fix: title/description must come from the SAME source risk item ────
+              // Previously getRiskTitle() and getRiskShortExplanation() used independent
+              // keyword matches on the same raw text, causing title="Basement Moisture Risk"
+              // but description="An illegal or unapproved rental unit..." (rental keyword matched
+              // description but not title). Now both use the raw risk text directly.
+              const cardTitle = getRiskTitle(risk);
+              const shortExplanation = risk.length > 120 ? risk.slice(0, 117) + '...' : risk;
+
+              // Guard: if title and explanation are identical (both raw risk text), it means
+              // getRiskTitle fell through to "Key Verification Risk" — show the raw text as title.
+              const displayTitle = cardTitle !== shortExplanation ? cardTitle : (risk.length > 60 ? risk.slice(0, 57) + '...' : risk);
+              const impact = getImpactLabel(risk, isRentMode);
+
+              return (
+                <article
+                  key={i}
+                  className={`report-risk-card report-risk-card-medium report-animate-slide-up`}
+                  style={{ animationDelay: `${i * 0.1}s` }}
+                >
+                  {/* Card Header — extension: title row + badge row (stacked).
+                     Web: original horizontal layout untouched. */}
+                  <div className={isExtension ? 'mb-4' : 'flex items-start justify-between gap-4 mb-4'}>
+                    <div className="flex items-start gap-3">
+                      {/* Severity indicator */}
+                      <div className="w-10 h-10 rounded-xl bg-amber-50 flex items-center justify-center shrink-0">
+                        <AlertTriangle className="w-5 h-5 text-amber-600" />
+                      </div>
+                      <div>
+                        <h3 className="report-display-3 text-stone-900">{displayTitle}</h3>
+                      </div>
+                    </div>
+                    {/* Action badge — extension: own row, left-aligned, sits under the title.
+                       Web: original right-aligned shrink-0 behaviour preserved. */}
+                    {isExtension ? (
+                      <div className="mt-3 ml-[52px]">
+                        <span className="report-badge report-badge-medium">
+                          {impact}
+                        </span>
+                      </div>
+                    ) : (
+                      <span className="shrink-0 report-badge report-badge-medium">
+                        {impact}
+                      </span>
+                    )}
+                  </div>
+
+                  {/* Divider */}
+                  <div className="report-hairline mb-4" />
+
+                  {/* Description */}
+                  <p className="report-body text-stone-600 leading-relaxed">{shortExplanation}</p>
+                </article>
+              );
+            })}
+          </div>
         </div>
       </div>
-      <p className="text-slate-500 text-sm mb-6 sm:mb-8">
-        {isBasic
-          ? 'Based on listing signals only — not independent analysis.'
-          : 'These are the issues that could affect whether this property is still worth your time.'}
-      </p>
-
-      <div className="space-y-4 sm:space-y-6">
-        {topRisks.map((risk, i) => {
-          // ── P0-8 fix: title/description must come from the SAME source risk item ────
-          // Previously getRiskTitle() and getRiskShortExplanation() used independent
-          // keyword matches on the same raw text, causing title="Basement Moisture Risk"
-          // but description="An illegal or unapproved rental unit..." (rental keyword matched
-          // description but not title). Now both use the raw risk text directly.
-          const cardTitle = getRiskTitle(risk);
-          const shortExplanation = risk.length > 120 ? risk.slice(0, 117) + '...' : risk;
-
-          // Guard: if title and explanation are identical (both raw risk text), it means
-          // getRiskTitle fell through to "Key Verification Risk" — show the raw text as title.
-          const displayTitle = cardTitle !== shortExplanation ? cardTitle : (risk.length > 60 ? risk.slice(0, 57) + '...' : risk);
-
-          const impact = getImpactLabel(risk, isRentMode);
-          return (
-            <div key={i} className="flex flex-col gap-3 p-5 rounded-xl bg-slate-50 border border-slate-200">
-              <div className="font-bold text-slate-900 text-base leading-snug">{displayTitle}</div>
-              <p className="text-slate-700 text-sm leading-relaxed">{shortExplanation}</p>
-              <div>
-                <span className="inline-flex items-center text-xs font-semibold px-3 py-1 rounded-full bg-amber-100 text-amber-700">
-                  {impact}
-                </span>
-              </div>
-            </div>
-          );
-        })}
-      </div>
-    </div>
+    </section>
   );
 }
 
@@ -1184,63 +1233,65 @@ function DealChangingRisksSection({ report, viewModel }: { report: NormalizedRep
   return (
     <>
       <SectionRegistrar ids={consumedIds} />
-      <div className="bg-white rounded-2xl p-6 sm:p-8 md:p-10 mb-8 border border-slate-200">
-        <div className="flex items-center gap-3 mb-2">
-          <div className="w-10 h-10 rounded-xl bg-rose-500/10 flex items-center justify-center">
-            <AlertTriangle className="w-5 h-5 text-rose-600/70" />
-          </div>
-          <div>
-            <h2 className="text-xl sm:text-2xl font-bold text-slate-900">Deal-Changing Risks</h2>
+      <section className="report-space-section" id="report-section-deal-changing-risks">
+        <div className="report-section">
+          <div className="pt-2 sm:pt-2">
+            <ModuleAnchor index={3} total={12} label="Detailed Analysis" />
+            <h2 className="report-display-2 text-stone-900 mb-3 sm:mb-4">Deal-Changing Risks</h2>
+            <p className="report-body text-stone-600 mb-10">
+              Not every issue is a deal breaker — but these are the ones to check before you rely on the listing.
+            </p>
+
+            <div className="space-y-4">
+              {filteredCards.map((card, i) => {
+                const sevKey = card.severity?.toLowerCase() ?? '';
+                const severityLabel = sevKey === 'critical' ? 'Critical' : sevKey === 'high' ? 'High' : sevKey === 'medium' ? 'Medium' : sevKey === 'low' ? 'Low' : '';
+                const cardClass = sevKey === 'high' || sevKey === 'critical'
+                  ? 'report-risk-card report-risk-card-high'
+                  : sevKey === 'medium'
+                  ? 'report-risk-card report-risk-card-medium'
+                  : 'report-risk-card report-risk-card-low';
+
+                return (
+                  <article
+                    key={i}
+                    className={`${cardClass} report-animate-slide-up`}
+                    style={{ animationDelay: `${i * 0.1}s` }}
+                  >
+                    <div className="flex items-start justify-between gap-4 mb-4">
+                      <div className="flex items-baseline gap-3 flex-wrap">
+                        <h3 className="report-display-3 text-stone-900">{card.title}</h3>
+                        {severityLabel && (
+                          <span className={`report-badge ${sevKey === 'high' || sevKey === 'critical' ? 'report-badge-high' : sevKey === 'medium' ? 'report-badge-medium' : 'report-badge-low'}`}>
+                            {severityLabel}
+                          </span>
+                        )}
+                      </div>
+                    </div>
+
+                    {card.description && (
+                      <div className="report-hairline mb-4" />
+                    )}
+
+                    {card.description && (
+                      <p className="report-body text-stone-600 leading-relaxed mb-4">
+                        {card.description}
+                      </p>
+                    )}
+
+                    {card.action && (
+                      <div className="report-callout">
+                        <div className="report-eyebrow text-teal-700 mb-1">Recommended Action</div>
+                        <p className="report-finding-body text-stone-800 font-medium">{card.action}</p>
+                      </div>
+                    )}
+                  </article>
+                );
+              })}
+            </div>
           </div>
         </div>
-        <p className="text-slate-500 text-sm mb-6 sm:mb-8">
-          Not every issue is a deal breaker — but these are the ones to check before you rely on the listing.
-        </p>
-
-        <div className="space-y-4 sm:space-y-6">
-          {filteredCards.map((card, i) => {
-            const sevKey = card.severity?.toLowerCase() ?? '';
-            const cardBg =
-              sevKey === 'high' || sevKey === 'critical'
-                ? 'bg-rose-50 border-rose-200'
-                : sevKey === 'medium'
-                ? 'bg-amber-50 border-amber-200'
-                : 'bg-slate-50 border-slate-200';
-
-            return (
-              <div key={i} className={`relative ${cardBg} rounded-xl p-5 sm:p-6 border overflow-hidden`}>
-                <div className="flex items-start gap-3 sm:gap-4 mb-3 sm:mb-4">
-                  <div className="w-10 h-10 rounded-xl bg-white border border-slate-200 flex items-center justify-center shrink-0">
-                    <span className={card.iconColor}>{card.icon}</span>
-                  </div>
-                  <div className="flex-1 min-w-0">
-                    <div className="flex items-center gap-2 sm:gap-3 flex-wrap">
-                      <h3 className="text-base sm:text-xl font-bold text-slate-900">{card.title}</h3>
-                      <SeverityPill value={card.severity} />
-                    </div>
-                  </div>
-                </div>
-
-                {card.description && (
-                  <p className="text-slate-700 text-sm sm:text-base leading-relaxed mb-3 sm:mb-4">
-                    {card.description}
-                  </p>
-                )}
-
-                {card.action && (
-                  <div className="flex items-start gap-2 sm:gap-3">
-                    <div className="bg-slate-800 px-4 sm:px-5 py-2 sm:py-2.5 rounded-xl flex items-center gap-2 shrink-0">
-                      <Target className="w-3.5 h-3.5 text-white" />
-                      <span className="uppercase text-xs font-bold tracking-wide text-white">Action</span>
-                    </div>
-                    <span className="text-slate-700 text-sm font-medium min-w-0 break-words leading-relaxed">{card.action}</span>
-                  </div>
-                )}
-              </div>
-            );
-          })}
-        </div>
-      </div>
+      </section>
     </>
   );
 }
@@ -1249,7 +1300,7 @@ function DealChangingRisksSection({ report, viewModel }: { report: NormalizedRep
 // MODULE 4: PropertySnapshotSection — "Is the Price Fair?" + property facts
 // ─────────────────────────────────────────────────────────────────────────────
 
-function PropertySnapshotSection({ report, isBasic }: { report: NormalizedReport; isBasic?: boolean }) {
+function PropertySnapshotSection({ report, isBasic, isExtension }: { report: NormalizedReport; isBasic?: boolean; isExtension?: boolean }) {
   const { hero, quickFacts, sections, meta } = report;
 
   // Sale-only section — never render for rent reports.
@@ -1496,150 +1547,144 @@ function PropertySnapshotSection({ report, isBasic }: { report: NormalizedReport
   }
 
   return (
-    <div className="rounded-2xl p-8 md:p-10 mb-8" style={{ backgroundColor: '#282828' }}>
-      {/* Header */}
-      <div className="flex items-center gap-3 mb-6">
-        <div className="w-10 h-10 rounded-xl flex items-center justify-center shrink-0" style={{ backgroundColor: 'rgba(218, 165, 32, 0.15)' }}>
-          <Home className="w-5 h-5" style={{ color: '#DAA520' }} />
-        </div>
-        <h2 className="text-2xl font-bold text-white">PROPERTY SNAPSHOT</h2>
-        {isBasic && (
-          <p className="text-xs text-stone-400 mt-0.5">Based on listing data — condition and market comparison not yet verified.</p>
-        )}
-      </div>
-
-      {/* Address intentionally omitted here to avoid duplicating the Hero address */}
-
-      {/* Price Fairness Section */}
-      {hasPriceData && (
-        <div className="rounded-xl p-8 mb-6" style={{ backgroundColor: '#3a3a3a' }}>
-          <div className="flex items-center gap-3 mb-6">
-            <div className="w-9 h-9 rounded-xl flex items-center justify-center shrink-0" style={{ backgroundColor: 'rgba(218, 165, 32, 0.15)' }}>
-              <DollarSign className="w-5 h-5" style={{ color: '#DAA520' }} />
-            </div>
-            <h3 className="text-xl font-bold text-white">Is the Price Fair?</h3>
-          </div>
-
-          {/* Estimated Value Range (large) */}
-          {(() => {
-            const estMin = priceData.find((i) => /min/i.test(i.label))?.value;
-            const estMax = priceData.find((i) => /max/i.test(i.label))?.value;
-            if (estMin || estMax) {
-              const range = [estMin, estMax].filter(Boolean).join(' – ');
-              return (
-                <div className="mb-8">
-                  <div className="text-slate-400 uppercase text-xs tracking-wider mb-3">Estimated Value Range</div>
-                  <div className="text-2xl font-bold text-white">{range}</div>
-                </div>
-              );
-            }
-            return null;
-          })()}
-
-          {/* Asking Price (large) */}
-          {(() => {
-            const asking = priceData.find((i) =>
-              /asking|list|price/i.test(i.label)
-            )?.value;
-            if (asking) {
-              return (
-                <div className="mb-8">
-                  <div className="text-slate-400 uppercase text-xs tracking-wider mb-3">Asking Price</div>
-                  <div className="text-2xl font-bold text-white">{asking}</div>
-                </div>
-              );
-            }
-            return null;
-          })()}
-
-          {/* Verdict + Confidence row */}
-          {(() => {
-            const verdict = priceData.find((i) => /verdict|assessment|fair|over|under/i.test(i.label))?.value;
-            if (!verdict && !confValue) return null;
-            return (
-              <div className="flex items-center gap-4 mb-6 pb-6 border-b flex-wrap" style={{ borderColor: 'rgba(148, 163, 184, 0.3)' }}>
-                {verdict && (
-                  <>
-                    <div className="text-slate-400 uppercase text-sm tracking-wide">Verdict</div>
-                    <div className="text-white font-semibold text-lg">{verdict}</div>
-                  </>
-                )}
-                {confValue && (
-                  <div className="text-slate-400">
-                    Confidence: {confValue}
-                    {confIsLow && <span className="text-amber-400 ml-1">— price may shift with more info</span>}
-                  </div>
-                )}
-              </div>
-            );
-          })()}
-
-          {/* Analysis paragraph — verdict-aware rewrite for "Unknown" verdicts */}
-          {(() => {
-            if (verdictIsUnknown && analysisText && /reasonable|appears.*fair|good.*value|undervalued/i.test(analysisText)) {
-              return (
-                <p className="text-slate-200 text-base leading-relaxed mb-6">
-                  Asking price may be within a plausible range based on partial signals, but confidence is low without nearby comparable sales, legal-use verification, rental support, and inspection results.
-                </p>
-              );
-            }
-            if (analysisText) {
-              return <p className="text-slate-200 text-base leading-relaxed mb-6">{analysisText}</p>;
-            }
-            if (confIsLow) {
-              return (
-                <p className="text-slate-300 text-sm leading-relaxed mb-6">
-                  Low confidence means the price may look reasonable on paper, but missing condition details could change the real value.
-                </p>
-              );
-            }
-            return null;
-          })()}
-
-          {/* Low confidence explanation box — verdict-aware, never contradicts the verdict */}
-          {confIsLow && (
-            <div className="rounded-lg p-5 mb-2" style={{ backgroundColor: '#282828', borderColor: 'rgba(148, 163, 184, 0.2)', borderWidth: '1px', borderStyle: 'solid' }}>
-              <div className="font-semibold text-amber-400 mb-1">Why Price Confidence Is Limited</div>
-              <p className="text-slate-300 text-sm leading-relaxed">{getPriceConfidenceCopy()}</p>
-            </div>
+    <section className="report-space-section" id="report-section-price-fair">
+      <div className="report-section">
+        <div className="pt-2 sm:pt-2">
+          <ModuleAnchor index={4} total={12} label="Property & Price" />
+          <h2 className="report-display-2 text-stone-900 mb-3 sm:mb-4">Is the Price Fair?</h2>
+          {isBasic && (
+            <p className="report-caption text-stone-500 mb-8">Based on listing data — condition and market comparison not yet verified.</p>
           )}
 
-          {/* Price Confidence box (if not low) */}
-          {(() => {
-            const conf = priceData.find((i) => /confidence/i.test(i.label) && i.description);
-            if (!conf || confIsLow) return null;
-            return (
-              <div className="rounded-lg p-5" style={{ backgroundColor: '#282828', borderColor: 'rgba(148, 163, 184, 0.2)', borderWidth: '1px', borderStyle: 'solid' }}>
-                <div className="font-semibold text-white mb-2">Price Confidence: {renderValue(conf.value ?? '')}</div>
-                <p className="text-slate-300 text-sm leading-relaxed">{conf.description}</p>
-              </div>
-            );
-          })()}
-        </div>
-      )}
+          {/* Price block — unified section card */}
+          {hasPriceData && (
+            <div className="report-paper-muted p-6 md:p-8">
+              {/* Estimated Value Range */}
+              {(() => {
+                const estMin = priceData.find((i) => /min/i.test(i.label))?.value;
+                const estMax = priceData.find((i) => /max/i.test(i.label))?.value;
+                if (estMin || estMax) {
+                  const range = [estMin, estMax].filter(Boolean).join(' – ');
+                  return (
+                    <div className="mb-6">
+                      <div className="report-eyebrow text-teal-700 mb-2">Estimated Value Range</div>
+                      <div className="report-data-cell-value">{range}</div>
+                    </div>
+                  );
+                }
+                return null;
+              })()}
 
-      {/* Quick Facts grid */}
-      {hasQuickFacts && (
-        <div className="mt-6 sm:mt-8">
-          <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-3 sm:gap-4">
-            {qfItems.map((item, i) => (
-              <div
-                key={i}
-                className="rounded-lg px-4 py-3 min-w-0"
-                style={{ backgroundColor: '#3a3a3a' }}
-              >
-                <div className="text-slate-400 uppercase text-xs tracking-wider mb-1 truncate">
-                  {item.label}
+              {/* Asking Price */}
+              {(() => {
+                const asking = priceData.find((i) =>
+                  /asking|list|price/i.test(i.label)
+                )?.value;
+                if (asking) {
+                  return (
+                    <div className="mb-6">
+                      <div className="report-eyebrow text-stone-500 mb-2">Asking Price</div>
+                      <div className="report-data-cell-value">{asking}</div>
+                    </div>
+                  );
+                }
+                return null;
+              })()}
+
+              {/* Verdict + Confidence row */}
+              {(() => {
+                const verdict = priceData.find((i) => /verdict|assessment|fair|over|under/i.test(i.label))?.value;
+              if (!verdict && !confValue) return null;
+              return (
+                <div className="report-hairline-bottom pb-4 mb-4 flex items-baseline gap-x-6 gap-y-2 flex-wrap">
+                  {verdict && (
+                    <>
+                      <div className="report-eyebrow text-stone-500">Verdict</div>
+                      <div className="report-display-3 text-stone-900">{verdict}</div>
+                    </>
+                  )}
+                  {confValue && (
+                    <div className="report-body text-stone-700 ml-auto">
+                      Confidence: <span className="font-semibold">{confValue}</span>
+                      {confIsLow && <span className="text-amber-700 ml-1">— price may shift with more info</span>}
+                    </div>
+                  )}
                 </div>
-                <div className="text-white font-semibold text-sm sm:text-base truncate min-w-0 break-words">
-                  {item.value}
-                </div>
+              );
+            })()}
+
+            {/* Analysis paragraph */}
+            {(() => {
+              if (verdictIsUnknown && analysisText && /reasonable|appears.*fair|good.*value|undervalued/i.test(analysisText)) {
+                return (
+                  <p className="report-body text-stone-700 leading-relaxed mb-4">
+                    Asking price may be within a plausible range based on partial signals, but confidence is low without nearby comparable sales, legal-use verification, rental support, and inspection results.
+                  </p>
+                );
+              }
+              if (analysisText) {
+                return <p className="report-body text-stone-700 leading-relaxed mb-4">{analysisText}</p>;
+              }
+              if (confIsLow) {
+                return (
+                  <p className="report-body text-stone-600 leading-relaxed mb-4">
+                    Low confidence means the price may look reasonable on paper, but missing condition details could change the real value.
+                  </p>
+                );
+              }
+              return null;
+            })()}
+
+            {/* Low confidence explanation — inline callout */}
+            {confIsLow && (
+              <div className="report-inline-callout mt-4">
+                <div className="report-eyebrow text-amber-700 mb-1">Why Price Confidence Is Limited</div>
+                <p className="report-body text-stone-700 leading-relaxed">{getPriceConfidenceCopy()}</p>
               </div>
-            ))}
+            )}
+
+            {/* Price Confidence box (non-low) */}
+            {(() => {
+              const conf = priceData.find((i) => /confidence/i.test(i.label) && i.description);
+              if (!conf || confIsLow) return null;
+              return (
+                <div className="report-inline-callout">
+                  <div className="report-display-3 text-stone-900 mb-2">Price Confidence: {renderValue(conf.value ?? '')}</div>
+                  <p className="report-body text-stone-700 leading-relaxed">{conf.description}</p>
+                </div>
+              );
+            })()}
           </div>
-        </div>
-      )}
-    </div>
+        )}
+
+        {/* Quick Facts — inline hairline list */}
+        {hasQuickFacts && (
+          <div className="mt-6">
+            <div className="report-eyebrow text-stone-500 mb-4">Quick Facts</div>
+            <dl className="divide-y divide-stone-200/70">
+              {qfItems.map((item, i) => (
+                <div
+                  key={i}
+                  className={
+                    isExtension
+                      ? 'py-3 flex flex-row items-start gap-3 sm:gap-4'
+                      : 'py-3 grid grid-cols-[10rem_1fr] gap-x-4 gap-y-1 sm:grid-cols-[12rem_1fr]'
+                  }
+                >
+                  <dt className="report-body text-stone-600 self-start pt-px shrink-0 w-36 sm:w-44">
+                    {item.label}
+                  </dt>
+                  <dd className="report-body font-semibold text-stone-900 leading-relaxed break-words min-w-0 flex-1 text-right">
+                    {item.value}
+                  </dd>
+                </div>
+              ))}
+            </dl>
+          </div>
+        )}
+      </div>
+      </div>
+    </section>
   );
 }
 
@@ -1776,130 +1821,121 @@ function CarryingCostsSection({ report }: { report: NormalizedReport }) {
 
   if (!hasCostSignal) {
     return (
-      <div className="bg-white rounded-2xl p-6 sm:p-8 md:p-10 mb-8 border border-slate-200">
-        <div className="flex items-center gap-3 mb-6">
-          <div className="w-10 h-10 rounded-xl bg-violet-500/10 flex items-center justify-center shrink-0">
-            <DollarSign className="w-5 h-5 text-violet-600/70" />
-          </div>
-          <h2 className="text-xl sm:text-2xl font-bold text-slate-900">{sectionTitle}</h2>
-        </div>
-        <div className="rounded-xl p-4 mb-4 bg-amber-50 border border-amber-200">
-          <div className="flex items-start gap-3">
-            <AlertTriangle className="w-4 h-4 text-amber-600 mt-0.5 shrink-0" />
-            <p className="text-amber-800 text-sm leading-relaxed">The listing does not provide enough cost data to estimate monthly ownership expenses.</p>
+      <section className="report-space-section">
+        <div className="report-hairline pt-8 sm:pt-12">
+          <div className="report-eyebrow text-stone-500 mb-3 sm:mb-4">Carrying Costs</div>
+          <h2 className="report-display-2 text-stone-900 mb-6 sm:mb-8">{sectionTitle}</h2>
+          <div className="report-inline-callout">
+            <p className="report-body text-stone-700 leading-relaxed">The listing does not provide enough cost data to estimate monthly ownership expenses.</p>
           </div>
         </div>
-      </div>
+      </section>
     );
   }
 
   return (
-    <div className="bg-white rounded-2xl p-6 sm:p-8 md:p-10 mb-8 border border-slate-200">
-      {/* Header */}
-      <div className="flex items-center gap-3 mb-6">
-        <div className="w-10 h-10 rounded-xl bg-violet-500/10 flex items-center justify-center shrink-0">
-          <DollarSign className="w-5 h-5 text-violet-600/70" />
-        </div>
-          <h2 className="text-xl sm:text-2xl font-bold text-slate-900">{sectionTitle}</h2>
-      </div>
+    <section className="report-space-section" id="report-section-carrying-costs">
+      <div className="report-hairline pt-8 sm:pt-12">
+        <ModuleAnchor index={5} total={12} label="Carrying Costs" />
+        <h2 className="report-display-2 text-stone-900 mb-6 sm:mb-8">{sectionTitle}</h2>
 
-      {/* Zillow Monthly Payment Breakdown */}
-      {hasBreakdown && (
-        <div className="space-y-1 mb-6">
-          {/* Total */}
-          {estimatedMonthlyPayment && (
-            <>
-              <div className="flex justify-between items-center py-2.5 border-b border-slate-200 mb-2">
-                <span className="text-sm font-semibold text-slate-900">Estimated Monthly Payment</span>
-                <span className="text-lg font-bold text-slate-900">{estimatedMonthlyPayment}</span>
-              </div>
-              {isDerived && (
-                <p className="text-xs text-slate-400 italic mb-3">Calculated from Zillow's listed payment components. Utilities are not included.</p>
-              )}
-            </>
-          )}
-          {/* Breakdown rows */}
-          {principalAndInterest && (
-            <div className="flex justify-between items-start py-1.5">
-              <span className="text-sm text-slate-500">Principal & Interest</span>
-              <span className="text-sm font-medium text-slate-700">{principalAndInterest}</span>
-            </div>
-          )}
-          {propertyTaxes && (
-            <div className="flex justify-between items-start py-1.5">
-              <span className="text-sm text-slate-500">Zillow Property Tax Estimate</span>
-              <span className="text-sm font-medium text-slate-700">{propertyTaxes}</span>
-            </div>
-          )}
-          {homeInsurance ? (
-            <div className="flex justify-between items-start py-1.5">
-              <span className="text-sm text-slate-500">Home Insurance Estimate</span>
-              <span className="text-sm font-medium text-slate-700">{homeInsurance}</span>
-            </div>
-          ) : (
-            <div className="flex justify-between items-start py-1.5">
-              <span className="text-sm text-slate-400">Home Insurance Estimate</span>
-              <span className="text-sm text-slate-400">Not provided</span>
-            </div>
-          )}
-          <div className="flex justify-between items-start py-1.5">
-            <span className="text-sm text-slate-400">HOA</span>
-            <span className="text-sm text-slate-400">{hoaFees || 'None'}</span>
-          </div>
-          {utilities && (
-            <div className="flex justify-between items-start py-1.5">
-              <span className="text-sm text-slate-400">Utilities</span>
-              <span className="text-sm text-slate-400">{utilities}</span>
-            </div>
-          )}
-          {/* Annual tax — separate from monthly breakdown; uses derived value if raw is anomalous */}
-          {effectiveAnnualTax && (
-            <div className="flex justify-between items-start py-1.5 border-t border-slate-100 mt-2 pt-2">
-              <span className="text-sm text-slate-600">Annual Tax</span>
-              <span className="text-sm font-medium text-slate-900">{effectiveAnnualTax}</span>
-            </div>
-          )}
-          {/* Disclaimer */}
-          <div className="mt-3 pt-2 border-t border-slate-100">
-            {hasBreakdown && estimatedMonthlyPayment ? (
-              <p className="text-xs text-slate-400 italic">
-                {isDerived
-                  ? 'Verify taxes, insurance, loan terms, and actual utility costs before relying on this number.'
-                  : `Zillow estimates monthly ownership cost around ${estimatedMonthlyPayment}, excluding utilities. Verify taxes, insurance, loan terms, and actual utility costs before relying on this number.`}
-              </p>
-            ) : (
-              <p className="text-xs text-slate-400 italic">This is a Zillow estimate, not a final ownership budget.</p>
+        {/* Costs row — paper-muted inline surface */}
+        {hasBreakdown && (
+          <div className="report-paper-muted px-5 py-6 sm:px-8 sm:py-8 mb-6">
+            {/* Total */}
+            {estimatedMonthlyPayment && (
+              <>
+                <div className="flex items-baseline justify-between gap-4 pb-4 mb-4 report-hairline-bottom">
+                  <span className="report-eyebrow text-stone-500">Estimated Monthly Payment</span>
+                  <span className="report-mono-num-sm text-stone-900">{estimatedMonthlyPayment}</span>
+                </div>
+                {isDerived && (
+                  <p className="report-caption text-stone-500 italic mb-4">Calculated from Zillow's listed payment components. Utilities are not included.</p>
+                )}
+              </>
             )}
-          </div>
-        </div>
-      )}
-
-      {/* Fallback: annual tax only (no monthly breakdown) — uses effectiveAnnualTax */}
-      {!hasBreakdown && effectiveAnnualTax && (
-        <div className="space-y-1 mb-6">
-          <div className="flex justify-between items-start py-1.5">
-            <span className="text-sm text-slate-600">Annual Tax</span>
-            <span className="text-sm font-medium text-slate-900">{effectiveAnnualTax}</span>
-          </div>
-          {monthlyTaxEquivalent && (
-            <div className="flex justify-between items-start py-1.5">
-              <span className="text-sm text-slate-600">Monthly Tax Equivalent</span>
-              <span className="text-sm font-medium text-slate-900">{monthlyTaxEquivalent}</span>
+            {/* Breakdown rows */}
+            <dl className="divide-y divide-stone-200/70">
+              {principalAndInterest && (
+                <div className="py-2 flex items-baseline justify-between gap-4">
+                  <dt className="report-body text-stone-600">Principal &amp; Interest</dt>
+                  <dd className="report-mono-num-sm text-stone-900">{principalAndInterest}</dd>
+                </div>
+              )}
+              {propertyTaxes && (
+                <div className="py-2 flex items-baseline justify-between gap-4">
+                  <dt className="report-body text-stone-600">Property Tax Estimate</dt>
+                  <dd className="report-mono-num-sm text-stone-900">{propertyTaxes}</dd>
+                </div>
+              )}
+              {homeInsurance ? (
+                <div className="py-2 flex items-baseline justify-between gap-4">
+                  <dt className="report-body text-stone-600">Home Insurance Estimate</dt>
+                  <dd className="report-mono-num-sm text-stone-900">{homeInsurance}</dd>
+                </div>
+              ) : (
+                <div className="py-2 flex items-baseline justify-between gap-4">
+                  <dt className="report-body text-stone-400">Home Insurance Estimate</dt>
+                  <dd className="report-body text-stone-400">Not provided</dd>
+                </div>
+              )}
+              <div className="py-2 flex items-baseline justify-between gap-4">
+                <dt className="report-body text-stone-600">HOA</dt>
+                <dd className="report-body text-stone-700">{hoaFees || 'None'}</dd>
+              </div>
+              {utilities && (
+                <div className="py-2 flex items-baseline justify-between gap-4">
+                  <dt className="report-body text-stone-600">Utilities</dt>
+                  <dd className="report-body text-stone-700">{utilities}</dd>
+                </div>
+              )}
+              {effectiveAnnualTax && (
+                <div className="py-2 flex items-baseline justify-between gap-4">
+                  <dt className="report-body text-stone-700">Annual Tax</dt>
+                  <dd className="report-mono-num-sm text-stone-900">{effectiveAnnualTax}</dd>
+                </div>
+              )}
+            </dl>
+            <div className="pt-4 mt-4 report-hairline">
+              {hasBreakdown && estimatedMonthlyPayment ? (
+                <p className="report-caption text-stone-500 italic">
+                  {isDerived
+                    ? 'Verify taxes, insurance, loan terms, and actual utility costs before relying on this number.'
+                    : `Zillow estimates monthly ownership cost around ${estimatedMonthlyPayment}, excluding utilities. Verify taxes, insurance, loan terms, and actual utility costs before relying on this number.`}
+                </p>
+              ) : (
+                <p className="report-caption text-stone-500 italic">This is a Zillow estimate, not a final ownership budget.</p>
+              )}
             </div>
-          )}
-        </div>
-      )}
-
-      {/* Missing costs */}
-      {!(hasBreakdown || effectiveAnnualTax) && (
-        <div className="rounded-xl p-4 bg-amber-50 border border-amber-200">
-          <div className="flex items-start gap-3">
-            <AlertTriangle className="w-4 h-4 text-amber-600 mt-0.5 shrink-0" />
-            <p className="text-amber-800 text-sm leading-relaxed">The listing does not provide enough cost data to estimate monthly ownership expenses.</p>
           </div>
-        </div>
-      )}
-    </div>
+        )}
+
+        {/* Fallback: annual tax only (no monthly breakdown) — uses effectiveAnnualTax */}
+        {!hasBreakdown && effectiveAnnualTax && (
+          <div className="report-paper-muted px-5 py-6 sm:px-8 sm:py-8 mb-6">
+            <dl className="divide-y divide-stone-200/70">
+              <div className="py-2 flex items-baseline justify-between gap-4">
+                <dt className="report-body text-stone-700">Annual Tax</dt>
+                <dd className="report-mono-num-sm text-stone-900">{effectiveAnnualTax}</dd>
+              </div>
+              {monthlyTaxEquivalent && (
+                <div className="py-2 flex items-baseline justify-between gap-4">
+                  <dt className="report-body text-stone-700">Monthly Tax Equivalent</dt>
+                  <dd className="report-mono-num-sm text-stone-900">{monthlyTaxEquivalent}</dd>
+                </div>
+              )}
+            </dl>
+          </div>
+        )}
+
+        {/* Missing costs */}
+        {!(hasBreakdown || effectiveAnnualTax) && (
+          <div className="report-inline-callout">
+            <p className="report-body text-stone-700 leading-relaxed">The listing does not provide enough cost data to estimate monthly ownership expenses.</p>
+          </div>
+        )}
+      </div>
+    </section>
   );
 }
 
@@ -2032,53 +2068,39 @@ function AgentSpinDecoderSection({ report, viewModel }: { report: NormalizedRepo
   }
 
   return (
-    <div className="bg-white rounded-2xl p-6 sm:p-8 md:p-10 mb-8 border border-slate-200">
-      <div className="flex items-center gap-3 mb-2">
-        <div className="w-10 h-10 rounded-xl bg-indigo-500/10 flex items-center justify-center shrink-0">
-          <FileSearch className="w-5 h-5 text-indigo-600/70" />
-        </div>
-        <div>
-          <h2 className="text-xl sm:text-2xl font-bold text-slate-900">Agent Spin Decoder</h2>
+    <section className="report-space-section" id="report-section-agent-spin">
+      <div className="report-hairline pt-8 sm:pt-12">
+        <ModuleAnchor index={11} total={12} label="Listing Language" />
+        <h2 className="report-display-2 text-stone-900 mb-2 sm:mb-3">Agent Spin Decoder</h2>
+        <p className="report-body text-stone-600 max-w-[65ch] mb-8 sm:mb-10">
+          What the listing language may really mean for a buyer.
+        </p>
+
+        <div className="space-y-8 sm:space-y-10">
+          {realityItems.map((item, i) => (
+            <article key={i} className={i < realityItems.length - 1 ? 'report-hairline-bottom pb-6 sm:pb-8' : ''}>
+              {/* Listing says */}
+              <div className="mb-3">
+                <div className="report-eyebrow text-stone-500 mb-1.5">Listing says</div>
+                <p className="report-body text-stone-800 italic font-medium leading-relaxed">&ldquo;{item.phrase}&rdquo;</p>
+              </div>
+
+              {/* HomeScope reads it as */}
+              <div className="mb-3">
+                <div className="report-eyebrow text-stone-500 mb-1.5">HomeScope reads it as</div>
+                <p className="report-body text-stone-700 leading-relaxed">{item.meaning}</p>
+              </div>
+
+              {/* Ask before viewing */}
+              <div>
+                <div className="report-eyebrow text-amber-700 mb-1.5">Ask before viewing</div>
+                <p className="report-body text-stone-700 leading-relaxed">{item.ask}</p>
+              </div>
+            </article>
+          ))}
         </div>
       </div>
-      <p className="text-slate-500 text-sm mb-6 sm:mb-8">
-        What the listing language may really mean for a buyer.
-      </p>
-
-      <div className="space-y-5 sm:space-y-6">
-        {realityItems.map((item, i) => (
-          <div key={i} className="rounded-xl border border-slate-200 overflow-hidden">
-            {/* Listing says */}
-            <div className="bg-slate-50 px-5 py-4 border-b border-slate-200">
-              <div className="text-[10px] font-semibold uppercase tracking-widest text-slate-500 mb-1">Listing says</div>
-              <p className="text-slate-800 text-sm font-medium italic">"{item.phrase}"</p>
-            </div>
-
-            {/* HomeScope reads it as */}
-            <div className="px-5 py-4 border-b border-slate-100">
-              <div className="flex items-start gap-2">
-                <Eye className="w-4 h-4 text-indigo-500 mt-0.5 shrink-0" />
-                <div>
-                  <div className="text-[10px] font-semibold uppercase tracking-widest text-slate-500 mb-1">HomeScope reads it as</div>
-                  <p className="text-slate-700 text-sm leading-relaxed">{item.meaning}</p>
-                </div>
-              </div>
-            </div>
-
-            {/* Ask */}
-            <div className="px-5 py-4 bg-amber-50/50">
-              <div className="flex items-start gap-2">
-                <CircleHelp className="w-4 h-4 text-amber-600 mt-0.5 shrink-0" />
-                <div>
-                  <div className="text-[10px] font-semibold uppercase tracking-widest text-amber-600 mb-1">Ask before viewing</div>
-                  <p className="text-slate-700 text-sm leading-relaxed">{item.ask}</p>
-                </div>
-              </div>
-            </div>
-          </div>
-        ))}
-      </div>
-    </div>
+    </section>
   );
 }
 
@@ -2157,65 +2179,52 @@ function WhoThisPropertyWorksForSection({ report }: { report: NormalizedReport }
   if (bestFor.length === 0 && notIdealFor.length === 0) return null;
 
   return (
-    <div className="bg-white rounded-2xl p-6 sm:p-8 md:p-10 mb-8 border border-slate-200">
-      <div className="flex items-center gap-3 mb-6">
-        <div className="w-10 h-10 rounded-xl bg-teal-500/10 flex items-center justify-center shrink-0">
-          <Home className="w-5 h-5 text-teal-600/70" />
-        </div>
-        <h2 className="text-xl sm:text-2xl font-bold text-slate-900">Who This Property Works For</h2>
-      </div>
+    <section className="report-space-section" id="report-section-fit">
+      <div className="report-hairline pt-8 sm:pt-12">
+        <ModuleAnchor index={12} total={12} label="Fit" />
+        <h2 className="report-display-2 text-stone-900 mb-3 sm:mb-4">Who This Property Works For</h2>
 
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-4 sm:gap-6 mb-5">
-        {/* Best for */}
-        {bestFor.length > 0 && (
-          <div className="rounded-xl bg-emerald-50 border border-emerald-100 p-5">
-            <div className="flex items-center gap-2 mb-3">
-              <ThumbsUp className="w-4 h-4 text-emerald-600" />
-              <span className="font-semibold text-emerald-800 uppercase text-xs tracking-wide">Best For</span>
-            </div>
-            <ul className="space-y-2">
-              {bestFor.map((item, i) => (
-                <li key={i} className="flex items-start gap-2 text-sm text-emerald-900">
-                  <CheckCircle2 className="w-3.5 h-3.5 text-emerald-500 mt-0.5 shrink-0" />
-                  <span>{item}</span>
-                </li>
-              ))}
-            </ul>
-          </div>
-        )}
-
-        {/* Not ideal for */}
-        {notIdealFor.length > 0 && (
-          <div className="rounded-xl bg-rose-50 border border-rose-100 p-5">
-            <div className="flex items-center gap-2 mb-3">
-              <Ban className="w-4 h-4 text-rose-600" />
-              <span className="font-semibold text-rose-800 uppercase text-xs tracking-wide">Not Ideal For</span>
-            </div>
-            <ul className="space-y-2">
-              {notIdealFor.map((item, i) => (
-                <li key={i} className="flex items-start gap-2 text-sm text-rose-900">
-                  <XCircle className="w-3.5 h-3.5 text-rose-500 mt-0.5 shrink-0" />
-                  <span>{item}</span>
-                </li>
-              ))}
-            </ul>
-          </div>
-        )}
-      </div>
-
-      {/* Why it matters */}
-      {whyItMatters && (
-        <div className="rounded-xl p-4 bg-slate-50 border border-slate-200">
-          <div className="flex items-start gap-2">
-            <Info className="w-4 h-4 text-slate-500 mt-0.5 shrink-0" />
+        <div className="max-w-none space-y-6 sm:space-y-8 mb-6">
+          {/* Best for */}
+          {bestFor.length > 0 && (
             <div>
-              <div className="font-semibold text-slate-700 text-sm mb-1">Why it matters</div>
-              <p className="text-slate-600 text-sm leading-relaxed">{whyItMatters}</p>
+              <div className="report-eyebrow text-emerald-700 mb-3">Best For</div>
+              <ul className="space-y-2">
+                {bestFor.map((item, i) => (
+                  <li key={i} className="report-body text-stone-800 flex items-start gap-2 leading-relaxed">
+                    <span className="text-stone-500 shrink-0 mt-1.5">·</span>
+                    <span className="min-w-0 break-words">{item}</span>
+                  </li>
+                ))}
+              </ul>
             </div>
-          </div>
+          )}
+
+          {/* Not ideal for */}
+          {notIdealFor.length > 0 && (
+            <div>
+              <div className="report-eyebrow text-rose-700 mb-3">Not Ideal For</div>
+              <ul className="space-y-2">
+                {notIdealFor.map((item, i) => (
+                  <li key={i} className="report-body text-stone-800 flex items-start gap-2 leading-relaxed">
+                    <span className="text-stone-500 shrink-0 mt-1.5">·</span>
+                    <span className="min-w-0 break-words">{item}</span>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
         </div>
-      )}
-    </div>
+
+        {/* Why it matters */}
+        {whyItMatters && (
+          <div className="report-inline-callout max-w-none">
+            <div className="report-eyebrow text-stone-700 mb-1.5">Why it matters</div>
+            <p className="report-body text-stone-700 leading-relaxed">{whyItMatters}</p>
+          </div>
+        )}
+      </div>
+    </section>
   );
 }
 
@@ -2581,53 +2590,47 @@ function QuestionsToAskSection({ report, viewModel, isBasic }: { report: Normali
   }
 
   return (
-    <div className="bg-white rounded-2xl p-6 sm:p-8 md:p-10 mb-8 border border-slate-200">
-      <div className="flex items-center gap-3 mb-2">
-        <div className="w-10 h-10 rounded-xl bg-sky-500/10 flex items-center justify-center shrink-0">
-          <ClipboardList className="w-5 h-5 text-sky-600/70" />
-        </div>
-        <h2 className="text-xl sm:text-2xl font-bold text-slate-900">Questions to Ask Before You View</h2>
-      </div>
-      <p className="text-slate-500 text-sm mb-4">
-        Use these before booking a viewing, contacting the agent, or making an offer.
-      </p>
+    <section className="report-space-section">
+      <div className="report-hairline pt-8 sm:pt-12">
+        <div className="report-eyebrow text-stone-500 mb-3 sm:mb-4">Questions</div>
+        <h2 className="report-display-2 text-stone-900 mb-2 sm:mb-3">Questions to Ask Before You View</h2>
+        <p className="report-body text-stone-600 mb-6">
+          Use these before booking a viewing, contacting the agent, or making an offer.
+        </p>
 
-      {/* Copy questions for agent — light secondary button below description */}
-      <button
-        type="button"
-        onClick={handleCopyQuestions}
-        className="w-full sm:w-auto inline-flex items-center justify-center gap-2 px-4 py-2 text-sm font-medium text-slate-600 bg-slate-50 hover:bg-slate-100 border border-slate-200 hover:border-slate-300 rounded-xl transition-colors cursor-pointer mb-6"
-      >
-        {copied ? (
-          <><CheckCircle2 className="w-4 h-4 text-emerald-500" />Questions copied</>
-        ) : (
-          <><Copy className="w-4 h-4" />Copy questions for agent</>
-        )}
-      </button>
+        {/* Copy questions for agent — inline secondary action */}
+        <button
+          type="button"
+          onClick={handleCopyQuestions}
+          className="inline-flex items-center justify-center gap-2 px-4 py-2 report-body font-medium text-stone-700 hover:text-stone-900 border-b border-stone-300 hover:border-stone-700 transition-colors cursor-pointer mb-8 sm:mb-10"
+        >
+          {copied ? (
+            <><CheckCircle2 className="w-4 h-4 text-emerald-600" />Questions copied</>
+          ) : (
+            <><Copy className="w-4 h-4" />Copy questions for agent</>
+          )}
+        </button>
 
-      <div className="space-y-3">
-        {finalQuestions.map((q, i) => (
-          <div key={i} className="flex items-start gap-3 p-4 rounded-xl bg-slate-50 border border-slate-200 hover:border-slate-300 transition-colors">
-            <div className="w-7 h-7 rounded-full bg-white border border-slate-200 flex items-center justify-center flex-shrink-0 mt-0.5">
-              <span className="text-xs font-bold text-slate-500">{i + 1}</span>
-            </div>
-            <div className="flex-1 min-w-0">
-              <div className="flex items-center gap-2 mb-1.5 flex-wrap">
-                <span className={`inline-flex items-center text-xs font-semibold px-2.5 py-0.5 rounded-full ${q.tagColor}`}>
-                  {q.tag}
-                </span>
+        <ol className="space-y-6 sm:space-y-8">
+          {finalQuestions.map((q, i) => (
+            <li key={i} className={i < finalQuestions.length - 1 ? 'report-hairline-bottom pb-6 sm:pb-8' : ''}>
+              <div className="flex items-baseline gap-3 mb-2 flex-wrap">
+                <span className="report-mono-num-sm text-stone-500 tabular-nums">{String(i + 1).padStart(2, '0')}</span>
+                {q.tag && (
+                  <span className="report-eyebrow text-stone-500">{q.tag}</span>
+                )}
               </div>
-              <p className="text-slate-800 text-sm leading-relaxed mb-0.5">{q.question}</p>
+              <p className="report-body text-stone-900 leading-relaxed">{q.question}</p>
               {q.whereToVerify && (
-                <p className="text-slate-500 text-xs">
+                <p className="report-caption text-stone-500 mt-2">
                   Where to verify: {q.whereToVerify}
                 </p>
               )}
-            </div>
-          </div>
-        ))}
+            </li>
+          ))}
+        </ol>
       </div>
-    </div>
+    </section>
   );
 }
 
@@ -2682,17 +2685,14 @@ function NextBestMoveSection({ report }: { report: NormalizedReport }) {
   }
 
   return (
-    <div className="rounded-2xl p-6 sm:p-8 md:p-10 mb-8 border-2" style={{ backgroundColor: '#282828', borderColor: '#DAA520' }}>
-      <div className="flex items-center gap-3 mb-4">
-        <div className="w-10 h-10 rounded-xl flex items-center justify-center shrink-0" style={{ backgroundColor: 'rgba(218, 165, 32, 0.2)' }}>
-          <Target className="w-5 h-5" style={{ color: '#DAA520' }} />
-        </div>
-        <h2 className="text-xl sm:text-2xl font-bold" style={{ color: '#DAA520' }}>Your Next Best Move</h2>
+    <section className="report-space-section">
+      <div className="report-ink-block px-6 py-8 sm:px-10 sm:py-10 md:px-12 md:py-12">
+        <div className="report-eyebrow text-amber-300 mb-3 sm:mb-4">Next Best Move</div>
+        <p className="report-lead text-stone-100 font-medium max-w-none">
+          {message}
+        </p>
       </div>
-      <p className="text-slate-200 text-base sm:text-lg leading-relaxed">
-        {message}
-      </p>
-    </div>
+    </section>
   );
 }
 
@@ -2964,7 +2964,7 @@ const RISK_CATEGORY_META: Record<RiskCategoryKey, { label: string; icon: React.R
   hidden_ownership_cost: { label: 'Hidden Cost',              icon: <Wallet size={18} strokeWidth={1.5} /> },
 };
 
-function RiskCategoriesSection({ report }: { report: NormalizedReport }) {
+function RiskCategoriesSection({ report, isExtension }: { report: NormalizedReport; isExtension?: boolean }) {
   // Sale-only section — uses foundation_basement/water_leaks/roof_exterior/hidden_ownership_cost.
   // Rent has its own RentalRiskCategoriesSection that uses rent lanes.
   if (report.meta?.reportMode === 'rent') return null;
@@ -3021,85 +3021,111 @@ function RiskCategoriesSection({ report }: { report: NormalizedReport }) {
     }
   };
 
+  const textForLevel = (level: RiskLevel): string => {
+    switch (level) {
+      case 'High':   return 'text-red-700';
+      case 'Medium': return 'text-amber-700';
+      case 'Low':    return 'text-green-700';
+      default:       return 'text-stone-700';
+    }
+  };
+
   return (
-    <div className="bg-white rounded-2xl p-5 border border-stone-100 shadow-[0_1px_4px_rgba(0,0,0,0.04)] animate-in fade-in slide-in-from-bottom-8 duration-700 ease-out mb-4">
-      <div className="flex items-center gap-3 mb-3">
-        <div className="w-10 h-10 rounded-xl bg-stone-100 flex items-center justify-center shrink-0">
-          <ShieldAlert size={18} className="text-stone-600" strokeWidth={1.5} />
+    <section className="report-space-section" id="report-section-risk-categories">
+      <div className="report-hairline pt-8 sm:pt-12">
+        <ModuleAnchor index={7} total={12} label="Risk Categories" />
+        <h2 className="report-display-2 text-stone-900 mb-2 sm:mb-3">Buyer-Advocate Risk Check</h2>
+        <p className="report-body text-stone-600 max-w-none mb-8 sm:mb-10">
+          Each category shows risk level, listing evidence, what&apos;s missing, and why it matters.
+        </p>
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 sm:gap-6">
+          {entries.map(({ key, meta, signal, evidence, missing, why, riskLevel, qs }) => {
+            const badge = badgeForLevel(riskLevel);
+            return (
+              <article key={key} className="report-paper-block p-5 sm:p-6" style={{ border: '1px solid var(--color-report-hairline)' }}>
+                {/* Card Header — extension: title row + status row (stacked).
+                   Web: original horizontal layout untouched. */}
+                <div className={isExtension ? 'mb-3' : 'flex items-start justify-between gap-2 mb-3'}>
+                  <div className="flex items-center gap-2 min-w-0">
+                    <div className="w-7 h-7 flex items-center justify-center text-stone-600 shrink-0">
+                      {meta.icon}
+                    </div>
+                    <span className="report-display-3 text-stone-900 leading-tight">{meta.label}</span>
+                  </div>
+                  {/* Status badge — extension: own row under the title, left-aligned to the title's text edge.
+                     Web: original right-aligned shrink-0 behaviour preserved. */}
+                  {isExtension ? (
+                    <div className="mt-1.5 ml-9">
+                      <div className="flex items-center gap-1.5">
+                        <span
+                          className={`w-2 h-2 rounded-full ${dotForLevel(riskLevel)}`}
+                          title={`Risk level: ${riskLevel}`}
+                          aria-label={`Risk level ${riskLevel}`}
+                        />
+                        <span className={`report-eyebrow px-2 py-0.5 ${textForLevel(riskLevel)}`}>
+                          {badge.label}
+                        </span>
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="flex items-center gap-1.5 shrink-0">
+                      <span
+                        className={`w-2 h-2 rounded-full ${dotForLevel(riskLevel)}`}
+                        title={`Risk level: ${riskLevel}`}
+                        aria-label={`Risk level ${riskLevel}`}
+                      />
+                      <span className={`report-eyebrow px-2 py-0.5 ${textForLevel(riskLevel)}`}>
+                        {badge.label}
+                      </span>
+                    </div>
+                  )}
+                </div>
+                <div className="space-y-3">
+                  {signal && (
+                    <div>
+                      <div className="report-field-label">Signal</div>
+                      <p className="report-body text-stone-800 font-medium leading-relaxed">{signal}</p>
+                    </div>
+                  )}
+                  <div>
+                      <div className="report-field-label">Listing Evidence</div>
+                      <p className="report-body text-stone-700 leading-relaxed">{evidence}</p>
+                    </div>
+                  {missing && (
+                    <div>
+                      <div className="report-field-label">Not Proven</div>
+                      <p className="report-body text-stone-600 leading-relaxed">{missing}</p>
+                    </div>
+                  )}
+                  {why && (
+                    <div>
+                      <div className="report-field-label">Why It Matters</div>
+                      <p className="report-body text-stone-600 leading-relaxed">{why}</p>
+                    </div>
+                  )}
+                  {qs.length > 0 && (
+                    <div>
+                      <div className="report-field-label">Ask</div>
+                      <ul className="space-y-1">
+                        {qs.slice(0, 4).map((q, i) => (
+                          <li key={i} className="report-body text-stone-700 flex items-start gap-1.5 leading-relaxed">
+                            <span className="text-stone-400 shrink-0">·</span>
+                            <span>{q}</span>
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+                  )}
+                </div>
+              </article>
+            );
+          })}
         </div>
-        <div className="flex-1 min-w-0">
-          <h3 className="text-sm font-semibold text-stone-900">Risk Categories</h3>
-          <p className="text-xs text-stone-500">Buyer-advocate 4-class risk check. Each category shows risk level, listing evidence, what's missing, and why it matters.</p>
-        </div>
+        <p className="report-caption text-stone-500 italic mt-6 max-w-none">
+          These are signals derived from listing facts and visible photos. They are not a structural inspection — verify with a licensed inspector and the listing agent before making an offer.
+        </p>
       </div>
-      <div className="grid grid-cols-1 @container[size>=640px]:grid-cols-2 gap-3">
-        {entries.map(({ key, meta, signal, evidence, missing, why, riskLevel, qs }) => {
-          const badge = badgeForLevel(riskLevel);
-          return (
-            <div key={key} className="rounded-xl border border-stone-200 bg-stone-50/40 p-4">
-              <div className="flex items-start justify-between gap-2 mb-2">
-                <div className="flex items-center gap-2">
-                  <div className="w-7 h-7 rounded-lg bg-white border border-stone-200 flex items-center justify-center text-stone-600 shrink-0">
-                    {meta.icon}
-                  </div>
-                  <span className="text-sm font-semibold text-stone-800 leading-tight">{meta.label}</span>
-                </div>
-                <div className="flex items-center gap-1.5">
-                  <span
-                    className={`w-2 h-2 rounded-full ${dotForLevel(riskLevel)}`}
-                    title={`Risk level: ${riskLevel}`}
-                    aria-label={`Risk level ${riskLevel}`}
-                  />
-                  <span className={`text-[10px] font-semibold uppercase tracking-wider px-2 py-0.5 rounded-md ${badge.cls}`}>
-                    {badge.label}
-                  </span>
-                </div>
-              </div>
-              <div className="space-y-2">
-                {signal && (
-                  <div>
-                    <div className="text-[10px] font-semibold uppercase tracking-wider text-stone-500 mb-0.5">Signal</div>
-                    <p className="text-xs text-stone-800 font-medium leading-relaxed">{signal}</p>
-                  </div>
-                )}
-                <div>
-                  <div className="text-[10px] font-semibold uppercase tracking-wider text-stone-500 mb-0.5">Listing evidence</div>
-                  <p className="text-xs text-stone-700 leading-relaxed">{evidence}</p>
-                </div>
-                {missing && (
-                  <div>
-                    <div className="text-[10px] font-semibold uppercase tracking-wider text-stone-500 mb-0.5">Not proven</div>
-                    <p className="text-xs text-stone-600 leading-relaxed">{missing}</p>
-                  </div>
-                )}
-                {why && (
-                  <div>
-                    <div className="text-[10px] font-semibold uppercase tracking-wider text-stone-500 mb-0.5">Why it matters</div>
-                    <p className="text-xs text-stone-600 leading-relaxed">{why}</p>
-                  </div>
-                )}
-                {qs.length > 0 && (
-                  <div>
-                    <div className="text-[10px] font-semibold uppercase tracking-wider text-stone-500 mb-0.5">Ask</div>
-                    <ul className="space-y-1">
-                      {qs.slice(0, 4).map((q, i) => (
-                        <li key={i} className="flex items-start gap-1.5 text-xs text-stone-700 leading-relaxed">
-                          <span className="text-stone-400 mt-0.5 shrink-0">•</span>
-                          <span>{q}</span>
-                        </li>
-                      ))}
-                    </ul>
-                  </div>
-                )}
-              </div>
-            </div>
-          );
-        })}
-      </div>
-      <div className="mt-3 text-[10px] text-stone-400 italic">
-        These are signals derived from listing facts and visible photos. They are not a structural inspection — verify with a licensed inspector and the listing agent before making an offer.
-      </div>
-    </div>
+    </section>
   );
 }
 
@@ -3116,25 +3142,22 @@ function ListingDoesNotProveSection({ report }: { report: NormalizedReport }) {
   if (items.length === 0) return null;
 
   return (
-    <div className="bg-white rounded-2xl p-5 border border-stone-100 shadow-[0_1px_4px_rgba(0,0,0,0.04)] animate-in fade-in slide-in-from-bottom-8 duration-700 ease-out mb-4">
-      <div className="flex items-center gap-3 mb-3">
-        <div className="w-10 h-10 rounded-xl bg-stone-100 flex items-center justify-center shrink-0">
-          <HelpCircle size={18} className="text-stone-600" strokeWidth={1.5} />
-        </div>
-        <div className="flex-1 min-w-0">
-          <h3 className="text-sm font-semibold text-stone-900">What the Listing Does Not Prove</h3>
-          <p className="text-xs text-stone-500">Key buyer-relevant facts this listing has not disclosed or documented.</p>
-        </div>
+    <section className="report-space-section" id="report-section-listing-does-not-prove">
+      <div className="report-hairline pt-8 sm:pt-12">
+        <ModuleAnchor index={8} total={12} label="What the listing does not prove" />
+        <p className="report-body text-stone-600 mb-6 sm:mb-8">
+          Key buyer-relevant facts this listing has not disclosed or documented.
+        </p>
+        <ul className="space-y-3">
+          {items.map((it, i) => (
+            <li key={i} className="report-body text-stone-800 flex items-start gap-2 leading-relaxed">
+              <span className="text-amber-500 shrink-0">·</span>
+              <span className="min-w-0 break-words">{it}</span>
+            </li>
+          ))}
+        </ul>
       </div>
-      <ul className="space-y-2">
-        {items.map((it, i) => (
-          <li key={i} className="flex items-start gap-2 p-3 bg-stone-50 rounded-xl">
-            <span className="shrink-0 mt-0.5 text-amber-500">•</span>
-            <span className="text-sm text-stone-700 leading-relaxed">{it}</span>
-          </li>
-        ))}
-      </ul>
-    </div>
+    </section>
   );
 }
 
@@ -3225,25 +3248,89 @@ function BeforeYouBookShowingSection({ report, viewModel }: { report: Normalized
   if (items.length < BYBS_MIN) return null;
 
   return (
-    <div className="bg-white rounded-2xl p-5 border border-stone-100 shadow-[0_1px_4px_rgba(0,0,0,0.04)] animate-in fade-in slide-in-from-bottom-8 duration-700 ease-out mb-4">
-      <div className="flex items-center gap-3 mb-3">
-        <div className="w-10 h-10 rounded-xl bg-stone-100 flex items-center justify-center shrink-0">
-          <HelpCircle size={18} className="text-stone-600" strokeWidth={1.5} />
-        </div>
-        <div className="flex-1 min-w-0">
-          <h3 className="text-sm font-semibold text-stone-900">Before You Book a Showing</h3>
-          <p className="text-xs text-stone-500">Ask the seller or listing agent before you book a showing. These questions target the risks the listing has not addressed.</p>
-        </div>
+    <>
+    <SectionRegistrar ids={['before-you-book-showing']} />
+    <section className="report-space-section" id="report-section-before-you-book">
+      <div className="report-hairline pt-8 sm:pt-12">
+        <ModuleAnchor index={9} total={12} label="Before You Book a Showing" />
+        <p className="report-body text-stone-600 mb-6 sm:mb-8">
+          Ask the seller or listing agent before you book a showing. These questions target the risks the listing has not addressed.
+        </p>
+        <ol className="space-y-6 sm:space-y-8">
+          {items.map((q, i) => (
+            <li key={i} className={i < items.length - 1 ? 'report-hairline-bottom pb-6 sm:pb-8' : ''}>
+              <div className="flex items-baseline gap-3 mb-2">
+                <span className="report-mono-num-sm text-stone-500 tabular-nums">Q{String(i + 1).padStart(2, '0')}</span>
+              </div>
+              <p className="report-body text-stone-900 leading-relaxed">{q}</p>
+            </li>
+          ))}
+        </ol>
       </div>
-      <div className="grid grid-cols-1 gap-3">
-        {items.map((q, i) => (
-          <div key={i} className="flex items-start gap-3 p-3 bg-stone-50 rounded-xl">
-            <span className="text-stone-400 text-sm font-medium shrink-0">Q{i + 1}.</span>
-            <span className="text-sm text-stone-700 leading-relaxed">{q}</span>
-          </div>
-        ))}
+    </section>
+    </>
+  );
+}
+
+// ── Deeper Due Diligence ─────────────────────────────────────────────────────
+
+const DDD_MAX = 12;
+const DDD_MIN = 1;
+
+function DeeperDueDiligenceSection({ report, isExtension }: { report: NormalizedReport; isExtension?: boolean }) {
+  // Sale-only section — uses deeper_due_diligence which only exists in sale reports.
+  if (report.meta?.reportMode === 'rent') return null;
+  // Schema-based guard.
+  const raw = (report.raw as any) ?? {};
+  if (raw.rental_snapshot || raw.rental_listing_score) return null;
+  if (!Array.isArray(raw.deeper_due_diligence)) return null;
+
+  const items = raw.deeper_due_diligence
+    .filter((x: unknown): x is string => typeof x === 'string' && x.trim().length > 0)
+    .slice(0, DDD_MAX);
+  if (items.length < DDD_MIN) return null;
+
+  return (
+    <>
+    <SectionRegistrar ids={['deeper-due-diligence']} />
+    <section className="report-space-section" id="report-section-deeper-due-diligence">
+      <div className="report-hairline pt-8 sm:pt-12">
+        <ModuleAnchor index={10} total={12} label="Deeper Due Diligence" />
+        <p className="report-body text-stone-600 mb-6 sm:mb-8">
+          Verification items to pursue after deciding to visit — documents, professional inspections, and detailed checks.
+        </p>
+        <ol className="space-y-6 sm:space-y-8">
+          {items.map((s: string, i: number) => (
+            <li key={i} className={i < items.length - 1 ? 'report-hairline-bottom pb-6 sm:pb-8' : ''}>
+              {/* Extension: stacked layout (main text row + badge row, left-aligned).
+                 Web: original horizontal layout untouched. */}
+              {isExtension ? (
+                <>
+                  <div className="mb-2">
+                    <p className="report-body text-stone-900 leading-relaxed">{s}</p>
+                  </div>
+                  <div>
+                    <span className="report-badge report-badge-info">
+                      VERIFY DEEPER
+                    </span>
+                  </div>
+                </>
+              ) : (
+                <>
+                  <div className="flex items-start justify-between gap-3 mb-2">
+                    <p className="report-body text-stone-900 leading-relaxed flex-1 min-w-0">{s}</p>
+                    <span className="shrink-0 report-badge report-badge-info">
+                      VERIFY DEEPER
+                    </span>
+                  </div>
+                </>
+              )}
+            </li>
+          ))}
+        </ol>
       </div>
-    </div>
+    </section>
+    </>
   );
 }
 
@@ -3426,69 +3513,65 @@ function LocationRealityCheckSection({ report }: { report: NormalizedReport }) {
   if (claimList.length === 0 && allVerify.length === 0) return null;
 
   return (
-    <div className="bg-white rounded-2xl p-6 sm:p-8 md:p-10 border border-slate-200 mb-8">
-      {/* Header */}
-      <div className="flex items-center gap-3 mb-4">
-        <div className="w-10 h-10 rounded-xl bg-pink-500/10 flex items-center justify-center shrink-0">
-          <MapPin className="w-5 h-5 text-pink-600/70" />
-        </div>
-        <div>
-          <h2 className="text-xl sm:text-2xl font-bold text-slate-900">Location Reality Check</h2>
-          <p className="text-xs text-slate-500 mt-0.5">Based on listing claims, not independently verified.</p>
-        </div>
+    <section className="report-space-section" id="report-section-location-reality">
+      <div className="report-hairline pt-8 sm:pt-12">
+        {/* Header — Module Anchor for scannability */}
+        <ModuleAnchor index={6} total={12} label="Location" />
+        <h2 className="report-display-2 text-stone-900 mb-2 sm:mb-3">Location Reality Check</h2>
+        <p className="report-caption text-stone-500 mb-6 sm:mb-8">Based on listing claims, not independently verified.</p>
+
+        {/* What the listing claims */}
+        {claimList.length > 0 && (
+          <div className="mb-6 sm:mb-8">
+            <div className="report-field-label">What the Listing Claims</div>
+            <ul className="space-y-2">
+              {claimList.map((claim, i) => (
+                <li key={i} className="report-body text-stone-700 flex items-start gap-2 leading-relaxed">
+                  <span className="text-stone-500 shrink-0 mt-1.5">+</span>
+                  {claim}
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
+
+        {/* What this could mean */}
+        {whatItMeans && (
+          <div className="report-inline-callout mb-6 sm:mb-8">
+            <div className="report-eyebrow text-amber-700 mb-1.5">What this could mean</div>
+            <p className="report-body text-stone-700 leading-relaxed">{whatItMeans}</p>
+          </div>
+        )}
+
+        {/* What to verify */}
+        {allVerify.length > 0 && (
+          <div>
+            <div className="report-field-label">What to Verify</div>
+            <ul className="space-y-2">
+              {allVerify.slice(0, 6).map((item, i) => (
+                <li key={i} className="report-body text-stone-700 flex items-start gap-2 leading-relaxed">
+                  <span className="text-sky-700 shrink-0 mt-1.5">?</span>
+                  <span className="min-w-0 break-words">{item}</span>
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
       </div>
-
-      {/* What the listing claims */}
-      {claimList.length > 0 && (
-        <div className="mb-6">
-          <div className="text-sm font-semibold text-slate-700 mb-2">What the listing claims</div>
-          <ul className="space-y-1.5">
-            {claimList.map((claim, i) => (
-              <li key={i} className="flex items-start gap-2 text-sm text-slate-700">
-                <span className="text-emerald-500 mt-0.5 shrink-0">+</span>
-                {claim}
-              </li>
-            ))}
-          </ul>
-        </div>
-      )}
-
-      {/* What this could mean */}
-      {whatItMeans && (
-        <div className="mb-6 p-4 bg-amber-50 border border-amber-200 rounded-xl">
-          <div className="text-xs font-semibold text-amber-700 mb-1.5">What this could mean</div>
-          <p className="text-sm text-amber-800 leading-relaxed">{whatItMeans}</p>
-        </div>
-      )}
-
-      {/* What to verify */}
-      {allVerify.length > 0 && (
-        <div>
-          <div className="text-sm font-semibold text-slate-700 mb-2">What to verify</div>
-          <ul className="space-y-2">
-            {allVerify.slice(0, 6).map((item, i) => (
-              <li key={i} className="flex items-start gap-2 text-sm text-slate-700">
-                <span className="text-sky-500 mt-0.5 shrink-0">?</span>
-                {item}
-              </li>
-            ))}
-          </ul>
-        </div>
-      )}
-    </div>
+    </section>
   );
 }
 
 // ── Generic Section Card ────────────────────────────────────────────────────
 
-const GENERIC_SEVERITY: Record<string, { bg: string; text: string }> = {
-  low:      { bg: 'bg-green-100', text: 'text-green-700' },
-  medium:   { bg: 'bg-amber-100', text: 'text-amber-700' },
-  high:     { bg: 'bg-rose-100',  text: 'text-rose-700' },
-  critical: { bg: 'bg-rose-200',  text: 'text-rose-800' },
+const GENERIC_SEVERITY_TEXT: Record<string, string> = {
+  low:      'text-green-700',
+  medium:   'text-amber-700',
+  high:     'text-red-700',
+  critical: 'text-red-800',
 };
 
-function GenericSectionCard({ section }: { section: ReportSection }) {
+function GenericSectionCard({ section, isExtension }: { section: ReportSection; isExtension?: boolean }) {
   const items = section.items
     .map((item) => ({
       title: renderValue(item.title),
@@ -3505,43 +3588,58 @@ function GenericSectionCard({ section }: { section: ReportSection }) {
   if (items.length === 0) return null;
 
   return (
-    <div className="bg-white rounded-2xl p-6 sm:p-8 md:p-10 mb-8 border border-slate-200 overflow-hidden">
-      <div className="flex items-center gap-3 mb-5 sm:mb-6">
-        <div className="w-10 h-10 rounded-xl bg-slate-100 flex items-center justify-center shrink-0">
-          <span className="text-stone-500">{iconFor(section.id, 'w-5 h-5')}</span>
-        </div>
-        <div className="min-w-0">
-          <h2 className="text-lg sm:text-xl font-bold text-slate-900">{renderValue(section.title)}</h2>
-          {section.subtitle && <p className="text-xs text-stone-400 mt-0.5">{renderValue(section.subtitle)}</p>}
-        </div>
-      </div>
+    <section className="report-space-section">
+      <div className="report-hairline pt-8 sm:pt-12">
+        <div className="report-eyebrow text-stone-500 mb-3 sm:mb-4">Detail</div>
+        <h2 className="report-display-2 text-stone-900 mb-2 sm:mb-3">{renderValue(section.title)}</h2>
+        {section.subtitle && <p className="report-body text-stone-600 mb-6 sm:mb-8">{renderValue(section.subtitle)}</p>}
 
-      <div className="divide-y divide-slate-100">
-        {items.map((item, i) => {
-          const sevKey = (item.severity ?? item.badge ?? '').toLowerCase();
-          const sevCfg = GENERIC_SEVERITY[sevKey];
-
-          return (
-            <div key={i} className="py-3 first:pt-0 last:pb-0">
-              <div className="flex items-start justify-between gap-4 flex-wrap">
-                <div className="flex-1 min-w-0">
-                  <span className="text-sm font-medium text-slate-700">{item.title}</span>
-                  {item.value && <span className="ml-2 text-sm font-semibold text-slate-900">{item.value}</span>}
-                </div>
-                {sevCfg ? (
-                  <span className={`inline-flex items-center text-xs font-bold px-3 py-1 rounded-full uppercase tracking-wide ${sevCfg.bg} ${sevCfg.text}`}>
-                    {item.badge ?? item.severity}
-                  </span>
-                ) : item.badge ? (
-                  <SeverityPill value={item.badge} />
-                ) : null}
+        <div>
+          {items.map((item, i) => {
+            const sevKey = (item.severity ?? item.badge ?? '').toLowerCase();
+            const sevText = GENERIC_SEVERITY_TEXT[sevKey];
+            const badgeNode = sevText ? (
+              <span className={`report-eyebrow ${sevText}`}>
+                {item.badge ?? item.severity}
+              </span>
+            ) : item.badge ? (
+              <SeverityPill value={item.badge} />
+            ) : null;
+            return (
+              <div key={i} className={`py-4 sm:py-5 ${i < items.length - 1 ? 'report-hairline-bottom' : ''}`}>
+                {/* Extension: stacked layout (main text row + badge row, left-aligned).
+                   Web: original horizontal layout untouched. */}
+                {isExtension ? (
+                  <>
+                    <div className="mb-1.5">
+                      <span className="report-display-3 text-stone-900">{item.title}</span>
+                      {item.value && <span className="ml-2 report-body font-semibold text-stone-900">{item.value}</span>}
+                    </div>
+                    {badgeNode && (
+                      <div className="mt-1.5">
+                        {badgeNode}
+                      </div>
+                    )}
+                    {item.description && <p className="report-body text-stone-700 leading-relaxed mt-1.5">{item.description}</p>}
+                  </>
+                ) : (
+                  <>
+                    <div className="flex items-start justify-between gap-4 flex-wrap mb-1.5">
+                      <div className="flex-1 min-w-0">
+                        <span className="report-display-3 text-stone-900">{item.title}</span>
+                        {item.value && <span className="ml-2 report-body font-semibold text-stone-900">{item.value}</span>}
+                      </div>
+                      {badgeNode}
+                    </div>
+                    {item.description && <p className="report-body text-stone-700 leading-relaxed">{item.description}</p>}
+                  </>
+                )}
               </div>
-              {item.description && <p className="text-xs text-stone-400 mt-1 leading-relaxed">{item.description}</p>}
-            </div>
-          );
-        })}
+            );
+          })}
+        </div>
       </div>
-    </div>
+    </section>
   );
 }
 
@@ -3724,96 +3822,95 @@ function BuildingRentSection({ report }: { report: NormalizedReport }) {
   return (
     <>
       <SectionRegistrar ids={['building-rent']} />
-      <div
+      <section
         id="building-rent"
         data-testid="building-rent-section"
-        className="rounded-2xl border border-slate-200 bg-white p-6 sm:p-8 md:p-10 mb-8"
+        className="report-space-section"
       >
-        <div className="flex items-center gap-3 mb-2">
-          <BuildingIcon />
-          <h2 className="text-lg sm:text-xl font-bold text-slate-900">
+        <div className="report-hairline pt-8 sm:pt-12">
+          <div className="report-eyebrow text-stone-500 mb-3 sm:mb-4">Building</div>
+          <h2 className="report-display-2 text-stone-900 mb-2 sm:mb-3">
             Building &amp; Availability
           </h2>
-        </div>
-        <p className="text-xs text-stone-400 mb-5 sm:mb-6">
-          Listing-level facts only. Photos may represent different units or
-          floor plan variants.
-        </p>
+          <p className="report-caption text-stone-500 mb-6 sm:mb-8">
+            Listing-level facts only. Photos may represent different units or
+            floor plan variants.
+          </p>
 
-        {hasAvailability && (
-          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 mb-6">
-            <div className="rounded-xl bg-stone-50 p-4">
-              <div className="text-[10px] font-semibold uppercase tracking-widest text-stone-500">
-                Total available units
+          {hasAvailability && (
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 sm:gap-6 mb-6 sm:mb-8">
+              <div className="report-paper-muted p-4 sm:p-5">
+                <div className="report-eyebrow text-stone-500 mb-2">
+                  Total available units
+                </div>
+                <div className="report-mono-num-sm text-slate-900">
+                  {availableUnitCount > 0 ? availableUnitCount : '—'}
+                </div>
+                <div className="report-caption text-stone-500">
+                  Across {floorPlans.length || '—'} floor plan
+                  {floorPlans.length === 1 ? '' : 's'}
+                </div>
               </div>
-              <div className="text-lg font-semibold text-slate-900">
-                {availableUnitCount > 0 ? availableUnitCount : '—'}
+              <div className="report-paper-muted p-4 sm:p-5">
+                <div className="report-eyebrow text-stone-500 mb-2">
+                  Identified specific units
+                </div>
+                <div className="report-mono-num-sm text-slate-900">
+                  {identifiedUnitCount > 0 ? identifiedUnitCount : '—'}
+                </div>
+                <div className="report-caption text-stone-500">
+                  Concrete unit numbers listed
+                </div>
               </div>
-              <div className="text-xs text-stone-500">
-                Across {floorPlans.length || '—'} floor plan
-                {floorPlans.length === 1 ? '' : 's'}
-              </div>
+              {firstFloorPlan && (
+                <div className="report-paper-muted p-4 sm:p-5">
+                  <div className="report-eyebrow text-stone-500 mb-2">
+                    Floor plan types
+                  </div>
+                  <div className="report-mono-num-sm text-slate-900">
+                    {floorPlans.length}
+                  </div>
+                  <div className="report-caption text-stone-500">
+                    {floorPlans
+                      .map((fp) => fp.planName ?? fp.name ?? 'Unnamed')
+                      .filter(Boolean)
+                      .join(' · ')}
+                  </div>
+                </div>
+              )}
             </div>
-            <div className="rounded-xl bg-stone-50 p-4">
-              <div className="text-[10px] font-semibold uppercase tracking-widest text-stone-500">
-                Identified specific units
-              </div>
-              <div className="text-lg font-semibold text-slate-900">
-                {identifiedUnitCount > 0 ? identifiedUnitCount : '—'}
-              </div>
-              <div className="text-xs text-stone-500">
-                Concrete unit numbers listed
-              </div>
-            </div>
-            {firstFloorPlan && (
-              <div className="rounded-xl bg-stone-50 p-4">
-                <div className="text-[10px] font-semibold uppercase tracking-widest text-stone-500">
-                  Floor plan types
-                </div>
-                <div className="text-lg font-semibold text-slate-900">
-                  {floorPlans.length}
-                </div>
-                <div className="text-xs text-stone-500">
-                  {floorPlans
-                    .map((fp) => fp.planName ?? fp.name ?? 'Unnamed')
-                    .filter(Boolean)
-                    .join(' · ')}
-                </div>
-              </div>
-            )}
-          </div>
-        )}
+          )}
 
         {showSpecificUnitBlock && representativeUnit && (
-          <div className="rounded-xl border border-slate-200 bg-slate-50 p-4 mb-6">
-            <div className="text-[10px] font-semibold uppercase tracking-widest text-stone-500 mb-2">
+          <div className="report-paper-block p-5 sm:p-6 mb-6 sm:mb-8 max-w-none" style={{ border: '1px solid var(--color-report-hairline)' }}>
+            <div className="report-eyebrow text-stone-500 mb-2">
               Identified unit example
             </div>
             <div className="flex flex-wrap items-baseline gap-2">
-              <span className="text-base font-semibold text-slate-900">
+              <span className="report-display-3 text-slate-900">
                 {representativeUnit.unitNumber ?? representativeUnit.name ?? representativeUnit.unitId ?? 'Unit'}
               </span>
               {representativeUnitLabel && (
-                <span className="text-sm text-slate-600">{representativeUnitLabel}</span>
+                <span className="report-body text-slate-600">{representativeUnitLabel}</span>
               )}
               {representativeUnit.sqft != null && (
-                <span className="text-sm text-slate-600">
+                <span className="report-body text-slate-600">
                   {representativeUnit.sqft.toLocaleString()} sqft
                 </span>
               )}
               {representativeUnit.monthlyRent != null && (
-                <span className="text-sm font-semibold text-slate-900 ml-auto">
+                <span className="report-mono-num-sm text-slate-900 ml-auto">
                   ${representativeUnit.monthlyRent.toLocaleString()}/mo
                 </span>
               )}
             </div>
             {representativeUnit.availableFrom && (
-              <div className="text-xs text-stone-500 mt-1">
+              <div className="report-caption text-stone-500 mt-1">
                 Available from {representativeUnit.availableFrom}
               </div>
             )}
             {availableUnits.length > 1 && (
-              <div className="text-xs text-stone-500 mt-2">
+              <div className="report-caption text-stone-500 mt-2">
                 + {availableUnits.length - 1} more identified unit
                 {availableUnits.length - 1 === 1 ? '' : 's'} (details vary per unit)
               </div>
@@ -3822,41 +3919,41 @@ function BuildingRentSection({ report }: { report: NormalizedReport }) {
         )}
 
         {hasAnyFloorPlanFact && (
-          <div className="mb-6">
-            <div className="text-[10px] font-semibold uppercase tracking-widest text-stone-500 mb-2">
+          <div className="mb-6 sm:mb-8">
+            <div className="report-eyebrow text-stone-500 mb-3">
               Recurring monthly cost
             </div>
-            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-              <div className="rounded-xl bg-stone-50 p-4">
-                <div className="text-[10px] font-semibold uppercase tracking-widest text-stone-500">
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 sm:gap-6">
+              <div className="report-paper-muted p-4 sm:p-5">
+                <div className="report-eyebrow text-stone-500 mb-2">
                   Advertised total price
                 </div>
-                <div className="text-base font-semibold text-slate-900">
+                <div className="report-mono-num-sm text-slate-900">
                   {advertisedPriceRange ?? 'Not listed'}
                 </div>
               </div>
-              <div className="rounded-xl bg-stone-50 p-4">
-                <div className="text-[10px] font-semibold uppercase tracking-widest text-stone-500">
+              <div className="report-paper-muted p-4 sm:p-5">
+                <div className="report-eyebrow text-stone-500 mb-2">
                   Base rent
                 </div>
-                <div className="text-base font-semibold text-slate-900">
+                <div className="report-mono-num-sm text-slate-900">
                   {baseRentRange ?? 'Not listed'}
                 </div>
               </div>
-              <div className="rounded-xl bg-stone-50 p-4">
-                <div className="text-[10px] font-semibold uppercase tracking-widest text-stone-500">
+              <div className="report-paper-muted p-4 sm:p-5">
+                <div className="report-eyebrow text-stone-500 mb-2">
                   Required monthly fees
                 </div>
-                <div className="text-base font-semibold text-slate-900">
+                <div className="report-mono-num-sm text-slate-900">
                   {feeRange ?? 'Not listed'}
                 </div>
                 {floorPlanRollupFeesIncluded === true && (
-                  <div className="text-xs text-emerald-700 mt-1">
+                  <div className="report-caption text-emerald-700 mt-2">
                     Required fees are already included in the listed price.
                   </div>
                 )}
                 {floorPlanRollupFeesIncluded === false && (
-                  <div className="text-xs text-amber-700 mt-1">
+                  <div className="report-caption text-amber-700 mt-2">
                     Required fees are not included in the listed price.
                   </div>
                 )}
@@ -3866,36 +3963,36 @@ function BuildingRentSection({ report }: { report: NormalizedReport }) {
         )}
 
         {hasCalculator && rentalCostCalculator && (
-          <div className="mb-6">
-            <div className="text-[10px] font-semibold uppercase tracking-widest text-stone-500 mb-2">
+          <div className="mb-6 sm:mb-8">
+            <div className="report-eyebrow text-stone-500 mb-3">
               Upfront application costs
             </div>
-            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-              <div className="rounded-xl bg-stone-50 p-4">
-                <div className="text-[10px] font-semibold uppercase tracking-widest text-stone-500">
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 sm:gap-6">
+              <div className="report-paper-muted p-4 sm:p-5">
+                <div className="report-eyebrow text-stone-500 mb-2">
                   Application
                 </div>
-                <div className="text-base font-semibold text-slate-900">
+                <div className="report-mono-num-sm text-slate-900">
                   {rentalCostCalculator.applicationCost != null
                     ? `$${rentalCostCalculator.applicationCost.toLocaleString()}`
                     : 'Not listed'}
                 </div>
               </div>
-              <div className="rounded-xl bg-stone-50 p-4">
-                <div className="text-[10px] font-semibold uppercase tracking-widest text-stone-500">
+              <div className="report-paper-muted p-4 sm:p-5">
+                <div className="report-eyebrow text-stone-500 mb-2">
                   Holding
                 </div>
-                <div className="text-base font-semibold text-slate-900">
+                <div className="report-mono-num-sm text-slate-900">
                   {rentalCostCalculator.holdingCost != null
                     ? `$${rentalCostCalculator.holdingCost.toLocaleString()}`
                     : 'Not listed'}
                 </div>
               </div>
-              <div className="rounded-xl bg-stone-50 p-4">
-                <div className="text-[10px] font-semibold uppercase tracking-widest text-stone-500">
+              <div className="report-paper-muted p-4 sm:p-5">
+                <div className="report-eyebrow text-stone-500 mb-2">
                   Total application cost
                 </div>
-                <div className="text-base font-semibold text-slate-900">
+                <div className="report-mono-num-sm text-slate-900">
                   {rentalCostCalculator.totalApplicationCost != null
                     ? `$${rentalCostCalculator.totalApplicationCost.toLocaleString()}`
                     : 'Not listed'}
@@ -3903,25 +4000,25 @@ function BuildingRentSection({ report }: { report: NormalizedReport }) {
               </div>
             </div>
             {totalMonthlyRange && (
-              <div className="text-xs text-stone-500 mt-2">
-                Calculator's estimated monthly range: {totalMonthlyRange}
+              <div className="report-caption text-stone-500 mt-3">
+                Calculator&apos;s estimated monthly range: {totalMonthlyRange}
               </div>
             )}
             {rentalCostCalculator.variableReimbursements &&
               rentalCostCalculator.variableReimbursements.length > 0 && (
-                <div className="mt-3 rounded-xl border border-amber-200 bg-amber-50 p-4">
-                  <div className="text-[10px] font-semibold uppercase tracking-widest text-amber-700 mb-2">
+                <div className="mt-4 report-inline-callout">
+                  <div className="report-eyebrow text-amber-700 mb-2">
                     Variable / unresolved monthly costs
                   </div>
                   <ul className="space-y-1">
                     {rentalCostCalculator.variableReimbursements.map((label, idx) => (
-                      <li key={idx} className="text-sm text-amber-900">
+                      <li key={idx} className="report-body text-amber-900">
                         {label}: <strong>varies</strong>
                       </li>
                     ))}
                   </ul>
-                  <div className="text-xs text-amber-700 mt-2">
-                    These are listed as "Varies" by the building; the exact
+                  <div className="report-caption text-amber-700 mt-2">
+                    These are listed as &ldquo;Varies&rdquo; by the building; the exact
                     monthly amount is not disclosed.
                   </div>
                 </div>
@@ -3930,24 +4027,25 @@ function BuildingRentSection({ report }: { report: NormalizedReport }) {
         )}
 
         {hasOffers && (
-          <div className="rounded-xl border border-emerald-200 bg-emerald-50 p-4">
-            <div className="text-[10px] font-semibold uppercase tracking-widest text-emerald-700 mb-2">
+          <div className="report-inline-callout max-w-none">
+            <div className="report-eyebrow text-emerald-700 mb-2">
               Special offer
             </div>
             <ul className="space-y-1">
               {specialOfferLines.map((line, idx) => (
-                <li key={idx} className="text-sm text-emerald-900">
+                <li key={idx} className="report-body text-emerald-900">
                   {line}
                 </li>
               ))}
             </ul>
-            <div className="text-xs text-emerald-700 mt-2">
+            <div className="report-caption text-emerald-700 mt-2">
               Conditions apply. The offer is not converted into a permanent
               monthly rent discount.
             </div>
           </div>
         )}
-      </div>
+        </div>
+      </section>
     </>
   );
 }
@@ -3978,48 +4076,64 @@ function _RentSection({
   const section = report.sections.find((s) => s.id === sectionId);
   if (!section || section.items.length === 0) return null;
 
-  const toneClass = tone === 'warning' ? 'border-amber-200 bg-amber-50/30' : 'border-slate-200 bg-white';
-
   return (
     <>
     {/* Register sectionId so _RemainingSections won't render it twice */}
     <SectionRegistrar ids={[sectionId]} />
-    <div className={`rounded-2xl p-6 sm:p-8 md:p-10 mb-8 border ${toneClass}`}>
-      <div className="flex items-center gap-3 mb-2">
-        <h2 className="text-lg sm:text-xl font-bold text-slate-900">{title}</h2>
+    <section className="report-space-section">
+      <div className="report-hairline pt-8 sm:pt-12">
+        <div className="report-eyebrow text-stone-500 mb-3 sm:mb-4">{title}</div>
+        {subtitle && <p className="report-body text-stone-600 max-w-none mb-6 sm:mb-8">{subtitle}</p>}
+        {children(section as any)}
       </div>
-      {subtitle && <p className="text-xs text-stone-400 mb-5 sm:mb-6">{subtitle}</p>}
-      {children(section as any)}
-    </div>
+    </section>
     </>
   );
 }
 
-function _RentKVBlock({ items }: { items: { title?: string; value?: string; description?: string; badge?: string; severity?: 'low' | 'medium' | 'high' }[] }) {
+function _RentKVBlock({ items, isExtension }: { items: { title?: string; value?: string; description?: string; badge?: string; severity?: 'low' | 'medium' | 'high' }[]; isExtension?: boolean }) {
   if (!items || items.length === 0) return null;
   return (
-    <div className="divide-y divide-slate-100">
+    <div className="max-w-none">
       {items.map((it, i) => {
         const sevKey = (it.severity ?? it.badge ?? '').toLowerCase();
-        const sevClass =
+        const sevText =
           sevKey === 'high' || sevKey === 'critical'
-            ? 'bg-rose-50 text-rose-700 border-rose-200'
+            ? 'text-red-700'
             : sevKey === 'medium' || sevKey === 'moderate'
-              ? 'bg-amber-50 text-amber-700 border-amber-200'
+              ? 'text-amber-700'
               : sevKey === 'low'
-                ? 'bg-emerald-50 text-emerald-700 border-emerald-200'
-                : 'bg-slate-50 text-slate-600 border-slate-200';
+                ? 'text-emerald-700'
+                : 'text-stone-600';
+        const badgeNode = it.badge ? (
+          <span className={`report-eyebrow ${sevText}`}>
+            {it.badge}
+          </span>
+        ) : null;
         return (
-          <div key={i} className="py-3 first:pt-0 last:pb-0 flex items-start justify-between gap-3 flex-wrap">
-            <div className="flex-1 min-w-0">
-              {it.title && <span className="text-sm font-medium text-slate-700">{it.title}</span>}
-              {it.value && <span className="ml-2 text-sm font-semibold text-slate-900">{it.value}</span>}
-              {it.description && <p className="text-xs text-stone-500 mt-1 leading-relaxed">{it.description}</p>}
-            </div>
-            {it.badge && (
-              <span className={`inline-flex items-center text-[10px] font-bold uppercase tracking-wide px-2.5 py-1 rounded-full border ${sevClass}`}>
-                {it.badge}
-              </span>
+          <div key={i} className={`py-4 sm:py-5 ${i < items.length - 1 ? 'report-hairline-bottom' : ''}`}>
+            {/* Extension: stacked layout (main text row + badge row, left-aligned).
+               Web: original horizontal layout untouched. */}
+            {isExtension ? (
+              <>
+                <div className="mb-1.5">
+                  {it.title && <span className="report-display-3 text-stone-900">{it.title}</span>}
+                  {it.value && <span className="ml-2 report-body font-semibold text-stone-900">{it.value}</span>}
+                </div>
+                {badgeNode && <div className="mt-1.5">{badgeNode}</div>}
+                {it.description && <p className="report-body text-stone-700 leading-relaxed mt-1.5">{it.description}</p>}
+              </>
+            ) : (
+              <>
+                <div className="flex items-start justify-between gap-3 flex-wrap mb-1.5">
+                  <div className="flex-1 min-w-0">
+                    {it.title && <span className="report-display-3 text-stone-900">{it.title}</span>}
+                    {it.value && <span className="ml-2 report-body font-semibold text-stone-900">{it.value}</span>}
+                  </div>
+                  {badgeNode}
+                </div>
+                {it.description && <p className="report-body text-stone-700 leading-relaxed">{it.description}</p>}
+              </>
             )}
           </div>
         );
@@ -4031,7 +4145,7 @@ function _RentKVBlock({ items }: { items: { title?: string; value?: string; desc
 function RentalListingScoreSection({ report }: { report: NormalizedReport }) {
   return (
     <_RentSection report={report} sectionId="rental-score" title="Rental Listing Score" subtitle="Is this listing worth your time?">
-      {(s) => <_RentKVBlock items={s.items} />}
+      {(s) => <_RentKVBlock items={s.items} isExtension={mode === 'extension'} />}
     </_RentSection>
   );
 }
@@ -4039,7 +4153,7 @@ function RentalListingScoreSection({ report }: { report: NormalizedReport }) {
 function RentalBottomLineSection({ report }: { report: NormalizedReport }) {
   return (
     <_RentSection report={report} sectionId="bottom-line" title="Bottom Line">
-      {(s) => <_RentKVBlock items={s.items} />}
+      {(s) => <_RentKVBlock items={s.items} isExtension={mode === 'extension'} />}
     </_RentSection>
   );
 }
@@ -4047,7 +4161,7 @@ function RentalBottomLineSection({ report }: { report: NormalizedReport }) {
 function RentalSnapshotSection({ report }: { report: NormalizedReport }) {
   return (
     <_RentSection report={report} sectionId="rental-snapshot" title="Rental Snapshot" subtitle="What the listing tells you up front">
-      {(s) => <_RentKVBlock items={s.items} />}
+      {(s) => <_RentKVBlock items={s.items} isExtension={mode === 'extension'} />}
     </_RentSection>
   );
 }
@@ -4055,7 +4169,7 @@ function RentalSnapshotSection({ report }: { report: NormalizedReport }) {
 function RentalListingTrustSection({ report }: { report: NormalizedReport }) {
   return (
     <_RentSection report={report} sectionId="rental-listing-trust" title="Rental Listing Trust" subtitle="How consistent is the listing itself">
-      {(s) => <_RentKVBlock items={s.items} />}
+      {(s) => <_RentKVBlock items={s.items} isExtension={mode === 'extension'} />}
     </_RentSection>
   );
 }
@@ -4063,7 +4177,7 @@ function RentalListingTrustSection({ report }: { report: NormalizedReport }) {
 function RentalAvailabilitySection({ report }: { report: NormalizedReport }) {
   return (
     <_RentSection report={report} sectionId="availability-check" title="Availability Check" subtitle="Live status from the listing only">
-      {(s) => <_RentKVBlock items={s.items} />}
+      {(s) => <_RentKVBlock items={s.items} isExtension={mode === 'extension'} />}
     </_RentSection>
   );
 }
@@ -4071,7 +4185,7 @@ function RentalAvailabilitySection({ report }: { report: NormalizedReport }) {
 function RentTrueCostSection({ report }: { report: NormalizedReport }) {
   return (
     <_RentSection report={report} sectionId="rent-true-cost" title="Rent & True Cost" subtitle="Monthly rent + recurring fees">
-      {(s) => <_RentKVBlock items={s.items} />}
+      {(s) => <_RentKVBlock items={s.items} isExtension={mode === 'extension'} />}
     </_RentSection>
   );
 }
@@ -4079,7 +4193,7 @@ function RentTrueCostSection({ report }: { report: NormalizedReport }) {
 function ApplicationPaymentRiskSection({ report }: { report: NormalizedReport }) {
   return (
     <_RentSection report={report} sectionId="application-payment-risk" title="Application & Payment Risk" subtitle="How money moves — and where the risk sits" tone="warning">
-      {(s) => <_RentKVBlock items={s.items} />}
+      {(s) => <_RentKVBlock items={s.items} isExtension={mode === 'extension'} />}
     </_RentSection>
   );
 }
@@ -4087,7 +4201,7 @@ function ApplicationPaymentRiskSection({ report }: { report: NormalizedReport })
 function LeaseTermsRulesSection({ report }: { report: NormalizedReport }) {
   return (
     <_RentSection report={report} sectionId="lease-terms-rules" title="Lease Terms & Rules" subtitle="What you sign up for">
-      {(s) => <_RentKVBlock items={s.items} />}
+      {(s) => <_RentKVBlock items={s.items} isExtension={mode === 'extension'} />}
     </_RentSection>
   );
 }
@@ -4095,7 +4209,7 @@ function LeaseTermsRulesSection({ report }: { report: NormalizedReport }) {
 function LocationDailyLifeSection({ report }: { report: NormalizedReport }) {
   return (
     <_RentSection report={report} sectionId="location-daily-life" title="Location & Daily Life Check" subtitle="What the area feels like day-to-day">
-      {(s) => <_RentKVBlock items={s.items} />}
+      {(s) => <_RentKVBlock items={s.items} isExtension={mode === 'extension'} />}
     </_RentSection>
   );
 }
@@ -4112,54 +4226,59 @@ function RentalRiskCategoriesSection({ report }: { report: NormalizedReport }) {
 
   const sevClass = (level: string) => {
     const u = (level ?? '').toUpperCase();
-    if (u === 'HIGH' || u === 'CRITICAL') return 'bg-rose-50 text-rose-700 border-rose-200';
-    if (u === 'MEDIUM' || u === 'MODERATE') return 'bg-amber-50 text-amber-700 border-amber-200';
-    if (u === 'LOW') return 'bg-emerald-50 text-emerald-700 border-emerald-200';
-    return 'bg-slate-50 text-slate-600 border-slate-200';
+    if (u === 'HIGH' || u === 'CRITICAL') return 'text-red-700';
+    if (u === 'MEDIUM' || u === 'MODERATE') return 'text-amber-700';
+    if (u === 'LOW') return 'text-emerald-700';
+    return 'text-stone-600';
   };
 
   return (
     <>
     <SectionRegistrar ids={['rental-risk-categories']} />
-    <div className="bg-white rounded-2xl p-6 sm:p-8 md:p-10 mb-8 border border-amber-200">
-      <div className="flex items-center gap-3 mb-2">
-        <h2 className="text-lg sm:text-xl font-bold text-slate-900">Rental Risk Categories</h2>
+    <section className="report-space-section">
+      <div className="report-hairline pt-8 sm:pt-12">
+        <div className="report-eyebrow text-stone-500 mb-3 sm:mb-4">Rental Risk Categories</div>
+        <p className="report-body text-stone-600 max-w-none mb-6 sm:mb-8">Four lanes to watch.</p>
+        <div className="space-y-6 sm:space-y-8 max-w-none">
+          {present.map((k) => {
+            const meta = RENT_RISK_META[k];
+            const bucket = rc[k] ?? {};
+            const level = normalizeRentRiskLevel(bucket.risk_level);
+            const signal = (bucket.signal ?? '').toString();
+            const evidence = (bucket.evidence ?? '').toString();
+            const missing = (bucket.missing ?? '').toString();
+            const why = (bucket.why_it_matters ?? '').toString();
+            const qs: string[] = Array.isArray(bucket.questions)
+              ? bucket.questions.filter((x: unknown) => typeof x === 'string' && (x as string).trim())
+              : [];
+            return (
+              <article key={k} className="report-paper-block p-5 sm:p-6" style={{ border: '1px solid var(--color-report-hairline)' }}>
+                <div className="flex items-start justify-between gap-3 mb-3">
+                  <h3 className="report-display-3 text-slate-900">{meta.label}</h3>
+                  <span className={`report-eyebrow ${sevClass(level)}`}>
+                    {level}
+                  </span>
+                </div>
+                {signal && <p className="report-body text-slate-700 leading-relaxed mb-3">{signal}</p>}
+                {why && <p className="report-caption text-stone-500 leading-relaxed mb-3">{why}</p>}
+                {evidence && <p className="report-body text-stone-700"><span className="font-medium">Evidence:</span> {evidence}</p>}
+                {missing && <p className="report-body text-stone-700"><span className="font-medium">Missing:</span> {missing}</p>}
+                {qs.length > 0 && (
+                  <ul className="mt-3 space-y-1 max-w-none">
+                    {qs.map((q, i) => (
+                      <li key={i} className="report-body text-slate-700 flex items-start gap-1.5 leading-relaxed">
+                        <span className="text-stone-400 shrink-0">·</span>
+                        <span>{q}</span>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </article>
+            );
+          })}
+        </div>
       </div>
-      <p className="text-xs text-stone-400 mb-5 sm:mb-6">Four lanes to watch</p>
-      <div className="space-y-4">
-        {present.map((k) => {
-          const meta = RENT_RISK_META[k];
-          const bucket = rc[k] ?? {};
-          const level = normalizeRentRiskLevel(bucket.risk_level);
-          const signal = (bucket.signal ?? '').toString();
-          const evidence = (bucket.evidence ?? '').toString();
-          const missing = (bucket.missing ?? '').toString();
-          const why = (bucket.why_it_matters ?? '').toString();
-          const qs: string[] = Array.isArray(bucket.questions)
-            ? bucket.questions.filter((x: unknown) => typeof x === 'string' && (x as string).trim())
-            : [];
-          return (
-            <div key={k} className="rounded-xl border border-slate-200 bg-slate-50/40 p-4">
-              <div className="flex items-start justify-between gap-3 mb-2">
-                <h3 className="text-base font-bold text-slate-900">{meta.label}</h3>
-                <span className={`inline-flex items-center text-[10px] font-bold uppercase tracking-wide px-2.5 py-1 rounded-full border ${sevClass(level)}`}>
-                  {level}
-                </span>
-              </div>
-              {signal && <p className="text-sm text-slate-700 leading-relaxed mb-2">{signal}</p>}
-              {why && <p className="text-xs text-stone-500 leading-relaxed mb-2">{why}</p>}
-              {evidence && <p className="text-xs text-stone-500"><span className="font-medium">Evidence:</span> {evidence}</p>}
-              {missing && <p className="text-xs text-stone-500"><span className="font-medium">Missing:</span> {missing}</p>}
-              {qs.length > 0 && (
-                <ul className="mt-2 space-y-1 list-disc list-inside text-xs text-slate-600">
-                  {qs.map((q, i) => <li key={i}>{q}</li>)}
-                </ul>
-              )}
-            </div>
-          );
-        })}
-      </div>
-    </div>
+    </section>
     </>
   );
 }
@@ -4167,7 +4286,7 @@ function RentalRiskCategoriesSection({ report }: { report: NormalizedReport }) {
 function BeforeYouTourApplyPaySection({ report }: { report: NormalizedReport }) {
   return (
     <_RentSection report={report} sectionId="before-tour-apply-pay" title="Before You Tour / Apply / Pay" subtitle="Three checkpoints, in order">
-      {(s) => <_RentKVBlock items={s.items} />}
+      {(s) => <_RentKVBlock items={s.items} isExtension={mode === 'extension'} />}
     </_RentSection>
   );
 }
@@ -4175,12 +4294,12 @@ function BeforeYouTourApplyPaySection({ report }: { report: NormalizedReport }) 
 function RentalWhoItWorksForSection({ report }: { report: NormalizedReport }) {
   return (
     <_RentSection report={report} sectionId="who-this-rental-works-for" title="Who This Rental Works For">
-      {(s) => <_RentKVBlock items={s.items} />}
+      {(s) => <_RentKVBlock items={s.items} isExtension={mode === 'extension'} />}
     </_RentSection>
   );
 }
 
-function _RemainingSections({ report }: { report: NormalizedReport }) {
+function _RemainingSections({ report, isExtension }: { report: NormalizedReport; isExtension?: boolean }) {
   const { sections } = report;
 
   const remaining = sections.filter(
@@ -4195,7 +4314,7 @@ function _RemainingSections({ report }: { report: NormalizedReport }) {
   return (
     <div>
       {remaining.map((section) => (
-        <GenericSectionCard key={section.id} section={section} />
+        <GenericSectionCard key={section.id} section={section} isExtension={isExtension} />
       ))}
     </div>
   );
@@ -4446,201 +4565,205 @@ function ReportClosingCTA({
   }
 
   return (
-    <div className="bg-white rounded-2xl p-6 sm:p-8 md:p-10 mb-8 border border-slate-200">
-      {/* Header */}
-      <div className="flex items-center gap-3 mb-4">
-        <div className="w-10 h-10 rounded-xl bg-amber-500/10 flex items-center justify-center shrink-0">
-          <Target className="w-5 h-5 text-amber-600/70" />
-        </div>
-        <h2 className="text-xl sm:text-2xl font-bold text-slate-900">One last check before you decide</h2>
+    <section className="report-space-section">
+      <div className="report-ink-block px-6 py-8 sm:px-10 sm:py-10 md:px-12 md:py-12">
+        <div className="report-eyebrow text-amber-300 mb-3 sm:mb-4">One last check before you decide</div>
         {isBasic && (
-          <p className="text-xs text-stone-400 mt-0.5">Basic shows listing signals — Full Analysis adds condition, market comparison, and risk depth.</p>
+          <p className="report-caption text-stone-400 mb-3">Basic shows listing signals — Full Analysis adds condition, market comparison, and risk depth.</p>
         )}
-      </div>
 
-      {/* Core message */}
-      <p className="text-slate-600 text-sm sm:text-base leading-relaxed mb-4">
-        You now know the key risks, missing details, and questions to ask before spending time on this property.
-      </p>
+        {/* Core message */}
+        <p className="report-body text-stone-200 mb-3 sm:mb-4">
+          You now know the key risks, missing details, and questions to ask before spending time on this property.
+        </p>
 
-      <p className="text-slate-600 text-sm sm:text-base leading-relaxed mb-6">
-        {ctaBuyMessage}
-      </p>
+        <p className="report-body text-stone-200 mb-6 sm:mb-8">
+          {ctaBuyMessage}
+        </p>
 
-      {/* Share section */}
-      <div className="border-t border-slate-200 pt-6">
-        <p className="text-slate-600 text-sm mb-4">{shareCtaMessage}</p>
-        <div className="flex flex-col sm:flex-row gap-3">
-          {effectiveShareResult === null ? (
+        {/* Share section */}
+        <div className="report-hairline-ink pt-6">
+          <p className="report-body text-stone-200 mb-4">{shareCtaMessage}</p>
+          <div className="flex flex-col sm:flex-row gap-3">
+            {effectiveShareResult === null ? (
+              <button
+                type="button"
+                onClick={handleShare}
+                disabled={effectiveIsSharing}
+                className="report-eyebrow inline-flex items-center justify-center gap-2 px-6 py-3 bg-white text-stone-900 hover:bg-stone-100 disabled:opacity-50 transition-colors cursor-pointer w-full sm:w-auto min-w-[11rem] text-center"
+                style={{ borderRadius: 9999 }}
+              >
+                {effectiveIsSharing ? 'Generating share link...' : 'Share Report'}
+              </button>
+            ) : (
+              <div className="inline-flex items-center justify-center gap-2 px-4 py-3 text-emerald-400 max-w-[11rem] text-center">
+                {effectiveCopied ? (
+                  <>
+                    <CheckCircle size={14} />
+                    <span className="report-eyebrow">Copied!</span>
+                  </>
+                ) : (
+                  <>
+                    <CheckCircle size={14} />
+                    <span className="report-eyebrow">Copied</span>
+                    <button
+                      onClick={() => {
+                        const url = effectiveShareResult?.shareUrl || `${window.location.origin}/share/${effectiveShareResult?.slug}`;
+                        navigator.clipboard.writeText(url).catch(() => {});
+                      }}
+                      className="ml-1 p-1 hover:bg-white/10 transition-colors cursor-pointer"
+                      title="Copy link again"
+                    >
+                      <Copy size={11} />
+                    </button>
+                  </>
+                )}
+              </div>
+            )}
+            {onUpgrade && (
+              <button
+                type="button"
+                onClick={onUpgrade}
+                className="report-eyebrow inline-flex items-center justify-center gap-2 px-6 py-3 bg-amber-500 hover:bg-amber-400 text-stone-900 transition-colors cursor-pointer w-full sm:w-auto"
+                style={{ borderRadius: 9999 }}
+              >
+                Unlock Full Analysis
+              </button>
+            )}
+            {mode !== 'extension' && (
+              <button
+                type="button"
+                onClick={handleAnalyseAnother}
+                className="report-eyebrow inline-flex items-center justify-center gap-2 px-6 py-3 bg-transparent hover:bg-white/10 text-white transition-colors cursor-pointer w-full sm:w-auto"
+                style={{ border: '1px solid rgba(255,255,255,0.3)', borderRadius: 9999 }}
+              >
+                Analyse another property
+              </button>
+            )}
+          </div>
+        </div>
+
+        {/* ── Feedback Section ──────────────────────────────────────── */}
+        <div className="report-hairline-ink pt-5 mt-5 flex flex-col">
+          {/* Title */}
+          <p className="report-caption text-stone-400 mb-3">Was this report useful?</p>
+
+          {/* Main rating buttons */}
+          <div className="flex items-center justify-start gap-2 mb-3">
             <button
               type="button"
-              onClick={handleShare}
-              disabled={effectiveIsSharing}
-              className="px-6 py-3 bg-slate-900 hover:bg-slate-700 disabled:bg-slate-400 text-white font-semibold text-sm rounded-xl transition-colors cursor-pointer w-full sm:w-auto min-w-[11rem] text-center"
+              onClick={() => handleRatingClick('useful')}
+              disabled={feedbackState === 'saving'}
+              className={`report-eyebrow px-3 py-1.5 border cursor-pointer transition-colors disabled:opacity-50 ${
+                rating === 'useful'
+                  ? 'border-amber-300 bg-amber-300/10 text-amber-200'
+                  : 'border-white/20 text-stone-300 hover:border-amber-300/60 hover:text-amber-200'
+              }`}
+              style={{ borderRadius: 9999 }}
             >
-              {effectiveIsSharing ? 'Generating share link...' : 'Share Report'}
-            </button>
-          ) : (
-            <div className="flex items-center justify-center gap-2 bg-green-50 text-green-700 px-4 py-2 rounded-full min-w-[11rem] text-center">
-              {effectiveCopied ? (
-                <>
-                  <CheckCircle size={14} />
-                  <span className="text-xs font-medium">Copied!</span>
-                </>
+              {rating === 'useful' ? (
+                <span className="flex items-center gap-1">
+                  <Check size={11} />
+                  Yes, useful
+                </span>
               ) : (
-                <>
-                  <CheckCircle size={14} />
-                  <span className="text-xs font-medium">Copied</span>
-                  <button
-                    onClick={() => {
-                      const url = effectiveShareResult?.shareUrl || `${window.location.origin}/share/${effectiveShareResult?.slug}`;
-                      navigator.clipboard.writeText(url).catch(() => {});
-                    }}
-                    className="ml-0.5 p-1 hover:bg-green-100 rounded transition-colors cursor-pointer"
-                    title="Copy link again"
-                  >
-                    <Copy size={11} />
-                  </button>
-                </>
+                'Yes, useful'
               )}
-            </div>
-          )}
-          {onUpgrade && (
-            <button
-              type="button"
-              onClick={onUpgrade}
-              className="px-6 py-3 bg-yellow-500 hover:bg-yellow-400 text-stone-900 font-semibold text-sm rounded-xl transition-colors cursor-pointer w-full sm:w-auto"
-            >
-              Unlock Full Analysis
             </button>
-          )}
-          {mode !== 'extension' && (
             <button
               type="button"
-              onClick={handleAnalyseAnother}
-              className="px-6 py-3 bg-white hover:bg-slate-50 border border-slate-300 text-slate-700 font-semibold text-sm rounded-xl transition-colors cursor-pointer w-full sm:w-auto"
-            >
-              Analyse another property
-            </button>
-          )}
-        </div>
-      </div>
-
-      {/* ── Feedback Section ───────────────────────────────────────────── */}
-      <div className="border-t border-slate-200 pt-5 mt-5 flex flex-col">
-        {/* Title */}
-        <p className="text-xs text-stone-400 mb-3">Was this report useful?</p>
-
-        {/* Main rating buttons */}
-        <div className="flex items-center justify-start gap-2 mb-3">
-          <button
-            type="button"
-            onClick={() => handleRatingClick('useful')}
-            disabled={feedbackState === 'saving'}
-            className={`px-3 py-1.5 text-xs rounded-lg border cursor-pointer transition-colors disabled:opacity-50 ${
-              rating === 'useful'
-                ? 'border-blue-200 bg-blue-50 text-blue-700 font-medium'
-                : 'border-slate-200 text-slate-500 hover:border-blue-200 hover:text-blue-600'
-            }`}
-          >
-            {rating === 'useful' ? (
-              <span className="flex items-center gap-1">
-                <Check size={11} />
-                Yes, useful
-              </span>
-            ) : (
-              'Yes, useful'
-            )}
-          </button>
-          <button
-            type="button"
-            onClick={() => handleRatingClick('not_useful')}
-            disabled={feedbackState === 'saving'}
-            className={`px-3 py-1.5 text-xs rounded-lg border cursor-pointer transition-colors disabled:opacity-50 ${
-              rating === 'not_useful'
-                ? 'border-rose-200 bg-rose-50 text-rose-700 font-medium'
-                : 'border-slate-200 text-slate-500 hover:border-rose-200 hover:text-rose-600'
-            }`}
-          >
-            {rating === 'not_useful' ? (
-              <span className="flex items-center gap-1">
-                <Check size={11} />
-                Not really
-              </span>
-            ) : (
-              'Not really'
-            )}
-          </button>
-        </div>
-
-        {/* Success state — Yes */}
-        {rating === 'useful' && feedbackState !== 'error' && (
-          <p className="text-xs text-stone-400 flex items-center gap-1">
-            <CheckCircle size={12} className="text-stone-400 shrink-0" />
-            Thanks for your feedback.
-          </p>
-        )}
-
-        {/* Success state — Not really submitted */}
-        {feedbackState === 'submitted' && rating === 'not_useful' && (
-          <p className="text-xs text-stone-400 flex items-center gap-1">
-            <CheckCircle size={12} className="text-stone-400 shrink-0" />
-            Thanks — this helps us improve HomeScope.
-          </p>
-        )}
-
-        {/* Error state */}
-        {feedbackState === 'error' && (
-          <p className="text-xs text-red-500">Could not save feedback. Please try again.</p>
-        )}
-
-        {/* Reason options — shown when "Not really" is selected and not yet submitted */}
-        {rating === 'not_useful' && feedbackState !== 'submitted' && feedbackState !== 'error' && (
-          <div className="mt-3 space-y-2">
-            <p className="text-xs text-stone-400">What could be better?</p>
-
-            {/* Reason pill chips */}
-            <div className="flex flex-wrap gap-1.5">
-              {FEEDBACK_REASONS.map(({ key, label }) => (
-                <button
-                  key={key}
-                  type="button"
-                  onClick={() => toggleReason(key)}
-                  disabled={feedbackState === 'saving'}
-                  className={`px-2.5 py-1 text-xs rounded-full border cursor-pointer transition-colors disabled:opacity-50 ${
-                    selectedReasons.includes(key)
-                      ? 'border-rose-200 bg-rose-50 text-rose-700'
-                      : 'border-slate-200 text-slate-500 hover:border-rose-200 hover:text-rose-600'
-                  }`}
-                >
-                  {label}
-                </button>
-              ))}
-            </div>
-
-            {/* Comment textarea */}
-            <textarea
-              rows={2}
-              placeholder="Anything else? Optional"
-              value={comment}
-              onChange={e => handleCommentChange(e.target.value)}
+              onClick={() => handleRatingClick('not_useful')}
               disabled={feedbackState === 'saving'}
-              className="w-full text-xs text-slate-700 bg-white border border-slate-200 rounded-lg p-2 resize-none placeholder:text-slate-400 focus:outline-none focus:border-slate-400 disabled:opacity-50"
-            />
-
-            {/* Submit button — always shown when not_useful is selected */}
-            <button
-              type="button"
-              onClick={handleSubmitFeedback}
-              disabled={feedbackState === 'saving'}
-              className="w-full px-3 py-1.5 text-xs bg-slate-800 hover:bg-slate-700 disabled:opacity-50 text-white rounded-lg transition-colors cursor-pointer"
+              className={`report-eyebrow px-3 py-1.5 border cursor-pointer transition-colors disabled:opacity-50 ${
+                rating === 'not_useful'
+                  ? 'border-red-300 bg-red-300/10 text-red-200'
+                  : 'border-white/20 text-stone-300 hover:border-red-300/60 hover:text-red-200'
+              }`}
+              style={{ borderRadius: 9999 }}
             >
-              {feedbackState === 'saving' ? 'Saving...' : 'Submit feedback'}
+              {rating === 'not_useful' ? (
+                <span className="flex items-center gap-1">
+                  <Check size={11} />
+                  Not really
+                </span>
+              ) : (
+                'Not really'
+              )}
             </button>
           </div>
-        )}
+
+          {/* Success state — Yes */}
+          {rating === 'useful' && feedbackState !== 'error' && (
+            <p className="report-caption text-stone-400 flex items-center gap-1">
+              <CheckCircle size={12} className="text-stone-400 shrink-0" />
+              Thanks for your feedback.
+            </p>
+          )}
+
+          {/* Success state — Not really submitted */}
+          {feedbackState === 'submitted' && rating === 'not_useful' && (
+            <p className="report-caption text-stone-400 flex items-center gap-1">
+              <CheckCircle size={12} className="text-stone-400 shrink-0" />
+              Thanks — this helps us improve HomeScope.
+            </p>
+          )}
+
+          {/* Error state */}
+          {feedbackState === 'error' && (
+            <p className="report-caption text-red-300">Could not save feedback. Please try again.</p>
+          )}
+
+          {/* Reason options — shown when "Not really" is selected and not yet submitted */}
+          {rating === 'not_useful' && feedbackState !== 'submitted' && feedbackState !== 'error' && (
+            <div className="mt-3 space-y-2">
+              <p className="report-caption text-stone-400">What could be better?</p>
+
+              {/* Reason pill chips */}
+              <div className="flex flex-wrap gap-1.5">
+                {FEEDBACK_REASONS.map(({ key, label }) => (
+                  <button
+                    key={key}
+                    type="button"
+                    onClick={() => toggleReason(key)}
+                    disabled={feedbackState === 'saving'}
+                    className={`report-eyebrow px-2.5 py-1 border cursor-pointer transition-colors disabled:opacity-50 ${
+                      selectedReasons.includes(key)
+                        ? 'border-red-300 bg-red-300/10 text-red-200'
+                        : 'border-white/20 text-stone-300 hover:border-red-300/60 hover:text-red-200'
+                    }`}
+                    style={{ borderRadius: 9999 }}
+                  >
+                    {label}
+                  </button>
+                ))}
+              </div>
+
+              {/* Comment textarea */}
+              <textarea
+                rows={2}
+                placeholder="Anything else? Optional"
+                value={comment}
+                onChange={e => handleCommentChange(e.target.value)}
+                disabled={feedbackState === 'saving'}
+                className="w-full report-caption text-stone-200 bg-white/5 border border-white/20 p-2 resize-none placeholder:text-stone-500 focus:outline-none focus:border-amber-300/60 disabled:opacity-50"
+                style={{ borderRadius: 12 }}
+              />
+
+              {/* Submit button */}
+              <button
+                type="button"
+                onClick={handleSubmitFeedback}
+                disabled={feedbackState === 'saving'}
+                className="report-eyebrow w-full px-3 py-1.5 bg-amber-500 hover:bg-amber-400 disabled:opacity-50 text-stone-900 transition-colors cursor-pointer"
+                style={{ borderRadius: 9999 }}
+              >
+                {feedbackState === 'saving' ? 'Saving...' : 'Submit feedback'}
+              </button>
+            </div>
+          )}
+        </div>
       </div>
-    </div>
+    </section>
   );
 }
 
@@ -4652,36 +4775,30 @@ function ListingSignalsSection({ report }: { report: NormalizedReport }) {
   if (!section || section.items.length === 0) return null;
 
   return (
-    <div className="bg-white border border-stone-100 rounded-2xl p-5 sm:p-6 mb-8 shadow-[0_1px_4px_rgba(0,0,0,0.04)] animate-in fade-in slide-in-from-bottom-8 duration-700 ease-out">
-      <div className="flex items-center gap-3 mb-6">
-        <div className="w-10 h-10 rounded-xl bg-blue-50 flex items-center justify-center shrink-0">
-          <Signal className="w-5 h-5 text-blue-500" />
-        </div>
-        <div>
-          <h2 className="text-xl sm:text-2xl font-bold text-slate-900">
-            {section.title || 'Listing Signals'}
-          </h2>
-          {section.subtitle && (
-            <p className="text-xs sm:text-sm text-stone-500 mt-0.5">{section.subtitle}</p>
-          )}
-        </div>
-      </div>
-      <ul className="space-y-3">
-        {section.items.map((item, i) => (
-          <li key={i} className="flex items-start gap-3 text-sm text-slate-700">
-            <div className="w-5 h-5 rounded-full bg-blue-100 flex items-center justify-center shrink-0 mt-0.5">
-              <span className="text-xs font-bold text-blue-600">{i + 1}</span>
-            </div>
-            <div className="flex-1 min-w-0">
-              <span className="font-semibold text-slate-800">{item.title}</span>
+    <section className="report-space-section">
+      <div className="report-hairline pt-8 sm:pt-12">
+        <div className="report-eyebrow text-stone-500 mb-3 sm:mb-4">Listing Signals</div>
+        <h2 className="report-display-2 text-stone-900 mb-2 sm:mb-3">
+          {section.title || 'Listing Signals'}
+        </h2>
+        {section.subtitle && (
+          <p className="report-body text-stone-600 max-w-none mb-6 sm:mb-8">{section.subtitle}</p>
+        )}
+        <ol className="space-y-4 max-w-none">
+          {section.items.map((item, i) => (
+            <li key={i} className={i < section.items.length - 1 ? 'report-hairline-bottom pb-4' : ''}>
+              <div className="flex items-baseline gap-3 mb-1.5">
+                <span className="report-mono-num-sm text-stone-500 tabular-nums">{String(i + 1).padStart(2, '0')}</span>
+                <span className="report-display-3 text-stone-900">{item.title}</span>
+              </div>
               {item.description && (
-                <span className="text-slate-500"> — {item.description}</span>
+                <p className="report-body text-stone-700 leading-relaxed">{item.description}</p>
               )}
-            </div>
-          </li>
-        ))}
-      </ul>
-    </div>
+            </li>
+          ))}
+        </ol>
+      </div>
+    </section>
   );
 }
 
@@ -4691,29 +4808,22 @@ function WhatsMissingSection({ report }: { report: NormalizedReport }) {
   if (!section || section.items.length === 0) return null;
 
   return (
-    <div className="bg-white border border-stone-100 rounded-2xl p-5 sm:p-6 mb-8 shadow-[0_1px_4px_rgba(0,0,0,0.04)] animate-in fade-in slide-in-from-bottom-8 duration-700 ease-out">
-      <div className="flex items-center gap-3 mb-6">
-        <div className="w-10 h-10 rounded-xl bg-amber-50 flex items-center justify-center shrink-0">
-          <AlertCircle className="w-5 h-5 text-amber-500" />
-        </div>
-        <div>
-          <h2 className="text-xl sm:text-2xl font-bold text-slate-900">
-            {section.title || "What's Missing"}
-          </h2>
-        </div>
+    <section className="report-space-section">
+      <div className="report-hairline pt-8 sm:pt-12">
+        <div className="report-eyebrow text-amber-700 mb-3 sm:mb-4">Still needs verification</div>
+        <h2 className="report-display-2 text-stone-900 mb-6 sm:mb-8">
+          {section.title || "What's Missing"}
+        </h2>
+        <ul className="space-y-2 max-w-none">
+          {section.items.map((item, i) => (
+            <li key={i} className="report-body text-stone-700 flex items-start gap-2 leading-relaxed">
+              <span className="text-amber-700 shrink-0 mt-1.5">—</span>
+              <span className="min-w-0 break-words">{item.title}</span>
+            </li>
+          ))}
+        </ul>
       </div>
-      <div className="text-[10px] font-semibold text-amber-600 uppercase tracking-widest mb-3">
-        Still needs verification
-      </div>
-      <ul className="space-y-2">
-        {section.items.map((item, i) => (
-          <li key={i} className="flex items-start gap-2 text-sm text-slate-700">
-            <span className="text-amber-400 mt-1 shrink-0">—</span>
-            <span>{item.title}</span>
-          </li>
-        ))}
-      </ul>
-    </div>
+    </section>
   );
 }
 
@@ -4723,61 +4833,52 @@ function KeyThingsToCheckSection({ report }: { report: NormalizedReport }) {
   if (!section || section.items.length < 2) return null;
 
   return (
-    <div className="bg-white border border-stone-100 rounded-2xl p-5 sm:p-6 mb-8 shadow-[0_1px_4px_rgba(0,0,0,0.04)] animate-in fade-in slide-in-from-bottom-8 duration-700 ease-out">
-      <div className="flex items-start gap-3 mb-5">
-        <div className="w-10 h-10 rounded-xl bg-amber-50 flex items-center justify-center shrink-0">
-          <Target className="w-5 h-5 text-amber-500" />
-        </div>
-        <div className="flex-1 min-w-0">
-          <h2 className="text-base sm:text-lg font-bold text-slate-900">
-            {section.title || 'Key Things To Check'}
-          </h2>
-          {section.subtitle && (
-            <p className="text-xs sm:text-sm text-stone-500 mt-0.5">{section.subtitle}</p>
-          )}
-        </div>
-      </div>
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-3">
-        {section.items.map((item, i) => (
-          <div
-            key={i}
-            className="border border-stone-100 rounded-xl p-4 bg-stone-50/40 flex flex-col"
-          >
-            <div className="flex items-center gap-2 mb-2">
-              <span
-                className={`shrink-0 rounded-full w-6 h-6 flex items-center justify-center text-[11px] font-bold ${
+    <section className="report-space-section">
+      <div className="report-hairline pt-8 sm:pt-12">
+        <div className="report-eyebrow text-stone-500 mb-3 sm:mb-4">Key Things To Check</div>
+        <h2 className="report-display-2 text-stone-900 mb-2 sm:mb-3">
+          {section.title || 'Key Things To Check'}
+        </h2>
+        {section.subtitle && (
+          <p className="report-body text-stone-600 max-w-none mb-6 sm:mb-8">{section.subtitle}</p>
+        )}
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4 sm:gap-6">
+          {section.items.map((item, i) => (
+            <article key={i} className="report-paper-block p-4 sm:p-5 flex flex-col" style={{ border: '1px solid var(--color-report-hairline)' }}>
+              <div className="flex items-baseline gap-2 mb-3">
+                <span className={`report-mono-num-sm tabular-nums ${
                   i === 0
-                    ? 'bg-red-500 text-white'
+                    ? 'text-red-700'
                     : i === 1
-                    ? 'bg-amber-500 text-white'
-                    : 'bg-stone-400 text-white'
-                }`}
-              >
-                {i + 1}
-              </span>
-              <h3 className="text-sm font-semibold text-slate-900 leading-snug">
-                {item.title}
-              </h3>
-            </div>
-            {item.description && (
-              <p className="text-xs text-stone-600 leading-relaxed mb-3">
-                {item.description}
-              </p>
-            )}
-            {item.action && (
-              <div className="mt-auto pt-3 border-t border-stone-100">
-                <div className="text-[10px] font-semibold text-stone-500 uppercase tracking-widest mb-1">
-                  What to do
-                </div>
-                <p className="text-xs text-slate-700 leading-relaxed">
-                  {item.action}
-                </p>
+                    ? 'text-amber-700'
+                    : 'text-stone-500'
+                }`}>
+                  {String(i + 1).padStart(2, '0')}
+                </span>
+                <h3 className="report-display-3 text-slate-900 leading-snug">
+                  {item.title}
+                </h3>
               </div>
-            )}
-          </div>
-        ))}
+              {item.description && (
+                <p className="report-body text-stone-700 leading-relaxed mb-3">
+                  {item.description}
+                </p>
+              )}
+              {item.action && (
+                <div className="mt-auto pt-3 report-hairline">
+                  <div className="report-eyebrow text-stone-500 mb-1">
+                    What to do
+                  </div>
+                  <p className="report-caption text-slate-700 leading-relaxed">
+                    {item.action}
+                  </p>
+                </div>
+              )}
+            </article>
+          ))}
+        </div>
       </div>
-    </div>
+    </section>
   );
 }
 
@@ -4787,73 +4888,73 @@ function WhatWeKnowSection({ report }: { report: NormalizedReport }) {
   if (!section || section.items.length === 0) return null;
 
   return (
-    <div className="bg-white rounded-2xl p-6 sm:p-8 md:p-10 mb-8 border border-slate-200">
-      <div className="flex items-center gap-3 mb-6">
-        <div className="w-10 h-10 rounded-xl bg-slate-100 flex items-center justify-center shrink-0">
-          <Home className="w-5 h-5 text-slate-600" />
-        </div>
-        <div>
-          <h2 className="text-xl sm:text-2xl font-bold text-slate-900">What We Know</h2>
-          <p className="text-xs text-stone-400 mt-0.5">{section.subtitle}</p>
-        </div>
+    <section className="report-space-section">
+      <div className="report-hairline pt-8 sm:pt-12">
+        <div className="report-eyebrow text-stone-500 mb-3 sm:mb-4">Property</div>
+        <h2 className="report-display-2 text-stone-900 mb-2 sm:mb-3">What We Know</h2>
+        {section.subtitle && <p className="report-caption text-stone-500 mb-6 sm:mb-8">{section.subtitle}</p>}
+        <dl className="max-w-none">
+          {section.items.map((item, i) => {
+            const rawValue = renderValue(item.value ?? '');
+            const isUnresolved = rawValue.startsWith('Not ');
+            return (
+              <div key={i} className={`py-3 grid grid-cols-[10rem_1fr] gap-x-4 gap-y-1 ${i < section.items.length - 1 ? 'report-hairline-bottom' : ''}`}>
+                <dt className="report-body text-stone-600 self-start pt-px">{renderValue(item.title)}</dt>
+                <dd className={`report-body font-semibold text-right leading-relaxed break-words ${isUnresolved ? 'text-stone-400 italic font-normal' : 'text-stone-900'}`}>
+                  {rawValue}
+                </dd>
+              </div>
+            );
+          })}
+        </dl>
       </div>
-      <div className="divide-y divide-slate-100">
-        {section.items.map((item, i) => {
-          const rawValue = renderValue(item.value ?? '');
-          const isUnresolved = rawValue.startsWith('Not ');
-          return (
-            <div key={i} className="py-3 first:pt-0 last:pb-0 grid grid-cols-[auto_1fr] gap-x-4 gap-y-1">
-              <span className="text-sm font-medium text-slate-600 self-start pt-px">{renderValue(item.title)}</span>
-              <span className={`text-sm font-semibold text-slate-900 text-right leading-relaxed ${isUnresolved ? 'text-stone-400 italic' : ''}`}>
-                {rawValue}
-              </span>
-            </div>
-          );
-        })}
-      </div>
-    </div>
+    </section>
   );
 }
 
 // ── BasicDecisionSection — "What Could Change Your Decision" cards for Basic mode ─
-function BasicDecisionSection({ report }: { report: NormalizedReport }) {
+function BasicDecisionSection({ report, isExtension }: { report: NormalizedReport; isExtension?: boolean }) {
   const section = report.sections.find((s) => s.id === 'basic-decision-cards');
   if (!section || section.items.length === 0) return null;
 
   return (
-    <div className="bg-white rounded-2xl p-6 sm:p-8 md:p-10 mb-8 border border-slate-200">
-      <div className="flex items-center gap-3 mb-6">
-        <div className="w-10 h-10 rounded-xl bg-amber-500/10 flex items-center justify-center shrink-0">
-          <AlertTriangle className="w-5 h-5 text-amber-600/70" />
-        </div>
-        <div>
-          <h2 className="text-xl sm:text-2xl font-bold text-slate-900">What Could Change Your Decision</h2>
-          <p className="text-xs text-stone-400 mt-0.5">Based on listing signals only — not independent analysis.</p>
-        </div>
-      </div>
-      <div className="space-y-4 sm:space-y-5">
-        {section.items.map((item, i) => (
-          <div key={i} className="flex flex-col gap-3 p-5 rounded-xl bg-slate-50 border border-slate-200">
-            <div className="font-bold text-slate-900 text-base">{renderValue(item.title)}</div>
-            {item.description && (
-              <div className="flex items-start gap-2">
-                <span className="text-amber-600 font-semibold text-xs shrink-0 mt-0.5">Why it matters:</span>
-                <span className="text-slate-700 text-sm leading-relaxed">{renderValue(item.description)}</span>
-              </div>
-            )}
-            {item.value && (
-              <div className="flex items-start gap-2">
-                <div className="bg-slate-800 px-3 py-1.5 rounded-lg flex items-center gap-1.5 shrink-0">
-                  <Target className="w-3 h-3 text-white" />
-                  <span className="uppercase text-[10px] font-bold tracking-wide text-white">Action</span>
+    <section className="report-space-section">
+      <div className="report-section">
+        <div className="pt-2 sm:pt-2">
+          <div className="report-eyebrow text-teal-700 mb-3">Risk Assessment</div>
+          <h2 className="report-display-2 text-stone-900 mb-2 sm:mb-3">What Could Change Your Decision</h2>
+          <p className="report-caption text-stone-500 mb-8">Based on listing signals only — not independent analysis.</p>
+          <div className="space-y-4">
+            {section.items.map((item, i) => (
+              <article key={i} className="report-risk-card report-risk-card-medium">
+                <div className="flex items-start gap-3 mb-4">
+                  <div className="w-10 h-10 rounded-xl bg-amber-50 flex items-center justify-center shrink-0">
+                    <AlertTriangle className="w-5 h-5 text-amber-600" />
+                  </div>
+                  <div>
+                    <h3 className="report-display-3 text-stone-900">{renderValue(item.title)}</h3>
+                  </div>
                 </div>
-                <span className="text-slate-700 text-sm font-medium leading-relaxed">{renderValue(item.value)}</span>
-              </div>
-            )}
+                {item.description && (
+                  <div className="report-hairline mb-4" />
+                )}
+                {item.description && (
+                  <div className="mb-4">
+                    <p className="report-body text-stone-600 leading-relaxed">{renderValue(item.description)}</p>
+                  </div>
+                )}
+                {item.value && (
+                  <div className="report-callout">
+                    <div className="report-eyebrow text-teal-700 mb-1">Recommended Action</div>
+                    <p className="report-finding-body text-stone-800 font-medium">{renderValue(item.value)}</p>
+                  </div>
+                )}
+              </article>
+            ))}
           </div>
-        ))}
+        </div>
       </div>
-    </div>
+    </section>
   );
 }
 
@@ -4863,27 +4964,23 @@ function MonthlyCostSnapshotSection({ report }: { report: NormalizedReport }) {
   if (!section || section.items.length === 0) return null;
 
   return (
-    <div className="bg-white rounded-2xl p-6 sm:p-8 md:p-10 mb-8 border border-slate-200">
-      <div className="flex items-center gap-3 mb-6">
-        <div className="w-10 h-10 rounded-xl bg-slate-100 flex items-center justify-center shrink-0">
-          <DollarSign className="w-5 h-5 text-slate-600" />
-        </div>
-        <div>
-          <h2 className="text-xl sm:text-2xl font-bold text-slate-900">{section.title}</h2>
-          {section.subtitle && (
-            <p className="text-xs text-stone-400 mt-0.5">{section.subtitle}</p>
-          )}
+    <section className="report-space-section">
+      <div className="report-hairline pt-8 sm:pt-12">
+        <div className="report-eyebrow text-stone-500 mb-3 sm:mb-4">Monthly Cost</div>
+        <h2 className="report-display-2 text-stone-900 mb-2 sm:mb-3">{section.title}</h2>
+        {section.subtitle && (
+          <p className="report-body text-stone-600 max-w-none mb-6 sm:mb-8">{section.subtitle}</p>
+        )}
+        <div className="grid grid-cols-2 sm:grid-cols-3 gap-4 sm:gap-6">
+          {section.items.map((item, i) => (
+            <div key={i} className="report-paper-muted p-4 sm:p-5">
+              <div className="report-eyebrow text-stone-500 mb-1.5">{renderValue(item.title)}</div>
+              <div className="report-mono-num-sm text-slate-800">{renderValue(item.value)}</div>
+            </div>
+          ))}
         </div>
       </div>
-      <div className="grid grid-cols-2 @container[size>=560px]:grid-cols-3 gap-4">
-        {section.items.map((item, i) => (
-          <div key={i} className="p-4 bg-slate-50 rounded-xl">
-            <div className="text-[10px] font-medium uppercase tracking-widest text-stone-500 mb-1">{renderValue(item.title)}</div>
-            <div className="text-sm font-semibold text-slate-800">{renderValue(item.value)}</div>
-          </div>
-        ))}
-      </div>
-    </div>
+    </section>
   );
 }
 
@@ -4905,41 +5002,37 @@ function BasicCarryingCostsSection({ report }: { report: NormalizedReport }) {
   const sourceItem = section.items.find((i) => /^source$/i.test(renderValue(i.title)));
 
   return (
-    <div className="bg-white rounded-2xl p-6 sm:p-8 md:p-10 mb-8 border border-slate-200">
-      <div className="flex items-center gap-3 mb-6">
-        <div className="w-10 h-10 rounded-xl bg-violet-500/10 flex items-center justify-center shrink-0">
-          <DollarSign className="w-5 h-5 text-violet-600/70" />
-        </div>
-        <div>
-          <h2 className="text-xl sm:text-2xl font-bold text-slate-900">Known Carrying Costs</h2>
-          <p className="text-xs text-stone-400 mt-0.5">{section.subtitle || 'From the Zillow listing estimate'}</p>
-        </div>
+    <section className="report-space-section">
+      <div className="report-hairline pt-8 sm:pt-12">
+        <div className="report-eyebrow text-stone-500 mb-3 sm:mb-4">Carrying Costs</div>
+        <h2 className="report-display-2 text-stone-900 mb-2 sm:mb-3">Known Carrying Costs</h2>
+        <p className="report-caption text-stone-500 mb-6 sm:mb-8">{section.subtitle || 'From the Zillow listing estimate'}</p>
+
+        {totalItem && (
+          <div className="report-paper-muted px-5 py-5 sm:px-6 sm:py-6 mb-6 flex items-baseline justify-between gap-4">
+            <span className="report-display-3 text-slate-900">{renderValue(totalItem.title)}</span>
+            <span className="report-mono-num-sm text-slate-900">{renderValue(totalItem.value)}</span>
+          </div>
+        )}
+
+        {breakdownRows.length > 0 && (
+          <dl className="max-w-none mb-6">
+            {breakdownRows.map((item, i) => (
+              <div key={i} className={`py-2 flex items-baseline justify-between gap-4 ${i < breakdownRows.length - 1 ? 'report-hairline-bottom' : ''}`}>
+                <dt className="report-body text-stone-600">{renderValue(item.title)}</dt>
+                <dd className="report-body font-medium text-slate-700">{renderValue(item.value)}</dd>
+              </div>
+            ))}
+          </dl>
+        )}
+
+        {sourceItem && (
+          <p className="report-caption text-stone-500 italic mt-2 pt-3 report-hairline max-w-none">
+            {renderValue(sourceItem.description ?? sourceItem.value ?? '')}
+          </p>
+        )}
       </div>
-
-      {totalItem && (
-        <div className="flex justify-between items-center py-3 border-b border-slate-200 mb-3">
-          <span className="text-sm font-semibold text-slate-900">{renderValue(totalItem.title)}</span>
-          <span className="text-lg font-bold text-slate-900">{renderValue(totalItem.value)}</span>
-        </div>
-      )}
-
-      {breakdownRows.length > 0 && (
-        <div className="space-y-1 mb-3">
-          {breakdownRows.map((item, i) => (
-            <div key={i} className="flex justify-between items-start py-1.5">
-              <span className="text-sm text-slate-500">{renderValue(item.title)}</span>
-              <span className="text-sm font-medium text-slate-700">{renderValue(item.value)}</span>
-            </div>
-          ))}
-        </div>
-      )}
-
-      {sourceItem && (
-        <p className="text-xs text-slate-400 italic mt-2 pt-2 border-t border-slate-100">
-          {renderValue(sourceItem.description ?? sourceItem.value ?? '')}
-        </p>
-      )}
-    </div>
+    </section>
   );
 }
 
@@ -4949,50 +5042,33 @@ function ListingClaimsSection({ report }: { report: NormalizedReport }) {
   if (!section || section.items.length === 0) return null;
 
   return (
-    <div className="bg-white rounded-2xl p-6 sm:p-8 md:p-10 mb-8 border border-slate-200">
-      <div className="flex items-center gap-3 mb-6">
-        <div className="w-10 h-10 rounded-xl bg-indigo-500/10 flex items-center justify-center shrink-0">
-          <FileSearch className="w-5 h-5 text-indigo-600/70" />
-        </div>
-        <div>
-          <h2 className="text-xl sm:text-2xl font-bold text-slate-900">Listing Claims to Verify</h2>
-          <p className="text-xs text-stone-400 mt-0.5">{section.subtitle}</p>
-        </div>
-      </div>
-      <div className="space-y-4 sm:space-y-5">
-        {section.items.map((item, i) => (
-          <div key={i} className="rounded-xl border border-slate-200 overflow-hidden">
-            {/* Listing says */}
-            <div className="bg-slate-50 px-5 py-4 border-b border-slate-200">
-              <div className="text-[10px] font-semibold uppercase tracking-widest text-slate-500 mb-1">Listing says</div>
-              <p className="text-slate-800 text-sm font-medium italic">"{renderValue(item.title)}"</p>
-            </div>
-            {/* HomeScope check */}
-            <div className="px-5 py-4 border-b border-slate-100">
-              <div className="flex items-start gap-2">
-                <Eye className="w-4 h-4 text-indigo-500 mt-0.5 shrink-0" />
+    <section className="report-space-section">
+      <div className="report-hairline pt-8 sm:pt-12">
+        <div className="report-eyebrow text-stone-500 mb-3 sm:mb-4">Listing Claims</div>
+        <h2 className="report-display-2 text-stone-900 mb-2 sm:mb-3">Listing Claims to Verify</h2>
+        {section.subtitle && <p className="report-body text-stone-600 max-w-none mb-6 sm:mb-8">{section.subtitle}</p>}
+        <div className="max-w-none space-y-8 sm:space-y-10">
+          {section.items.map((item, i) => (
+            <article key={i} className={i < section.items.length - 1 ? 'report-hairline-bottom pb-6 sm:pb-8' : ''}>
+              <div className="mb-3">
+                <div className="report-eyebrow text-stone-500 mb-1.5">Listing says</div>
+                <p className="report-body text-slate-800 italic font-medium leading-relaxed">&ldquo;{renderValue(item.title)}&rdquo;</p>
+              </div>
+              <div className="mb-3">
+                <div className="report-eyebrow text-stone-500 mb-1.5">HomeScope check</div>
+                <p className="report-body text-slate-700 leading-relaxed">{renderValue(item.description)}</p>
+              </div>
+              {item.value && (
                 <div>
-                  <div className="text-[10px] font-semibold uppercase tracking-widest text-slate-500 mb-1">HomeScope check</div>
-                  <p className="text-slate-700 text-sm leading-relaxed">{renderValue(item.description)}</p>
+                  <div className="report-eyebrow text-amber-700 mb-1.5">Ask before viewing</div>
+                  <p className="report-body text-slate-700 leading-relaxed">{renderValue(item.value)}</p>
                 </div>
-              </div>
-            </div>
-            {/* Ask before viewing */}
-            {item.value && (
-              <div className="px-5 py-4 bg-amber-50/50">
-                <div className="flex items-start gap-2">
-                  <CircleHelp className="w-4 h-4 text-amber-600 mt-0.5 shrink-0" />
-                  <div>
-                    <div className="text-[10px] font-semibold uppercase tracking-widest text-amber-600 mb-1">Ask before viewing</div>
-                    <p className="text-slate-700 text-sm leading-relaxed">{renderValue(item.value)}</p>
-                  </div>
-                </div>
-              </div>
-            )}
-          </div>
-        ))}
+              )}
+            </article>
+          ))}
+        </div>
       </div>
-    </div>
+    </section>
   );
 }
 
@@ -5118,53 +5194,51 @@ function BasicCTA({
   const isGenerating = buttonState.action === 'disabled';
 
   return (
-    <div className="bg-[#282828] rounded-2xl p-6 sm:p-8 md:p-10 mb-8 overflow-hidden" style={{ border: '1px solid rgba(218, 165, 32, 0.3)' }}>
-      <div className="flex items-start gap-4">
-        <div className="w-12 h-12 bg-yellow-500/20 rounded-2xl flex items-center justify-center shrink-0">
-          <Zap className="w-6 h-6 text-yellow-400" />
-        </div>
-        <div className="flex-1 min-w-0">
-          <h3 className="text-xl font-semibold text-white mb-2">{ctaTitle}</h3>
-          <p className="text-stone-300 text-sm leading-relaxed mb-6">
-            {ctaBody}
-          </p>
-          <div className="flex flex-col sm:flex-row gap-3">
+    <section className="report-space-section">
+      <div className="report-ink-block px-6 py-8 sm:px-10 sm:py-10 md:px-12 md:py-12">
+        <div className="report-eyebrow text-amber-300 mb-3 sm:mb-4">Unlock</div>
+        <h3 className="report-display-2 text-white mb-3 sm:mb-4">{ctaTitle}</h3>
+        <p className="report-body text-stone-300 max-w-none mb-6 sm:mb-8 leading-relaxed">
+          {ctaBody}
+        </p>
+        <div className="flex flex-col sm:flex-row gap-3">
+          <button
+            type="button"
+            onClick={handlePrimaryClick}
+            disabled={buttonState.disabled}
+            className={`report-eyebrow inline-flex items-center justify-center gap-2 px-6 py-3 bg-amber-500 hover:bg-amber-400 text-stone-900 transition-colors ${
+              buttonState.disabled ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer'
+            }`}
+            style={{ borderRadius: 9999 }}
+          >
+            {isGenerating && (
+              <span className="inline-block w-4 h-4 align-middle">
+                <svg className="animate-spin w-4 h-4" viewBox="0 0 24 24" fill="none">
+                  <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                  <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
+                </svg>
+              </span>
+            )}
+            {buttonState.label}
+          </button>
+          {mode !== 'extension' && buttonState.action !== 'view' && (
             <button
               type="button"
-              onClick={handlePrimaryClick}
-              disabled={buttonState.disabled}
-              className={`px-6 py-3 bg-yellow-500 hover:bg-yellow-400 text-stone-900 font-semibold text-sm rounded-xl transition-colors ${
-                buttonState.disabled ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer'
-              }`}
+              onClick={handleAnalyseAnother}
+              className="report-eyebrow inline-flex items-center justify-center gap-2 px-6 py-3 bg-transparent hover:bg-white/10 text-white transition-colors cursor-pointer"
+              style={{ border: '1px solid rgba(255,255,255,0.3)', borderRadius: 9999 }}
             >
-              {isGenerating && (
-                <span className="inline-block w-4 h-4 mr-2 align-middle">
-                  <svg className="animate-spin w-4 h-4" viewBox="0 0 24 24" fill="none">
-                    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
-                    <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
-                  </svg>
-                </span>
-              )}
-              {buttonState.label}
+              Analyse another property
             </button>
-            {mode !== 'extension' && buttonState.action !== 'view' && (
-              <button
-                type="button"
-                onClick={handleAnalyseAnother}
-                className="px-6 py-3 bg-white/10 hover:bg-white/20 text-white font-semibold text-sm rounded-xl transition-colors cursor-pointer border border-white/20"
-              >
-                Analyse another property
-              </button>
-            )}
-          </div>
-          {buttonState.action === 'disabled' && (
-            <p className="text-stone-400 text-xs mt-3">
-              This usually takes 1–3 minutes.
-            </p>
           )}
         </div>
+        {buttonState.action === 'disabled' && (
+          <p className="report-caption text-stone-400 mt-3">
+            This usually takes 1–3 minutes.
+          </p>
+        )}
       </div>
-    </div>
+    </section>
   );
 }
 
@@ -5224,67 +5298,51 @@ function ContradictionBanner({ contradictions }: { contradictions: Contradiction
 
   return (
     <>
-      {/* High-severity contradictions: prominent banner */}
+      {/* High-severity contradictions: inline callout (amber accent line) */}
       {highSeverity.length > 0 && (
-        <div
-          className="rounded-2xl p-6 mb-6"
-          style={{
-            backgroundColor: SEVERITY_STYLES.high.bg,
-            border: `1px solid ${SEVERITY_STYLES.high.border}`,
-          }}
-        >
-          <div className="flex items-center gap-2 mb-3">
-            <div style={{ color: SEVERITY_STYLES.high.iconColor }}>{SEVERITY_STYLES.high.icon}</div>
-            <span className="text-sm font-semibold" style={{ color: SEVERITY_STYLES.high.iconColor }}>
+        <section className="report-space-section">
+          <div className="report-inline-callout">
+            <div className="report-eyebrow text-red-700 mb-2 flex items-center gap-2">
+              <span style={{ color: '#EF4444' }}>{SEVERITY_STYLES.high.icon}</span>
               Data Inconsistency Detected
-            </span>
+            </div>
+            <div className="space-y-2 max-w-none">
+              {highSeverity.map((c) => (
+                <div key={c.id}>
+                  <p className="report-body text-stone-800 font-medium">{c.description}</p>
+                  {c.suggestion && (
+                    <p className="report-caption text-stone-500 mt-1 italic">{c.suggestion}</p>
+                  )}
+                </div>
+              ))}
+            </div>
           </div>
-          <div className="space-y-3">
-            {highSeverity.map((c) => (
-              <div key={c.id} className="text-sm text-slate-200">
-                <span className="font-medium text-white">{c.description}</span>
-                {c.suggestion && (
-                  <div className="mt-1 text-xs text-slate-400" style={{ fontStyle: 'italic' }}>
-                    {c.suggestion}
-                  </div>
-                )}
-              </div>
-            ))}
-          </div>
-        </div>
+        </section>
       )}
 
-      {/* Medium / low severity: compact list in What to Verify */}
+      {/* Medium / low severity: compact list */}
       {otherSeverity.length > 0 && (
-        <div
-          className="rounded-xl p-5 mb-6"
-          style={{
-            backgroundColor: 'rgba(255,255,255,0.03)',
-            border: '1px solid rgba(255,255,255,0.08)',
-          }}
-        >
-          <div className="flex items-center gap-2 mb-3">
-            <div className="text-xs font-semibold text-slate-400 uppercase tracking-wider">What to Verify</div>
+        <section className="report-space-section">
+          <div className="report-inline-callout">
+            <div className="report-eyebrow text-stone-700 mb-2">What to Verify</div>
+            <ul className="space-y-2 max-w-none">
+              {otherSeverity.map((c) => {
+                const style = SEVERITY_STYLES[c.severity] ?? SEVERITY_STYLES.low;
+                return (
+                  <li key={c.id} className="report-body text-stone-800 flex items-start gap-2">
+                    <span style={{ color: style.iconColor }} className="shrink-0 mt-0.5">{style.icon}</span>
+                    <div>
+                      <span>{c.description}</span>
+                      {c.suggestion && (
+                        <div className="report-caption text-stone-500 mt-0.5 italic">{c.suggestion}</div>
+                      )}
+                    </div>
+                  </li>
+                );
+              })}
+            </ul>
           </div>
-          <div className="space-y-2">
-            {otherSeverity.map((c) => {
-              const style = SEVERITY_STYLES[c.severity] ?? SEVERITY_STYLES.low;
-              return (
-                <div key={c.id} className="flex items-start gap-2 text-sm">
-                  <div className="mt-0.5 shrink-0" style={{ color: style.iconColor }}>{style.icon}</div>
-                  <div className="text-slate-300">
-                    <span>{c.description}</span>
-                    {c.suggestion && (
-                      <div className="text-xs text-slate-500 mt-0.5" style={{ fontStyle: 'italic' }}>
-                        {c.suggestion}
-                      </div>
-                    )}
-                  </div>
-                </div>
-              );
-            })}
-          </div>
-        </div>
+        </section>
       )}
     </>
   );
@@ -5363,40 +5421,39 @@ function VerifiedFromListingSection({ report, viewModel: _viewModel }: {
   if (verified.length === 0 && needsList.length === 0) return null;
 
   return (
-    <div className="bg-white rounded-2xl p-5 sm:p-6 mb-6 border border-slate-200">
-      <div className="flex items-center gap-2 mb-4">
-        <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />
-        <h3 className="text-sm font-semibold text-slate-800">What We Found</h3>
-      </div>
-      <div className="grid grid-cols-1 sm:grid-cols-2 gap-6">
-        {/* From the listing */}
-        <div>
-          <div className="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-2">From the listing</div>
-          <div className="space-y-1.5">
-            {verified.map((item, i) => (
-              <div key={i} className="flex items-start gap-2">
-                <span className="text-xs text-slate-400 w-32 shrink-0 pt-0.5">{item.label}</span>
-                <span className="text-xs font-medium text-slate-700">{item.value}</span>
-              </div>
-            ))}
-          </div>
-        </div>
-        {/* Still needs verification — only shown when evidence-derived items exist */}
-        {needsList.length > 0 && (
+    <section className="report-space-section">
+      <div className="report-hairline pt-8 sm:pt-12">
+        <div className="report-eyebrow text-stone-500 mb-3 sm:mb-4">What We Found</div>
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-6 sm:gap-8">
+          {/* From the listing */}
           <div>
-            <div className="text-xs font-semibold text-amber-600 uppercase tracking-wide mb-2">Still needs verification</div>
-            <div className="space-y-1">
-              {needsList.map((item, i) => (
-                <div key={i} className="flex items-start gap-2 text-xs text-slate-600">
-                  <span className="text-amber-400 mt-0.5 shrink-0">—</span>
-                  {item}
+            <div className="report-eyebrow text-stone-700 mb-3">From the listing</div>
+            <dl className="max-w-none">
+              {verified.map((item, i) => (
+                <div key={i} className={`py-2 grid grid-cols-[8rem_1fr] gap-x-3 ${i < verified.length - 1 ? 'report-hairline-bottom' : ''}`}>
+                  <dt className="report-caption text-stone-500 self-start pt-0.5">{item.label}</dt>
+                  <dd className="report-body font-medium text-slate-700">{item.value}</dd>
                 </div>
               ))}
-            </div>
+            </dl>
           </div>
-        )}
+          {/* Still needs verification — only shown when evidence-derived items exist */}
+          {needsList.length > 0 && (
+            <div>
+              <div className="report-eyebrow text-amber-700 mb-3">Still needs verification</div>
+              <ul className="space-y-2 max-w-none">
+                {needsList.map((item, i) => (
+                  <li key={i} className="report-body text-slate-600 flex items-start gap-2 leading-relaxed">
+                    <span className="text-amber-700 shrink-0 mt-1.5">—</span>
+                    <span className="min-w-0 break-words">{item}</span>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+        </div>
       </div>
-    </div>
+    </section>
   );
 }
 
@@ -5664,7 +5721,7 @@ export function NewReportUI({
                   risks from highlights.risks, rental-listing-trust, and
                   risk_categories. Building the section here too caused two
                   cards with the same title to render side by side. */}
-              <WhatCouldChangeYourDecisionSection report={report} />
+              <WhatCouldChangeYourDecisionSection report={report} isExtension={mode === 'extension'} />
 
               {/* 14. What the Listing Does Not Prove — render via _RentSection
                   so the rent-mode listing_does_not_prove items (filtered +
@@ -5673,7 +5730,7 @@ export function NewReportUI({
                   twice if ListingDoesNotProveSection ever stops returning
                   null for rent). */}
               <_RentSection report={report} sectionId="listing-does-not-prove" title="What the Listing Does Not Prove">
-                {(s) => <_RentKVBlock items={s.items} />}
+                {(s) => <_RentKVBlock items={s.items} isExtension={mode === 'extension'} />}
               </_RentSection>
 
               {/* 15. Before You Tour / Apply / Pay */}
@@ -5686,11 +5743,11 @@ export function NewReportUI({
                   in usRent.buildSections gets a dedicated card instead of
                   falling through to GenericSectionCard. */}
               <_RentSection report={report} sectionId="next-best-move" title="Your Next Best Move">
-                {(s) => <_RentKVBlock items={s.items} />}
+                {(s) => <_RentKVBlock items={s.items} isExtension={mode === 'extension'} />}
               </_RentSection>
 
               {/* 18. Any remaining generic sections from the rent adapter */}
-              <_RemainingSections report={report} />
+              <_RemainingSections report={report} isExtension={mode === 'extension'} />
             </>
           ) : (() => {
             // ── Sale path. Defence-in-depth: even if meta.reportMode was lost
@@ -5713,12 +5770,12 @@ export function NewReportUI({
                     <PhotoSpaceAnalysisCard raw={{ ...report.raw, reportMode: report.meta?.reportMode }} />
                   ) : null}
                   <RentalRiskCategoriesSection report={report} />
-                  <WhatCouldChangeYourDecisionSection report={report} />
+                  <WhatCouldChangeYourDecisionSection report={report} isExtension={mode === 'extension'} />
                   <ListingDoesNotProveSection report={report} />
                   <BeforeYouTourApplyPaySection report={report} />
                   <RentalWhoItWorksForSection report={report} />
                   <NextBestMoveSection report={report} />
-                  <_RemainingSections report={report} />
+                  <_RemainingSections report={report} isExtension={mode === 'extension'} />
                 </>
               );
             }
@@ -5727,13 +5784,13 @@ export function NewReportUI({
                 {/* ── Sale deep layout (unchanged) ──────────────────────── */}
 
                 {/* 2. What Could Change Your Decision */}
-                <WhatCouldChangeYourDecisionSection report={report} />
+                <WhatCouldChangeYourDecisionSection report={report} isExtension={mode === 'extension'} />
 
                 {/* 3. Deal-Changing Risks */}
                 <DealChangingRisksSection report={report} />
 
                 {/* 4. Property Snapshot (Is the Price Fair?) */}
-                <PropertySnapshotSection report={report} />
+                <PropertySnapshotSection report={report} isExtension={mode === 'extension'} />
 
                 {/* 5. Carrying Costs */}
                 <CarryingCostsSection report={report} />
@@ -5747,7 +5804,7 @@ export function NewReportUI({
                 ) : null}
 
                 {/* 7b. Buyer Risk Check (risk_categories) */}
-                <RiskCategoriesSection report={report} />
+                <RiskCategoriesSection report={report} isExtension={mode === 'extension'} />
 
                 {/* 7c. What the Listing Does Not Prove — register so _RemainingSections
                     won't render it again from the usSale.buildSections adapter output. */}
@@ -5756,6 +5813,9 @@ export function NewReportUI({
 
                 {/* 7d. Before You Book a Showing */}
                 <BeforeYouBookShowingSection report={report} />
+
+                {/* 7e. Deeper Due Diligence */}
+                <DeeperDueDiligenceSection report={report} isExtension={mode === 'extension'} />
 
                 {/* 8. Agent Spin Decoder */}
                 <AgentSpinDecoderSection report={report} viewModel={viewModel} />
@@ -5767,7 +5827,7 @@ export function NewReportUI({
                 <NextBestMoveSection report={report} />
 
                 {/* 9b. Any sections not consumed by sale-specific modules */}
-                <_RemainingSections report={report} />
+                <_RemainingSections report={report} isExtension={mode === 'extension'} />
               </>
             );
           })()}

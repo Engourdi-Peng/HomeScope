@@ -50,6 +50,7 @@ export default defineConfig({
       'src/lib/reportAdapters/imageDedup.test.ts',
       'supabase/functions/analyze/imageDedup.test.ts',
       'src/lib/reportAdapters/basicReport.test.ts',
+      'src/lib/reportAdapters/canonicalInput.test.ts',
       'src/components/report/NewReportUI.layout.test.ts',
     ],
   },
