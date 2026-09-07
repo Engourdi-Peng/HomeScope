@@ -1296,57 +1296,57 @@ function generateSEOFields(input: {
   const { suburb, bedrooms, bathrooms, weeklyRent, askingPrice, verdict, reportMode } = input;
   const isRent = reportMode !== 'sale';
 
-  // Generate SEO title（包含 realestate.com.au 关键词）
+  // Generate SEO title (targets Zillow keywords)
   let seo_title: string;
   if (isRent) {
     if (suburb && bedrooms) {
-      seo_title = `${bedrooms} bed rental on realestate.com.au in ${suburb} – Worth it?`;
+      seo_title = `${bedrooms} bed rental on Zillow in ${suburb} – Worth it?`;
     } else if (suburb) {
-      seo_title = `Rental on realestate.com.au in ${suburb} – Worth it?`;
+      seo_title = `Rental on Zillow in ${suburb} – Worth it?`;
     } else if (bedrooms) {
-      seo_title = `${bedrooms} bed rental on realestate.com.au – Worth it?`;
+      seo_title = `${bedrooms} bed rental on Zillow – Worth it?`;
     } else {
-      seo_title = `realestate.com.au Rental Analysis | HomeScope`;
+      seo_title = `Zillow Rental Analysis | HomeScope`;
     }
   } else {
     if (suburb && bedrooms) {
-      seo_title = `${bedrooms} bed property on realestate.com.au in ${suburb} – Worth buying?`;
+      seo_title = `${bedrooms} bed home on Zillow in ${suburb} – Worth buying?`;
     } else if (suburb) {
-      seo_title = `Property on realestate.com.au in ${suburb} – Worth buying?`;
+      seo_title = `Home on Zillow in ${suburb} – Worth buying?`;
     } else if (bedrooms) {
-      seo_title = `${bedrooms} bed property on realestate.com.au – Worth buying?`;
+      seo_title = `${bedrooms} bed home on Zillow – Worth buying?`;
     } else {
-      seo_title = `realestate.com.au Property Analysis | HomeScope`;
+      seo_title = `Zillow Property Analysis | HomeScope`;
     }
   }
 
-  // Generate SEO description（包含 realestate.com.au 关键词）
+  // Generate SEO description (targets Zillow keywords)
   let seo_description: string;
   if (isRent) {
     if (suburb && bedrooms) {
-      seo_description = `${bedrooms}-bed, ${bathrooms || '?'}-bath on realestate.com.au in ${suburb}. `;
+      seo_description = `${bedrooms}-bed, ${bathrooms || '?'}-bath rental on Zillow in ${suburb}. `;
       if (weeklyRent) seo_description += `$${weeklyRent}/week. `;
-      seo_description += 'AI analysis: pros, cons, risks and verdict. Built for Australian renters.';
+      seo_description += 'AI analysis: pros, cons, risks and verdict. Built for U.S. renters.';
     } else if (bedrooms) {
-      seo_description = `${bedrooms}-bed property on realestate.com.au. `;
+      seo_description = `${bedrooms}-bed rental on Zillow. `;
       if (bathrooms) seo_description += `${bathrooms} bathroom, `;
       if (weeklyRent) seo_description += `$${weeklyRent}/week. `;
       seo_description += 'AI analysis: pros, cons, risks and verdict.';
     } else {
-      seo_description = 'AI analysis of property from realestate.com.au. Pros, cons, risks and verdict. Built for Australian renters.';
+      seo_description = 'AI analysis of a Zillow listing. Pros, cons, risks and verdict. Built for U.S. renters.';
     }
   } else {
     if (suburb && bedrooms) {
-      seo_description = `${bedrooms}-bed, ${bathrooms || '?'}-bath on realestate.com.au in ${suburb}. `;
+      seo_description = `${bedrooms}-bed, ${bathrooms || '?'}-bath home on Zillow in ${suburb}. `;
       if (askingPrice) seo_description += `$${askingPrice.toLocaleString()}. `;
-      seo_description += 'AI analysis: pros, cons, risks and verdict. Built for Australian property buyers.';
+      seo_description += 'AI analysis: pros, cons, risks and verdict. Built for U.S. home buyers.';
     } else if (bedrooms) {
-      seo_description = `${bedrooms}-bed property on realestate.com.au. `;
+      seo_description = `${bedrooms}-bed home on Zillow. `;
       if (bathrooms) seo_description += `${bathrooms} bathroom, `;
       if (askingPrice) seo_description += `$${askingPrice.toLocaleString()}. `;
       seo_description += 'AI analysis: pros, cons, risks and verdict.';
     } else {
-      seo_description = 'AI analysis of property from realestate.com.au. Pros, cons, risks and verdict. Built for Australian property buyers.';
+      seo_description = 'AI analysis of a Zillow listing. Pros, cons, risks and verdict. Built for U.S. home buyers.';
     }
   }
 

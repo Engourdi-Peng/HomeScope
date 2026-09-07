@@ -100,7 +100,7 @@ function isSupportedPropertyUrl(url: string | undefined): boolean {
   try {
     const parsed = new URL(url);
     const host = parsed.hostname.toLowerCase();
-    // 支持 realestate.com.au（含子域名）和 zillow.com（含子域名）
+    // 支持 zillow.com（含子域名），realestate.com.au 作为兼容项保留
     return (
       host === 'realestate.com.au' ||
       host.endsWith('.realestate.com.au') ||

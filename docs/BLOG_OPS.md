@@ -31,7 +31,7 @@
 
 - **Listing review**：listing 分析、listing photo 检查、listing 风险识别。
 - **Buying & renting decisions**：看房清单、报价前清单、租客决策。
-- **Platform playbooks**：Zillow 使用技巧、realestate.com.au 使用技巧。
+- **Platform playbooks**：Zillow 使用技巧、listing photo 阅读指南。
 
 每支柱 1 篇核心指南 + 5–10 篇长尾。`scripts/seed-blog.mjs` 已包含 4 篇示例（ID + slug + 内容），部署后调用一次即可灌入。后续登录 `/admin/articles` 即可继续撰写。
 

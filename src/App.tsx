@@ -18,7 +18,7 @@ import { AuthCallback } from './pages/AuthCallback';
 import { LoginPage } from './pages/Login';
 import { AuthCompletePage } from './pages/AuthComplete';
 import { AuthorizePage } from './pages/Authorize';
-import { RealEstateToolsPage } from './pages/RealEstateTools';
+import { ZillowToolsPage } from './pages/ZillowTools';
 import { BlogIndexPage } from './pages/Blog';
 import { ArticleDetailPage } from './pages/Article';
 import { AdminArticlesListPage } from './pages/admin/ArticlesList';
@@ -63,7 +63,7 @@ function AnimatedRoutes() {
         <Route path="/login" element={<LoginPage />} />
         <Route path="/auth-complete" element={<AuthCompletePage />} />
         <Route path="/auth/authorize" element={<AuthorizePage />} />
-        <Route path="/tools/realestate-com-au" element={<RealEstateToolsPage />} />
+        <Route path="/tools/zillow" element={<ZillowToolsPage />} />
         <Route path="/blog" element={<BlogIndexPage />} />
         <Route path="/blog/:slug" element={<ArticleDetailPage />} />
         <Route path="/admin/articles" element={<RequireAdmin><AdminArticlesListPage /></RequireAdmin>} />

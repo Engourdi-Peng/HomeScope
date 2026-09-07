@@ -139,7 +139,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     : 'HomeScope Blog — Insights on Listings, Buying, and Renting Smarter';
   const description = category
     ? category.seo_description || category.description || `Articles in ${category.name}.`
-    : 'Practical guides for reviewing Zillow and realestate.com.au listings, comparing homes, and asking the right questions before you tour.';
+    : 'Practical guides for reviewing Zillow listings, comparing homes, and asking the right questions before you tour.';
   const canonical = category
     ? `${SITE_URL}/blog/category/${category.slug}`
     : `${SITE_URL}/blog`;

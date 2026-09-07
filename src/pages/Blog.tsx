@@ -67,7 +67,7 @@ export function BlogIndexPage() {
         ? `Blog — ${categories.find((c) => c.slug === activeCategory)?.name ?? 'Category'} | HomeScope`
         : 'HomeScope Blog — Insights on Listings, Buying, and Renting Smarter';
     const description =
-      'Practical guides for reviewing Zillow and realestate.com.au listings, comparing homes, and asking the right questions before you tour.';
+      'Practical guides for reviewing Zillow listings, comparing homes, and asking the right questions before you tour.';
     document.title = title;
     let meta = document.querySelector('meta[name="description"]') as HTMLMetaElement | null;
     if (!meta) {
@@ -97,7 +97,7 @@ export function BlogIndexPage() {
           HomeScope Blog
         </h1>
         <p className="text-stone-600 max-w-2xl mx-auto">
-          Insights, checklists, and real-world walk-throughs for buyers and renters reviewing Zillow and realestate.com.au listings.
+          Insights, checklists, and real-world walk-throughs for buyers and renters reviewing Zillow listings.
         </p>
       </div>
 

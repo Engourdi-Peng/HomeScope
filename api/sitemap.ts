@@ -53,6 +53,7 @@ interface SitemapRow {
   shared_at?: string | null;
   published_at?: string | null;
   updated_at?: string;
+  noindex?: boolean | null;
 }
 
 /** Calculate date threshold for filtering old analyses */
@@ -101,7 +102,8 @@ async function fetchPublicAnalyses(): Promise<SitemapRow[]> {
 async function fetchPublishedArticles(): Promise<SitemapRow[]> {
   const query = new URL(`${SUPABASE_URL}/rest/v1/articles`);
   query.searchParams.set('status', 'eq.published');
-  query.searchParams.set('select', 'slug,published_at,updated_at');
+  query.searchParams.set('noindex', 'eq.false');
+  query.searchParams.set('select', 'slug,published_at,updated_at,noindex');
   query.searchParams.set('order', 'published_at.desc.nullslast');
   query.searchParams.set('limit', String(MAX_ARTICLE_PAGES));
 
@@ -161,7 +163,7 @@ function formatDate(isoString: string | null | undefined): string {
 
 const STATIC_PAGES = [
   { loc: `${SITE_URL}/`, changefreq: 'weekly', priority: '1.0' },
-  { loc: `${SITE_URL}/tools/realestate-com-au`, changefreq: 'weekly', priority: '0.9' },
+  { loc: `${SITE_URL}/tools/zillow`, changefreq: 'weekly', priority: '0.9' },
   { loc: `${SITE_URL}/blog`, changefreq: 'daily', priority: '0.9' },
   { loc: `${SITE_URL}/pricing`, changefreq: 'monthly', priority: '0.7' },
   { loc: `${SITE_URL}/privacy`, changefreq: 'yearly', priority: '0.3' },
@@ -196,6 +198,7 @@ function buildXml(shareRows: SitemapRow[], articleRows: SitemapRow[]): string {
 
   for (const row of articleRows) {
     if (!row.slug || isTestSlug(row.slug)) continue;
+    if (row.noindex) continue;
     const lastmod = formatDate(row.published_at ?? row.updated_at);
     lines.push(`  <url>`);
     lines.push(`    <loc>${SITE_URL}/blog/${encodeURIComponent(row.slug)}</loc>`);

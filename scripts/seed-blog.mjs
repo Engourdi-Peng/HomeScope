@@ -45,7 +45,7 @@ async function call(action, body, method = 'POST') {
 const CATEGORIES = [
   { slug: 'listing-review', name: 'Listing Review', description: 'How to read property listings critically before you tour.' },
   { slug: 'buying-renting', name: 'Buying & Renting Decisions', description: 'Practical decision guides for tenants and buyers.' },
-  { slug: 'platform-tips', name: 'Platform Tips', description: 'Real-world tips for Zillow and realestate.com.au.' },
+  { slug: 'platform-tips', name: 'Platform Tips', description: 'Real-world tips for getting the most out of Zillow listings.' },
 ];
 
 const ARTICLES = [
@@ -101,9 +101,9 @@ After reviewing, write down three things you want to verify in person: layout, n
     slug: 'questions-to-ask-the-agent-on-a-rental-showing',
     title: 'Questions to Ask the Agent on a Rental Showing',
     excerpt: 'Eleven targeted questions that reveal lease traps, building condition, and hidden costs before you sign a rental application.',
-    tags: ['rental', 'buyer-tips', 'realestate.com.au'],
+    tags: ['rental', 'buyer-tips', 'zillow'],
     category_slug: 'buying-renting',
-    seo_title: 'Questions to Ask the Agent on a Rental Showing (Australia & US)',
+    seo_title: 'Questions to Ask the Agent on a Rental Showing',
     seo_description: 'Eleven targeted questions to ask on a rental showing — from lease traps and utility costs to building condition and neighbor noise.',
     status: 'published',
     published_at: new Date(Date.now() - 86400000 * 14).toISOString(),
@@ -148,19 +148,19 @@ If the agent dodges any of these, treat the listing as suspect. Use HomeScope to
 `,
   },
   {
-    slug: 'using-realestate-com-au-photos-to-spot-condition-red-flags',
-    title: 'Using realestate.com.au Photos to Spot Condition Red Flags',
-    excerpt: 'What listing photos can — and cannot — tell you about an Australian rental or sale. A buyer-side photo-reading guide.',
-    tags: ['realestate.com.au', 'photos', 'au-rental'],
+    slug: 'using-zillow-photos-to-spot-condition-red-flags',
+    title: 'Using Zillow Photos to Spot Condition Red Flags',
+    excerpt: 'What listing photos can — and cannot — tell you about a Zillow listing. A buyer-side photo-reading guide.',
+    tags: ['zillow', 'photos', 'us-buyer'],
     category_slug: 'platform-tips',
-    seo_title: 'realestate.com.au Photos: Spotting Condition Red Flags',
-    seo_description: 'A buyer-focused guide to reading realestate.com.au listing photos — what missing views and dated finishes mean before you book an inspection.',
+    seo_title: 'Zillow Photos: Spotting Condition Red Flags',
+    seo_description: 'A buyer-focused guide to reading Zillow listing photos — what missing views and dated finishes mean before you book a showing.',
     status: 'published',
     published_at: new Date(Date.now() - 86400000 * 7).toISOString(),
     cover_alt: 'Listing photos lined up on a phone',
-    content_markdown: `# Using realestate.com.au Photos to Spot Condition Red Flags
+    content_markdown: `# Using Zillow Photos to Spot Condition Red Flags
 
-Photos lie by omission. Use this checklist before you book an inspection.
+Photos lie by omission. Use this checklist before you book a showing.
 
 ## Bathroom and kitchen
 
@@ -168,12 +168,12 @@ If there are no bathroom or kitchen photos, assume the worst. Listing agents pho
 
 ## Wide-angle distortion
 
-A 16mm lens makes a small apartment look like a townhouse. Ask for a second angle before falling in love.
+A wide-angle lens makes a small home look like a townhouse. Ask for a second angle before falling in love.
 
 ## Outdoor space
 
-- Garden photos taken in early spring can hide neglected landscaping.
-- Balconies photographed from one angle often hide the noisy side.
+- Backyard photos taken in early spring can hide neglected landscaping.
+- Patios photographed from one angle often hide the noisy side.
 
 ## Light and windows
 
@@ -183,8 +183,8 @@ A 16mm lens makes a small apartment look like a townhouse. Ask for a second angl
 ## What photos never show
 
 - Noise from the street
-- Building smells (mould, pets, cooking)
-- Building management responsiveness
+- Neighborhood smells
+- HOA or property management responsiveness
 
 When in doubt, run a HomeScope report on the listing and cross-check what the photos don't show.
 `,

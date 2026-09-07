@@ -140,7 +140,7 @@ function drawText(text, x0, y0, scale, color) {
 
 // Center brand mark + tagline
 const title = 'HomeScope';
-const tagline = 'AI Property Analyzer for Zillow and realestate.com.au';
+const tagline = 'AI Property Analyzer for Zillow';
 const sub = 'tryhomescope.com';
 
 // Measure text widths (5 cols + 1 spacing per glyph).

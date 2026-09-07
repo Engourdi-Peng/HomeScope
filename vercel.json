@@ -1,4 +1,21 @@
 {
+  "redirects": [
+    {
+      "source": "/tools/realestate-com-au",
+      "destination": "/tools/zillow",
+      "statusCode": 301
+    },
+    {
+      "source": "/tools/realestate-com-au/:path*",
+      "destination": "/tools/zillow",
+      "statusCode": 301
+    },
+    {
+      "source": "/blog/using-realestate-com-au-photos-to-spot-condition-red-flags",
+      "destination": "/blog/using-zillow-photos-to-spot-condition-red-flags",
+      "statusCode": 301
+    }
+  ],
   "rewrites": [
     { "source": "/api/sitemap", "destination": "/api/sitemap" },
     { "source": "/api/share", "destination": "/api/share" },

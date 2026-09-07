@@ -17,14 +17,14 @@ function usePageSEO(title: string, description: string) {
   });
 }
 
-export function RealEstateToolsPage() {
+export function ZillowToolsPage() {
   const { isAuthenticated } = useAuth();
   const [isLoginModalOpen, setIsLoginModalOpen] = useState(false);
 
   // Set page SEO
   usePageSEO(
-    'realestate.com.au Rental Analysis Tool | HomeScope',
-    'AI-powered analysis for realestate.com.au listings. Upload screenshots, get instant insights on space quality, hidden risks, competition level and inspection checklist – built for Australian renters.'
+    'Zillow Rental Analysis Tool | HomeScope',
+    'AI-powered analysis for Zillow listings in the United States. Upload screenshots, get instant insights on space quality, hidden risks, competition level and tour checklist – built for U.S. renters and buyers.'
   );
 
   return (
@@ -32,8 +32,8 @@ export function RealEstateToolsPage() {
       {/* Background */}
       <div className="fixed inset-0 z-0 opacity-[0.04] mix-blend-multiply pointer-events-none overflow-hidden">
         <img
-          src="https://images.unsplash.com/photo-1560518883-ce09059eeffa?crop=entropy&cs=tinysrgb&fit=max&fm=jpg&ixid=M3w3Nzg4Nzd8MHwxfHNlYXJjaHwxMXx8aG91c2luZyUyMHByb3BlcnR5JTIwYXVzdHJhbGlhJTIwcmVudWFsJTIwY29tcGxlfGVufDF8fGZ8MTc3NDExMzQ2OHww&ixlib=rb-4.1.0&q=80&w=1080"
-          alt="Australian property"
+          src="https://images.unsplash.com/photo-1560518883-ce09059eeffa?crop=entropy&cs=tinysrgb&fit=max&fm=jpg&ixid=M3w3Nzg4Nzd8MHwxfHNlYXJjaHwxMXx8aG91c2luZyUyMHByb3BlcnR5JTIwdXMlMjByZW50YWwlMjBob21lfGVufDF8fGZ8MTc3NDExMzQ2OHww&ixlib=rb-4.1.0&q=80&w=1080"
+          alt="U.S. property"
           className="absolute right-0 top-0 w-full md:w-2/3 h-full object-cover object-right grayscale"
         />
         <div className="absolute inset-0 bg-gradient-to-r from-[#FDFCF9] via-[#FDFCF9]/80 to-transparent"></div>
@@ -59,13 +59,13 @@ export function RealEstateToolsPage() {
         {/* Hero Section */}
         <div className="text-center mb-12">
           <h1 className="text-[44px] font-light tracking-[-0.5px] text-[#1c1917] leading-[1.15] mb-4">
-            Best AI Tool for realestate.com.au Listings in Australia
+            Best AI Tool for Zillow Listings in the United States
           </h1>
           <p className="text-[18px] text-[#57534e] max-w-2xl mx-auto leading-relaxed font-light mb-4">
-            Analyze properties directly from realestate.com.au screenshots
+            Analyze properties directly from Zillow screenshots
           </p>
           <p className="text-xs text-stone-500 text-center italic max-w-xl mx-auto">
-            This is an independent third-party AI tool. Not affiliated with, endorsed by, or connected to realestate.com.au or REA Group. All analysis is for informational purposes only.
+            This is an independent third-party AI tool. Not affiliated with, endorsed by, or connected to Zillow Group. All analysis is for informational purposes only.
           </p>
         </div>
 
@@ -92,7 +92,7 @@ export function RealEstateToolsPage() {
               </svg>
             </div>
             <h3 className="text-lg font-semibold text-stone-900 mb-2">Hidden Risks Detection</h3>
-            <p className="text-sm text-stone-500">Identify staging signs, maintenance issues, and red flags before you attend the inspection.</p>
+            <p className="text-sm text-stone-500">Identify staging signs, maintenance issues, and red flags before you schedule the tour.</p>
           </div>
 
           <div className="bg-white rounded-2xl shadow-sm border border-stone-200 p-6 text-center">
@@ -102,8 +102,8 @@ export function RealEstateToolsPage() {
                 <polyline points="22 4 12 14.01 9 11.01"/>
               </svg>
             </div>
-            <h3 className="text-lg font-semibold text-stone-900 mb-2">Inspection Checklist</h3>
-            <p className="text-sm text-stone-500">Receive a tailored checklist of questions to ask the agent at the inspection.</p>
+            <h3 className="text-lg font-semibold text-stone-900 mb-2">Tour Checklist</h3>
+            <p className="text-sm text-stone-500">Receive a tailored checklist of questions to ask the listing agent on the tour.</p>
           </div>
         </div>
 
@@ -116,7 +116,7 @@ export function RealEstateToolsPage() {
             <div className="text-center">
               <div className="w-10 h-10 bg-orange-500 text-white rounded-full flex items-center justify-center mx-auto mb-4 text-lg font-semibold">1</div>
               <h3 className="text-base font-semibold text-[#292524] mb-2">Upload Screenshots</h3>
-              <p className="text-sm text-[#78716c]">Take screenshots from a realestate.com.au listing and upload them.</p>
+              <p className="text-sm text-[#78716c]">Take screenshots from a Zillow listing and upload them.</p>
             </div>
             <div className="text-center">
               <div className="w-10 h-10 bg-orange-500 text-white rounded-full flex items-center justify-center mx-auto mb-4 text-lg font-semibold">2</div>
@@ -140,14 +140,14 @@ export function RealEstateToolsPage() {
             Try It Now – It's Free to Start
           </Link>
           <p className="text-xs text-stone-400 mt-4">
-            3 free reports with Starter plan from AU$6.99
+            3 free reports with Starter plan from US$6.99
           </p>
         </div>
 
         {/* Footer Disclaimer */}
         <div className="text-center pt-8 pb-4 border-t border-[rgba(231,229,228,0.8)]">
           <p className="text-xs text-stone-500 mb-3 italic max-w-xl mx-auto">
-            This is an independent third-party AI tool. Not affiliated with, endorsed by, or connected to realestate.com.au or REA Group. All analysis is for informational purposes only.
+            This is an independent third-party AI tool. Not affiliated with, endorsed by, or connected to Zillow Group. All analysis is for informational purposes only.
           </p>
           <div className="flex justify-center gap-6 mb-3">
             <Link to="/privacy" className="text-[13px] text-[#a8a29e] hover:text-[#57534e] transition-colors">

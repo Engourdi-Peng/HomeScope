@@ -375,8 +375,8 @@ export function ArticleDetailPage() {
                 Take it further
               </p>
               <p className="font-serif text-2xl md:text-3xl leading-snug text-balance">
-                Ready to read a listing like an analyst? Paste any Zillow or
-                realestate.com.au URL and get a buyer-focused risk review in minutes.
+                Ready to read a listing like an analyst? Paste any Zillow URL
+                and get a buyer-focused risk review in minutes.
               </p>
             </div>
             <Link

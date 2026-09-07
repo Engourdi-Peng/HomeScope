@@ -13,9 +13,9 @@ const SITE_URL = 'https://www.tryhomescope.com';
 
 export const STATIC_PAGE_SEO: Record<string, PageSEO> = {
   '/': {
-    title: 'HomeScope | AI Property Analyzer for Zillow & realestate.com.au',
+    title: 'HomeScope | AI Property Analyzer for Zillow Listings',
     description:
-      'HomeScope turns Zillow and realestate.com.au listings into buyer-focused risk reports — price signals, photo observations, carrying costs, and questions to ask the agent.',
+      'HomeScope turns Zillow listings into buyer-focused risk reports — price signals, photo observations, carrying costs, and questions to ask the agent.',
     path: '/',
   },
   pricing: {
@@ -54,7 +54,7 @@ export const STATIC_PAGE_SEO: Record<string, PageSEO> = {
   blog: {
     title: 'HomeScope Blog — Insights on Listings, Buying, and Renting Smarter',
     description:
-      'Practical guides for reviewing Zillow and realestate.com.au listings, comparing homes, and asking the right questions before you tour.',
+      'Practical guides for reviewing Zillow listings, comparing homes, and asking the right questions before you tour.',
     path: '/blog',
   },
 };

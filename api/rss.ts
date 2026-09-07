@@ -78,7 +78,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 <channel>
   <title>HomeScope Blog</title>
   <link>${escapeXml(SITE_URL)}/blog</link>
-  <description>Practical guides for reviewing Zillow and realestate.com.au listings.</description>
+  <description>Practical guides for reviewing Zillow listings.</description>
   <language>en-us</language>
   <lastBuildDate>${escapeXml(lastBuild)}</lastBuildDate>
 ${items}

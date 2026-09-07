@@ -16,7 +16,7 @@ const SUPABASE_ANON_KEY = process.env.SUPABASE_ANON_KEY || '';
 const SITE_URL = process.env.SITE_URL || 'https://www.tryhomescope.com';
 
 /**
- * Extract suburb from Australian address format
+ * Extract suburb from a US-style address format.
  * @deprecated Use parseAddress from shared/address instead
  */
 function extractSuburbFromAddress(address: string | null | undefined): string | null {
@@ -94,7 +94,7 @@ async function fetchSEOData(slug: string): Promise<{
 }
 
 export const config = {
-  matcher: '/share/:slug*',
+  matcher: ['/share/:slug*', '/tools/realestate-com-au', '/tools/realestate-com-au/:path*'],
 };
 
 export default async function middleware(request: Request) {
@@ -102,6 +102,11 @@ export default async function middleware(request: Request) {
   const pathname = url.pathname;
 
   if (request.method !== 'GET') return next();
+
+  // 301 redirect: /tools/realestate-com-au -> /tools/zillow
+  if (pathname === '/tools/realestate-com-au' || pathname.startsWith('/tools/realestate-com-au/')) {
+    return Response.redirect(new URL('/tools/zillow', url.origin), 301);
+  }
 
   const match = pathname.match(/^\/share\/(.+?)(\/.*)?$/);
   if (!match) return next();
