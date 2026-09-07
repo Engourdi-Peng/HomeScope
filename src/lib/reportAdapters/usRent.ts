@@ -1044,4 +1044,3 @@ export function normalizeUSRentReport(result: USRentResult): NormalizedReport {
     raw: result,
   };
 }
-}
