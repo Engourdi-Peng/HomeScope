@@ -52,6 +52,7 @@ interface SitemapRow {
   slug?: string;
   shared_at?: string | null;
   published_at?: string | null;
+  content_updated_at?: string | null;
   updated_at?: string;
   noindex?: boolean | null;
 }
@@ -103,7 +104,7 @@ async function fetchPublishedArticles(): Promise<SitemapRow[]> {
   const query = new URL(`${SUPABASE_URL}/rest/v1/articles`);
   query.searchParams.set('status', 'eq.published');
   query.searchParams.set('noindex', 'eq.false');
-  query.searchParams.set('select', 'slug,published_at,updated_at,noindex');
+  query.searchParams.set('select', 'slug,published_at,content_updated_at,noindex');
   query.searchParams.set('order', 'published_at.desc.nullslast');
   query.searchParams.set('limit', String(MAX_ARTICLE_PAGES));
 
@@ -199,7 +200,7 @@ function buildXml(shareRows: SitemapRow[], articleRows: SitemapRow[]): string {
   for (const row of articleRows) {
     if (!row.slug || isTestSlug(row.slug)) continue;
     if (row.noindex) continue;
-    const lastmod = formatDate(row.published_at ?? row.updated_at);
+    const lastmod = formatDate(row.content_updated_at ?? row.published_at);
     lines.push(`  <url>`);
     lines.push(`    <loc>${SITE_URL}/blog/${encodeURIComponent(row.slug)}</loc>`);
     lines.push(`    <lastmod>${lastmod}</lastmod>`);

@@ -24,7 +24,7 @@ const SUPABASE_SERVICE_ROLE_KEY =
 const SITE_URL = process.env.SITE_URL || 'https://www.tryhomescope.com';
 
 const ARTICLE_SELECT =
-  'id,slug,title,excerpt,content_html,cover_image_url,cover_alt,category_id,tags,author_name,status,published_at,updated_at,reading_time_minutes,seo_title,seo_description,canonical_url,og_image_url,noindex';
+  'id,slug,title,excerpt,content_html,cover_image_url,cover_alt,category_id,tags,author_name,status,published_at,content_updated_at,updated_at,reading_time_minutes,seo_title,seo_description,canonical_url,og_image_url,noindex';
 
 interface ArticleRow {
   id: string;
@@ -39,6 +39,7 @@ interface ArticleRow {
   author_name: string;
   status: string;
   published_at: string | null;
+  content_updated_at: string | null;
   updated_at: string;
   reading_time_minutes: number;
   seo_title: string | null;
@@ -165,8 +166,14 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       description,
       url: canonical,
       imageUrl: ogImage,
-      datePublished: article.published_at || article.updated_at,
-      dateModified: article.updated_at,
+      datePublished:
+        article.published_at ||
+        article.content_updated_at ||
+        article.updated_at,
+      dateModified:
+        article.content_updated_at ||
+        article.published_at ||
+        article.updated_at,
       authorName: article.author_name,
     }),
     breadcrumbJsonLd([

@@ -452,11 +452,20 @@ async function upsertArticle(input: ArticleInput, user: UserPayload, isCreate: b
   const words = wordCount(cleaned.content);
 
   const status = cleaned.status || existing?.status || "draft";
+  // 严格语义：published_at 仅在"第一次进入 published 且当前为 NULL"时设置。
+  // 后续 published → draft → published 等任何状态切换都不得刷新。
   let publishedAt: string | null = existing?.published_at ?? null;
-  if (status === "published") {
-    if (!publishedAt) publishedAt = new Date().toISOString();
-    else if (existing?.status !== "published") publishedAt = new Date().toISOString();
+  if (status === "published" && !publishedAt) {
+    publishedAt = new Date().toISOString();
   }
+  // 真正的首次发布：之前从未 published，且本次将进入 published（publishedAt 已被赋值）。
+  // 用于在 payload 里显式初始化 content_updated_at = published_at，
+  // 避免 draft 阶段编辑留下的 content_updated_at 比 published_at 更新。
+  const isFirstPublish =
+    status === "published" &&
+    !existing?.published_at &&
+    !!publishedAt;
+
   if (status !== "scheduled") {
     cleaned.scheduled_for = null;
   }
@@ -473,6 +482,13 @@ async function upsertArticle(input: ArticleInput, user: UserPayload, isCreate: b
     tags: cleaned.tags,
     status,
     published_at: publishedAt,
+    // 仅在"真正的首次发布"时显式初始化 content_updated_at = published_at，
+    // 覆盖 draft 阶段编辑可能留下的 content_updated_at，确保不变量
+    //   content_updated_at >= published_at
+    // 后续编辑由 trigger 通过 IS DISTINCT FROM 自动刷新，payload 不再写该字段。
+    ...(isFirstPublish
+      ? { content_updated_at: publishedAt }
+      : {}),
     scheduled_for: cleaned.scheduled_for,
     reading_time_minutes: reading,
     word_count: words,
