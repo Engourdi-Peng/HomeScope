@@ -143,6 +143,12 @@ function renderInline(text: string): string {
   out = out.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
   // italic
   out = out.replace(/(^|[^*])\*([^*\n]+)\*/g, "$1<em>$2</em>");
+  // images: ![alt](url)
+  out = out.replace(/!\[([^\]]*)\]\(([^)\s]+)\)/g, (_m, alt, url) =>
+    isSafeUrl(url)
+      ? `<img src="${escapeHtml(url)}" alt="${alt}" loading="lazy" />`
+      : alt
+  );
   // links: [text](url)
   out = out.replace(/\[([^\]]+)\]\(([^)\s]+)\)/g, (_m, label, url) =>
     isSafeUrl(url)
@@ -185,6 +191,22 @@ function renderMarkdown(md: string): string {
       closeList();
       inCode = true;
       i++;
+      continue;
+    }
+
+    const tableRow = /^\s*\|(.+)\|\s*$/.test(line) && i + 1 < lines.length && /^\s*\|?\s*:?-{3,}:?\s*(\|\s*:?-{3,}:?\s*)+\|?\s*$/.test(lines[i + 1]);
+    if (tableRow) {
+      closeList();
+      const cells = (value: string) => value.replace(/^\s*\|/, '').replace(/\|\s*$/, '').split('|').map((cell) => renderInline(cell.trim()));
+      const headers = cells(line);
+      html.push(`<table><thead><tr>${headers.map((cell) => `<th>${cell}</th>`).join('')}</tr></thead><tbody>`);
+      i += 2;
+      while (i < lines.length && /^\s*\|(.+)\|\s*$/.test(lines[i])) {
+        const row = cells(lines[i]);
+        html.push(`<tr>${row.map((cell) => `<td>${cell}</td>`).join('')}</tr>`);
+        i++;
+      }
+      html.push('</tbody></table>');
       continue;
     }
 

@@ -26,10 +26,12 @@ export interface ArticleSummary {
   tags: string[];
   author_name: string;
   published_at: string | null;
+  scheduled_for?: string | null;
   reading_time_minutes?: number;
 }
 
 export interface Article extends ArticleSummary {
+  content_markdown?: string;
   content_html: string;
   status: ArticleStatus;
   updated_at: string;
