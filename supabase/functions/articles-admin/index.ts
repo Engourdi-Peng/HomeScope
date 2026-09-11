@@ -117,8 +117,94 @@ function wordCount(markdown: string): number {
  * 极简 markdown -> HTML 渲染器：
  * - 支持标题、段落、粗体/斜体、行内 code、链接、列表、引用、水平线、代码块；
  * - 所有 HTML 实体与原始 HTML 已转义，避免 XSS；
- * - 段落、行内 code、链接 URL 通过白名单限制；不引入额外依赖。
+ * - 段落、行内 code、链接 URL 通过白名单限制；不引入额外依赖；
+ * - 已知安全的内联 HTML（img / br / span[data-fontsize]）会做白名单校验后保留。
  */
+
+// 仅放行一组已知安全的内联 HTML 标签；其它任何 HTML 都会被 escape。
+// img / br：MDXEditor 在图片带尺寸时会输出 <img width="..." height="..." />，以及段落内换行 <br />。
+// span[data-fontsize]：编辑器字号选择会写入 <span data-fontsize="...">。
+const PASSTHROUGH_TAGS = ["img", "br", "span"] as const;
+type PassthroughTag = (typeof PASSTHROUGH_TAGS)[number];
+
+// 仅放行特定属性组合，URL 一律走 isSafeUrl。
+const SAFE_ATTRS: Record<PassthroughTag, RegExp[]> = {
+  img: [
+    /^src$/,
+    /^alt$/,
+    /^title$/,
+    /^width$/,
+    /^height$/,
+    /^loading$/,
+  ],
+  br: [],
+  span: [/^data-fontsize$/],
+};
+
+// 解析 <tag attr="..." attr2='...'> ... </tag> 或自闭合形式；返回节点列表。
+// 仅识别顶层节点（不嵌套递归），保证恶意嵌套不会被绕过。
+function extractPassthroughTokens(input: string): { placeholder: string; raw: string; html: string }[] {
+  const tokens: { placeholder: string; raw: string; html: string }[] = [];
+  // 先匹配自闭合形式：<tag attrs />
+  const selfCloseRe = /<([a-zA-Z][a-zA-Z0-9-]*)\b([^>]*?)\/\s*>/g;
+  // 再匹配成对形式：<tag attrs>...</tag>
+  const pairRe = /<([a-zA-Z][a-zA-Z0-9-]*)\b([^>]*)>([\s\S]*?)<\/\1>/g;
+
+  let m: RegExpExecArray | null;
+
+  const sanitizeAttrs = (tag: PassthroughTag, raw: string): string => {
+    // 解析 attr="value" 或 attr='value' 或 attr=value
+    const attrRe = /([a-zA-Z_:][-a-zA-Z0-9_:.]*)\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'>]+))/g;
+    const out: string[] = [];
+    let am: RegExpExecArray | null;
+    while ((am = attrRe.exec(raw)) !== null) {
+      const name = am[1].toLowerCase();
+      const value = am[2] ?? am[3] ?? am[4] ?? "";
+      if (!SAFE_ATTRS[tag].some((re) => re.test(name))) continue;
+      if ((name === "src" || name === "href") && !isSafeUrl(value)) continue;
+      out.push(`${name}="${escapeHtml(value)}"`);
+    }
+    return out.join(" ");
+  };
+
+  const isAllowedTag = (tag: string): tag is PassthroughTag =>
+    (PASSTHROUGH_TAGS as readonly string[]).includes(tag.toLowerCase());
+
+  while ((m = selfCloseRe.exec(input)) !== null) {
+    const tag = m[1].toLowerCase();
+    const raw = m[0];
+    if (!isAllowedTag(tag)) continue;
+    if (tag === "br") {
+      tokens.push({ placeholder: `\u0000PT${tokens.length}\u0000`, raw, html: `<br />` });
+      continue;
+    }
+    const attrs = sanitizeAttrs(tag, m[2] || "");
+    tokens.push({
+      placeholder: `\u0000PT${tokens.length}\u0000`,
+      raw,
+      html: `<${tag}${attrs ? " " + attrs : ""} />`,
+    });
+  }
+
+  while ((m = pairRe.exec(input)) !== null) {
+    const tag = m[1].toLowerCase();
+    const raw = m[0];
+    if (!isAllowedTag(tag)) continue;
+    const inner = m[3];
+    // 拒绝嵌套同名/异名标签，避免绕过（递归保护）
+    if (/<\/?[a-zA-Z][a-zA-Z0-9-]*\b/.test(inner)) continue;
+    const attrs = sanitizeAttrs(tag, m[2] || "");
+    const innerEscaped = escapeHtml(inner);
+    tokens.push({
+      placeholder: `\u0000PT${tokens.length}\u0000`,
+      raw,
+      html: `<${tag}${attrs ? " " + attrs : ""}>${innerEscaped}</${tag}>`,
+    });
+  }
+
+  return tokens;
+}
+
 function escapeHtml(input: string): string {
   return (input || "")
     .replace(/&/g, "&amp;")
@@ -136,7 +222,15 @@ function isSafeUrl(url: string): boolean {
 }
 
 function renderInline(text: string): string {
-  let out = escapeHtml(text);
+  // 先抽取允许的内联 HTML（img / br / span[data-fontsize]），用占位符替换，
+  // 防止 escapeHtml 把它们一起转义掉。占位符使用不可见控制字符，正常 Markdown
+  // 内容里不会出现，安全性靠 extractPassthroughTokens 的白名单保证。
+  const tokens = extractPassthroughTokens(text);
+  let working = text;
+  for (const t of tokens) {
+    working = working.replace(t.raw, t.placeholder);
+  }
+  let out = escapeHtml(working);
   // inline code
   out = out.replace(/`([^`]+)`/g, (_m, code) => `<code>${code}</code>`);
   // bold
@@ -155,6 +249,10 @@ function renderInline(text: string): string {
       ? `<a href="${escapeHtml(url)}" rel="noopener noreferrer">${label}</a>`
       : label
   );
+  // 把占位符还原为已校验的 HTML
+  for (const t of tokens) {
+    out = out.replace(t.placeholder, t.html);
+  }
   return out;
 }
 

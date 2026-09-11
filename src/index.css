@@ -574,6 +574,24 @@ html {
   border-radius: 2px;
 }
 
+/* Inline font-size marker emitted by the editor toolbar
+   (data-fontsize=sm|md|lg). Renders as an inline span without breaking the reading flow. */
+.article-prose span[data-fontsize="sm"] {
+  font-size: 0.875em;
+}
+
+.article-prose span[data-fontsize="md"] {
+  font-size: 1em;
+}
+
+.article-prose span[data-fontsize="lg"] {
+  font-size: 1.25em;
+}
+
+.article-prose span[data-fontsize="xl"] {
+  font-size: 1.5em;
+}
+
 /* Reduced motion — kill drop cap float and link transition */
 @media (prefers-reduced-motion: reduce) {
   .article-prose a {
@@ -721,5 +739,234 @@ html {
 @media (prefers-reduced-motion: reduce) {
   .article-enter {
     animation: none;
+  }
+}
+
+/* ───────────────────────────────────────────────────────────────
+   Article Editor (admin) — wraps MDXEditor and tunes its look
+   so the editing surface matches the published reading surface.
+─────────────────────────────────────────────────────────────── */
+.mdxeditor-shell {
+  background-color: var(--color-report-paper, #FAF8F3);
+}
+
+.mdxeditor-shell .mdxeditor {
+  background-color: transparent;
+}
+
+.mdxeditor-shell .mdxeditor-toolbar {
+  position: sticky;
+  top: 0;
+  z-index: 5;
+  background-color: rgba(255, 255, 255, 0.96);
+  backdrop-filter: blur(6px);
+  border-bottom: 1px solid #e7e5e4;
+  flex-wrap: wrap;
+}
+
+.mdxeditor-shell .mdxeditor-toolbar button {
+  color: #44403c;
+}
+
+.mdxeditor-shell .mdxeditor-toolbar button[data-active] {
+  background-color: #1c1917;
+  color: #fafaf9;
+}
+
+/* Editing surface — match published prose where possible */
+.mdxeditor-prose {
+  font-family: 'Newsreader', Georgia, 'Times New Roman', serif;
+  font-size: 1.0625rem;
+  line-height: 1.75;
+  color: #1c1917;
+  max-width: 720px;
+  margin-left: auto;
+  margin-right: auto;
+  padding: 1.5rem 1.25rem 2rem;
+  outline: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+}
+
+.mdxeditor-prose:focus-visible {
+  outline: none;
+}
+
+.mdxeditor-prose h1 {
+  font-family: 'Newsreader', Georgia, serif;
+  font-weight: 600;
+  font-size: 2rem;
+  line-height: 1.15;
+  letter-spacing: -0.015em;
+  margin: 1.25em 0 0.5em;
+  color: #1c1917;
+  text-wrap: balance;
+}
+
+.mdxeditor-prose h2 {
+  font-family: 'Newsreader', Georgia, serif;
+  font-weight: 600;
+  font-size: 1.625rem;
+  line-height: 1.2;
+  margin: 1.5em 0 0.5em;
+  text-wrap: balance;
+}
+
+.mdxeditor-prose h3 {
+  font-family: 'Newsreader', Georgia, serif;
+  font-weight: 600;
+  font-size: 1.25rem;
+  line-height: 1.25;
+  margin: 1.25em 0 0.4em;
+  text-wrap: balance;
+}
+
+.mdxeditor-prose h4 {
+  font-family: 'Inter', system-ui, sans-serif;
+  font-size: 0.8125rem;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: #57534e;
+  margin: 1.5em 0 0.4em;
+}
+
+.mdxeditor-prose p {
+  margin: 0 0 1em;
+}
+
+.mdxeditor-prose blockquote {
+  margin: 1.25em 0;
+  padding: 0.25em 0 0.25em 1.25em;
+  border-left: 3px solid #b45309;
+  font-style: italic;
+  color: #1c1917;
+}
+
+.mdxeditor-prose code {
+  font-family: 'JetBrains Mono', ui-monospace, monospace;
+  font-size: 0.875em;
+  background-color: rgba(120, 113, 108, 0.12);
+  padding: 0.1em 0.35em;
+  border-radius: 4px;
+}
+
+.mdxeditor-prose pre {
+  font-family: 'JetBrains Mono', ui-monospace, monospace;
+  font-size: 0.875rem;
+  line-height: 1.6;
+  background-color: #1c1917;
+  color: #fafaf9;
+  padding: 1em 1.25em;
+  border-radius: 12px;
+  overflow-x: auto;
+  margin: 1.25em 0;
+}
+
+.mdxeditor-prose pre code {
+  background: none;
+  padding: 0;
+  color: inherit;
+  font-size: inherit;
+}
+
+.mdxeditor-prose ul,
+.mdxeditor-prose ol {
+  margin: 0 0 1em;
+  padding-left: 1.5em;
+}
+
+.mdxeditor-prose li {
+  margin-bottom: 0.4em;
+}
+
+.mdxeditor-prose a {
+  color: #0369a1;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+.mdxeditor-prose hr {
+  border: none;
+  text-align: center;
+  margin: 1.5em 0;
+  color: #a8a29e;
+}
+
+.mdxeditor-prose hr::before {
+  content: '· · ·';
+  letter-spacing: 0.5em;
+}
+
+.mdxeditor-prose img {
+  max-width: 100%;
+  height: auto;
+  display: block;
+  margin: 1.25em auto;
+  border-radius: 12px;
+}
+
+.mdxeditor-prose table {
+  width: 100%;
+  margin: 1.25em 0;
+  border-collapse: collapse;
+  font-family: 'Inter', system-ui, sans-serif;
+  font-size: 0.9375rem;
+  display: block;
+  overflow-x: auto;
+  border: 1px solid #e7e5e4;
+  border-radius: 10px;
+}
+
+.mdxeditor-prose th,
+.mdxeditor-prose td {
+  padding: 0.6em 0.9em;
+  border-bottom: 1px solid #e7e5e4;
+  text-align: left;
+}
+
+.mdxeditor-prose th {
+  background-color: rgba(120, 113, 108, 0.06);
+  font-weight: 600;
+  font-size: 0.8125rem;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.mdxeditor-prose[contenteditable='true']:empty::before {
+  content: attr(data-placeholder);
+  color: #a8a29e;
+  pointer-events: none;
+}
+
+/* The image dialog has its own dark scrim — let it shine through */
+.mdxeditor-shell .mdxeditor-popup-container {
+  z-index: 50;
+}
+
+/* Mobile: stack sidebar and editor full-width */
+@media (max-width: 1024px) {
+  .mdxeditor-shell {
+    margin-left: 0;
+    margin-right: 0;
+  }
+}
+
+@media (max-width: 640px) {
+  .mdxeditor-prose {
+    font-size: 1rem;
+    padding: 1rem 1rem 1.5rem;
+  }
+  .mdxeditor-prose h1 {
+    font-size: 1.625rem;
+  }
+  .mdxeditor-prose h2 {
+    font-size: 1.375rem;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .mdxeditor-shell .mdxeditor-toolbar {
+    backdrop-filter: none;
   }
 }

@@ -17,6 +17,7 @@
     "verify:us-prompt": "tsx scripts/verify_us_prompt.ts"
   },
   "dependencies": {
+    "@mdxeditor/editor": "^4.2.4",
     "@radix-ui/react-accordion": "^1.2.12",
     "@supabase/supabase-js": "^2.101.1",
     "@tailwindcss/vite": "^4.2.1",
