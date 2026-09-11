@@ -274,37 +274,42 @@ export function ArticleDetailPage() {
             screens. This gives symmetric outer gutters around the body and keeps
             the reading measure stable. */}
         <div className="relative mx-auto w-full max-w-[1200px] px-4 md:px-6">
-          <article
-            ref={contentRef}
-            className="article-prose mx-auto"
-            dangerouslySetInnerHTML={{ __html: article.content_html }}
-          />
-
-          {toc.length > 0 && (
-            <aside
-              aria-label="Table of contents"
-              className="hidden xl:block absolute top-0 right-6 w-[220px]"
-            >
-              <div className="sticky top-24">
-                <nav className="article-toc">
-                  <p className="article-toc__label">In this article</p>
-                  <ul className="article-toc__list">
-                    {toc.map((item) => (
-                      <li key={item.id} className="article-toc__item">
-                        <a
-                          href={`#${item.id}`}
-                          className={`article-toc__link article-toc__link--level-${item.level}${
-                            activeId === item.id ? ' is-active' : ''
-                          }`}
-                        >
-                          {item.text}
-                        </a>
-                      </li>
-                    ))}
-                  </ul>
-                </nav>
-              </div>
-            </aside>
+          {toc.length > 0 ? (
+            <div className="hidden xl:grid xl:grid-cols-[minmax(0,1fr)_220px] xl:gap-10 xl:items-start">
+              <article
+                ref={contentRef}
+                className="article-prose"
+                style={{ marginLeft: 0, marginRight: 'auto' }}
+                dangerouslySetInnerHTML={{ __html: article.content_html }}
+              />
+              <aside aria-label="Table of contents" className="relative">
+                <div className="sticky top-24">
+                  <nav className="article-toc">
+                    <p className="article-toc__label">In this article</p>
+                    <ul className="article-toc__list">
+                      {toc.map((item) => (
+                        <li key={item.id} className="article-toc__item">
+                          <a
+                            href={`#${item.id}`}
+                            className={`article-toc__link article-toc__link--level-${item.level}${
+                              activeId === item.id ? ' is-active' : ''
+                            }`}
+                          >
+                            {item.text}
+                          </a>
+                        </li>
+                      ))}
+                    </ul>
+                  </nav>
+                </div>
+              </aside>
+            </div>
+          ) : (
+            <article
+              ref={contentRef}
+              className="article-prose mx-auto"
+              dangerouslySetInnerHTML={{ __html: article.content_html }}
+            />
           )}
         </div>
 
