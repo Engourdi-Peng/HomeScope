@@ -370,6 +370,58 @@ export function AdminArticleEditorPage() {
             </div>
           </section>
 
+          <Section title="SEO settings">
+            <p className="text-xs text-stone-500 -mt-1">
+              Optimize how this article appears in search engines and social sharing.
+            </p>
+            <Field label="SEO Title" hint="Recommended 50–60 characters">
+              <input
+                type="text"
+                value={form.seo_title}
+                onChange={(e) => setField('seo_title', e.target.value)}
+                className="w-full px-3 py-2 rounded-lg border border-stone-200 bg-white text-sm"
+                placeholder="What searchers see as the page title in Google"
+              />
+              <CharCount value={form.seo_title} max={60} />
+            </Field>
+            <Field label="SEO Description" hint="Recommended 140–160 characters">
+              <textarea
+                value={form.seo_description}
+                onChange={(e) => setField('seo_description', e.target.value)}
+                rows={3}
+                className="w-full px-3 py-2 rounded-lg border border-stone-200 bg-white text-sm"
+                placeholder="Short summary shown under the title in search results and social cards"
+              />
+              <CharCount value={form.seo_description} max={160} />
+            </Field>
+            <Field label="Canonical URL" hint="Leave blank to use the default article URL">
+              <input
+                type="url"
+                value={form.canonical_url}
+                onChange={(e) => setField('canonical_url', e.target.value)}
+                className="w-full px-3 py-2 rounded-lg border border-stone-200 bg-white text-sm"
+                placeholder="https://homescope.com/articles/your-slug"
+              />
+            </Field>
+            <Field label="OG Image URL" hint="Used when this article is shared on social media">
+              <input
+                type="url"
+                value={form.og_image_url}
+                onChange={(e) => setField('og_image_url', e.target.value)}
+                className="w-full px-3 py-2 rounded-lg border border-stone-200 bg-white text-sm"
+                placeholder="https://..."
+              />
+            </Field>
+            <label className="flex items-center gap-2 text-sm text-stone-700 pt-1">
+              <input
+                type="checkbox"
+                checked={form.noindex}
+                onChange={(e) => setField('noindex', e.target.checked)}
+              />
+              Mark this article as noindex
+            </label>
+          </Section>
+
           <div className="rounded-2xl border border-dashed border-stone-300 p-4 bg-stone-50 text-xs text-stone-600">
             <strong>Long-form tips:</strong> use <code>##</code> for sections and <code>###</code> for subsections; the published page builds a table of contents automatically. Use blank lines between paragraphs.
           </div>
@@ -459,51 +511,6 @@ export function AdminArticleEditorPage() {
               }}
               onAlt={(value) => setField('cover_alt', value)}
             />
-          </Section>
-
-          <Section title="SEO">
-            <Field label="SEO title" hint="50–70 characters recommended">
-              <input
-                type="text"
-                value={form.seo_title}
-                onChange={(e) => setField('seo_title', e.target.value)}
-                className="w-full px-3 py-2 rounded-lg border border-stone-200 bg-white text-sm"
-              />
-              <CharCount value={form.seo_title} max={70} />
-            </Field>
-            <Field label="SEO description" hint="140–200 characters recommended">
-              <textarea
-                value={form.seo_description}
-                onChange={(e) => setField('seo_description', e.target.value)}
-                rows={3}
-                className="w-full px-3 py-2 rounded-lg border border-stone-200 bg-white text-sm"
-              />
-              <CharCount value={form.seo_description} max={200} />
-            </Field>
-            <Field label="Canonical URL">
-              <input
-                type="url"
-                value={form.canonical_url}
-                onChange={(e) => setField('canonical_url', e.target.value)}
-                className="w-full px-3 py-2 rounded-lg border border-stone-200 bg-white text-sm"
-              />
-            </Field>
-            <Field label="OG image URL">
-              <input
-                type="url"
-                value={form.og_image_url}
-                onChange={(e) => setField('og_image_url', e.target.value)}
-                className="w-full px-3 py-2 rounded-lg border border-stone-200 bg-white text-sm"
-              />
-            </Field>
-            <label className="flex items-center gap-2 text-sm text-stone-700">
-              <input
-                type="checkbox"
-                checked={form.noindex}
-                onChange={(e) => setField('noindex', e.target.checked)}
-              />
-              Mark as noindex
-            </label>
           </Section>
         </aside>
       </div>
