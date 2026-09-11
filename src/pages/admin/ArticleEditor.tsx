@@ -80,7 +80,7 @@ export function AdminArticleEditorPage() {
   const [dirty, setDirty] = useState(false);
   const [uploadingImages, setUploadingImages] = useState(0);
   const [imageError, setImageError] = useState<string | null>(null);
-  const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [sidebarOpen, setSidebarOpen] = useState(true);
 
   const editorRef = useRef<MDXEditorMethods | null>(null);
 
@@ -428,7 +428,7 @@ export function AdminArticleEditorPage() {
         </div>
 
         <aside
-          className={`space-y-4 ${sidebarOpen ? 'block' : 'hidden lg:block lg:opacity-0 lg:pointer-events-none lg:w-0 lg:overflow-hidden'}`}
+          className={`space-y-4 ${sidebarOpen ? 'block' : 'hidden'}`}
           aria-hidden={!sidebarOpen}
         >
           <Section title="Publishing">
