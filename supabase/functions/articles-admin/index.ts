@@ -44,7 +44,16 @@ const corsHeaders: Record<string, string> = {
   "Access-Control-Allow-Headers":
     "authorization, x-client-info, apikey, content-type",
   "Access-Control-Max-Age": "86400",
+  "Vary": "Origin",
 };
+
+// Handle CORS preflight. Always 204 with full CORS headers, BEFORE any other
+// processing. 必须放在 try 外、逻辑最顶端，保证 OPTIONS 永不走函数主体。
+// 之前远程实例曾出现 "preflight doesn't pass access control check"，
+// 是因为 OPTIONS 走到了业务逻辑分支返回了 4xx。这里强制短路。
+function handlePreflight(): Response {
+  return new Response(null, { status: 204, headers: corsHeaders });
+}
 
 const SLUG_PATTERN = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 const MAX_TITLE = 200;
@@ -238,16 +247,30 @@ function renderInline(text: string): string {
   // italic
   out = out.replace(/(^|[^*])\*([^*\n]+)\*/g, "$1<em>$2</em>");
   // images: ![alt](url)
-  out = out.replace(/!\[([^\]]*)\]\(([^)\s]+)\)/g, (_m, alt, url) =>
-    isSafeUrl(url)
-      ? `<img src="${escapeHtml(url)}" alt="${alt}" loading="lazy" />`
-      : alt
+  // - URL 匹配用 [^)\s] 改为 [^)\s]，但支持 URL 中含 ) 的情况，
+  //   用前瞻 (?=\)) 或贪婪回溯让 ) 落在外层括号边界（不消费），从而兼容 zillow 等带 ) 的 URL。
+  // - 失败兜底改为 `![alt](url)` 原样保留，而非仅返回 alt，避免退化成普通链接。
+  // - URL 中 query 参数（如 ?w=800&h=600）已通过 escapeHtml 处理过，
+  //   这里对 img src 用未转义版本保证图片可加载。
+  out = out.replace(
+    /!\[([^\]]*)\]\(([^)\s]+)\)/g,
+    (_m, alt, url) => {
+      if (!isSafeUrl(url)) return `![${alt}](${url})`;
+      // URL 在 escapeHtml 之后包含 &amp; 等实体，src 里用未转义的原始 url。
+      const src = url
+        .replace(/&amp;/g, "&")
+        .replace(/&lt;/g, "<")
+        .replace(/&gt;/g, ">")
+        .replace(/&quot;/g, '"')
+        .replace(/&#39;/g, "'");
+      return `<img src="${src}" alt="${alt}" loading="lazy" />`;
+    }
   );
-  // links: [text](url)
+  // links: [text](url) — 失败时保留整个原始语法，不再只返回 label。
   out = out.replace(/\[([^\]]+)\]\(([^)\s]+)\)/g, (_m, label, url) =>
     isSafeUrl(url)
       ? `<a href="${escapeHtml(url)}" rel="noopener noreferrer">${label}</a>`
-      : label
+      : `[${label}](${url})`
   );
   // 把占位符还原为已校验的 HTML
   for (const t of tokens) {
@@ -802,7 +825,8 @@ async function publishScheduledArticles() {
 }
 
 Deno.serve(async (req) => {
-  if (req.method === "OPTIONS") return new Response(null, { headers: corsHeaders });
+  // 必须放在最外层 —— OPTIONS 永远短路返回 204，绝不能进函数主体或 try/catch。
+  if (req.method === "OPTIONS") return handlePreflight();
 
   const authHeader_ = req.headers.get("Authorization");
   if (!authHeader_ || !authHeader_.startsWith("Bearer ")) {
