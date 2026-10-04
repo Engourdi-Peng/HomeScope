@@ -16,6 +16,12 @@
       ]
     },
     {
+      "source": "/fonts/(.*\\.woff)",
+      "headers": [
+        { "key": "Content-Type", "value": "font/woff" }
+      ]
+    },
+    {
       "source": "/fonts/(.*\\.ttf)",
       "headers": [
         { "key": "Content-Type", "value": "font/ttf" }
